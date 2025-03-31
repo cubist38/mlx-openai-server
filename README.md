@@ -126,11 +126,11 @@ When a request times out, an exception is raised in the client's response.
 
 ### Implementation Notes
 
-- Streaming requests are not queued because they are inherently long-running and would block the queue
-- Non-streaming vision requests are handled through the queue system
+- Streaming requests are handled efficiently to leverage MLX's generation capabilities
+- Both vision and text requests are fully supported through the MLX interface
 - Each request gets a unique ID for tracking and debugging
 - Queue statistics are updated in real-time
-- Currently, only vision requests are supported; text-only requests are rejected with a 400 status code
+- Model loading is optimized for MLX's architecture
 
 ## Performance Monitoring
 
@@ -453,3 +453,17 @@ Stay tuned for updates and enhancements!
 
 ## Acknowledgments
 Special thanks to the contributors and the open-source community for their support and inspiration.
+
+## Recent Updates
+
+### Repository Name Change and MLX Focus (March 2025)
+- Repository renamed from `proxy-OAI-compat` to `mlx-server-OAI-compat` to emphasize MLX focus
+- Updated documentation to highlight MLX-specific features and optimizations
+- Enhanced compatibility with MLX model formats and capabilities
+- Improved Apple Silicon optimization throughout the codebase
+
+### Bugfix: Metrics Handling (March 2025)
+- Fixed issue with KeyError in `_update_metrics` function when accessing metrics dictionary
+- Improved metrics system robustness with fallback values when keys are missing
+- Standardized key naming across all request handlers for consistency
+- Added defensive programming with `get()` method for safe access to dictionary values
