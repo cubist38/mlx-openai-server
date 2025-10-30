@@ -186,8 +186,8 @@ async def setup_server(args) -> uvicorn.Config:
     
     # Create FastAPI app with the configured lifespan
     app = FastAPI(
-        title="OpenAI-compatible API",
-        description="API for OpenAI-compatible chat completion and text embedding",
+        title="MLX OpenAI-compatible API Server",
+        description="A high-performance API server that provides OpenAI-compatible endpoints for MLX models",
         version=__version__,
         lifespan=create_lifespan(args)
     )
