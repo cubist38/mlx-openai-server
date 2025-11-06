@@ -65,9 +65,11 @@ class BaseThinkingParser:
             
             # If there's reasoning content before the close tag, return it with completion signal
             if reasoning_part:
-                return {
-                    "reasoning_content": reasoning_part
-                }, True
+                result = {"reasoning_content": reasoning_part}
+                # If there's also content after the close tag, include it as text
+                if after_close:
+                    result["content"] = after_close
+                return result, True
             # Close tag found, thinking complete, return content after close tag (if any)
             return after_close if after_close else None, True
         
