@@ -128,6 +128,13 @@ class MLXVLMHandler:
             # Create appropriate parsers for this model type
             thinking_parser, tool_parser = self._create_parsers()
 
+            chat_template_kwargs = request_dict.get("chat_template_kwargs", {})
+            enable_thinking = chat_template_kwargs.get("enable_thinking", True)
+
+            if ParserFactory.respects_enable_thinking(self.reasoning_parser):
+                if not enable_thinking:
+                    thinking_parser = None
+
             is_first_chunk = True
             
             # Process and yield each chunk asynchronously
@@ -137,7 +144,7 @@ class MLXVLMHandler:
                     
                 text = chunk.text
                 if is_first_chunk:
-                    if thinking_parser and self.reasoning_parser in ["qwen3_vl"]:
+                    if thinking_parser and ParserFactory.needs_redacted_reasoning_prefix(self.reasoning_parser):
                         text = "<think>" + text
                     is_first_chunk = False
 
@@ -199,7 +206,7 @@ class MLXVLMHandler:
             }
             response_text = response.text
 
-            if thinking_parser and self.reasoning_parser in ["qwen3_vl"]:
+            if thinking_parser and ParserFactory.needs_redacted_reasoning_prefix(self.reasoning_parser):
                 response_text = "<think>" + response_text
 
             if thinking_parser:

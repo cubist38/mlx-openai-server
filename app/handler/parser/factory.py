@@ -63,6 +63,45 @@ CONVERTER_REGISTRY: Dict[str, Callable] = {
     "minimax": MiniMaxMessageConverter,
 }
 
+# Registry mapping parser names to their metadata/properties
+PARSER_METADATA: Dict[str, Dict[str, Any]] = {
+    "qwen3": {
+        "respects_enable_thinking": True,  # Parser respects enable_thinking flag
+        "needs_redacted_reasoning_prefix": False,  # Needs <think> prefix
+        "has_special_parsing": False,  # Has special parsing logic (e.g., harmony returns dict)
+    },
+    "glm4_moe": {
+        "respects_enable_thinking": True,
+        "needs_redacted_reasoning_prefix": False,
+        "has_special_parsing": False,
+    },
+    "qwen3_moe": {
+        "respects_enable_thinking": False,
+        "needs_redacted_reasoning_prefix": True,  # Needs prefix for both stream and response
+        "has_special_parsing": False,
+    },
+    "qwen3_next": {
+        "respects_enable_thinking": False,
+        "needs_redacted_reasoning_prefix": True,  # Needs prefix for both stream and response
+        "has_special_parsing": False,
+    },
+    "qwen3_vl": {
+        "respects_enable_thinking": False,
+        "needs_redacted_reasoning_prefix": True,  # Needs prefix for both stream and response
+        "has_special_parsing": False,
+    },
+    "harmony": {
+        "respects_enable_thinking": False,
+        "needs_redacted_reasoning_prefix": False,
+        "has_special_parsing": True,  # Harmony parser returns dict from parse() instead of tuple
+    },
+    "minimax": {
+        "respects_enable_thinking": False,
+        "needs_redacted_reasoning_prefix": True,  # Needs prefix for both stream and response
+        "has_special_parsing": False,
+    },
+}
+
 class ParserFactory:
     """Factory for creating thinking and tool parsers."""
 
@@ -169,4 +208,49 @@ class ParserFactory:
         
         converter_class = CONVERTER_REGISTRY[model_type]
         return converter_class()
+
+    @staticmethod
+    def respects_enable_thinking(parser_name: Optional[str]) -> bool:
+        """
+        Check if a parser respects the enable_thinking flag.
+        
+        Args:
+            parser_name: Name of the parser to check
+            
+        Returns:
+            True if parser respects enable_thinking, False otherwise
+        """
+        if not parser_name:
+            return False
+        return PARSER_METADATA.get(parser_name, {}).get("respects_enable_thinking", False)
+
+    @staticmethod
+    def needs_redacted_reasoning_prefix(parser_name: Optional[str]) -> bool:
+        """
+        Check if a parser needs the <think> prefix added to responses.
+        
+        Args:
+            parser_name: Name of the parser to check
+            
+        Returns:
+            True if parser needs redacted_reasoning prefix, False otherwise
+        """
+        if not parser_name:
+            return False
+        return PARSER_METADATA.get(parser_name, {}).get("needs_redacted_reasoning_prefix", False)
+
+    @staticmethod
+    def has_special_parsing(parser_name: Optional[str]) -> bool:
+        """
+        Check if a parser has special parsing logic (e.g., harmony returns dict from parse()).
+        
+        Args:
+            parser_name: Name of the parser to check
+            
+        Returns:
+            True if parser has special parsing, False otherwise
+        """
+        if not parser_name:
+            return False
+        return PARSER_METADATA.get(parser_name, {}).get("has_special_parsing", False)
 

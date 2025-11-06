@@ -119,8 +119,14 @@ class MLXLMHandler:
             # Create appropriate parsers for this model type
 
             thinking_parser, tool_parser = self._create_parsers()
-
             is_first_chunk = True
+
+            chat_template_kwargs = model_params.get("chat_template_kwargs", {})
+            enable_thinking = chat_template_kwargs.get("enable_thinking", True)
+
+            if ParserFactory.respects_enable_thinking(self.reasoning_parser):
+                if not enable_thinking:
+                    thinking_parser = None
 
             # # Process streaming response
             for chunk in response_generator:
@@ -131,7 +137,7 @@ class MLXLMHandler:
                 text = chunk.text
 
                 if is_first_chunk:
-                    if thinking_parser and self.reasoning_parser in ["qwen3_moe", "qwen3_next", "minimax"]:
+                    if thinking_parser and ParserFactory.needs_redacted_reasoning_prefix(self.reasoning_parser):
                         text = "<think>" + text
                     is_first_chunk = False
 
@@ -186,18 +192,25 @@ class MLXLMHandler:
             # Create appropriate parsers for this model type
             thinking_parser, tool_parser = self._create_parsers()
 
+            chat_template_kwargs = model_params.get("chat_template_kwargs", {})
+            enable_thinking = chat_template_kwargs.get("enable_thinking", True)
+
+            if ParserFactory.respects_enable_thinking(self.reasoning_parser):
+                if not enable_thinking:
+                    thinking_parser = None
+
             if not thinking_parser and not tool_parser:
                 return response
 
             response_text = response
 
-            if thinking_parser and self.reasoning_parser in ["harmony"]:
-                # Handle Harmony parser (special case)
+            if thinking_parser and ParserFactory.has_special_parsing(self.reasoning_parser):
+                # Handle parsers with special parsing logic (e.g., harmony returns dict)
                 return thinking_parser.parse(response_text)
 
 
-            if thinking_parser and self.reasoning_parser in ["qwen3_moe", "qwen3_next"]:
-                # Add thinking tag to response for Qwen3 MoE and Qwen3 Next
+            if thinking_parser and ParserFactory.needs_redacted_reasoning_prefix(self.reasoning_parser):
+                # Add thinking tag to response for parsers that need it
                 response_text = "<think>" + response_text
             
             parsed_response = {
