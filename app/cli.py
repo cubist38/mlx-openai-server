@@ -6,6 +6,7 @@ from loguru import logger
 from functools import lru_cache
 from app.version import __version__
 from app.main import setup_server
+from app.handler.parser.factory import PARSER_REGISTRY
 
 class Config:
     """Configuration container for server parameters."""
@@ -239,13 +240,13 @@ def print_startup_banner(args):
 @click.option(
     "--tool-call-parser",
     default=None,
-    type=click.Choice(["qwen3", "glm4_moe", "harmony"]),
+    type=click.Choice(list(PARSER_REGISTRY.keys())),
     help="Specify tool call parser to use instead of auto-detection. Only works with language models."
 )
 @click.option(
     "--reasoning-parser",
     default=None,
-    type=click.Choice(["qwen3", "glm4_moe", "harmony"]),
+    type=click.Choice(list(PARSER_REGISTRY.keys())),
     help="Specify reasoning parser to use instead of auto-detection. Only works with language models."
 )
 def launch(model_path, model_type, context_length, port, host, max_concurrency, queue_timeout, queue_size, quantize, config_name, lora_paths, lora_scales, disable_auto_resize, log_file, no_log_file, log_level, enable_auto_tool_choice, tool_call_parser, reasoning_parser):
