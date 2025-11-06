@@ -14,6 +14,10 @@ from app.handler.parser import (
     Glm4MoEThinkingParser,
     Qwen3MoEToolParser,
     Qwen3MoEThinkingParser,
+    Qwen3NextToolParser,
+    Qwen3NextThinkingParser,
+    Qwen3VLToolParser,
+    Qwen3VLThinkingParser,
 )
 
 
@@ -30,6 +34,14 @@ PARSER_REGISTRY: Dict[str, Dict[str, Callable]] = {
     "qwen3_moe": {
         "thinking": Qwen3MoEThinkingParser,
         "tool": Qwen3MoEToolParser,
+    },
+    "qwen3_next": {
+        "thinking": Qwen3NextThinkingParser,
+        "tool": Qwen3NextToolParser,
+    },
+    "qwen3_vl": {
+        "thinking": Qwen3VLThinkingParser,
+        "tool": Qwen3VLToolParser,
     },
     "harmony": {
         # Harmony parser handles both thinking and tools
