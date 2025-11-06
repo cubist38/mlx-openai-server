@@ -1,8 +1,8 @@
 """
-Parser factory for creating thinking and tool parsers based on configuration.
+Parser factory for creating thinking and tool parsers based on manual configuration.
 
-This module provides a centralized way to create parsers either through
-manual specification or auto-detection based on model type.
+This module provides a centralized way to create parsers through explicit
+manual specification. Parsers are only created when explicitly requested.
 """
 from typing import Optional, Dict, Any, Tuple, Callable
 from loguru import logger
@@ -94,118 +94,57 @@ class ParserFactory:
         return None
 
     @staticmethod
-    def auto_detect_parsers(
-        model_type: str,
-        tools: Optional[Any] = None,
-        enable_thinking: bool = True,
-    ) -> Tuple[Optional[str], Optional[str]]:
-        """
-        Auto-detect parser names based on model type.
-        
-        Args:
-            model_type: The type of the model (e.g., "qwen3", "glm4_moe")
-            tools: Whether tools are available (affects tool parser creation)
-            enable_thinking: Whether thinking/reasoning is enabled
-            
-        Returns:
-            Tuple of (reasoning_parser_name, tool_parser_name)
-        """
-        if model_type not in MODEL_TYPE_TO_PARSER:
-            logger.debug(f"Unknown model type for auto-detection: {model_type}")
-            return None, None
-        
-        model_config = MODEL_TYPE_TO_PARSER[model_type]
-        
-        # Handle unified parsers (like Harmony for gpt_oss)
-        if "unified" in model_config:
-            return model_config["unified"], None
-        
-        reasoning_parser = None
-        tool_parser = None
-        
-        if "thinking" in model_config and enable_thinking:
-            reasoning_parser = model_config["thinking"]
-        
-        if "tool" in model_config and tools:
-            tool_parser = model_config["tool"]
-        
-        return reasoning_parser, tool_parser
-
-    @staticmethod
     def create_parsers(
         model_type: str,
-        tools: Optional[Any] = None,
-        enable_thinking: bool = True,
         manual_reasoning_parser: Optional[str] = None,
         manual_tool_parser: Optional[str] = None,
     ) -> Tuple[Optional[Any], Optional[Any]]:
         """
-        Create thinking and tool parsers based on configuration.
+        Create thinking and tool parsers based on manual configuration.
         
-        This method handles both manual parser specification and auto-detection.
-        When manual parsers are specified, they override auto-detection for that
-        specific parser type. If only one parser is manually specified, the other
-        uses auto-detection.
+        Parsers are only created when explicitly specified. If no parsers are
+        specified, both will be None.
         
         Args:
-            model_type: The type of the model
-            tools: Whether tools are available
-            enable_thinking: Whether thinking/reasoning is enabled
+            model_type: The type of the model (for logging/debugging purposes)
+            tools: Whether tools are available (for logging/debugging purposes)
+            enable_thinking: Whether thinking/reasoning is enabled (for logging/debugging purposes)
             manual_reasoning_parser: Manually specified reasoning parser name
             manual_tool_parser: Manually specified tool parser name
             
         Returns:
-            Tuple of (thinking_parser, tool_parser)
+            Tuple of (thinking_parser, tool_parser). Both will be None if not specified.
         """
-        # Handle unified parsers manually specified
+        # Handle unified parsers (harmony) - handles both thinking and tools
         if manual_reasoning_parser == "harmony" or manual_tool_parser == "harmony":
             harmony_parser = ParserFactory.create_parser("harmony", "unified")
             if harmony_parser:
                 return harmony_parser, None
+            logger.warning(f"Failed to create Harmony parser")
         
-        # Determine which parsers to use (manual or auto-detected)
-        reasoning_parser_name = manual_reasoning_parser
-        tool_parser_name = manual_tool_parser
-        
-        # Auto-detect missing parsers
-        auto_reasoning, auto_tool = ParserFactory.auto_detect_parsers(
-            model_type, tools, enable_thinking
-        )
-        
-        # Handle unified parser from auto-detection
-        if auto_reasoning == "harmony":
-            harmony_parser = ParserFactory.create_parser("harmony", "unified")
-            if harmony_parser:
-                return harmony_parser, None
-        
-        if reasoning_parser_name is None:
-            reasoning_parser_name = auto_reasoning
-        
-        if tool_parser_name is None:
-            tool_parser_name = auto_tool
-        
-        # Create parser instances
+        # Create reasoning parser if explicitly specified
         thinking_parser = None
-        if reasoning_parser_name:
+        if manual_reasoning_parser:
             parser_instance = ParserFactory.create_parser(
-                reasoning_parser_name, "thinking"
+                manual_reasoning_parser, "thinking"
             )
             if parser_instance is not None:
                 thinking_parser = parser_instance
-            elif reasoning_parser_name:  # Only log if manual override was attempted
-                logger.debug(
-                    f"Thinking parser '{reasoning_parser_name}' not available or not supported "
+            else:
+                logger.warning(
+                    f"Failed to create thinking parser '{manual_reasoning_parser}' "
                     f"for model type '{model_type}'"
                 )
         
+        # Create tool parser if explicitly specified
         tool_parser = None
-        if tool_parser_name:
-            parser_instance = ParserFactory.create_parser(tool_parser_name, "tool")
+        if manual_tool_parser:
+            parser_instance = ParserFactory.create_parser(manual_tool_parser, "tool")
             if parser_instance is not None:
                 tool_parser = parser_instance
-            elif tool_parser_name:  # Only log if manual override was attempted
-                logger.debug(
-                    f"Tool parser '{tool_parser_name}' not available or not supported "
+            else:
+                logger.warning(
+                    f"Failed to create tool parser '{manual_tool_parser}' "
                     f"for model type '{model_type}'"
                 )
         

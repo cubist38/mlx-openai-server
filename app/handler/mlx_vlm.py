@@ -83,13 +83,9 @@ class MLXVLMHandler:
             Tuple of (thinking_parser, tool_parser)
         """
         chat_template_kwargs = chat_template_kwargs or {}
-        tools = chat_template_kwargs.get("tools", None)
-        enable_thinking = chat_template_kwargs.get("enable_thinking", True)
         
         return ParserFactory.create_parsers(
             model_type=self.model_type,
-            tools=tools,
-            enable_thinking=enable_thinking,
             manual_reasoning_parser=self.reasoning_parser,
             manual_tool_parser=self.tool_call_parser,
         )
