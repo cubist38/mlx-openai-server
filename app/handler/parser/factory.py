@@ -12,6 +12,8 @@ from app.handler.parser import (
     HarmonyParser,
     Glm4MoEToolParser,
     Glm4MoEThinkingParser,
+    Qwen3MoEToolParser,
+    Qwen3MoEThinkingParser,
 )
 
 
@@ -25,40 +27,15 @@ PARSER_REGISTRY: Dict[str, Dict[str, Callable]] = {
         "thinking": Glm4MoEThinkingParser,
         "tool": Glm4MoEToolParser,
     },
+    "qwen3_moe": {
+        "thinking": Qwen3MoEThinkingParser,
+        "tool": Qwen3MoEToolParser,
+    },
     "harmony": {
         # Harmony parser handles both thinking and tools
         "unified": HarmonyParser,
     },
 }
-
-# Model type to parser name mapping for auto-detection
-MODEL_TYPE_TO_PARSER: Dict[str, Dict[str, Optional[str]]] = {
-    # Language models
-    "qwen3": {
-        "thinking": "qwen3",
-        "tool": "qwen3",
-    },
-    "glm4_moe": {
-        "thinking": "glm4_moe",
-        "tool": "glm4_moe",
-    },
-    "gpt_oss": {
-        # Harmony parser handles both
-        "unified": "harmony",
-    },
-    # Vision language models
-    "qwen3_vl": {
-        "tool": "qwen3",
-    },
-    "qwen3_vl_moe": {
-        "tool": "qwen3",
-    },
-    "glm4v_moe": {
-        "thinking": "glm4_moe",
-        "tool": "glm4_moe",
-    },
-}
-
 
 class ParserFactory:
     """Factory for creating thinking and tool parsers."""
