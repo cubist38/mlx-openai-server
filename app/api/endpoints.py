@@ -225,7 +225,7 @@ def create_response_chunk(chunk: Union[str, Dict[str, Any]], model: str, is_fina
             model=model,
             choices=[StreamingChoice(
                 index=0,
-                delta=Delta(reasoning_content=chunk["reasoning_content"], role="assistant"),
+                delta=Delta(reasoning_content=chunk["reasoning_content"], role="assistant", content=chunk.get("content", None)),
                 finish_reason=finish_reason if is_final else None
             )]
         )
