@@ -91,7 +91,10 @@ def create_lifespan(config_args):
                     model_path=model_identifier,
                     context_length=getattr(config_args, 'context_length', None),
                     max_concurrency=config_args.max_concurrency,
-                    disable_auto_resize=getattr(config_args, 'disable_auto_resize', False)
+                    disable_auto_resize=getattr(config_args, 'disable_auto_resize', False),
+                    enable_auto_tool_choice=getattr(config_args, 'enable_auto_tool_choice', False),
+                    tool_call_parser=getattr(config_args, 'tool_call_parser', None),
+                    reasoning_parser=getattr(config_args, 'reasoning_parser', None)
                 )
             elif config_args.model_type == "image-generation":
                 if not MFLUX_AVAILABLE:
@@ -133,7 +136,10 @@ def create_lifespan(config_args):
                 handler = MLXLMHandler(
                     model_path=model_identifier,
                     context_length=getattr(config_args, 'context_length', None),
-                    max_concurrency=config_args.max_concurrency
+                    max_concurrency=config_args.max_concurrency,
+                    enable_auto_tool_choice=getattr(config_args, 'enable_auto_tool_choice', False),
+                    tool_call_parser=getattr(config_args, 'tool_call_parser', None),
+                    reasoning_parser=getattr(config_args, 'reasoning_parser', None)
                 )       
             # Initialize queue
             await handler.initialize({
