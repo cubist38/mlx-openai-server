@@ -26,15 +26,46 @@ class BaseThinkingParser:
                 - parsed_content: The parsed chunk (could be str, dict, or None)
                 - is_complete: True if thinking section is complete
         """
+        if chunk is None:
+            return None, False
+            
         if not self.is_thinking:
-            if chunk == self.thinking_open:
+            # Check if thinking_open is in the chunk
+            if self.thinking_open in chunk:
                 self.is_thinking = True
-                return None, False
+                start_idx = chunk.find(self.thinking_open)
+                after_open = chunk[start_idx + len(self.thinking_open):]
+                before_open = chunk[:start_idx]
+                
+                # Check if thinking_close is also in this chunk (both tags in same chunk)
+                if self.thinking_close in after_open:
+                    close_idx = after_open.find(self.thinking_close)
+                    self.is_thinking = False
+                    # Return content before open tag + content after close tag
+                    after_close = after_open[close_idx + len(self.thinking_close):]
+                    return (before_open + after_close) if (before_open + after_close) else None, True
+                
+                # Only opening tag found, return content before it
+                return before_open if before_open else None, False
+            # No thinking tag, return chunk as is
             return chunk, False
-        if chunk == self.thinking_close:
-            self.is_thinking = False
-            return None, True
         
+        # Currently in thinking mode
+        if self.thinking_close in chunk:
+            close_idx = chunk.find(self.thinking_close)
+            reasoning_part = chunk[:close_idx]
+            after_close = chunk[close_idx + len(self.thinking_close):]
+            self.is_thinking = False
+            
+            # If there's reasoning content before the close tag, return it
+            if reasoning_part:
+                return {
+                    "reasoning_content": reasoning_part
+                }, False
+            # Close tag found, thinking complete, return content after close tag
+            return after_close if after_close else None, True
+        
+        # Still in thinking mode, return as reasoning content
         return {
             "reasoning_content": chunk
         }, False
