@@ -114,8 +114,10 @@ class MLXLMHandler:
             }
             response_generator = await self.request_queue.submit(request_id, request_data)            
             # Create appropriate parsers for this model type
-            
+
             thinking_parser, tool_parser = self._create_parsers()
+
+            is_first_chunk = True
 
             # # Process streaming response
             for chunk in response_generator:
@@ -124,6 +126,11 @@ class MLXLMHandler:
                     continue
                     
                 text = chunk.text
+
+                if is_first_chunk:
+                    if self.reasoning_parser and self.reasoning_parser in ["qwen3_moe", "qwen3_next"]:
+                        text = "<think>" + text
+                    is_first_chunk = False
 
                 if thinking_parser:
                     parsed_content, is_complete = thinking_parser.parse_stream(text)
