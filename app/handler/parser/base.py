@@ -10,12 +10,21 @@ class BaseThinkingParser:
         self.is_thinking = False
 
     def parse(self, content: str) -> Tuple[Optional[str], str]:
-        if self.thinking_open in content:
-            start_thinking = content.find(self.thinking_open)
-            end_thinking = content.find(self.thinking_close)
-            if end_thinking != -1:
-                return content[start_thinking + len(self.thinking_open):end_thinking].strip(), content[end_thinking + len(self.thinking_close):].strip()
-        return None, content
+        start_thinking = content.find(self.thinking_open)
+        if start_thinking == -1:
+            return None, content
+        
+        thinking_open_len = len(self.thinking_open)
+        thinking_close_len = len(self.thinking_close)
+        start_content = start_thinking + thinking_open_len
+        end_thinking = content.find(self.thinking_close, start_content)
+        
+        if end_thinking == -1:
+            return None, content
+        
+        thinking_content = content[start_content:end_thinking].strip()
+        remaining_content = content[end_thinking + thinking_close_len:].strip()
+        return thinking_content, remaining_content
         
     
     def parse_stream(self, chunk: Optional[str] = None) -> Tuple[Optional[Any], bool]:
@@ -114,25 +123,50 @@ class BaseToolParser:
 
     def parse(self, content: str) -> Tuple[Optional[List[Dict[str, Any]]], str]:
         tool_calls = []
-        remaining_content = ""
-        start = 0
+        remaining_parts = []
+        
+        if self.tool_open not in content:
+            return None, content
+        
+        tool_open_len = len(self.tool_open)
+        tool_close_len = len(self.tool_close)
+        pos = 0
+        
         while True:
-            start_tool = content.find(self.tool_open, start)
+            start_tool = content.find(self.tool_open, pos)
             if start_tool == -1:
+                # No more tool calls, add remaining content
+                if pos < len(content):
+                    remaining_parts.append(content[pos:].strip())
                 break
-            remaining_content += content[:start_tool].strip()
-            end_tool = content.find(self.tool_close, start_tool + len(self.tool_open))
+            
+            # Add content before tool call
+            if start_tool > pos:
+                remaining_parts.append(content[pos:start_tool].strip())
+            
+            # Find closing tag
+            search_start = start_tool + tool_open_len
+            end_tool = content.find(self.tool_close, search_start)
             if end_tool == -1:
+                # Unclosed tool tag, add remaining content and break
+                remaining_parts.append(content[pos:].strip())
                 break
-            tool_content = content[start_tool + len(self.tool_open):end_tool].strip()
-
+            
+            # Extract and parse tool content
+            tool_content = content[search_start:end_tool].strip()
             try:
                 json_output = self._parse_tool_content(tool_content)
                 tool_calls.append(json_output)
             except json.JSONDecodeError:
                 print("Error parsing tool call: ", tool_content)
+                # Continue processing remaining content after error
+                remaining_parts.append(content[pos:].strip())
                 break
-            content = content[end_tool + len(self.tool_close):].strip()
+            
+            # Move position past the closing tag
+            pos = end_tool + tool_close_len
+        
+        remaining_content = " ".join(filter(None, remaining_parts))
         return tool_calls, remaining_content
     
     def parse_stream(self, chunk: Optional[str] = None) -> Tuple[Optional[Any], bool]:
