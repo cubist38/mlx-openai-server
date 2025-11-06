@@ -45,7 +45,13 @@ class BaseThinkingParser:
                     after_close = after_open[close_idx + len(self.thinking_close):]
                     return (before_open + after_close) if (before_open + after_close) else None, True
                 
-                # Only opening tag found, return content before it
+                # Only opening tag found, return content before it (if any) and reasoning content after
+                # If there's content after the opening tag, return it as reasoning_content
+                if after_open:
+                    return {
+                        "reasoning_content": after_open
+                    }, False
+                # Just the opening tag with nothing after it
                 return before_open if before_open else None, False
             # No thinking tag, return chunk as is
             return chunk, False
@@ -57,12 +63,12 @@ class BaseThinkingParser:
             after_close = chunk[close_idx + len(self.thinking_close):]
             self.is_thinking = False
             
-            # If there's reasoning content before the close tag, return it
+            # If there's reasoning content before the close tag, return it with completion signal
             if reasoning_part:
                 return {
                     "reasoning_content": reasoning_part
-                }, False
-            # Close tag found, thinking complete, return content after close tag
+                }, True
+            # Close tag found, thinking complete, return content after close tag (if any)
             return after_close if after_close else None, True
         
         # Still in thinking mode, return as reasoning content
