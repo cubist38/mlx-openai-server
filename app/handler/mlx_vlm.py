@@ -33,8 +33,8 @@ class MLXVLMHandler:
             max_concurrency (int): Maximum number of concurrent model inference tasks.
             disable_auto_resize (bool): Whether to disable automatic image resizing.
             enable_auto_tool_choice (bool): Enable automatic tool choice.
-            tool_call_parser (str): Name of the tool call parser to use (qwen3, glm4_moe, harmony).
-            reasoning_parser (str): Name of the reasoning parser to use (qwen3, glm4_moe, harmony).
+            tool_call_parser (str): Name of the tool call parser to use (qwen3, glm4_moe, harmony, minimax, ...)
+            reasoning_parser (str): Name of the reasoning parser to use (qwen3, qwen3_next, glm4_moe, harmony, minimax, ...).
         """
         self.model_path = model_path
         self.model = MLX_VLM(model_path)

@@ -28,8 +28,8 @@ class MLXLMHandler:
             context_length (int): Maximum context length for the model.
             max_concurrency (int): Maximum number of concurrent model inference tasks.
             enable_auto_tool_choice (bool): Enable automatic tool choice.
-            tool_call_parser (str): Name of the tool call parser to use (qwen3, glm4_moe, harmony).
-            reasoning_parser (str): Name of the reasoning parser to use (qwen3, glm4_moe, harmony).
+            tool_call_parser (str): Name of the tool call parser to use (qwen3, glm4_moe, harmony, minimax, ...)
+            reasoning_parser (str): Name of the reasoning parser to use (qwen3, qwen3_next, glm4_moe, harmony, minimax, ...)
         """
         self.model_path = model_path
         self.model = MLX_LM(model_path, context_length)
@@ -45,7 +45,7 @@ class MLXLMHandler:
         self.request_queue = RequestQueue(max_concurrency=max_concurrency)
 
         # Initialize message converter for supported models
-        self.converter = self._create_converter()
+        self.converter = ParserFactory.create_converter(self.model_type)
 
         logger.info(f"Initialized MLXHandler with model path: {model_path}")
     
@@ -63,19 +63,6 @@ class MLXLMHandler:
             manual_reasoning_parser=self.reasoning_parser,
             manual_tool_parser=self.tool_call_parser,
         )
-
-    def _create_converter(self) -> Optional[BaseMessageConverter]:
-        """
-        Create appropriate message converter based on model type.
-        
-        Returns:
-            BaseMessageConverter instance or None if no conversion needed
-        """
-        if self.model_type == "glm4_moe":
-            return Glm4MoEMessageConverter()
-        elif self.model_type == "minimax":
-            return MiniMaxMessageConverter()
-        return None
 
     async def get_models(self) -> List[Dict[str, Any]]:
         """
@@ -144,7 +131,7 @@ class MLXLMHandler:
                 text = chunk.text
 
                 if is_first_chunk:
-                    if thinking_parser and self.reasoning_parser in ["qwen3_moe", "qwen3_next"]:
+                    if thinking_parser and self.reasoning_parser in ["qwen3_moe", "qwen3_next", "minimax"]:
                         text = "<think>" + text
                     is_first_chunk = False
 
