@@ -181,14 +181,21 @@ class MLXLMHandler:
             response = await self.request_queue.submit(request_id, request_data)
             
             # Create appropriate parsers for this model type
-            thinking_parser, tool_parser = self._create_parsers(model_params.get("chat_template_kwargs", {}))
+            thinking_parser, tool_parser = self._create_parsers()
 
             if not thinking_parser and not tool_parser:
                 return response
-            
-            # Handle Harmony parser (special case)
-            if isinstance(thinking_parser, HarmonyParser):
-                return thinking_parser.parse(response)
+
+            response_text = response
+
+            if thinking_parser and self.reasoning_parser in ["harmony"]:
+                # Handle Harmony parser (special case)
+                return thinking_parser.parse(response_text)
+
+
+            if thinking_parser and self.reasoning_parser in ["qwen3_moe", "qwen3_next"]:
+                # Add thinking tag to response for Qwen3 MoE and Qwen3 Next
+                response_text = "<think>" + response_text
             
             parsed_response = {
                 "reasoning_content": None,
@@ -197,13 +204,13 @@ class MLXLMHandler:
             }
             
             if thinking_parser:
-                thinking_response, response = thinking_parser.parse(response)
+                thinking_response, response_text = thinking_parser.parse(response_text)
                 parsed_response["reasoning_content"] = thinking_response
                 
             if tool_parser:
-                tool_response, response = tool_parser.parse(response)
+                tool_response, response_text = tool_parser.parse(response_text)
                 parsed_response["tool_calls"] = tool_response
-            parsed_response["content"] = response
+            parsed_response["content"] = response_text
             
             return parsed_response
                         
