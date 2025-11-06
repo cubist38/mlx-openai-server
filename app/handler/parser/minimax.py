@@ -6,8 +6,8 @@ from app.handler.parser.base import BaseToolParser, BaseThinkingParser, BaseMess
 
 TOOL_OPEN = "<minimax:tool_call>"
 TOOL_CLOSE = "</minimax:tool_call>"
-THINKING_OPEN = "<thinking>"
-THINKING_CLOSE = "</thinking>"
+THINKING_OPEN = "<think>"
+THINKING_CLOSE = "</think>"
 
 class MinimaxThinkingParser(BaseThinkingParser):
     """Parser for MiniMax model's thinking response format."""
