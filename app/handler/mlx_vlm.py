@@ -11,9 +11,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from app.core.queue import RequestQueue
 from app.models.mlx_vlm import MLX_VLM
-from app.handler.parser import (
-    Qwen3ToolParser, Glm4MoEThinkingParser, Glm4MoEToolParser   
-)
+from app.handler.parser import ParserFactory
 from app.core import ImageProcessor, AudioProcessor, VideoProcessor
 from app.utils.errors import create_error_response
 from app.schemas.openai import ChatCompletionRequest, EmbeddingRequest, ChatCompletionContentPart, ChatCompletionContentPartText, ChatCompletionContentPartImage, ChatCompletionContentPartInputAudio, ChatCompletionContentPartVideo
@@ -24,15 +22,19 @@ class MLXVLMHandler:
     Provides caching, concurrent image processing, audio processing, and robust error handling.
     """
 
-    def __init__(self, model_path: str, context_length: int = None, max_workers: int = 4, max_concurrency: int = 1, disable_auto_resize: bool = False):
+    def __init__(self, model_path: str, context_length: int = None, max_workers: int = 4, max_concurrency: int = 1, disable_auto_resize: bool = False, enable_auto_tool_choice: bool = False, tool_call_parser: str = None, reasoning_parser: str = None):
         """
         Initialize the handler with the specified model path.
         
         Args:
             model_path (str): Path to the model directory.
+            context_length (int): Maximum context length for the model.
             max_workers (int): Maximum number of worker threads for image processing.
             max_concurrency (int): Maximum number of concurrent model inference tasks.
             disable_auto_resize (bool): Whether to disable automatic image resizing.
+            enable_auto_tool_choice (bool): Enable automatic tool choice.
+            tool_call_parser (str): Name of the tool call parser to use (qwen3, glm4_moe, harmony).
+            reasoning_parser (str): Name of the reasoning parser to use (qwen3, glm4_moe, harmony).
         """
         self.model_path = model_path
         self.model = MLX_VLM(model_path)
@@ -42,6 +44,11 @@ class MLXVLMHandler:
         self.disable_auto_resize = disable_auto_resize
         self.model_created = int(time.time())  # Store creation time when model is loaded
         self.model_type = self.model.get_model_type()
+        
+        # Store parser configuration
+        self.enable_auto_tool_choice = enable_auto_tool_choice
+        self.tool_call_parser = tool_call_parser
+        self.reasoning_parser = reasoning_parser
 
         # Initialize request queue for multimodal and text tasks
         # We use the same queue for both multimodal and text tasks for simplicity
@@ -70,23 +77,22 @@ class MLXVLMHandler:
     def _create_parsers(self, chat_template_kwargs: Optional[Dict[str, Any]] = None) -> Tuple[Optional[Any], Optional[Any]]:
         """
         Create appropriate parsers based on model type and available tools.
+        Uses ParserFactory for centralized parser creation logic.
         
         Returns:
             Tuple of (thinking_parser, tool_parser)
         """
+        chat_template_kwargs = chat_template_kwargs or {}
         tools = chat_template_kwargs.get("tools", None)
         enable_thinking = chat_template_kwargs.get("enable_thinking", True)
-
-        thinking_parser = None
-        tool_parser = None
         
-        if self.model_type in ["qwen3_vl", "qwen3_vl_moe"]:
-            tool_parser = Qwen3ToolParser() if tools else None
-        elif self.model_type == "glm4v_moe":
-            thinking_parser = Glm4MoEThinkingParser() if enable_thinking else None
-            tool_parser = Glm4MoEToolParser() if tools else None
-            
-        return thinking_parser, tool_parser
+        return ParserFactory.create_parsers(
+            model_type=self.model_type,
+            tools=tools,
+            enable_thinking=enable_thinking,
+            manual_reasoning_parser=self.reasoning_parser,
+            manual_tool_parser=self.tool_call_parser,
+        )
     
     async def initialize(self, queue_config: Optional[Dict[str, Any]] = None):
         """Initialize the handler and start the request queue."""
@@ -472,7 +478,10 @@ class MLXVLMHandler:
             tool_choice = request.tool_choice or None
 
             if tools:
-                if tool_choice:
+                # Enable auto tool choice if requested via CLI flag
+                if self.enable_auto_tool_choice and tool_choice == "auto":
+                    request_dict["chat_template_kwargs"]["tool_choice"] = "auto"
+                elif tool_choice:
                     logger.warning("Tool choice has not supported yet, will be ignored.")
                 request_dict["chat_template_kwargs"]["tools"] = tools
             return request_dict

@@ -7,9 +7,7 @@ from fastapi import HTTPException
 from loguru import logger
 from app.models.mlx_lm import MLX_LM
 from app.core.queue import RequestQueue
-from app.handler.parser import (
-    Qwen3ThinkingParser, Qwen3ToolParser, HarmonyParser, Glm4MoEThinkingParser, Glm4MoEToolParser   
-)
+from app.handler.parser import ParserFactory
 from app.utils.errors import create_error_response
 from typing import Any, AsyncGenerator, Dict, List, Optional, Tuple
 from app.schemas.openai import ChatCompletionRequest, EmbeddingRequest
@@ -21,18 +19,27 @@ class MLXLMHandler:
     Provides request queuing, metrics tracking, and robust error handling.
     """
 
-    def __init__(self, model_path: str, context_length: int = None, max_concurrency: int = 1):
+    def __init__(self, model_path: str, context_length: int = None, max_concurrency: int = 1, enable_auto_tool_choice: bool = False, tool_call_parser: str = None, reasoning_parser: str = None):
         """
         Initialize the handler with the specified model path.
         
         Args:
             model_path (str): Path to the model directory.
+            context_length (int): Maximum context length for the model.
             max_concurrency (int): Maximum number of concurrent model inference tasks.
+            enable_auto_tool_choice (bool): Enable automatic tool choice.
+            tool_call_parser (str): Name of the tool call parser to use (qwen3, glm4_moe, harmony).
+            reasoning_parser (str): Name of the reasoning parser to use (qwen3, glm4_moe, harmony).
         """
         self.model_path = model_path
         self.model = MLX_LM(model_path, context_length)
         self.model_created = int(time.time())  # Store creation time when model is loaded
         self.model_type = self.model.get_model_type()
+        
+        # Store parser configuration
+        self.enable_auto_tool_choice = enable_auto_tool_choice
+        self.tool_call_parser = tool_call_parser
+        self.reasoning_parser = reasoning_parser
         
         # Initialize request queue for text tasks
         self.request_queue = RequestQueue(max_concurrency=max_concurrency)
@@ -42,26 +49,22 @@ class MLXLMHandler:
     def _create_parsers(self, chat_template_kwargs: Optional[Dict[str, Any]] = None) -> Tuple[Optional[Any], Optional[Any]]:
         """
         Create appropriate parsers based on model type and available tools.
+        Uses ParserFactory for centralized parser creation logic.
         
         Returns:
             Tuple of (thinking_parser, tool_parser)
         """
+        chat_template_kwargs = chat_template_kwargs or {}
         tools = chat_template_kwargs.get("tools", None)
         enable_thinking = chat_template_kwargs.get("enable_thinking", True)
-        thinking_parser = None
-        tool_parser = None
         
-        if self.model_type == "qwen3":
-            thinking_parser = Qwen3ThinkingParser()
-            tool_parser = Qwen3ToolParser() if tools else None
-        elif self.model_type == "glm4_moe":
-            thinking_parser = Glm4MoEThinkingParser() if enable_thinking else None
-            tool_parser = Glm4MoEToolParser() if tools else None
-        elif self.model_type == "gpt_oss":
-            # Harmony parser handles both thinking and tools
-            return HarmonyParser(), None
-            
-        return thinking_parser, tool_parser
+        return ParserFactory.create_parsers(
+            model_type=self.model_type,
+            tools=tools,
+            enable_thinking=enable_thinking,
+            manual_reasoning_parser=self.reasoning_parser,
+            manual_tool_parser=self.tool_call_parser,
+        )
 
     async def get_models(self) -> List[Dict[str, Any]]:
         """
@@ -335,7 +338,10 @@ class MLXLMHandler:
             tool_choice = request_dict.pop("tool_choice", None)
             
             if tools:
-                if tool_choice:
+                # Enable auto tool choice if requested via CLI flag
+                if self.enable_auto_tool_choice and tool_choice == "auto":
+                    request_dict["chat_template_kwargs"]["tool_choice"] = "auto"
+                elif tool_choice:
                     logger.warning("Tool choice has not supported yet, will be ignored.")
                 request_dict["chat_template_kwargs"]["tools"] = tools
 
