@@ -137,7 +137,7 @@ class MLXVLMHandler:
                     
                 text = chunk.text
                 if is_first_chunk:
-                    if self.reasoning_parser and self.reasoning_parser in ["qwen3_vl"]:
+                    if thinking_parser and self.reasoning_parser in ["qwen3_vl"]:
                         text = "<think>" + text
                     is_first_chunk = False
 

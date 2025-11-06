@@ -128,7 +128,7 @@ class MLXLMHandler:
                 text = chunk.text
 
                 if is_first_chunk:
-                    if self.reasoning_parser and self.reasoning_parser in ["qwen3_moe", "qwen3_next"]:
+                    if thinking_parser and self.reasoning_parser in ["qwen3_moe", "qwen3_next"]:
                         text = "<think>" + text
                     is_first_chunk = False
 
