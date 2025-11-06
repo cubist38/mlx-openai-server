@@ -404,9 +404,81 @@ mlx-openai-server launch \
 - `--port`: Port to run the server on (default: 8000)
 - `--host`: Host to run the server on (default: 0.0.0.0)
 - `--disable-auto-resize`: Disable automatic model resizing. Only works for Vision Language Models.
+- `--enable-auto-tool-choice`: Enable automatic tool choice. Only works with language models (`lm` or `multimodal` model types).
+- `--tool-call-parser`: Specify tool call parser to use instead of auto-detection. Only works with language models (`lm` or `multimodal` model types). Available options: `qwen3`, `glm4_moe`, `qwen3_moe`, `qwen3_next`, `qwen3_vl`, `harmony`, `minimax`.
+- `--reasoning-parser`: Specify reasoning parser to use instead of auto-detection. Only works with language models (`lm` or `multimodal` model types). Available options: `qwen3`, `glm4_moe`, `qwen3_moe`, `qwen3_next`, `qwen3_vl`, `harmony`, `minimax`.
 - `--log-file`: Path to log file. If not specified, logs will be written to 'logs/app.log' by default.
 - `--no-log-file`: Disable file logging entirely. Only console output will be shown.
 - `--log-level`: Set the logging level. Choices: `DEBUG`, `INFO`, `WARNING`, `ERROR`, `CRITICAL`. Default: `INFO`.
+
+### Parser Configuration
+
+The server supports manual configuration of parsers for tool calls and reasoning/reasoning content extraction. When parsers are not explicitly specified, they will be `None` by default, meaning no parsing will be performed.
+
+#### Available Parsers
+
+The following parsers are available for both tool call and reasoning parsing:
+
+- **`qwen3`**: Parser for Qwen3 model formats
+- **`glm4_moe`**: Parser for GLM4 MoE model formats
+- **`qwen3_moe`**: Parser for Qwen3 MoE model formats
+- **`qwen3_next`**: Parser for Qwen3 Next model formats
+- **`qwen3_vl`**: Parser for Qwen3 Vision-Language model formats
+- **`harmony`**: Unified parser for Harmony/GPT-OSS models (handles both thinking and tools)
+- **`minimax`**: Parser for MiniMax model formats
+
+#### Parser Parameters
+
+- **`--tool-call-parser`**: Specify which parser to use for extracting tool calls from model responses
+- **`--reasoning-parser`**: Specify which parser to use for extracting reasoning/thinking content from model responses
+- **`--enable-auto-tool-choice`**: Enable automatic tool choice when using tool calling
+
+#### Usage Examples
+
+**Basic usage without parsers (default):**
+```bash
+mlx-openai-server launch \
+  --model-path /path/to/model \
+  --model-type lm
+```
+
+**With tool call parser only:**
+```bash
+mlx-openai-server launch \
+  --model-path /path/to/model \
+  --model-type lm \
+  --tool-call-parser qwen3
+```
+
+**With both parsers:**
+```bash
+mlx-openai-server launch \
+  --model-path /path/to/model \
+  --model-type lm \
+  --tool-call-parser qwen3 \
+  --reasoning-parser qwen3
+```
+
+**With auto tool choice enabled:**
+```bash
+mlx-openai-server launch \
+  --model-path /path/to/model \
+  --model-type lm \
+  --enable-auto-tool-choice \
+  --tool-call-parser qwen3 \
+  --reasoning-parser qwen3
+```
+
+**Using Harmony parser (unified parser):**
+```bash
+mlx-openai-server launch \
+  --model-path /path/to/model \
+  --model-type lm \
+  --tool-call-parser harmony
+# Note: Harmony parser handles both tool calls and reasoning, so specifying either parameter will use it
+```
+
+> **Note:** Parser configuration is only applicable to language models (`lm` or `multimodal` model types). If parsers are not specified, the server will not perform any parsing, and raw model responses will be returned.
 
 #### Example Configurations
 
@@ -544,6 +616,14 @@ mlx-openai-server launch --model-path <path-to-mlx-model> --model-type lm --no-l
 
 # Use default logging (logs/app.log, INFO level)
 mlx-openai-server launch --model-path <path-to-mlx-model> --model-type lm
+
+# With parser configuration for tool calls and reasoning
+mlx-openai-server launch \
+  --model-path <path-to-mlx-model> \
+  --model-type lm \
+  --enable-auto-tool-choice \
+  --tool-call-parser qwen3 \
+  --reasoning-parser qwen3
 
 # Using python -m app.main (alternative method)
 python -m app.main --model-path <path-to-mlx-model> --model-type lm --no-log-file
