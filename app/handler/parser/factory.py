@@ -18,7 +18,11 @@ from app.handler.parser import (
     Qwen3NextThinkingParser,
     Qwen3VLToolParser,
     Qwen3VLThinkingParser,
+    MinimaxToolParser,
+    MinimaxThinkingParser
 )
+from app.handler.parser.glm4_moe import Glm4MoEMessageConverter
+from app.handler.parser.minimax import MiniMaxMessageConverter
 
 
 # Registry mapping parser names to their classes
@@ -47,6 +51,16 @@ PARSER_REGISTRY: Dict[str, Dict[str, Callable]] = {
         # Harmony parser handles both thinking and tools
         "unified": HarmonyParser,
     },
+    "minimax": {
+        "thinking": MinimaxThinkingParser,
+        "tool": MinimaxToolParser,
+    },
+}
+
+# Registry mapping model types to their converter classes
+CONVERTER_REGISTRY: Dict[str, Callable] = {
+    "glm4_moe": Glm4MoEMessageConverter,
+    "minimax": MiniMaxMessageConverter,
 }
 
 class ParserFactory:
@@ -138,4 +152,21 @@ class ParserFactory:
                 )
         
         return thinking_parser, tool_parser
+
+    @staticmethod
+    def create_converter(model_type: str) -> Optional[Any]:
+        """
+        Create a message converter based on model type.
+        
+        Args:
+            model_type: The type of the model (e.g., "glm4_moe", "minimax")
+            
+        Returns:
+            Message converter instance or None if no converter needed
+        """
+        if model_type not in CONVERTER_REGISTRY:
+            return None
+        
+        converter_class = CONVERTER_REGISTRY[model_type]
+        return converter_class()
 
