@@ -74,16 +74,14 @@ class MLXVLMHandler:
             logger.error(f"Error getting models: {str(e)}")
             return []
     
-    def _create_parsers(self, chat_template_kwargs: Optional[Dict[str, Any]] = None) -> Tuple[Optional[Any], Optional[Any]]:
+    def _create_parsers(self) -> Tuple[Optional[Any], Optional[Any]]:
         """
         Create appropriate parsers based on model type and available tools.
         Uses ParserFactory for centralized parser creation logic.
         
         Returns:
             Tuple of (thinking_parser, tool_parser)
-        """
-        chat_template_kwargs = chat_template_kwargs or {}
-        
+        """         
         return ParserFactory.create_parsers(
             model_type=self.model_type,
             manual_reasoning_parser=self.reasoning_parser,
@@ -128,7 +126,9 @@ class MLXVLMHandler:
             response_generator = await self.request_queue.submit(request_id, request_dict)      
             
             # Create appropriate parsers for this model type
-            thinking_parser, tool_parser = self._create_parsers(request_dict.get("chat_template_kwargs", {}))
+            thinking_parser, tool_parser = self._create_parsers()
+
+            is_first_chunk = True
             
             # Process and yield each chunk asynchronously
             for chunk in response_generator:
@@ -136,6 +136,10 @@ class MLXVLMHandler:
                     continue
                     
                 text = chunk.text
+                if is_first_chunk:
+                    if self.reasoning_parser and self.reasoning_parser in ["qwen3_vl"]:
+                        text = "<think>" + text
+                    is_first_chunk = False
 
                 if thinking_parser:
                     parsed_content, is_complete = thinking_parser.parse_stream(text)

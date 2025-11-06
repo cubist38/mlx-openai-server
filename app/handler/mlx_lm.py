@@ -46,7 +46,7 @@ class MLXLMHandler:
 
         logger.info(f"Initialized MLXHandler with model path: {model_path}")
     
-    def _create_parsers(self, chat_template_kwargs: Optional[Dict[str, Any]] = None) -> Tuple[Optional[Any], Optional[Any]]:
+    def _create_parsers(self) -> Tuple[Optional[Any], Optional[Any]]:
         """
         Create appropriate parsers based on model type and available tools.
         Uses ParserFactory for centralized parser creation logic.
@@ -54,7 +54,6 @@ class MLXLMHandler:
         Returns:
             Tuple of (thinking_parser, tool_parser)
         """
-        chat_template_kwargs = chat_template_kwargs or {}
         
         return ParserFactory.create_parsers(
             model_type=self.model_type,
@@ -115,7 +114,8 @@ class MLXLMHandler:
             }
             response_generator = await self.request_queue.submit(request_id, request_data)            
             # Create appropriate parsers for this model type
-            thinking_parser, tool_parser = self._create_parsers(model_params.get("chat_template_kwargs", {}))
+            
+            thinking_parser, tool_parser = self._create_parsers()
 
             # # Process streaming response
             for chunk in response_generator:
