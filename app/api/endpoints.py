@@ -282,16 +282,22 @@ async def handle_stream_response(generator: AsyncGenerator, model: str):
                 if isinstance(chunk, str):
                     response_chunk = create_response_chunk(chunk, model, chat_id=chat_index, created_time=created_time)
                     yield f"data: {json.dumps(response_chunk.model_dump())}\n\n"
-                else:
-                    finish_reason = "tool_calls"
+                elif isinstance(chunk, dict):
                     if "name" in chunk and chunk["name"]:
+                        finish_reason = "tool_calls"
                         index += 1
-                    payload = {
-                        "index": index,
-                        **chunk
-                    }
-                    response_chunk = create_response_chunk(payload, model, chat_id=chat_index, created_time=created_time)
-                    yield f"data: {json.dumps(response_chunk.model_dump())}\n\n"
+                        payload = {
+                            "index": index,
+                            **chunk
+                        }
+                        response_chunk = create_response_chunk(payload, model, chat_id=chat_index, created_time=created_time, finish_reason=finish_reason)
+                        yield f"data: {json.dumps(response_chunk.model_dump())}\n\n"
+                    else:
+                        response_chunk = create_response_chunk(chunk, model, chat_id=chat_index, created_time=created_time)
+                        yield f"data: {json.dumps(response_chunk.model_dump())}\n\n"
+                else:
+                    error_response = create_error_response(f"Invalid chunk type: {type(chunk)}", "server_error", HTTPStatus.INTERNAL_SERVER_ERROR)
+                    yield f"data: {json.dumps(error_response)}\n\n"
     except Exception as e:
         logger.error(f"Error in stream wrapper: {str(e)}")
         error_response = create_error_response(str(e), "server_error", HTTPStatus.INTERNAL_SERVER_ERROR)
