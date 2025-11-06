@@ -126,7 +126,7 @@ class BaseToolParser:
         remaining_parts = []
         
         if self.tool_open not in content:
-            return None, content
+            return [], content
         
         tool_open_len = len(self.tool_open)
         tool_close_len = len(self.tool_close)
