@@ -13,7 +13,7 @@ setup(
     long_description_content_type="text/markdown",
     packages=find_packages(), 
     install_requires=[
-        "mlx-vlm==0.3.4",
+        "mlx-vlm==0.3.5",
         "mlx-lm==0.28.3",
         "torchvision==0.23.0",
         "mlx-whisper==0.4.3",
