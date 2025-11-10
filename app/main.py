@@ -65,6 +65,9 @@ def parse_args():
     parser.add_argument("--log-file", type=str, default=None, help="Path to log file. If not specified, logs will be written to 'logs/app.log' by default.")
     parser.add_argument("--no-log-file", action="store_true", help="Disable file logging entirely. Only console output will be shown.")
     parser.add_argument("--log-level", type=str, default="INFO", choices=["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"], help="Set the logging level. Default is INFO.")
+    parser.add_argument("--enable-auto-tool-choice", action="store_true", help="Enable automatic tool choice. Only works with language models (`lm` or `multimodal` model types).")
+    parser.add_argument("--tool-call-parser", type=str, default=None, choices=["qwen3", "glm4_moe", "qwen3_moe", "qwen3_next", "qwen3_vl", "harmony", "minimax"], help="Specify tool call parser to use instead of auto-detection. Only works with language models (`lm` or `multimodal` model types). Available options: `qwen3`, `glm4_moe`, `qwen3_moe`, `qwen3_next`, `qwen3_vl`, `harmony`, `minimax`.")
+    parser.add_argument("--reasoning-parser", type=str, default=None, choices=["qwen3", "glm4_moe", "qwen3_moe", "qwen3_next", "qwen3_vl", "harmony", "minimax"], help="Specify reasoning parser to use instead of auto-detection. Only works with language models (`lm` or `multimodal` model types). Available options: `qwen3`, `glm4_moe`, `qwen3_moe`, `qwen3_next`, `qwen3_vl`, `harmony`, `minimax`.")
     
     args = parser.parse_args()
     
