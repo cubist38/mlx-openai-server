@@ -13,8 +13,8 @@ from loguru import logger
 from app.handler.mlx_lm import MLXLMHandler
 from app.handler.mlx_vlm import MLXVLMHandler
 from app.handler import MLXFluxHandler, MFLUX_AVAILABLE
-from app.schemas.openai import (ChatCompletionChunk,
-                                ChatCompletionMessageToolCall,
+from app.schemas.openai import (HealthCheckResponse, HealthCheckStatus,
+                                ChatCompletionChunk, ChatCompletionMessageToolCall,
                                 ChatCompletionRequest, ChatCompletionResponse,
                                 Choice, ChoiceDeltaFunctionCall,
                                 ChoiceDeltaToolCall, Delta, EmbeddingResponseData,
@@ -36,7 +36,7 @@ async def health():
     """
     Health check endpoint - always responds immediately without dependencies.
     """
-    return {"status": "ok"}
+    return HealthCheckResponse(status=HealthCheckStatus.OK)
 
 @router.get("/v1/models")
 async def models(raw_request: Request):

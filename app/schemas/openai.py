@@ -54,6 +54,13 @@ class Config:
     IMAGE_EDIT_MODEL = "local-image-edit-model"
     TRANSCRIPTION_MODEL="local-transcription-model"
 
+class HealthCheckStatus(str, Enum):
+    """Health check status"""
+    OK = "ok"
+
+class HealthCheckResponse(OpenAIBaseModel):
+    status: HealthCheckStatus = Field(..., description="The status of the health check.")
+
 class ErrorResponse(OpenAIBaseModel):
     object: str = Field("error", description="The object type, always 'error'.")
     message: str = Field(..., description="The error message.")
