@@ -261,52 +261,75 @@ def create_response_chunk(chunk: Union[str, Dict[str, Any]], model: str, is_fina
         choices=[StreamingChoice(index=0, delta=delta, finish_reason=None)]
     )
 
+def _yield_sse_chunk(data: Union[Dict[str, Any], ChatCompletionChunk]) -> str:
+    """Helper function to format and yield SSE chunk data."""
+    if isinstance(data, ChatCompletionChunk):
+        return f"data: {json.dumps(data.model_dump())}\n\n"
+    return f"data: {json.dumps(data)}\n\n"
+
 async def handle_stream_response(generator: AsyncGenerator, model: str):
     """Handle streaming response generation (OpenAI-compatible)."""
     chat_index = get_id()
     created_time = int(time.time())
+    finish_reason = "stop"
+    tool_call_index = -1
+    
     try:
-        finish_reason = "stop"
-        index = -1
         # First chunk: role-only delta, as per OpenAI
         first_chunk = ChatCompletionChunk(
             id=chat_index,
             object="chat.completion.chunk",
             created=created_time,
             model=model,
-            choices=[StreamingChoice(index=0, delta=Delta(role="assistant"), finish_reason=None)]
+            choices=[StreamingChoice(index=0, delta=Delta(role="assistant"))]
         )
-        yield f"data: {json.dumps(first_chunk.model_dump())}\n\n"
+        yield _yield_sse_chunk(first_chunk)
+        
         async for chunk in generator:
-            if chunk:
-                if isinstance(chunk, str):
-                    response_chunk = create_response_chunk(chunk, model, chat_id=chat_index, created_time=created_time)
-                    yield f"data: {json.dumps(response_chunk.model_dump())}\n\n"
-                elif isinstance(chunk, dict):
-                    if "name" in chunk and chunk["name"]:
-                        finish_reason = "tool_calls"
-                        index += 1
-                        payload = {
-                            "index": index,
-                            **chunk
-                        }
-                        response_chunk = create_response_chunk(payload, model, chat_id=chat_index, created_time=created_time, finish_reason=finish_reason)
-                        yield f"data: {json.dumps(response_chunk.model_dump())}\n\n"
-                    else:
-                        response_chunk = create_response_chunk(chunk, model, chat_id=chat_index, created_time=created_time)
-                        yield f"data: {json.dumps(response_chunk.model_dump())}\n\n"
-                else:
-                    error_response = create_error_response(f"Invalid chunk type: {type(chunk)}", "server_error", HTTPStatus.INTERNAL_SERVER_ERROR)
-                    yield f"data: {json.dumps(error_response)}\n\n"
+            if not chunk:
+                continue
+                
+            if isinstance(chunk, str):
+                response_chunk = create_response_chunk(
+                    chunk, model, chat_id=chat_index, created_time=created_time
+                )
+                yield _yield_sse_chunk(response_chunk)
+                
+            elif isinstance(chunk, dict):
+                # Handle tool call chunks
+                payload = dict(chunk)  # Create a copy to avoid mutating the original
+                if payload.get("name"):
+                    finish_reason = "tool_calls"
+                    tool_call_index += 1
+                    payload["index"] = tool_call_index
+                elif payload.get("arguments") and "index" not in payload:
+                    payload["index"] = tool_call_index
+                
+                response_chunk = create_response_chunk(
+                    payload, model, chat_id=chat_index, created_time=created_time
+                )
+                yield _yield_sse_chunk(response_chunk)
+                
+            else:
+                error_response = create_error_response(
+                    f"Invalid chunk type: {type(chunk)}", 
+                    "server_error", 
+                    HTTPStatus.INTERNAL_SERVER_ERROR
+                )
+                yield _yield_sse_chunk(error_response)
+                
     except Exception as e:
-        logger.error(f"Error in stream wrapper: {str(e)}")
-        error_response = create_error_response(str(e), "server_error", HTTPStatus.INTERNAL_SERVER_ERROR)
-        # Yield error as last chunk before [DONE]
-        yield f"data: {json.dumps(error_response)}\n\n"
+        logger.error(f"Error in stream wrapper: {str(e)}", exc_info=True)
+        error_response = create_error_response(
+            str(e), "server_error", HTTPStatus.INTERNAL_SERVER_ERROR
+        )
+        yield _yield_sse_chunk(error_response)
     finally:
         # Final chunk: finish_reason and [DONE], as per OpenAI
-        final_chunk = create_response_chunk('', model, is_final=True, finish_reason=finish_reason, chat_id=chat_index)
-        yield f"data: {json.dumps(final_chunk.model_dump())}\n\n"
+        final_chunk = create_response_chunk(
+            '', model, is_final=True, finish_reason=finish_reason, chat_id=chat_index
+        )
+        yield _yield_sse_chunk(final_chunk)
         yield "data: [DONE]\n\n"
 
 async def process_multimodal_request(handler, request: ChatCompletionRequest):
