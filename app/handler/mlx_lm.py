@@ -121,42 +121,52 @@ class MLXLMHandler:
             thinking_parser, tool_parser = self._create_parsers()
             is_first_chunk = True
 
-            chat_template_kwargs = model_params.get("chat_template_kwargs", {})
-            enable_thinking = chat_template_kwargs.get("enable_thinking", True)
-
-            if ParserFactory.respects_enable_thinking(self.reasoning_parser):
-                if not enable_thinking:
-                    thinking_parser = None
-
-            # # Process streaming response
-            for chunk in response_generator:
-
-                if not chunk or not chunk.text:
-                    continue
-                    
-                text = chunk.text
-
-                if is_first_chunk:
-                    if thinking_parser and ParserFactory.needs_redacted_reasoning_prefix(self.reasoning_parser):
-                        text = thinking_parser.get_thinking_open() + text
-                    is_first_chunk = False
-
-                if thinking_parser:
-                    parsed_content, is_complete = thinking_parser.parse_stream(text)
+            if thinking_parser and ParserFactory.has_special_parsing(self.reasoning_parser):
+                for chunk in response_generator:
+                    if not chunk or not chunk.text:
+                        continue
+                    text = chunk.text
+                    parsed_content, is_complete = thinking_parser.parse(text)
                     if parsed_content:
                         yield parsed_content
                     if is_complete:
+                        break
+            else:
+
+                if ParserFactory.respects_enable_thinking(self.reasoning_parser):
+                    chat_template_kwargs = model_params.get("chat_template_kwargs", {})
+                    enable_thinking = chat_template_kwargs.get("enable_thinking", True)
+                    if not enable_thinking:
                         thinking_parser = None
-                    continue
-                    
-                if tool_parser:
-                    parsed_content, _ = tool_parser.parse_stream(text)
-                    if parsed_content:
-                        yield parsed_content
-                    continue
 
-                yield text
+                # # Process streaming response
+                for chunk in response_generator:
 
+                    if not chunk or not chunk.text:
+                        continue
+                        
+                    text = chunk.text
+
+                    if is_first_chunk:
+                        if thinking_parser and ParserFactory.needs_redacted_reasoning_prefix(self.reasoning_parser):
+                            text = thinking_parser.get_thinking_open() + text
+                        is_first_chunk = False
+
+                    if thinking_parser:
+                        parsed_content, is_complete = thinking_parser.parse_stream(text)
+                        if parsed_content:
+                            yield parsed_content
+                        if is_complete:
+                            thinking_parser = None
+                        continue
+                        
+                    if tool_parser:
+                        parsed_content, _ = tool_parser.parse_stream(text)
+                        if parsed_content:
+                            yield parsed_content
+                        continue
+
+                    yield text
 
         except asyncio.QueueFull:
             logger.error("Too many requests. Service is at capacity.")
