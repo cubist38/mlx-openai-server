@@ -9,6 +9,12 @@ class BaseThinkingParser:
         self.thinking_close = thinking_close
         self.is_thinking = False
 
+    def get_thinking_open(self):
+        return self.thinking_open
+    
+    def get_thinking_close(self):
+        return self.thinking_close
+
     def parse(self, content: str) -> Tuple[Optional[str], str]:
         start_thinking = content.find(self.thinking_open)
         if start_thinking == -1:

@@ -138,7 +138,7 @@ class MLXLMHandler:
 
                 if is_first_chunk:
                     if thinking_parser and ParserFactory.needs_redacted_reasoning_prefix(self.reasoning_parser):
-                        text = "<think>" + text
+                        text = thinking_parser.get_thinking_open() + text
                     is_first_chunk = False
 
                 if thinking_parser:
@@ -211,7 +211,7 @@ class MLXLMHandler:
 
             if thinking_parser and ParserFactory.needs_redacted_reasoning_prefix(self.reasoning_parser):
                 # Add thinking tag to response for parsers that need it
-                response_text = "<think>" + response_text
+                response_text = thinking_parser.get_thinking_open() + response_text
             
             parsed_response = {
                 "reasoning_content": None,
