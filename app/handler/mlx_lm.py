@@ -126,7 +126,7 @@ class MLXLMHandler:
                     if not chunk or not chunk.text:
                         continue
                     text = chunk.text
-                    parsed_content, is_complete = thinking_parser.parse(text)
+                    parsed_content, is_complete = thinking_parser.parse_stream(text)
                     if parsed_content:
                         yield parsed_content
                     if is_complete:
