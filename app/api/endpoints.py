@@ -374,9 +374,15 @@ def format_final_response(response: Union[str, Dict[str, Any]], model: str) -> C
             choices=[Choice(index=0, message=Message(role="assistant", content=response_content, reasoning_content=reasoning_content), finish_reason="stop")]
         )
     for idx, tool_call in enumerate(tool_calls):
+        arguments = tool_call.get("arguments")
+        # If arguments is already a string, use it directly; otherwise serialize it
+        if isinstance(arguments, str):
+            arguments_str = arguments
+        else:
+            arguments_str = json.dumps(arguments)
         function_call = FunctionCall(
             name=tool_call.get("name"),
-            arguments=json.dumps(tool_call.get("arguments"))
+            arguments=arguments_str
         )
         tool_call_response = ChatCompletionMessageToolCall(
             id=get_tool_call_id(),
