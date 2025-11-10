@@ -126,7 +126,7 @@ class Message(OpenAIBaseModel):
     """
     Represents a message in a chat completion.
     """
-    content: Union[str, List[ChatCompletionContentPart]] = Field(..., description="The content of the message, either text or a list of content items (vision, audio, or multimodal).")
+    content: Optional[Union[str, List[ChatCompletionContentPart]]] = Field(None, description="The content of the message, either text or a list of content items (vision, audio, or multimodal).")
     refusal: Optional[str] = Field(None, description="The refusal reason, if any.")
     role: Literal["system", "user", "assistant", "tool"] = Field(..., description="The role of the message sender.")
     function_call: Optional[FunctionCall] = Field(None, description="The function call, if any.")
