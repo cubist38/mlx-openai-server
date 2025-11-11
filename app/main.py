@@ -11,8 +11,8 @@ from fastapi.responses import JSONResponse
 from loguru import logger
 
 import mlx.core as mx
-from app.handler.mlx_vlm import MLXVLMHandler
 from app.handler.mlx_lm import MLXLMHandler
+from app.handler.mlx_vlm import MLXVLMHandler
 from app.handler.mlx_embeddings import MLXEmbeddingsHandler
 from app.handler.mlx_whisper import MLXWhisperHandler
 from app.handler import MLXFluxHandler, MFLUX_AVAILABLE 
