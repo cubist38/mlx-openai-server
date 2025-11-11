@@ -474,8 +474,8 @@ mlx-openai-server launch \
 mlx-openai-server launch \
   --model-path /path/to/model \
   --model-type lm \
+  --reasoning-parser harmony \
   --tool-call-parser harmony
-# Note: Harmony parser handles both tool calls and reasoning, so specifying either parameter will use it
 ```
 
 > **Note:** Parser configuration is only applicable to language models (`lm` or `multimodal` model types). If parsers are not specified, the server will not perform any parsing, and raw model responses will be returned.
