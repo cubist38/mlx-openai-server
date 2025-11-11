@@ -129,7 +129,6 @@ class Message(OpenAIBaseModel):
     content: Optional[Union[str, List[ChatCompletionContentPart]]] = Field(None, description="The content of the message, either text or a list of content items (vision, audio, or multimodal).")
     refusal: Optional[str] = Field(None, description="The refusal reason, if any.")
     role: Literal["system", "user", "assistant", "tool"] = Field(..., description="The role of the message sender.")
-    function_call: Optional[FunctionCall] = Field(None, description="The function call, if any.")
     reasoning_content: Optional[str] = Field(None, description="The reasoning content, if any.")
     tool_calls: Optional[List[ChatCompletionMessageToolCall]] = Field(None, description="List of tool calls, if any.")
     tool_call_id: Optional[str] = Field(None, description="The ID of the tool call, if any.")
@@ -262,7 +261,7 @@ class StreamingChoice(OpenAIBaseModel):
     """
     Represents a choice in a streaming response.
     """
-    delta: Delta = Field(..., description="The delta for this streaming choice.")
+    delta: Optional[Delta] = Field(None, description="The delta for this streaming choice.")
     finish_reason: Optional[Literal["stop", "length", "tool_calls", "content_filter", "function_call"]] = Field(None, description="The reason for finishing, if any.")
     index: int = Field(..., description="The index of the streaming choice.")
     

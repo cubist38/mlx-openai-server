@@ -203,8 +203,10 @@ def create_response_embeddings(embeddings: List[float], model: str, encoding_for
 
 def create_response_chunk(chunk: Union[str, Dict[str, Any]], model: str, is_final: bool = False, finish_reason: Optional[str] = "stop", chat_id: Optional[str] = None, created_time: Optional[int] = None) -> ChatCompletionChunk:
     """Create a formatted response chunk for streaming."""
-    chat_id = chat_id if chat_id else get_id()
-    created_time = created_time if created_time else int(time.time())
+    chat_id = chat_id or get_id()
+    created_time = created_time or int(time.time())
+    
+    # Handle string chunks (text content)
     if isinstance(chunk, str):
         return ChatCompletionChunk(
             id=chat_id,
@@ -217,6 +219,8 @@ def create_response_chunk(chunk: Union[str, Dict[str, Any]], model: str, is_fina
                 finish_reason=finish_reason if is_final else None
             )]
         )
+    
+    # Handle reasoning content chunks
     if "reasoning_content" in chunk:
         return ChatCompletionChunk(
             id=chat_id,
@@ -225,40 +229,50 @@ def create_response_chunk(chunk: Union[str, Dict[str, Any]], model: str, is_fina
             model=model,
             choices=[StreamingChoice(
                 index=0,
-                delta=Delta(reasoning_content=chunk["reasoning_content"], role="assistant", content=chunk.get("content", None)),
+                delta=Delta(
+                    reasoning_content=chunk["reasoning_content"],
+                    role="assistant",
+                    content=chunk.get("content", None)
+                ),
                 finish_reason=finish_reason if is_final else None
             )]
         )
 
-    if "name" in chunk and chunk["name"]:
+    # Handle tool/function call chunks
+    function_call = None
+    if "name" in chunk:
+        function_call = ChoiceDeltaFunctionCall(name=chunk["name"])
+        if "arguments" in chunk:
+            function_call.arguments = chunk["arguments"]
+    elif "arguments" in chunk:
+        # Handle case where arguments come before name (streaming)
+        function_call = ChoiceDeltaFunctionCall(arguments=chunk["arguments"])
+
+    if function_call:
+        # Validate index exists before accessing
+        tool_index = chunk.get("index", 0)
         tool_chunk = ChoiceDeltaToolCall(
-            index=chunk["index"],
+            index=tool_index,
             type="function",
             id=get_tool_call_id(),
-            function=ChoiceDeltaFunctionCall(
-                name=chunk["name"],
-                arguments=chunk["arguments"]
-            )
+            function=function_call
+        )
+
+        delta = Delta(
+            content=None,
+            role="assistant",
+            tool_calls=[tool_chunk]
         )
     else:
-        tool_chunk = ChoiceDeltaToolCall(
-            index=chunk["index"],
-            type="function",
-            function= ChoiceDeltaFunctionCall(
-                arguments=chunk["arguments"]
-            )
-        )
-    delta = Delta(
-        content = None,
-        role = "assistant",
-        tool_calls = [tool_chunk]
-    )
+        # Fallback: create empty delta if no recognized chunk type
+        delta = Delta(role="assistant")
+
     return ChatCompletionChunk(
         id=chat_id,
         object="chat.completion.chunk",
         created=created_time,
         model=model,
-        choices=[StreamingChoice(index=0, delta=delta, finish_reason=None)]
+        choices=[StreamingChoice(index=0, delta=delta, finish_reason=finish_reason if is_final else None)]
     )
 
 def _yield_sse_chunk(data: Union[Dict[str, Any], ChatCompletionChunk]) -> str:
