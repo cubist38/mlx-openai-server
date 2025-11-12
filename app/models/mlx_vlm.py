@@ -19,13 +19,13 @@ class MLX_VLM:
     supporting both streaming and non-streaming modes.
     """
     
-    def __init__(self, model_path: str, context_length: int = None):
+    def __init__(self, model_path: str, context_length: int = 32768):
         """
         Initialize the MLX_VLM model.
         
         Args:
             model_path (str): Path to the model directory containing model weights and configuration.
-            
+            context_length (int): Maximum context length for the model. Defaults to 32768.
         Raises:
             ValueError: If model loading fails.
         """

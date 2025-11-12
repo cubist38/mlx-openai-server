@@ -22,7 +22,7 @@ class MLXVLMHandler:
     Provides caching, concurrent image processing, audio processing, and robust error handling.
     """
 
-    def __init__(self, model_path: str, context_length: int = None, max_workers: int = 4, max_concurrency: int = 1, disable_auto_resize: bool = False, enable_auto_tool_choice: bool = False, tool_call_parser: str = None, reasoning_parser: str = None):
+    def __init__(self, model_path: str, context_length: int = 32768, max_workers: int = 4, max_concurrency: int = 1, disable_auto_resize: bool = False, enable_auto_tool_choice: bool = False, tool_call_parser: str = None, reasoning_parser: str = None):
         """
         Initialize the handler with the specified model path.
         
@@ -37,7 +37,7 @@ class MLXVLMHandler:
             reasoning_parser (str): Name of the reasoning parser to use (qwen3, qwen3_next, glm4_moe, harmony, minimax, ...).
         """
         self.model_path = model_path
-        self.model = MLX_VLM(model_path)
+        self.model = MLX_VLM(model_path, context_length=context_length)
         self.image_processor = ImageProcessor(max_workers)
         self.audio_processor = AudioProcessor(max_workers)
         self.video_processor = VideoProcessor(max_workers)
