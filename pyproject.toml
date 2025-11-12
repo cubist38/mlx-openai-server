@@ -43,6 +43,9 @@ dependencies = [
 [dependency-groups]
 dev = ["pytest", "black[jupyter]", "isort", "flake8-pyproject"]
 
+[tool.setuptools.packages.find]
+exclude = ["logs*"]
+
 [tool.setuptools.dynamic]
 version = { attr = "app.__version__" }
 
