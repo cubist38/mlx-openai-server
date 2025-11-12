@@ -68,6 +68,7 @@ def parse_args():
     parser.add_argument("--enable-auto-tool-choice", action="store_true", help="Enable automatic tool choice. Only works with language models (`lm` or `multimodal` model types).")
     parser.add_argument("--tool-call-parser", type=str, default=None, choices=["qwen3", "glm4_moe", "qwen3_moe", "qwen3_next", "qwen3_vl", "harmony", "minimax"], help="Specify tool call parser to use instead of auto-detection. Only works with language models (`lm` or `multimodal` model types). Available options: `qwen3`, `glm4_moe`, `qwen3_moe`, `qwen3_next`, `qwen3_vl`, `harmony`, `minimax`.")
     parser.add_argument("--reasoning-parser", type=str, default=None, choices=["qwen3", "glm4_moe", "qwen3_moe", "qwen3_next", "qwen3_vl", "harmony", "minimax"], help="Specify reasoning parser to use instead of auto-detection. Only works with language models (`lm` or `multimodal` model types). Available options: `qwen3`, `glm4_moe`, `qwen3_moe`, `qwen3_next`, `qwen3_vl`, `harmony`, `minimax`.")
+    parser.add_argument("--trust-remote-code", action="store_true", help="Enable trust_remote_code when loading models. This allows loading custom code from model repositories.")
     
     args = parser.parse_args()
     
@@ -97,7 +98,8 @@ def create_lifespan(config_args):
                     disable_auto_resize=getattr(config_args, 'disable_auto_resize', False),
                     enable_auto_tool_choice=getattr(config_args, 'enable_auto_tool_choice', False),
                     tool_call_parser=getattr(config_args, 'tool_call_parser', None),
-                    reasoning_parser=getattr(config_args, 'reasoning_parser', None)
+                    reasoning_parser=getattr(config_args, 'reasoning_parser', None),
+                    trust_remote_code=getattr(config_args, 'trust_remote_code', False)
                 )
             elif config_args.model_type == "image-generation":
                 if not MFLUX_AVAILABLE:
@@ -142,7 +144,8 @@ def create_lifespan(config_args):
                     max_concurrency=config_args.max_concurrency,
                     enable_auto_tool_choice=getattr(config_args, 'enable_auto_tool_choice', False),
                     tool_call_parser=getattr(config_args, 'tool_call_parser', None),
-                    reasoning_parser=getattr(config_args, 'reasoning_parser', None)
+                    reasoning_parser=getattr(config_args, 'reasoning_parser', None),
+                    trust_remote_code=getattr(config_args, 'trust_remote_code', False)
                 )       
             # Initialize queue
             await handler.initialize({

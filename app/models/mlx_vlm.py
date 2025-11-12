@@ -19,18 +19,19 @@ class MLX_VLM:
     supporting both streaming and non-streaming modes.
     """
     
-    def __init__(self, model_path: str, context_length: int = 32768):
+    def __init__(self, model_path: str, context_length: int = 32768, trust_remote_code: bool = False):
         """
         Initialize the MLX_VLM model.
         
         Args:
             model_path (str): Path to the model directory containing model weights and configuration.
             context_length (int): Maximum context length for the model. Defaults to 32768.
+            trust_remote_code (bool): Enable trust_remote_code when loading models. Defaults to False.
         Raises:
             ValueError: If model loading fails.
         """
         try:
-            self.model, self.processor = load(model_path, lazy=False, trust_remote_code=True)
+            self.model, self.processor = load(model_path, lazy=False, trust_remote_code=trust_remote_code)
             self.max_kv_size = context_length
             self.config = self.model.config
         except Exception as e:

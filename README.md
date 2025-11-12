@@ -407,6 +407,7 @@ mlx-openai-server launch \
 - `--enable-auto-tool-choice`: Enable automatic tool choice. Only works with language models (`lm` or `multimodal` model types).
 - `--tool-call-parser`: Specify tool call parser to use instead of auto-detection. Only works with language models (`lm` or `multimodal` model types). Available options: `qwen3`, `glm4_moe`, `qwen3_moe`, `qwen3_next`, `qwen3_vl`, `harmony`, `minimax`.
 - `--reasoning-parser`: Specify reasoning parser to use instead of auto-detection. Only works with language models (`lm` or `multimodal` model types). Available options: `qwen3`, `glm4_moe`, `qwen3_moe`, `qwen3_next`, `qwen3_vl`, `harmony`, `minimax`.
+- `--trust-remote-code`: Enable `trust_remote_code` when loading models. This allows loading custom code from model repositories. Default: `False` (disabled). Only works with `lm` or `multimodal` model types.
 - `--log-file`: Path to log file. If not specified, logs will be written to 'logs/app.log' by default.
 - `--no-log-file`: Disable file logging entirely. Only console output will be shown.
 - `--log-level`: Set the logging level. Choices: `DEBUG`, `INFO`, `WARNING`, `ERROR`, `CRITICAL`. Default: `INFO`.
@@ -499,6 +500,17 @@ python -m app.main \
   --model-path mlx-community/llava-phi-3-vision-4bit \
   --model-type multimodal \
   --context-length 4096 \
+  --max-concurrency 1 \
+  --queue-timeout 300 \
+  --queue-size 100
+```
+
+**Model with trust_remote_code enabled:**
+```bash
+python -m app.main \
+  --model-path <path-to-model-requiring-custom-code> \
+  --model-type lm \
+  --trust-remote-code \
   --max-concurrency 1 \
   --queue-timeout 300 \
   --queue-size 100
@@ -625,9 +637,16 @@ mlx-openai-server launch \
   --tool-call-parser qwen3 \
   --reasoning-parser qwen3
 
+# With trust_remote_code enabled (for models requiring custom code)
+mlx-openai-server launch \
+  --model-path <path-to-mlx-model> \
+  --model-type lm \
+  --trust-remote-code
+
 # Using python -m app.main (alternative method)
 python -m app.main --model-path <path-to-mlx-model> --model-type lm --no-log-file
 python -m app.main --model-path <path-to-mlx-model> --model-type lm --log-file /tmp/custom.log
+python -m app.main --model-path <path-to-mlx-model> --model-type lm --trust-remote-code
 ```
 
 > **Note:** Text embeddings via the `/v1/embeddings` endpoint are now available with both text-only models (`--model-type lm`) and multimodal models (`--model-type multimodal`).

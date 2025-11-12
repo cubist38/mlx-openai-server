@@ -10,7 +10,7 @@ from app.handler.parser.factory import PARSER_REGISTRY
 
 class Config:
     """Configuration container for server parameters."""
-    def __init__(self, model_path, model_type, context_length, port, host, max_concurrency, queue_timeout, queue_size, disable_auto_resize=False, quantize=8, config_name=None, lora_paths=None, lora_scales=None, log_file=None, no_log_file=False, log_level="INFO", enable_auto_tool_choice=False, tool_call_parser=None, reasoning_parser=None):
+    def __init__(self, model_path, model_type, context_length, port, host, max_concurrency, queue_timeout, queue_size, disable_auto_resize=False, quantize=8, config_name=None, lora_paths=None, lora_scales=None, log_file=None, no_log_file=False, log_level="INFO", enable_auto_tool_choice=False, tool_call_parser=None, reasoning_parser=None, trust_remote_code=False):
         self.model_path = model_path
         self.model_type = model_type
         self.context_length = context_length
@@ -28,6 +28,7 @@ class Config:
         self.enable_auto_tool_choice = enable_auto_tool_choice
         self.tool_call_parser = tool_call_parser
         self.reasoning_parser = reasoning_parser
+        self.trust_remote_code = trust_remote_code
         
         # Process comma-separated LoRA paths and scales
         if lora_paths:
@@ -76,7 +77,7 @@ def cli():
 
 
 @lru_cache(maxsize=1)
-def get_server_config(model_path, model_type, context_length, port, host, max_concurrency, queue_timeout, queue_size, quantize, config_name, lora_paths, lora_scales, disable_auto_resize, log_file, no_log_file, log_level, enable_auto_tool_choice, tool_call_parser, reasoning_parser):
+def get_server_config(model_path, model_type, context_length, port, host, max_concurrency, queue_timeout, queue_size, quantize, config_name, lora_paths, lora_scales, disable_auto_resize, log_file, no_log_file, log_level, enable_auto_tool_choice, tool_call_parser, reasoning_parser, trust_remote_code):
     """Cache and return server configuration to avoid redundant processing."""
     return Config(
         model_path=model_path,
@@ -97,7 +98,8 @@ def get_server_config(model_path, model_type, context_length, port, host, max_co
         log_level=log_level,
         enable_auto_tool_choice=enable_auto_tool_choice,
         tool_call_parser=tool_call_parser,
-        reasoning_parser=reasoning_parser
+        reasoning_parser=reasoning_parser,
+        trust_remote_code=trust_remote_code
     )
 
 
@@ -249,7 +251,12 @@ def print_startup_banner(args):
     type=click.Choice(list(PARSER_REGISTRY.keys())),
     help="Specify reasoning parser to use instead of auto-detection. Only works with language models."
 )
-def launch(model_path, model_type, context_length, port, host, max_concurrency, queue_timeout, queue_size, quantize, config_name, lora_paths, lora_scales, disable_auto_resize, log_file, no_log_file, log_level, enable_auto_tool_choice, tool_call_parser, reasoning_parser):
+@click.option(
+    "--trust-remote-code",
+    is_flag=True,
+    help="Enable trust_remote_code when loading models. This allows loading custom code from model repositories."
+)
+def launch(model_path, model_type, context_length, port, host, max_concurrency, queue_timeout, queue_size, quantize, config_name, lora_paths, lora_scales, disable_auto_resize, log_file, no_log_file, log_level, enable_auto_tool_choice, tool_call_parser, reasoning_parser, trust_remote_code):
     """Launch the MLX server with the specified model."""
     try:
         # Validate that config name is only used with image-generation and image-edit model types
@@ -263,7 +270,7 @@ def launch(model_path, model_type, context_length, port, host, max_concurrency, 
             config_name = "flux-kontext-dev"
         
         # Get optimized configuration
-        args = get_server_config(model_path, model_type, context_length, port, host, max_concurrency, queue_timeout, queue_size, quantize, config_name, lora_paths, lora_scales, disable_auto_resize, log_file, no_log_file, log_level, enable_auto_tool_choice, tool_call_parser, reasoning_parser)
+        args = get_server_config(model_path, model_type, context_length, port, host, max_concurrency, queue_timeout, queue_size, quantize, config_name, lora_paths, lora_scales, disable_auto_resize, log_file, no_log_file, log_level, enable_auto_tool_choice, tool_call_parser, reasoning_parser, trust_remote_code)
         
         # Display startup information
         print_startup_banner(args)
