@@ -105,7 +105,7 @@ class MLX_VLM:
             model_params["pixel_values"] = mx.array(inputs["pixel_values_videos"])
             model_params["video_grid_thw"] = mx.array(inputs["video_grid_thw"])
 
-        prompt_cache = make_prompt_cache(self.model, self.max_kv_size)
+        prompt_cache = make_prompt_cache(self.model.language_model, self.max_kv_size)
 
         if stream:
             return stream_generate(
