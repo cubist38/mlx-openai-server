@@ -1,5 +1,0 @@
-include README.md
-include requirements.txt
-include MANIFEST.in
-include setup.py
-recursive-include app * 

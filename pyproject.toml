@@ -1,0 +1,67 @@
+[project]
+name = "mlx-openai-server"
+description = "A high-performance API server that provides OpenAI-compatible endpoints for MLX models."
+readme = "README.md"
+requires-python = ">=3.11,<3.13"
+license = { text = "MIT" }
+dynamic = ["version"]
+authors = [{ name = "Gia-Huy Vuong", email = "cubist38@gmail.com" }]
+keywords = [
+  "mlx",
+  "fastapi",
+  "openai",
+  "server",
+  "api",
+  "multimodal",
+  "local models",
+]
+classifiers = [
+  "Programming Language :: Python :: 3",
+  "License :: OSI Approved :: MIT License",
+  "Operating System :: OS Independent",
+]
+
+dependencies = [
+  "mlx-vlm==0.3.5",
+  "mlx-lm==0.28.3",
+  "torchvision==0.23.0",
+  "mlx-whisper==0.4.3",
+  "mlx-embeddings==0.0.4",
+  "fastapi==0.115.14",
+  "av==16.0.1",
+  "uvicorn==0.35.0",
+  "Pillow==10.4.0",
+  "click==8.2.1",
+  "loguru==0.7.3",
+  "outlines==1.1.1",
+  "librosa==0.11.0",
+  "openai-harmony==0.0.4",
+  "json_repair==0.52.1",
+  "python-multipart==0.0.20",
+]
+
+[dependency-groups]
+dev = ["pytest", "black[jupyter]", "isort", "flake8-pyproject"]
+
+[tool.setuptools.dynamic]
+version = { attr = "app.__version__" }
+
+[project.urls]
+Homepage = "https://github.com/cubist38/mlx-openai-server"
+
+[project.scripts]
+mlx-openai-server = "app.cli:cli"
+
+[build-system]
+requires = ["setuptools>=77.0"]
+build-backend = "setuptools.build_meta"
+
+[tool.black]
+line-length = 100
+
+[tool.isort]
+profile = "black"
+line_length = 100
+
+[tool.flake8]
+ignore = ['E501', 'W503']
