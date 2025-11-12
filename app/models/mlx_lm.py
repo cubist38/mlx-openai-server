@@ -30,7 +30,7 @@ class MLX_LM:
 
     def __init__(self, model_path: str, context_length: int = 32768):
         try:
-            self.model, self.tokenizer = load(model_path, lazy=False, trust_remote_code=True)
+            self.model, self.tokenizer = load(model_path, lazy=False, tokenizer_config = {"trust_remote_code": True})
             self.pad_token_id = self.tokenizer.pad_token_id
             self.bos_token = self.tokenizer.bos_token
             self.model_type = self.model.model_type
