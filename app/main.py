@@ -51,7 +51,7 @@ def parse_args():
     parser = argparse.ArgumentParser(description="MLX OpenAI Compatible Server")
     parser.add_argument("--model-path", type=str, help="Path to the model (required for lm, multimodal, image-generation, image-edit, embeddings, whisper model types). With `image-generation` or `image-edit` model types, it should be the local path to the model.")
     parser.add_argument("--model-type", type=str, default="lm", choices=["lm", "multimodal", "image-generation", "image-edit", "embeddings", "whisper"], help="Model type")
-    parser.add_argument("--context-length", type=int, default=None, help="Context length for language models. Only works with `lm` or `multimodal` model types.")
+    parser.add_argument("--context-length", type=int, default=32768, help="Context length for language models. Only works with `lm` or `multimodal` model types.")
     parser.add_argument("--port", type=int, default=8000, help="Port to run the server on")
     parser.add_argument("--host", type=str, default="0.0.0.0", help="Host to run the server on")
     parser.add_argument("--max-concurrency", type=int, default=1, help="Maximum number of concurrent requests")

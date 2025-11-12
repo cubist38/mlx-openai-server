@@ -153,7 +153,7 @@ def print_startup_banner(args):
 )
 @click.option(
     "--context-length",
-    default=None,
+    default=32768,
     type=int,
     help="Context length for language models. Only works with `lm` or `multimodal` model types."
 )
