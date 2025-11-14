@@ -16,6 +16,7 @@ Forward explicit arguments to the CLI:
 
     python -m app.main launch --port 8000
 """
+
 import sys
 
 import uvicorn
@@ -75,6 +76,7 @@ def print_startup_banner(config_args):
         logger.info("📝 Log File: logs/app.log (default)")
     logger.info("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
 
+
 async def start(config: MLXServerConfig) -> None:
     """Run the ASGI server using the provided configuration.
 
@@ -99,6 +101,7 @@ async def start(config: MLXServerConfig) -> None:
         logger.error(f"Server startup failed: {str(e)}")
         sys.exit(1)
 
+
 def main():
     """Normalize process args and dispatch to the Click CLI.
 
@@ -114,6 +117,7 @@ def main():
     if not args or args[0].startswith("-"):
         args.insert(0, "launch")
     cli.main(args=args)
+
 
 if __name__ == "__main__":
     main()

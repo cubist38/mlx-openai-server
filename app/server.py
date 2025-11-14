@@ -157,17 +157,14 @@ def create_lifespan(config_args: MLXServerConfig):
                     enable_auto_tool_choice=config_args.enable_auto_tool_choice,
                     tool_call_parser=config_args.tool_call_parser,
                     reasoning_parser=config_args.reasoning_parser,
+                    trust_remote_code=config_args.trust_remote_code,
                 )
             elif config_args.model_type == "image-generation":
                 if not MFLUX_AVAILABLE:
                     raise ValueError(
                         "Image generation requires mflux. Install with: pip install git+https://github.com/cubist38/mflux.git"
                     )
-                if config_args.config_name not in [
-                    "flux-schnell",
-                    "flux-dev",
-                    "flux-krea-dev",
-                ]:
+                if config_args.config_name not in ["flux-schnell", "flux-dev", "flux-krea-dev"]:
                     raise ValueError(
                         f"Invalid config name: {config_args.config_name}. Only flux-schnell, flux-dev, and flux-krea-dev are supported for image generation."
                     )
@@ -181,8 +178,7 @@ def create_lifespan(config_args: MLXServerConfig):
                 )
             elif config_args.model_type == "embeddings":
                 handler = MLXEmbeddingsHandler(
-                    model_path=model_identifier,
-                    max_concurrency=config_args.max_concurrency,
+                    model_path=model_identifier, max_concurrency=config_args.max_concurrency
                 )
             elif config_args.model_type == "image-edit":
                 if not MFLUX_AVAILABLE:
@@ -203,8 +199,7 @@ def create_lifespan(config_args: MLXServerConfig):
                 )
             elif config_args.model_type == "whisper":
                 handler = MLXWhisperHandler(
-                    model_path=model_identifier,
-                    max_concurrency=config_args.max_concurrency,
+                    model_path=model_identifier, max_concurrency=config_args.max_concurrency
                 )
             else:
                 handler = MLXLMHandler(
@@ -214,6 +209,7 @@ def create_lifespan(config_args: MLXServerConfig):
                     enable_auto_tool_choice=config_args.enable_auto_tool_choice,
                     tool_call_parser=config_args.tool_call_parser,
                     reasoning_parser=config_args.reasoning_parser,
+                    trust_remote_code=config_args.trust_remote_code,
                 )
             # Initialize queue
             await handler.initialize(
@@ -240,6 +236,7 @@ def create_lifespan(config_args: MLXServerConfig):
         logger.info("Shutting down application")
         if hasattr(app.state, "handler") and app.state.handler:
             try:
+                # Use the proper cleanup method which handles both request queue and image processor
                 logger.info("Cleaning up resources")
                 await app.state.handler.cleanup()
                 logger.info("Resources cleaned up successfully")
@@ -349,5 +346,9 @@ def setup_server(config_args: MLXServerConfig) -> uvicorn.Config:
 
     logger.info(f"Starting server on {config_args.host}:{config_args.port}")
     return uvicorn.Config(
-        app=app, host=config_args.host, port=config_args.port, log_level=config_args.log_level.lower(), access_log=True
+        app=app,
+        host=config_args.host,
+        port=config_args.port,
+        log_level=config_args.log_level.lower(),
+        access_log=True,
     )

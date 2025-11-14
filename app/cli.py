@@ -54,6 +54,7 @@ class UpperChoice(click.Choice):
             f"invalid choice: {choice!r}. (choose from {', '.join(map(repr, self.choices))})"
         )
 
+
 # Configure basic logging for CLI (will be overridden by main.py)
 logger.remove()  # Remove default handler
 logger.add(
@@ -100,7 +101,7 @@ def cli():
 )
 @click.option(
     "--context-length",
-    default=None,
+    default=32768,
     type=int,
     help="Context length for language models. Only works with `lm` or `multimodal` model types.",
 )
@@ -155,6 +156,7 @@ def cli():
     "--log-level",
     default="INFO",
     type=UpperChoice(["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"]),
+    help="Set the logging level. Default is INFO.",
 )
 @click.option(
     "--enable-auto-tool-choice",
@@ -172,6 +174,11 @@ def cli():
     default=None,
     type=click.Choice(list(PARSER_REGISTRY.keys())),
     help="Specify reasoning parser to use instead of auto-detection. Only works with language models.",
+)
+@click.option(
+    "--trust-remote-code",
+    is_flag=True,
+    help="Enable trust_remote_code when loading models. This allows loading custom code from model repositories.",
 )
 def launch(
     model_path,
@@ -193,6 +200,7 @@ def launch(
     enable_auto_tool_choice,
     tool_call_parser,
     reasoning_parser,
+    trust_remote_code,
 ) -> None:
     """Start the FastAPI/Uvicorn server with the supplied flags.
 
@@ -221,5 +229,7 @@ def launch(
         enable_auto_tool_choice=enable_auto_tool_choice,
         tool_call_parser=tool_call_parser,
         reasoning_parser=reasoning_parser,
+        trust_remote_code=trust_remote_code,
     )
+
     asyncio.run(start(args))

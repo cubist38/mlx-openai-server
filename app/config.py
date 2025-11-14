@@ -36,13 +36,14 @@ class MLXServerConfig:
     quantize: int = 8
     config_name: str | None = None
     lora_paths: list[str] | None = field(default=None, init=False)
-    lora_scales: list[float] | None = field(default=None, init=False)    
+    lora_scales: list[float] | None = field(default=None, init=False)
     log_file: str | None = None
     no_log_file: bool = False
     log_level: str = "INFO"
     enable_auto_tool_choice: bool = False
     tool_call_parser: str | None = None
     reasoning_parser: str | None = None
+    trust_remote_code: bool = False
 
     # Used to capture raw CLI input before processing
     lora_paths_str: str | None = None
@@ -56,26 +57,19 @@ class MLXServerConfig:
         - Apply small model-type-specific defaults for ``config_name``
           and emit warnings when values appear inconsistent.
         """
-        
+
         # Process comma-separated LoRA paths and scales into lists (or None)
         if self.lora_paths_str:
-            self.lora_paths = [
-                p.strip() for p in self.lora_paths_str.split(",") if p.strip()
-            ]
+            self.lora_paths = [p.strip() for p in self.lora_paths_str.split(",") if p.strip()]
 
         if self.lora_scales_str:
             try:
                 self.lora_scales = [
-                    float(s.strip())
-                    for s in self.lora_scales_str.split(",")
-                    if s.strip()
+                    float(s.strip()) for s in self.lora_scales_str.split(",") if s.strip()
                 ]
             except ValueError:
                 # If parsing fails, log and set to None
-                logger.warning(
-                    "Failed to parse lora_scales into floats; "
-                    "ignoring lora_scales"
-                )
+                logger.warning("Failed to parse lora_scales into floats; ignoring lora_scales")
                 self.lora_scales = None
 
         # Validate that config name is only used with image-generation and

@@ -28,9 +28,9 @@ class MLX_LM:
     supporting both streaming and non-streaming modes.
     """
 
-    def __init__(self, model_path: str, context_length: int = 32768):
+    def __init__(self, model_path: str, context_length: int = 32768, trust_remote_code: bool = False):
         try:
-            self.model, self.tokenizer = load(model_path)
+            self.model, self.tokenizer = load(model_path, lazy=False, tokenizer_config = {"trust_remote_code": trust_remote_code})
             self.pad_token_id = self.tokenizer.pad_token_id
             self.bos_token = self.tokenizer.bos_token
             self.model_type = self.model.model_type
