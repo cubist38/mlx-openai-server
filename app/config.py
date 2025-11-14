@@ -3,13 +3,10 @@
 This module exposes ``MLXServerConfig``, a dataclass that holds all CLI
 configuration values for the server. The dataclass performs minimal
 normalization in ``__post_init__`` (parsing comma-separated LoRA
-arguments and applying small model-type-specific defaults). The
-``get_server_config`` helper returns a cached configuration instance to
-keep construction cheap and deterministic across the application.
+arguments and applying small model-type-specific defaults).
 """
 
 from dataclasses import dataclass, field
-from functools import lru_cache
 
 from loguru import logger
 
@@ -25,13 +22,13 @@ class MLXServerConfig:
     """
 
     model_path: str
-    model_type: str
-    context_length: int
-    port: int
-    host: str
-    max_concurrency: int
-    queue_timeout: int
-    queue_size: int
+    model_type: str = "lm"
+    context_length: int = 32768
+    port: int = 8000
+    host: str = "0.0.0.0"
+    max_concurrency: int = 1
+    queue_timeout: int = 300
+    queue_size: int = 100
     disable_auto_resize: bool = False
     quantize: int = 8
     config_name: str | None = None
@@ -102,49 +99,3 @@ class MLXServerConfig:
         For Flux models, we always use model_path (local directory path).
         """
         return self.model_path
-
-
-@lru_cache(maxsize=1)
-def get_server_config(
-    model_path,
-    model_type,
-    context_length,
-    port,
-    host,
-    max_concurrency,
-    queue_timeout,
-    queue_size,
-    quantize,
-    config_name,
-    lora_paths_str,
-    lora_scales_str,
-    disable_auto_resize,
-    log_file,
-    no_log_file,
-    log_level,
-    enable_auto_tool_choice,
-    tool_call_parser,
-    reasoning_parser,
-) -> MLXServerConfig:
-    """Cache and return server configuration to avoid redundant processing."""
-    return MLXServerConfig(
-        model_path=model_path,
-        model_type=model_type,
-        context_length=context_length,
-        port=port,
-        host=host,
-        max_concurrency=max_concurrency,
-        queue_timeout=queue_timeout,
-        queue_size=queue_size,
-        disable_auto_resize=disable_auto_resize,
-        quantize=quantize,
-        config_name=config_name,
-        lora_paths_str=lora_paths_str,
-        lora_scales_str=lora_scales_str,
-        log_file=log_file,
-        no_log_file=no_log_file,
-        log_level=log_level,
-        enable_auto_tool_choice=enable_auto_tool_choice,
-        tool_call_parser=tool_call_parser,
-        reasoning_parser=reasoning_parser,
-    )

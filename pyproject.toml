@@ -43,8 +43,11 @@ dependencies = [
 [dependency-groups]
 dev = ["pytest", "black[jupyter]", "isort", "flake8-pyproject"]
 
-[tool.setuptools.packages.find]
-exclude = ["logs*"]
+[tool.setuptools]
+packages = ["mlx_openai_server"]
+
+[tool.setuptools.package-dir]
+mlx_openai_server = "app"
 
 [tool.setuptools.dynamic]
 version = { attr = "app.__version__" }

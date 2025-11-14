@@ -2,9 +2,7 @@
 
 This module defines the Click command group used by the package and the
 ``launch`` command which constructs a server configuration and starts
-the ASGI server. It exposes a cached ``get_server_config`` helper so
-that configuration construction is deterministic and cheap to call from
-tests.
+the ASGI server.
 """
 
 import asyncio
@@ -13,7 +11,7 @@ import sys
 import click
 from loguru import logger
 
-from app.config import get_server_config
+from app.config import MLXServerConfig
 from app.handler.parser.factory import PARSER_REGISTRY
 from app.main import start
 from app.version import __version__
@@ -89,6 +87,7 @@ def cli():
 @cli.command()
 @click.option(
     "--model-path",
+    required=True,
     help="Path to the model (required for lm, multimodal, embeddings, image-generation, image-edit, whisper model types). With `image-generation` or `image-edit` model types, it should be the local path to the model.",
 )
 @click.option(
@@ -204,12 +203,12 @@ def launch(
 ) -> None:
     """Start the FastAPI/Uvicorn server with the supplied flags.
 
-    The command builds a cached server configuration object using
-    ``get_server_config`` and then calls the async ``start`` routine
+    The command builds a server configuration object using
+    ``MLXServerConfig`` and then calls the async ``start`` routine
     which handles the event loop and server lifecycle.
     """
 
-    args = get_server_config(
+    args = MLXServerConfig(
         model_path=model_path,
         model_type=model_type,
         context_length=context_length,
