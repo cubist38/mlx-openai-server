@@ -150,7 +150,14 @@ class LLMContractTester:
         payload = response.json()
         HealthResponse.model_validate(payload)
         status = payload.get("status", "unknown")
-        return f"status={status}"
+        model_status = payload.get("model_status", "unknown")
+        model_id = payload.get("model_id", None)
+
+        # Build detailed status message
+        if model_id:
+            return f"status={status}, model_status={model_status}, model_id={model_id}"
+        else:
+            return f"status={status}, model_status={model_status}"
 
     def test_models(self) -> str:
         response = self.client.get("/v1/models")

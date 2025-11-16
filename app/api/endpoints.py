@@ -32,11 +32,32 @@ router = APIRouter()
 # =============================================================================
 
 @router.get("/health")
-async def health():
+async def health(raw_request: Request):
     """
-    Health check endpoint - always responds immediately without dependencies.
+    Health check endpoint - verifies handler initialization status.
+    Returns 503 if handler is not initialized, 200 otherwise.
     """
-    return HealthCheckResponse(status=HealthCheckStatus.OK)
+    handler = getattr(raw_request.app.state, 'handler', None)
+
+    if handler is None:
+        # Handler not initialized - return 503 with degraded status
+        return JSONResponse(
+            status_code=503,
+            content={
+                "status": "ok",
+                "model_id": None,
+                "model_status": "uninitialized"
+            }
+        )
+
+    # Handler initialized - extract model_id
+    model_id = getattr(handler, 'model_path', 'unknown')
+
+    return HealthCheckResponse(
+        status=HealthCheckStatus.OK,
+        model_id=model_id,
+        model_status="initialized"
+    )
 
 @router.get("/v1/models")
 async def models(raw_request: Request):

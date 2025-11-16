@@ -60,6 +60,8 @@ class HealthCheckStatus(str, Enum):
 
 class HealthCheckResponse(OpenAIBaseModel):
     status: HealthCheckStatus = Field(..., description="The status of the health check.")
+    model_id: Optional[str] = Field(None, description="ID of the loaded model, if any.")
+    model_status: Optional[str] = Field(None, description="Status of the model handler (initialized/uninitialized).")
 
 class ErrorResponse(OpenAIBaseModel):
     object: str = Field("error", description="The object type, always 'error'.")
