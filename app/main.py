@@ -1,8 +1,9 @@
 import argparse
-import asyncio
 import gc
+import os
 import time
 from contextlib import asynccontextmanager
+from typing import Iterable, Optional
 
 import uvicorn
 from fastapi import FastAPI, Request
@@ -47,9 +48,9 @@ def configure_logging(log_file=None, no_log_file=False, log_level="INFO"):
             format="{time:YYYY-MM-DD HH:mm:ss} | {level} | {message}"
         )
 
-# Logging will be configured in setup_server() with CLI arguments
+# Logging will be configured when constructing the FastAPI app.
 
-def parse_args():
+def parse_args(argv: Optional[Iterable[str]] = None):
     parser = argparse.ArgumentParser(description="MLX OpenAI Compatible Server")
     parser.add_argument("--model-path", type=str, help="Path to the model (required for lm, multimodal, image-generation, image-edit, embeddings, whisper model types). With `image-generation` or `image-edit` model types, it should be the local path to the model.")
     parser.add_argument("--model-type", type=str, default="lm", choices=["lm", "multimodal", "image-generation", "image-edit", "embeddings", "whisper"], help="Model type")
@@ -71,9 +72,46 @@ def parse_args():
     parser.add_argument("--tool-call-parser", type=str, default=None, choices=["qwen3", "glm4_moe", "qwen3_moe", "qwen3_next", "qwen3_vl", "harmony", "minimax"], help="Specify tool call parser to use instead of auto-detection. Only works with language models (`lm` or `multimodal` model types). Available options: `qwen3`, `glm4_moe`, `qwen3_moe`, `qwen3_next`, `qwen3_vl`, `harmony`, `minimax`.")
     parser.add_argument("--reasoning-parser", type=str, default=None, choices=["qwen3", "glm4_moe", "qwen3_moe", "qwen3_next", "qwen3_vl", "harmony", "minimax"], help="Specify reasoning parser to use instead of auto-detection. Only works with language models (`lm` or `multimodal` model types). Available options: `qwen3`, `glm4_moe`, `qwen3_moe`, `qwen3_next`, `qwen3_vl`, `harmony`, `minimax`.")
     parser.add_argument("--trust-remote-code", action="store_true", help="Enable trust_remote_code when loading models. This allows loading custom code from model repositories.")
-    
-    args = parser.parse_args()
-    
+    return parser.parse_args(argv)
+
+
+def _str_to_bool(value: str) -> bool:
+    return value.lower() in {"1", "true", "yes", "on"}
+
+
+def args_from_env() -> argparse.Namespace:
+    """Create default args object, allowing environment variables to override values."""
+    args = parse_args([])
+    env_map: dict[str, tuple[str, callable]] = {
+        "MODEL_PATH": ("model_path", str),
+        "MODEL_TYPE": ("model_type", str),
+        "CONTEXT_LENGTH": ("context_length", int),
+        "SERVER_PORT": ("port", int),
+        "SERVER_HOST": ("host", str),
+        "MAX_CONCURRENCY": ("max_concurrency", int),
+        "QUEUE_TIMEOUT": ("queue_timeout", int),
+        "QUEUE_SIZE": ("queue_size", int),
+        "QUANTIZE": ("quantize", int),
+        "CONFIG_NAME": ("config_name", str),
+        "LORA_PATHS": ("lora_paths", str),
+        "LORA_SCALES": ("lora_scales", str),
+        "DISABLE_AUTO_RESIZE": ("disable_auto_resize", _str_to_bool),
+        "LOG_FILE": ("log_file", str),
+        "NO_LOG_FILE": ("no_log_file", _str_to_bool),
+        "LOG_LEVEL": ("log_level", str),
+        "ENABLE_AUTO_TOOL_CHOICE": ("enable_auto_tool_choice", _str_to_bool),
+        "TOOL_CALL_PARSER": ("tool_call_parser", str),
+        "REASONING_PARSER": ("reasoning_parser", str),
+        "TRUST_REMOTE_CODE": ("trust_remote_code", _str_to_bool),
+    }
+    for env_var, (attr, caster) in env_map.items():
+        raw_value = os.getenv(env_var)
+        if raw_value is None:
+            continue
+        try:
+            setattr(args, attr, caster(raw_value))
+        except ValueError:
+            logger.warning(f"Invalid value for {env_var}: {raw_value!r}. Keeping default {getattr(args, attr)!r}.")
     return args
 
 
@@ -197,81 +235,72 @@ def create_lifespan(config_args):
     
     return lifespan
 
-# App instance will be created during setup with the correct lifespan
-app = None
+def create_app(config_args: Optional[argparse.Namespace] = None, *, configure_log: bool = True) -> FastAPI:
+    """Construct the FastAPI app with the provided configuration."""
+    args = config_args or args_from_env()
+    if configure_log:
+        configure_logging(
+            log_file=getattr(args, "log_file", None),
+            no_log_file=getattr(args, "no_log_file", False),
+            log_level=getattr(args, "log_level", "INFO"),
+        )
 
-async def setup_server(args) -> uvicorn.Config:
-    global app
-    
-    # Configure logging based on CLI parameters
-    configure_logging(
-        log_file=getattr(args, 'log_file', None),
-        no_log_file=getattr(args, 'no_log_file', False),
-        log_level=getattr(args, 'log_level', 'INFO')
-    )
-    
-    # Create FastAPI app with the configured lifespan
-    app = FastAPI(
+    application = FastAPI(
         title="OpenAI-compatible API",
         description="API for OpenAI-compatible chat completion and text embedding",
         version=__version__,
-        lifespan=create_lifespan(args)
+        lifespan=create_lifespan(args),
     )
-    
-    app.include_router(router)
+    application.state.config = args
+    application.include_router(router)
 
-    # Add request tracking middleware (must be added before CORS)
-    app.add_middleware(RequestTrackingMiddleware)
-
-    # Add CORS middleware
-    app.add_middleware(
+    application.add_middleware(RequestTrackingMiddleware)
+    application.add_middleware(
         CORSMiddleware,
-        allow_origins=["*"],  # In production, replace with specific origins
+        allow_origins=["*"],
         allow_credentials=True,
         allow_methods=["*"],
         allow_headers=["*"],
     )
-    
-    @app.middleware("http")
+
+    @application.middleware("http")
     async def add_process_time_header(request: Request, call_next):
         start_time = time.time()
         response = await call_next(request)
         process_time = time.time() - start_time
         response.headers["X-Process-Time"] = str(process_time)
-        
-        # Periodic memory cleanup for long-running processes
-        if hasattr(request.app.state, 'request_count'):
-            request.app.state.request_count += 1
-        else:
-            request.app.state.request_count = 1
-        
-        # Clean up memory every 50 requests
-        if request.app.state.request_count % 50 == 0:
+
+        request_count = getattr(request.app.state, "request_count", 0) + 1
+        request.app.state.request_count = request_count
+        if request_count % 50 == 0:
             mx.clear_cache()
             gc.collect()
-            logger.debug(f"Performed memory cleanup after {request.app.state.request_count} requests")
+            logger.debug(f"Performed memory cleanup after {request_count} requests")
         
         return response
-    
-    @app.exception_handler(Exception)
+
+    @application.exception_handler(Exception)
     async def global_exception_handler(request: Request, exc: Exception):
         logger.error(f"Global exception handler caught: {str(exc)}", exc_info=True)
         return JSONResponse(
             status_code=500,
-            content={"error": {"message": "Internal server error", "type": "internal_error"}}
+            content={"error": {"message": "Internal server error", "type": "internal_error"}},
         )
-    
-    logger.info(f"Starting server on {args.host}:{args.port}")
-    config = uvicorn.Config(
-        app=app,
-        host=args.host,
-        port=args.port,
-        log_level="info",
-        access_log=True
-    )
-    return config
+
+    return application
+
+
+_default_args = args_from_env()
+app = create_app(_default_args)
+
 
 if __name__ == "__main__":
-    args = parse_args()
-    config = asyncio.run(setup_server(args))
-    uvicorn.Server(config).run()
+    cli_args = parse_args()
+    app = create_app(cli_args)
+    uvicorn.run(
+        app,
+        host=cli_args.host,
+        port=cli_args.port,
+        log_level="info",
+        access_log=True,
+    )
