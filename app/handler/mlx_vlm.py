@@ -137,7 +137,8 @@ class MLXVLMHandler:
                     thinking_parser = None
 
             is_first_chunk = True
-            
+            after_thinking_content = ""
+
             # Process and yield each chunk asynchronously
             for chunk in response_generator:
                 if not chunk or not chunk.text:
@@ -152,10 +153,14 @@ class MLXVLMHandler:
                 if thinking_parser:
                     parsed_content, is_complete = thinking_parser.parse_stream(text)
                     if parsed_content:
+                        after_thinking_content = parsed_content.pop("content", "")
                         yield parsed_content
                     if is_complete:
                         thinking_parser = None
                     continue
+
+                text = after_thinking_content + text
+                after_thinking_content = ""
                     
                 if tool_parser:
                     parsed_content, _ = tool_parser.parse_stream(text)

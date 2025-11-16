@@ -120,7 +120,9 @@ class MLXLMHandler:
             # Create appropriate parsers for this model type
 
             thinking_parser, tool_parser = self._create_parsers()
+
             is_first_chunk = True
+            after_thinking_content = ""
 
             if thinking_parser and ParserFactory.has_special_parsing(self.reasoning_parser):
                 for chunk in response_generator:
@@ -156,10 +158,14 @@ class MLXLMHandler:
                     if thinking_parser:
                         parsed_content, is_complete = thinking_parser.parse_stream(text)
                         if parsed_content:
+                            after_thinking_content = parsed_content.pop("content", "")
                             yield parsed_content
                         if is_complete:
                             thinking_parser = None
                         continue
+
+                    text = after_thinking_content + text
+                    after_thinking_content = ""
                         
                     if tool_parser:
                         parsed_content, _ = tool_parser.parse_stream(text)
