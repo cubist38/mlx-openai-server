@@ -56,7 +56,7 @@ version = { attr = "app.__version__" }
 Homepage = "https://github.com/cubist38/mlx-openai-server"
 
 [project.scripts]
-mlx-openai-server = "app.cli:cli"
+mlx-openai-server = "mlx_openai_server.cli:cli"
 
 [build-system]
 requires = ["setuptools>=77.0"]
