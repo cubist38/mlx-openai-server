@@ -193,7 +193,30 @@ def create_lifespan(config_args):
                 "timeout": config_args.queue_timeout,
                 "queue_size": config_args.queue_size
             })
+
+            # Log detailed initialization info (Phase 02 observability)
             logger.info("MLX handler initialized successfully")
+            logger.info(f"  Model ID: {model_identifier}")
+            logger.info(f"  Model Type: {config_args.model_type}")
+            logger.info(f"  Backend: mlx")
+            logger.info(f"  Device: {mx.default_device()}")
+
+            # Log model-specific metadata if available
+            if hasattr(handler, 'model'):
+                model_obj = handler.model
+                if hasattr(model_obj, 'max_kv_size'):
+                    logger.info(f"  Context Length: {model_obj.max_kv_size}")
+                if hasattr(model_obj, 'model_type') and model_obj.model_type:
+                    logger.info(f"  Model Family: {model_obj.model_type}")
+                if hasattr(model_obj.model, 'dtype'):
+                    logger.info(f"  Dtype: {model_obj.model.dtype}")
+
+            # Log image generation specific info
+            if config_args.model_type == "image-generation" or config_args.model_type == "image-edit":
+                if hasattr(config_args, 'quantize'):
+                    logger.info(f"  Quantization: {config_args.quantize}-bit")
+                if hasattr(config_args, 'config_name'):
+                    logger.info(f"  Config: {config_args.config_name}")
 
             # Create model registry and register the single model
             registry = ModelRegistry()
