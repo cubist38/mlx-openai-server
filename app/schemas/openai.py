@@ -229,6 +229,7 @@ class ChatCompletionResponse(OpenAIBaseModel):
     model: str = Field(..., description="The model used for completion.")
     choices: List[Choice] = Field(..., description="List of choices in the response.")
     usage: Optional[UsageInfo] = Field(default=None, description="The usage of the completion.")
+    request_id: Optional[str] = Field(None, description="Request correlation ID for tracking.")
 
 class ChoiceDeltaFunctionCall(OpenAIBaseModel):
     """
@@ -275,6 +276,7 @@ class ChatCompletionChunk(OpenAIBaseModel):
     model: str = Field(..., description="The model used for the chunk.")
     object: Literal["chat.completion.chunk"] = Field(..., description="The object type, always 'chat.completion.chunk'.")
     usage: Optional[UsageInfo] = Field(default=None, description="The usage of the chunk.")
+    request_id: Optional[str] = Field(None, description="Request correlation ID for tracking.")
 
 # Embedding models
 class EmbeddingRequest(OpenAIBaseModel):
