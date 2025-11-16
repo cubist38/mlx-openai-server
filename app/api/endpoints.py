@@ -304,6 +304,7 @@ async def handle_stream_response(generator: AsyncGenerator, model: str, request_
     created_time = int(time.time())
     finish_reason = "stop"
     tool_call_index = -1
+    usage_info = None
 
     try:
         # First chunk: role-only delta, as per OpenAI
@@ -316,7 +317,7 @@ async def handle_stream_response(generator: AsyncGenerator, model: str, request_
             request_id=request_id
         )
         yield _yield_sse_chunk(first_chunk)
-        
+
         async for chunk in generator:
             if not chunk:
                 continue
@@ -328,6 +329,11 @@ async def handle_stream_response(generator: AsyncGenerator, model: str, request_
                 yield _yield_sse_chunk(response_chunk)
 
             elif isinstance(chunk, dict):
+                # Check if this is usage info from the handler
+                if "__usage__" in chunk:
+                    usage_info = chunk["__usage__"]
+                    continue
+
                 # Handle tool call chunks
                 payload = dict(chunk)  # Create a copy to avoid mutating the original
                 if payload.get("name"):
@@ -341,15 +347,15 @@ async def handle_stream_response(generator: AsyncGenerator, model: str, request_
                     payload, model, chat_id=chat_index, created_time=created_time, request_id=request_id
                 )
                 yield _yield_sse_chunk(response_chunk)
-                
+
             else:
                 error_response = create_error_response(
-                    f"Invalid chunk type: {type(chunk)}", 
-                    "server_error", 
+                    f"Invalid chunk type: {type(chunk)}",
+                    "server_error",
                     HTTPStatus.INTERNAL_SERVER_ERROR
                 )
                 yield _yield_sse_chunk(error_response)
-                
+
     except Exception as e:
         logger.error(f"Error in stream wrapper: {str(e)}", exc_info=True)
         error_response = create_error_response(
@@ -357,9 +363,15 @@ async def handle_stream_response(generator: AsyncGenerator, model: str, request_
         )
         yield _yield_sse_chunk(error_response)
     finally:
-        # Final chunk: finish_reason and [DONE], as per OpenAI
-        final_chunk = create_response_chunk(
-            '', model, is_final=True, finish_reason=finish_reason, chat_id=chat_index, request_id=request_id
+        # Final chunk: finish_reason with usage info, as per OpenAI
+        final_chunk = ChatCompletionChunk(
+            id=chat_index,
+            object="chat.completion.chunk",
+            created=created_time,
+            model=model,
+            choices=[StreamingChoice(index=0, delta=Delta(), finish_reason=finish_reason)],
+            usage=usage_info,
+            request_id=request_id
         )
         yield _yield_sse_chunk(final_chunk)
         yield "data: [DONE]\n\n"
@@ -388,7 +400,12 @@ async def process_text_request(handler, request: ChatCompletionRequest, request_
             media_type="text/event-stream",
             headers={"Cache-Control": "no-cache", "Connection": "keep-alive", "X-Accel-Buffering": "no"}
         )
-    return format_final_response(await handler.generate_text_response(request), request.model, request_id)
+
+    # Extract response and usage from handler
+    result = await handler.generate_text_response(request)
+    response_data = result.get("response")
+    usage = result.get("usage")
+    return format_final_response(response_data, request.model, request_id, usage)
 
 def get_id():
     """
@@ -406,7 +423,7 @@ def get_tool_call_id():
     random_suffix = random.randint(0, 999999)
     return f"call_{timestamp}{random_suffix:06d}"
 
-def format_final_response(response: Union[str, Dict[str, Any]], model: str, request_id: str = None) -> ChatCompletionResponse:
+def format_final_response(response: Union[str, Dict[str, Any]], model: str, request_id: str = None, usage=None) -> ChatCompletionResponse:
     """Format the final non-streaming response."""
 
     if isinstance(response, str):
@@ -420,6 +437,7 @@ def format_final_response(response: Union[str, Dict[str, Any]], model: str, requ
                 message=Message(role="assistant", content=response, refusal=None, function_call=None, reasoning_content=None, tool_calls=None),
                 finish_reason="stop"
             )],
+            usage=usage,
             request_id=request_id
         )
 
@@ -434,6 +452,7 @@ def format_final_response(response: Union[str, Dict[str, Any]], model: str, requ
             created=int(time.time()),
             model=model,
             choices=[Choice(index=0, message=Message(role="assistant", content=response_content, reasoning_content=reasoning_content), finish_reason="stop")],
+            usage=usage,
             request_id=request_id
         )
     for idx, tool_call in enumerate(tool_calls):
@@ -454,7 +473,7 @@ def format_final_response(response: Union[str, Dict[str, Any]], model: str, requ
             index=idx
         )
         tool_call_responses.append(tool_call_response)
-    
+
     message = Message(role="assistant", content=response_content, reasoning_content=reasoning_content, tool_calls=tool_call_responses)
 
     return ChatCompletionResponse(
@@ -467,5 +486,6 @@ def format_final_response(response: Union[str, Dict[str, Any]], model: str, requ
             message=message,
             finish_reason="tool_calls"
         )],
+        usage=usage,
         request_id=request_id
     )

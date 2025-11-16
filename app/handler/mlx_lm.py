@@ -10,7 +10,7 @@ from app.core.queue import RequestQueue
 from app.handler.parser import ParserFactory
 from app.utils.errors import create_error_response
 from typing import Any, AsyncGenerator, Dict, List, Optional, Tuple
-from app.schemas.openai import ChatCompletionRequest, EmbeddingRequest
+from app.schemas.openai import ChatCompletionRequest, EmbeddingRequest, UsageInfo
 
 
 class MLXLMHandler:
@@ -54,16 +54,55 @@ class MLXLMHandler:
         """
         Create appropriate parsers based on model type and available tools.
         Uses ParserFactory for centralized parser creation logic.
-        
+
         Returns:
             Tuple of (thinking_parser, tool_parser)
         """
-        
+
         return ParserFactory.create_parsers(
             model_type=self.model_type,
             manual_reasoning_parser=self.reasoning_parser,
             manual_tool_parser=self.tool_call_parser,
         )
+
+    def _count_tokens(self, text: str) -> int:
+        """
+        Count the number of tokens in a text string.
+
+        Args:
+            text: The text to count tokens for.
+
+        Returns:
+            int: The number of tokens.
+        """
+        if not text:
+            return 0
+        tokens = self.model.tokenizer.encode(text, add_special_tokens=False)
+        return len(tokens)
+
+    def _count_message_tokens(self, messages: List[Dict[str, str]], **kwargs) -> int:
+        """
+        Count the number of tokens in a list of messages after applying chat template.
+
+        Args:
+            messages: List of messages to count tokens for.
+            **kwargs: Additional arguments to pass to apply_chat_template.
+
+        Returns:
+            int: The number of prompt tokens.
+        """
+        try:
+            input_tokens = self.model.tokenizer.apply_chat_template(
+                messages,
+                add_generation_prompt=True,
+                **kwargs
+            )
+            return len(input_tokens)
+        except Exception as e:
+            logger.warning(f"Failed to count message tokens: {str(e)}")
+            # Fallback: rough estimate
+            total_text = " ".join([msg.get("content", "") for msg in messages if isinstance(msg.get("content"), str)])
+            return self._count_tokens(total_text)
 
     async def get_models(self) -> List[Dict[str, Any]]:
         """
@@ -100,33 +139,40 @@ class MLXLMHandler:
         """
         Generate a streaming response for text-only chat completion requests.
         Uses the request queue for handling concurrent requests.
-        
+
         Args:
             request: ChatCompletionRequest object containing the messages.
-        
+
         Yields:
-            str: Response chunks.
+            str or dict: Response chunks (str) followed by usage info (dict) at the end.
         """
         request_id = f"text-{uuid.uuid4()}"
-        
+
         try:
             chat_messages, model_params = await self._prepare_text_request(request)
+
+            # Count prompt tokens
+            chat_template_kwargs = model_params.get("chat_template_kwargs", {})
+            prompt_tokens = self._count_message_tokens(chat_messages, **chat_template_kwargs)
+
             request_data = {
                 "messages": chat_messages,
                 "stream": True,
                 **model_params
             }
-            response_generator = await self.request_queue.submit(request_id, request_data)            
+            response_generator = await self.request_queue.submit(request_id, request_data)
             # Create appropriate parsers for this model type
 
             thinking_parser, tool_parser = self._create_parsers()
             is_first_chunk = True
+            completion_text = ""  # Accumulate completion for token counting
 
             if thinking_parser and ParserFactory.has_special_parsing(self.reasoning_parser):
                 for chunk in response_generator:
                     if not chunk or not chunk.text:
                         continue
                     text = chunk.text
+                    completion_text += text
                     parsed_content, is_complete = thinking_parser.parse_stream(text)
                     if parsed_content:
                         yield parsed_content
@@ -135,7 +181,6 @@ class MLXLMHandler:
             else:
 
                 if ParserFactory.respects_enable_thinking(self.reasoning_parser):
-                    chat_template_kwargs = model_params.get("chat_template_kwargs", {})
                     enable_thinking = chat_template_kwargs.get("enable_thinking", True)
                     if not enable_thinking:
                         thinking_parser = None
@@ -145,8 +190,9 @@ class MLXLMHandler:
 
                     if not chunk or not chunk.text:
                         continue
-                        
+
                     text = chunk.text
+                    completion_text += text
 
                     if is_first_chunk:
                         if thinking_parser and ParserFactory.needs_redacted_reasoning_prefix(self.reasoning_parser):
@@ -160,7 +206,7 @@ class MLXLMHandler:
                         if is_complete:
                             thinking_parser = None
                         continue
-                        
+
                     if tool_parser:
                         parsed_content, _ = tool_parser.parse_stream(text)
                         if parsed_content:
@@ -168,6 +214,18 @@ class MLXLMHandler:
                         continue
 
                     yield text
+
+            # Count completion tokens and yield usage info at the end
+            completion_tokens = self._count_tokens(completion_text)
+            total_tokens = prompt_tokens + completion_tokens
+
+            yield {
+                "__usage__": UsageInfo(
+                    prompt_tokens=prompt_tokens,
+                    completion_tokens=completion_tokens,
+                    total_tokens=total_tokens
+                )
+            }
 
         except asyncio.QueueFull:
             logger.error("Too many requests. Service is at capacity.")
@@ -178,32 +236,47 @@ class MLXLMHandler:
             content = create_error_response(f"Failed to generate text stream: {str(e)}", "server_error", HTTPStatus.INTERNAL_SERVER_ERROR)
             raise HTTPException(status_code=500, detail=content)
 
-    async def generate_text_response(self, request: ChatCompletionRequest) -> str:
+    async def generate_text_response(self, request: ChatCompletionRequest) -> Dict[str, Any]:
         """
         Generate a complete response for text-only chat completion requests.
         Uses the request queue for handling concurrent requests.
-        
+
         Args:
             request: ChatCompletionRequest object containing the messages.
-        
+
         Returns:
-            str: Complete response.
+            dict: Response content and usage info.
         """
         request_id = f"text-{uuid.uuid4()}"
-        
+
         try:
             chat_messages, model_params = await self._prepare_text_request(request)
+
+            # Count prompt tokens
+            chat_template_kwargs = model_params.get("chat_template_kwargs", {})
+            prompt_tokens = self._count_message_tokens(chat_messages, **chat_template_kwargs)
+
             request_data = {
                 "messages": chat_messages,
                 "stream": False,
                 **model_params
             }
             response = await self.request_queue.submit(request_id, request_data)
-            
+
+            # Count completion tokens
+            completion_tokens = self._count_tokens(response if isinstance(response, str) else response.get("content", ""))
+            total_tokens = prompt_tokens + completion_tokens
+
+            # Create usage info
+            usage = UsageInfo(
+                prompt_tokens=prompt_tokens,
+                completion_tokens=completion_tokens,
+                total_tokens=total_tokens
+            )
+
             # Create appropriate parsers for this model type
             thinking_parser, tool_parser = self._create_parsers()
 
-            chat_template_kwargs = model_params.get("chat_template_kwargs", {})
             enable_thinking = chat_template_kwargs.get("enable_thinking", True)
 
             if ParserFactory.respects_enable_thinking(self.reasoning_parser):
@@ -211,35 +284,36 @@ class MLXLMHandler:
                     thinking_parser = None
 
             if not thinking_parser and not tool_parser:
-                return response
+                return {"response": response, "usage": usage}
 
             response_text = response
 
             if thinking_parser and ParserFactory.has_special_parsing(self.reasoning_parser):
                 # Handle parsers with special parsing logic (e.g., harmony returns dict)
-                return thinking_parser.parse(response_text)
+                parsed = thinking_parser.parse(response_text)
+                return {"response": parsed, "usage": usage}
 
 
             if thinking_parser and ParserFactory.needs_redacted_reasoning_prefix(self.reasoning_parser):
                 # Add thinking tag to response for parsers that need it
                 response_text = thinking_parser.get_thinking_open() + response_text
-            
+
             parsed_response = {
                 "reasoning_content": None,
                 "tool_calls": None,
                 "content": None
             }
-            
+
             if thinking_parser:
                 thinking_response, response_text = thinking_parser.parse(response_text)
                 parsed_response["reasoning_content"] = thinking_response
-                
+
             if tool_parser:
                 tool_response, response_text = tool_parser.parse(response_text)
                 parsed_response["tool_calls"] = tool_response
             parsed_response["content"] = response_text
-            
-            return parsed_response
+
+            return {"response": parsed_response, "usage": usage}
                         
         except asyncio.QueueFull:
             logger.error("Too many requests. Service is at capacity.")
