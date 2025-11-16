@@ -22,9 +22,9 @@ import sys
 import uvicorn
 from loguru import logger
 
-from app.config import MLXServerConfig
-from app.server import setup_server
-from app.version import __version__
+from .config import MLXServerConfig
+from .server import setup_server
+from .version import __version__
 
 
 def print_startup_banner(config_args):
@@ -110,7 +110,7 @@ def main():
     and delegates execution to :func:`app.cli.cli` through
     ``cli.main``.
     """
-    from app.cli import cli
+    from .cli import cli
 
     args = [str(x) for x in sys.argv[1:]]
     # Keep backwards compatibility: Add 'launch' subcommand if none is provided

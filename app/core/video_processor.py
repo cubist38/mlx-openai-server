@@ -3,7 +3,7 @@ import gc
 import asyncio
 from loguru import logger
 from typing import List
-from app.core.base_processor import BaseProcessor
+from .base_processor import BaseProcessor
 
 
 class VideoProcessor(BaseProcessor):

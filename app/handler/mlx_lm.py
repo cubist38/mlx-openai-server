@@ -5,12 +5,12 @@ import asyncio
 from http import HTTPStatus
 from fastapi import HTTPException
 from loguru import logger
-from app.models.mlx_lm import MLX_LM
-from app.core.queue import RequestQueue
-from app.handler.parser import ParserFactory
-from app.utils.errors import create_error_response
+from ..models.mlx_lm import MLX_LM
+from ..core.queue import RequestQueue
+from .parser import ParserFactory
+from ..utils.errors import create_error_response
 from typing import Any, AsyncGenerator, Dict, List, Optional, Tuple
-from app.schemas.openai import ChatCompletionRequest, EmbeddingRequest
+from ..schemas.openai import ChatCompletionRequest, EmbeddingRequest
 
 
 class MLXLMHandler:

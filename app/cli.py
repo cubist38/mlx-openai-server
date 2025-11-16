@@ -11,10 +11,10 @@ import sys
 import click
 from loguru import logger
 
-from app.config import MLXServerConfig
-from app.handler.parser.factory import PARSER_REGISTRY
-from app.main import start
-from app.version import __version__
+from .config import MLXServerConfig
+from .handler.parser.factory import PARSER_REGISTRY
+from .main import start
+from .version import __version__
 
 
 class UpperChoice(click.Choice):

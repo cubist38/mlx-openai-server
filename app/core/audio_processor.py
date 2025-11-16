@@ -2,7 +2,7 @@ import os
 import gc
 import asyncio
 from typing import List
-from app.core.base_processor import BaseProcessor
+from .base_processor import BaseProcessor
 
 
 class AudioProcessor(BaseProcessor):

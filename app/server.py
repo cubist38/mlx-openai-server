@@ -23,14 +23,14 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from loguru import logger
 
-from app.api.endpoints import router
-from app.config import MLXServerConfig
-from app.handler import MFLUX_AVAILABLE, MLXFluxHandler
-from app.handler.mlx_embeddings import MLXEmbeddingsHandler
-from app.handler.mlx_lm import MLXLMHandler
-from app.handler.mlx_vlm import MLXVLMHandler
-from app.handler.mlx_whisper import MLXWhisperHandler
-from app.version import __version__
+from .api.endpoints import router
+from .config import MLXServerConfig
+from .handler import MFLUX_AVAILABLE, MLXFluxHandler
+from .handler.mlx_embeddings import MLXEmbeddingsHandler
+from .handler.mlx_lm import MLXLMHandler
+from .handler.mlx_vlm import MLXVLMHandler
+from .handler.mlx_whisper import MLXWhisperHandler
+from .version import __version__
 
 
 def configure_logging(

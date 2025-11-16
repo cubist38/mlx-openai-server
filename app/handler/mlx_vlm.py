@@ -9,12 +9,12 @@ from http import HTTPStatus
 from fastapi import HTTPException
 from typing import Any, Dict, List, Optional, Tuple
 
-from app.core.queue import RequestQueue
-from app.models.mlx_vlm import MLX_VLM
-from app.handler.parser import ParserFactory
-from app.core import ImageProcessor, AudioProcessor, VideoProcessor
-from app.utils.errors import create_error_response
-from app.schemas.openai import ChatCompletionRequest, EmbeddingRequest, ChatCompletionContentPart, ChatCompletionContentPartText, ChatCompletionContentPartImage, ChatCompletionContentPartInputAudio, ChatCompletionContentPartVideo
+from ..core.queue import RequestQueue
+from ..models.mlx_vlm import MLX_VLM
+from .parser import ParserFactory
+from ..core import ImageProcessor, AudioProcessor, VideoProcessor
+from ..utils.errors import create_error_response
+from ..schemas.openai import ChatCompletionRequest, EmbeddingRequest, ChatCompletionContentPart, ChatCompletionContentPartText, ChatCompletionContentPartImage, ChatCompletionContentPartInputAudio, ChatCompletionContentPartVideo
 
 class MLXVLMHandler:
     """

@@ -10,10 +10,10 @@ from fastapi import APIRouter, Request, Form
 from fastapi.responses import JSONResponse, StreamingResponse
 from loguru import logger
 
-from app.handler.mlx_lm import MLXLMHandler
-from app.handler.mlx_vlm import MLXVLMHandler
-from app.handler import MLXFluxHandler, MFLUX_AVAILABLE
-from app.schemas.openai import (HealthCheckResponse, HealthCheckStatus,
+from ..handler.mlx_lm import MLXLMHandler
+from ..handler.mlx_vlm import MLXVLMHandler
+from ..handler import MLXFluxHandler, MFLUX_AVAILABLE
+from ..schemas.openai import (HealthCheckResponse, HealthCheckStatus,
                                 ChatCompletionChunk, ChatCompletionMessageToolCall,
                                 ChatCompletionRequest, ChatCompletionResponse,
                                 Choice, ChoiceDeltaFunctionCall,
@@ -22,7 +22,7 @@ from app.schemas.openai import (HealthCheckResponse, HealthCheckStatus,
                                 FunctionCall, Message, Model, ModelsResponse,
                                 StreamingChoice, ImageGenerationRequest,
                                 ImageEditRequest, TranscriptionRequest)
-from app.utils.errors import create_error_response
+from ..utils.errors import create_error_response
 
 router = APIRouter()
 
