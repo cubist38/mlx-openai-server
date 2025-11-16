@@ -179,6 +179,18 @@ def cli():
     is_flag=True,
     help="Enable trust_remote_code when loading models. This allows loading custom code from model repositories.",
 )
+@click.option(
+    "--jit",
+    "jit_enabled",
+    is_flag=True,
+    help="Enable just-in-time model loading. Models load on first request instead of startup.",
+)
+@click.option(
+    "--auto-unload-minutes",
+    type=click.IntRange(1),
+    default=None,
+    help="When JIT is enabled, unload the model after idle for this many minutes.",
+)
 def launch(
     model_path,
     model_type,
@@ -200,6 +212,8 @@ def launch(
     tool_call_parser,
     reasoning_parser,
     trust_remote_code,
+    jit_enabled,
+    auto_unload_minutes,
 ) -> None:
     """Start the FastAPI/Uvicorn server with the supplied flags.
 
@@ -229,6 +243,8 @@ def launch(
         tool_call_parser=tool_call_parser,
         reasoning_parser=reasoning_parser,
         trust_remote_code=trust_remote_code,
+        jit_enabled=jit_enabled,
+        auto_unload_minutes=auto_unload_minutes,
     )
 
     asyncio.run(start(args))

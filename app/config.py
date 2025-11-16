@@ -41,6 +41,8 @@ class MLXServerConfig:
     tool_call_parser: str | None = None
     reasoning_parser: str | None = None
     trust_remote_code: bool = False
+    jit_enabled: bool = False
+    auto_unload_minutes: int | None = None
 
     # Used to capture raw CLI input before processing
     lora_paths_str: str | None = None
@@ -91,6 +93,12 @@ class MLXServerConfig:
                 "specified. Using default 'flux-kontext-dev'."
             )
             self.config_name = "flux-kontext-dev"
+
+        if self.auto_unload_minutes is not None:
+            if not self.jit_enabled:
+                raise ValueError("Auto-unload requires JIT loading to be enabled")
+            if self.auto_unload_minutes <= 0:
+                raise ValueError("Auto-unload minutes must be a positive integer")
 
     @property
     def model_identifier(self) -> str:

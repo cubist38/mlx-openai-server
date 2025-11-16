@@ -43,6 +43,7 @@ This repository hosts a high-performance API server that provides OpenAI-compati
 - 🎛️ **LoRA adapter support** for fine-tuned image generation
 - ⚡ **Configurable quantization** (4-bit, 8-bit, 16-bit) for optimal performance
 - 🧠 **Customizable context length** for memory optimization and performance tuning
+- 💤 **Just-in-time loading with idle auto-unload** to keep GPU/RAM usage minimal when idle
 
 ---
 
@@ -408,9 +409,15 @@ mlx-openai-server launch \
 - `--tool-call-parser`: Specify tool call parser to use instead of auto-detection. Only works with language models (`lm` or `multimodal` model types). Available options: `qwen3`, `glm4_moe`, `qwen3_moe`, `qwen3_next`, `qwen3_vl`, `harmony`, `minimax`.
 - `--reasoning-parser`: Specify reasoning parser to use instead of auto-detection. Only works with language models (`lm` or `multimodal` model types). Available options: `qwen3`, `glm4_moe`, `qwen3_moe`, `qwen3_next`, `qwen3_vl`, `harmony`, `minimax`.
 - `--trust-remote-code`: Enable `trust_remote_code` when loading models. This allows loading custom code from model repositories. Default: `False` (disabled). Only works with `lm` or `multimodal` model types.
+- `--jit`: Enable just-in-time model loading. Models are created when the first request arrives instead of during startup.
+- `--auto-unload-minutes`: Automatically unload the model after idle for the specified number of minutes. Requires `--jit` and must be greater than zero.
 - `--log-file`: Path to log file. If not specified, logs will be written to 'logs/app.log' by default.
 - `--no-log-file`: Disable file logging entirely. Only console output will be shown.
 - `--log-level`: Set the logging level. Choices: `DEBUG`, `INFO`, `WARNING`, `ERROR`, `CRITICAL`. Default: `INFO`.
+
+#### Just-in-time loading & idle TTL
+
+Use `--jit` when you want the server to postpone model initialization until the first API request arrives. This mirrors the "JIT Loading" toggle in LM Studio and keeps RAM/GPU memory free while the server is idle. Combine `--jit` with `--auto-unload-minutes <minutes>` to automatically release model memory after a period of inactivity. The server logs when a model is lazily loaded and when it is evicted because of the idle timeout, so you can trace exactly when memory changes occur. Auto-unloading is only available when JIT loading is enabled, and the timeout must be a positive integer (minutes).
 
 ### Parser Configuration
 
