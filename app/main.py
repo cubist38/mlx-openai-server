@@ -15,8 +15,10 @@ from app.handler.mlx_lm import MLXLMHandler
 from app.handler.mlx_vlm import MLXVLMHandler
 from app.handler.mlx_embeddings import MLXEmbeddingsHandler
 from app.handler.mlx_whisper import MLXWhisperHandler
-from app.handler import MLXFluxHandler, MFLUX_AVAILABLE 
+from app.handler import MLXFluxHandler, MFLUX_AVAILABLE
 from app.api.endpoints import router
+from app.middleware import RequestTrackingMiddleware
+from app.core.model_registry import ModelRegistry
 from app.version import __version__
 
 def configure_logging(log_file=None, no_log_file=False, log_level="INFO"):
@@ -154,7 +156,19 @@ def create_lifespan(config_args):
                 "queue_size": config_args.queue_size
             })
             logger.info("MLX handler initialized successfully")
+
+            # Create model registry and register the single model
+            registry = ModelRegistry()
+            await registry.register_model(
+                model_id=model_identifier,
+                handler=handler,
+                model_type=config_args.model_type,
+                context_length=getattr(config_args, 'context_length', None)
+            )
+
+            # Store in app state (both handler and registry for backward compat)
             app.state.handler = handler
+            app.state.registry = registry
             
         except Exception as e:
             logger.error(f"Failed to initialize MLX handler: {str(e)}")
@@ -205,7 +219,10 @@ async def setup_server(args) -> uvicorn.Config:
     )
     
     app.include_router(router)
-    
+
+    # Add request tracking middleware (must be added before CORS)
+    app.add_middleware(RequestTrackingMiddleware)
+
     # Add CORS middleware
     app.add_middleware(
         CORSMiddleware,
