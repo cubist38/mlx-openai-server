@@ -314,6 +314,7 @@ class Model(OpenAIBaseModel):
     object: str = Field("model", description="The object type, always 'model'.")
     created: int = Field(..., description="The creation timestamp.")
     owned_by: str = Field("openai", description="The owner of the model.")
+    metadata: Optional[Dict[str, Any]] = Field(None, description="Additional model metadata.")
 
 class ModelsResponse(OpenAIBaseModel):
     """

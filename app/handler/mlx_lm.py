@@ -104,6 +104,42 @@ class MLXLMHandler:
             total_text = " ".join([msg.get("content", "") for msg in messages if isinstance(msg.get("content"), str)])
             return self._count_tokens(total_text)
 
+    def _extract_model_metadata(self) -> Dict[str, Any]:
+        """
+        Extract metadata from the loaded MLX model.
+
+        Returns:
+            dict: Metadata about the model including context_length, backend, etc.
+        """
+        metadata = {
+            "backend": "mlx",
+            "modality": "text",
+        }
+
+        # Add context length
+        if hasattr(self.model, 'max_kv_size'):
+            metadata["context_length"] = self.model.max_kv_size
+
+        # Add vocab size if available
+        if hasattr(self.model.tokenizer, 'vocab_size'):
+            metadata["vocab_size"] = self.model.tokenizer.vocab_size
+
+        # Add model family/type if available
+        if hasattr(self.model, 'model_type') and self.model.model_type:
+            metadata["model_family"] = self.model.model_type
+
+        # Add dtype info if available from model config
+        if hasattr(self.model.model, 'dtype'):
+            metadata["dtype"] = str(self.model.model.dtype)
+
+        # Add load settings
+        metadata["load_settings"] = {
+            "model_path": self.model_path,
+            "model_type": "lm"
+        }
+
+        return metadata
+
     async def get_models(self) -> List[Dict[str, Any]]:
         """
         Get list of available models with their metadata.
@@ -113,7 +149,8 @@ class MLXLMHandler:
                 "id": self.model_path,
                 "object": "model",
                 "created": self.model_created,
-                "owned_by": "local"
+                "owned_by": "local",
+                "metadata": self._extract_model_metadata()
             }]
         except Exception as e:
             logger.error(f"Error getting models: {str(e)}")

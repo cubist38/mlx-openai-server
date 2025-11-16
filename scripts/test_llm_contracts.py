@@ -161,7 +161,20 @@ class LLMContractTester:
             raise AssertionError("Model registry returned an empty list")
         if not self.model_id:
             self.model_id = model_list.data[0].id
-        return f"{len(model_list.data)} models detected"
+
+        # Verify metadata presence and required fields (Phase 02)
+        first_model = model_list.data[0]
+        raw_model = payload["data"][0]  # Get raw dict for metadata check
+        if "metadata" in raw_model:
+            metadata = raw_model["metadata"]
+            if "context_length" not in metadata:
+                raise AssertionError("Model metadata missing 'context_length' field")
+            if metadata.get("backend") != "mlx":
+                raise AssertionError(f"Expected backend='mlx', got '{metadata.get('backend')}'")
+            return f"{len(model_list.data)} models, metadata: backend={metadata.get('backend')}, context={metadata.get('context_length')}"
+        else:
+            # Metadata is optional for backward compat, but warn if missing
+            return f"{len(model_list.data)} models detected (no metadata)"
 
     def test_chat_completion(self) -> str:
         model_id = self.ensure_model_id()
