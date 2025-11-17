@@ -1,3 +1,12 @@
+"""API endpoints and streaming utilities.
+
+This module provides OpenAI-compatible REST and streaming (SSE) endpoints
+for working with MLM models (chat completions, embeddings, images, audio,
+and streaming tools). It contains helper functions for formatting
+OpenAI-style chunks and ensures deterministic tool-call IDs for streaming
+tool/function calls so clients can reassemble fragmented argument blocks.
+"""
+
 import base64
 import json
 import random
@@ -42,10 +51,26 @@ router = APIRouter()
 
 
 def _get_handler_manager(raw_request: Request):
+    """Retrieve the handler manager instance from the app context.
+
+    Args:
+        raw_request: FastAPI request used to access application state.
+
+    Returns:
+        The configured handler manager, or ``None`` if not set.
+    """
     return getattr(raw_request.app.state, "handler_manager", None)
 
 
 def _handler_unavailable_response(message: str = "Model handler not initialized") -> JSONResponse:
+    """Return a consistent JSON error response when the handler is not loaded.
+
+    Args:
+        message: Optional error message to include in the response body.
+
+    Returns:
+        A FastAPI ``JSONResponse`` with a 503 status and consistent payload.
+    """
     return JSONResponse(
         content=create_error_response(message, "service_unavailable", 503),
         status_code=503,
@@ -53,6 +78,21 @@ def _handler_unavailable_response(message: str = "Model handler not initialized"
 
 
 async def _ensure_active_handler(raw_request: Request, reason: str):
+    """Ensure a model handler is present and loaded for the request.
+
+    This function asks the handler manager to ensure a handler is loaded
+    for the provided reason. If a handler is loaded and an auto-unload
+    controller exists on the application, it gets notified of activity.
+
+    Args:
+        raw_request: FastAPI request used to access application state.
+        reason: Short text describing why the handler is needed (e.g.,
+            "chat-completions", "embeddings").
+
+    Returns:
+        The active handler instance or ``None`` if no handler could be
+        obtained.
+    """
     handler_manager = _get_handler_manager(raw_request)
     if handler_manager is None:
         return None
@@ -75,9 +115,13 @@ async def _ensure_active_handler(raw_request: Request, reason: str):
 
 @router.get("/health")
 async def health(raw_request: Request):
-    """
-    Health check endpoint - verifies handler initialization status.
-    Returns 503 if handler is not initialized, 200 otherwise.
+    """Return an immediate health check response.
+
+    This endpoint responds immediately and does not depend on any handler
+    or external state making it suitable for monitoring checks.
+
+    Returns:
+        A `HealthCheckResponse` with `HealthCheckStatus.OK`.
     """
     handler = getattr(raw_request.app.state, "handler", None)
 
@@ -98,9 +142,18 @@ async def health(raw_request: Request):
 
 @router.get("/v1/models")
 async def models(raw_request: Request):
-    """
-    Get list of available models with cached response for instant delivery.
-    This endpoint is defined early to ensure it's not blocked by other routes.
+    """Return metadata for available (or fallback) models.
+
+    Attempts to read metadata from a loaded handler; if none is present a
+    local fallback model entry (based on server config) is returned. The
+    endpoint should be fast for clients that query available models.
+
+    Args:
+        raw_request: FastAPI request with application state referencing the
+            handler manager and server configuration.
+
+    Returns:
+        A `ModelsResponse` containing one or more `Model` entries.
     """
     handler_manager = _get_handler_manager(raw_request)
     handler = handler_manager.current_handler if handler_manager else None
@@ -139,8 +192,14 @@ async def models(raw_request: Request):
 
 @router.get("/v1/queue/stats")
 async def queue_stats(raw_request: Request):
-    """
-    Get queue statistics.
+    """Return the server request queue statistics.
+
+    Args:
+        raw_request: FastAPI request used to access the handler manager.
+
+    Returns:
+        A JSON-serializable mapping with queue statistics or an error payload
+        if the handler is not loaded or the retrieval fails.
     """
     handler_manager = _get_handler_manager(raw_request)
     handler = handler_manager.current_handler if handler_manager else None
@@ -167,7 +226,22 @@ async def queue_stats(raw_request: Request):
 
 @router.post("/v1/chat/completions")
 async def chat_completions(request: ChatCompletionRequest, raw_request: Request):
-    """Handle chat completion requests."""
+    """Handle OpenAI-compatible chat completion requests.
+
+    Dispatches the incoming chat completion request to a text-only or
+    multimodal handler depending on the configured model. If `request.stream`
+    is set, returns an SSE streaming response compatible with OpenAI's
+    streaming protocol.
+
+    Args:
+        request: OpenAI-style `ChatCompletionRequest` describing chat messages
+            and generation options.
+        raw_request: FastAPI request used to access the handler manager.
+
+    Returns:
+        Either a streaming SSE `StreamingResponse` or a standard JSON
+        `ChatCompletionResponse`.
+    """
 
     handler = await _ensure_active_handler(raw_request, "chat-completions")
     if handler is None:
@@ -199,7 +273,19 @@ async def chat_completions(request: ChatCompletionRequest, raw_request: Request)
 
 @router.post("/v1/embeddings")
 async def embeddings(request: EmbeddingRequest, raw_request: Request):
-    """Handle embedding requests."""
+    """Handle embedding computation requests.
+
+    This endpoint forwards the `EmbeddingRequest` to the active handler and
+    normalizes the returned vector(s) into the `EmbeddingResponse` schema.
+
+    Args:
+        request: `EmbeddingRequest` that includes input(s) to encode and
+            optional encoding preferences.
+        raw_request: FastAPI request used to resolve the handler manager.
+
+    Returns:
+        An `EmbeddingResponse` with a list of embedding vectors.
+    """
     handler = await _ensure_active_handler(raw_request, "embeddings")
     if handler is None:
         return _handler_unavailable_response()
@@ -216,7 +302,20 @@ async def embeddings(request: EmbeddingRequest, raw_request: Request):
 
 @router.post("/v1/images/generations")
 async def image_generations(request: ImageGenerationRequest, raw_request: Request):
-    """Handle image generation requests."""
+    """Handle image generation requests.
+
+    This endpoint accepts an `ImageGenerationRequest` and will forward it
+    to the currently active image-generation handler (requires MLXFlux
+    to be available). If a non-image model is loaded, a 400 `unsupported_request`
+    error is returned.
+
+    Args:
+        request: An `ImageGenerationRequest` with generation parameters.
+        raw_request: FastAPI request used to resolve the handler manager.
+
+    Returns:
+        The generated image response or an error JSON response.
+    """
     handler = await _ensure_active_handler(raw_request, "image-generations")
     if handler is None:
         return _handler_unavailable_response()
@@ -244,7 +343,20 @@ async def image_generations(request: ImageGenerationRequest, raw_request: Reques
 
 @router.post("/v1/images/edits")
 async def create_image_edit(request: Annotated[ImageEditRequest, Form()], raw_request: Request):
-    """Handle image editing requests with dynamic provider routing."""
+    """Handle image-editing requests routed to the active provider.
+
+    This endpoint supports editing operations and will verify that the
+    server has an MLXFlux-compatible handler loaded. The endpoint may
+    respond synchronously with a result or return appropriate error
+    payloads on failure.
+
+    Args:
+        request: `ImageEditRequest` with the editing specification.
+        raw_request: FastAPI request used to resolve the handler manager.
+
+    Returns:
+        A JSON response containing the edited image or an error response.
+    """
 
     handler = await _ensure_active_handler(raw_request, "image-edits")
     if handler is None:
@@ -307,6 +419,22 @@ async def create_audio_transcriptions(
 def create_response_embeddings(
     embeddings: List[float], model: str, encoding_format: str = "float"
 ) -> EmbeddingResponse:
+    """Return an OpenAI-style EmbeddingResponse for a list of floats.
+
+    Converts a list or array of floats into the standard `EmbeddingResponse`
+    schema used by OpenAI-compliant clients. When the caller requests
+    base64 encoding, this function serializes float32 bytes and returns
+    base64-encoded bytestrings instead of raw floats.
+
+    Args:
+        embeddings: A list of embedding vectors, usually lists of floats.
+        model: Model id to include on the response object.
+        encoding_format: Optional; when set to "base64" the embeddings
+            are serialized to bytes and base64-encoded.
+
+    Returns:
+        An `EmbeddingResponse` object representing the requested embeddings.
+    """
     embeddings_response = []
     for index, embedding in enumerate(embeddings):
         if encoding_format == "base64":
@@ -330,8 +458,23 @@ def create_response_chunk(
     chat_id: Optional[str] = None,
     created_time: Optional[int] = None,
     request_id: str = None,
+    tool_call_id: Optional[str] = None,
 ) -> ChatCompletionChunk:
-    """Create a formatted response chunk for streaming."""
+    """Create a formatted response chunk for streaming.
+
+    Args:
+        chunk: Generator payload (str/dict) describing delta content.
+        model: Model identifier.
+        is_final: Flag for finish_reason propagation.
+        finish_reason: OpenAI finish reason to attach when finalizing.
+        chat_id: Optional chat identifier to reuse across chunks.
+        created_time: Optional timestamp reused across chunks.
+        tool_call_id: Stable identifier to assign to tool call deltas.
+
+    The `tool_call_id` parameter allows upstream callers to enforce a
+    consistent ID for every chunk emitted for the same tool call so that
+    OpenAI-compatible clients can correlate argument fragments.
+    """
     chat_id = chat_id or get_id()
     created_time = created_time or int(time.time())
 
@@ -387,7 +530,10 @@ def create_response_chunk(
         # Validate index exists before accessing
         tool_index = chunk.get("index", 0)
         tool_chunk = ChoiceDeltaToolCall(
-            index=tool_index, type="function", id=get_tool_call_id(), function=function_call
+            index=tool_index,
+            type="function",
+            id=tool_call_id or get_tool_call_id(),
+            function=function_call,
         )
 
         delta = Delta(content=None, role="assistant", tool_calls=[tool_chunk])
@@ -408,19 +554,33 @@ def create_response_chunk(
 
 
 def _yield_sse_chunk(data: Union[Dict[str, Any], ChatCompletionChunk]) -> str:
-    """Helper function to format and yield SSE chunk data."""
+    """Format a data object or ChatCompletionChunk into SSE payload format.
+
+    Args:
+        data: Either a dictionary or a `ChatCompletionChunk` instance.
+
+    Returns:
+        A string containing `data: <json>\n\n` for SSE streaming.
+    """
     if isinstance(data, ChatCompletionChunk):
         return f"data: {json.dumps(data.model_dump())}\n\n"
     return f"data: {json.dumps(data)}\n\n"
 
 
 async def handle_stream_response(generator: AsyncGenerator, model: str, request_id: str = None):
-    """Handle streaming response generation (OpenAI-compatible)."""
+    """Stream OpenAI-style SSE chunks while preserving tool-call IDs.
+
+    This wrapper emits the role preamble, forwards each generator chunk,
+    and caches deterministic tool-call identifiers so that every delta
+    chunk for a given tool call shares the same `delta.tool_calls[i].id`.
+    """
     chat_index = get_id()
     created_time = int(time.time())
     finish_reason = "stop"
     tool_call_index = -1
     usage_info = None
+    tool_call_ids: Dict[int, str] = {}
+    # Cache tool-call IDs per index to keep them stable across chunks.
 
     try:
         # First chunk: role-only delta, as per OpenAI
@@ -456,12 +616,29 @@ async def handle_stream_response(generator: AsyncGenerator, model: str, request_
 
                 # Handle tool call chunks
                 payload = dict(chunk)  # Create a copy to avoid mutating the original
+                provided_index = payload.get("index")
+
                 if payload.get("name"):
                     finish_reason = "tool_calls"
-                    tool_call_index += 1
+                    if provided_index is not None:
+                        tool_call_index = provided_index
+                    else:
+                        tool_call_index += 1
+                        payload["index"] = tool_call_index
+                    current_index = payload["index"]
+                    tool_call_ids.setdefault(
+                        current_index, get_stream_tool_call_id(chat_index, current_index)
+                    )
+                elif payload.get("arguments") and provided_index is None and tool_call_index >= 0:
                     payload["index"] = tool_call_index
-                elif payload.get("arguments") and "index" not in payload:
-                    payload["index"] = tool_call_index
+
+                index_for_payload = payload.get("index")
+                tool_call_id = None
+                if index_for_payload is not None:
+                    tool_call_id = tool_call_ids.setdefault(
+                        index_for_payload,
+                        get_stream_tool_call_id(chat_index, index_for_payload),
+                    )
 
                 response_chunk = create_response_chunk(
                     payload,
@@ -469,6 +646,7 @@ async def handle_stream_response(generator: AsyncGenerator, model: str, request_
                     chat_id=chat_index,
                     created_time=created_time,
                     request_id=request_id,
+                    tool_call_id=tool_call_id,
                 )
                 yield _yield_sse_chunk(response_chunk)
 
@@ -504,7 +682,23 @@ async def handle_stream_response(generator: AsyncGenerator, model: str, request_
 async def process_multimodal_request(
     handler, request: ChatCompletionRequest, request_id: str = None
 ):
-    """Process multimodal-specific requests."""
+    """Process multimodal-specific (vision + text) chat requests.
+
+    If `request.stream` is true, returns a streaming `StreamingResponse`
+    that emits SSE OpenAI-style chunks using `handle_stream_response`.
+    Otherwise it awaits and formats a final `ChatCompletionResponse`.
+
+    Args:
+        handler: The active multimodal handler that knows how to generate
+            streaming and non-streaming responses for the model.
+        request: The original `ChatCompletionRequest` describing content and
+            streaming preferences.
+
+    Returns:
+        A `StreamingResponse` (for streaming requests) or a JSON
+        `ChatCompletionResponse` (for non-streaming requests).
+    """
+
     if request_id:
         logger.info(f"Processing multimodal request [request_id={request_id}]")
 
@@ -532,7 +726,20 @@ async def process_multimodal_request(
 
 
 async def process_text_request(handler, request: ChatCompletionRequest, request_id: str = None):
-    """Process text-only requests."""
+    """Process text-only chat completion requests.
+
+    Mirrors `process_multimodal_request` but uses text-only handler entry
+    points for generation; returns a streaming response when requested or
+    a formatted final response otherwise.
+
+    Args:
+        handler: The active text handler that knows how to generate
+            streaming and non-streaming text completions.
+        request: The `ChatCompletionRequest` with messages and options.
+
+    Returns:
+        A `StreamingResponse` for streaming or a `ChatCompletionResponse`.
+    """
     if request_id:
         logger.info(f"Processing text request [request_id={request_id}]")
 
@@ -557,8 +764,15 @@ async def process_text_request(handler, request: ChatCompletionRequest, request_
 
 
 def get_id():
-    """
-    Generate a unique ID for chat completions with timestamp and random component.
+    """Generate a unique ID for chat completions.
+
+    The returned ID combines the UNIX timestamp and a random numeric suffix
+    to provide reasonable uniqueness across concurrent requests and
+    restarts. This is suitable for the `id` field in both streaming and
+    final chat completion responses.
+
+    Returns:
+        A string identifier for the chat completion (e.g., ``chatcmpl_...``).
     """
     timestamp = int(time.time())
     random_suffix = random.randint(0, 999999)
@@ -566,18 +780,49 @@ def get_id():
 
 
 def get_tool_call_id():
-    """
-    Generate a unique ID for tool calls with timestamp and random component.
+    """Generate an unpredictable ID for synchronous tool call responses.
+
+    This function creates a unique identifier suitable for representing a
+    tool call (function) performed by the assistant outside the streaming
+    context. For streaming contexts prefer `get_stream_tool_call_id` which
+    derives deterministic identifiers tied to the chat and tool index.
+
+    Returns:
+        A string identifier for tool call lookups (e.g., ``call_...``).
     """
     timestamp = int(time.time())
     random_suffix = random.randint(0, 999999)
     return f"call_{timestamp}{random_suffix:06d}"
 
 
+def get_stream_tool_call_id(chat_id: str, tool_call_index: int) -> str:
+    """Generate a deterministic ID for streaming tool calls.
+
+    Combines the chat identifier with the tool-call index so every chunk
+    referencing that tool call can reuse the same ID without randomness.
+    """
+    return f"call_{chat_id}_{tool_call_index}"
+
+
 def format_final_response(
     response: Union[str, Dict[str, Any]], model: str, request_id: str = None, usage=None
 ) -> ChatCompletionResponse:
-    """Format the final non-streaming response."""
+    """Format the final, non-streaming chat completion response.
+
+    This converts a handler's normal return into a `ChatCompletionResponse`
+    object that matches the OpenAI API response schema, including
+    special handling for `tool_calls` when present.
+
+    Args:
+        response: Either a string or a dictionary describing the response
+            (may include `content`, `reasoning_content`, and `tool_calls`).
+        model: Model name to include on the returned response.
+
+    Returns:
+        A `ChatCompletionResponse` containing a single `Choice` which has
+        the assistant's message. If `tool_calls` are included they are
+        converted into `ChatCompletionMessageToolCall` entries.
+    """
 
     if isinstance(response, str):
         return ChatCompletionResponse(
