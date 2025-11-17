@@ -220,7 +220,63 @@ def launch(
     The command builds a server configuration object using
     ``MLXServerConfig`` and then calls the async ``start`` routine
     which handles the event loop and server lifecycle.
+
+    Parameters
+    ----------
+    model_path : str
+        Path to the model (required for lm, multimodal, embeddings, image-generation, image-edit, whisper model types).
+    model_type : str
+        Type of model to run (lm: text-only, multimodal: text+vision+audio, image-generation: flux image generation, image-edit: flux image edit, embeddings: text embeddings, whisper: audio transcription).
+    context_length : int
+        Context length for language models. Only works with `lm` or `multimodal` model types.
+    port : int
+        Port to run the server on.
+    host : str
+        Host to run the server on.
+    max_concurrency : int
+        Maximum number of concurrent requests.
+    queue_timeout : int
+        Request timeout in seconds.
+    queue_size : int
+        Maximum queue size for pending requests.
+    quantize : int
+        Quantization level for the model. Only used for image-generation and image-edit Flux models.
+    config_name : str, optional
+        Config name of the model. Only used for image-generation and image-edit Flux models.
+    lora_paths : str, optional
+        Path to the LoRA file(s). Multiple paths should be separated by commas.
+    lora_scales : str, optional
+        Scale factor for the LoRA file(s). Multiple scales should be separated by commas.
+    disable_auto_resize : bool
+        Disable automatic model resizing. Only work for Vision Language Models.
+    log_file : str, optional
+        Path to log file. If not specified, logs will be written to 'logs/app.log' by default.
+    no_log_file : bool
+        Disable file logging entirely. Only console output will be shown.
+    log_level : str
+        Set the logging level. Default is INFO.
+    enable_auto_tool_choice : bool
+        Enable automatic tool choice. Only works with language models.
+    tool_call_parser : str, optional
+        Specify tool call parser to use instead of auto-detection. Only works with language models.
+    reasoning_parser : str, optional
+        Specify reasoning parser to use instead of auto-detection. Only works with language models.
+    trust_remote_code : bool
+        Enable trust_remote_code when loading models. This allows loading custom code from model repositories.
+    jit_enabled : bool
+        Enable just-in-time model loading. Models load on first request instead of startup.
+    auto_unload_minutes : int, optional
+        When JIT is enabled, unload the model after idle for this many minutes.
+
+    Raises
+    ------
+    click.BadOptionUsage
+        If auto_unload_minutes is set without jit_enabled.
     """
+    if auto_unload_minutes is not None and not jit_enabled:
+        raise click.BadOptionUsage(
+            "--auto-unload-minutes", "--auto-unload-minutes requires --jit to be set."
+        )
 
     args = MLXServerConfig(
         model_path=model_path,

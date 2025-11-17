@@ -417,7 +417,7 @@ mlx-openai-server launch \
 
 #### Just-in-time loading & idle TTL
 
-Use `--jit` when you want the server to postpone model initialization until the first API request arrives. This mirrors the "JIT Loading" toggle in LM Studio and keeps RAM/GPU memory free while the server is idle. Combine `--jit` with `--auto-unload-minutes <minutes>` to automatically release model memory after a period of inactivity. The server logs when a model is lazily loaded and when it is evicted because of the idle timeout, so you can trace exactly when memory changes occur. Auto-unloading is only available when JIT loading is enabled, and the timeout must be a positive integer (minutes).
+Use `--jit` when you want the server to postpone model initialization until the first API request arrives. This keeps RAM/GPU memory free while the server is idle. Combine `--jit` with `--auto-unload-minutes <minutes>` to automatically release model memory after a period of inactivity. The server logs when a model is lazily loaded and when it is evicted because of the idle timeout, so you can trace exactly when memory changes occur. Auto-unloading is only available when JIT loading is enabled, and the timeout must be a positive integer (minutes).
 
 ### Parser Configuration
 

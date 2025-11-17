@@ -51,6 +51,11 @@ class MLXServerConfig:
     def __post_init__(self):
         """Normalize certain CLI fields after instantiation.
 
+        This method processes comma-separated LoRA paths and scales into lists,
+        and applies model-type-specific defaults for config_name.
+
+        Notes
+        -----
         - Convert comma-separated ``lora_paths`` and ``lora_scales`` into
           lists when provided.
         - Apply small model-type-specific defaults for ``config_name``

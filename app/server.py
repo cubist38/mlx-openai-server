@@ -3,9 +3,10 @@
 import asyncio
 import gc
 import time
+from collections.abc import Callable
 from contextlib import asynccontextmanager
 from typing import Any
-from collections.abc import Callable
+
 import mlx.core as mx
 import uvicorn
 from fastapi import FastAPI, Request
@@ -35,14 +36,14 @@ def configure_logging(
 
     Parameters
     ----------
-    log_file:
+    log_file : str, optional
         Optional filesystem path where logs should be written. When
         ``None`` and file logging is enabled a sensible default
         (``logs/app.log``) is used.
-    no_log_file:
+    no_log_file : bool, default False
         When True, file logging is disabled and only console logs are
         emitted.
-    log_level:
+    log_level : str, default "INFO"
         Minimum log level to emit (e.g. "DEBUG", "INFO").
     """
     logger.remove()  # Remove default handler
@@ -78,7 +79,7 @@ def get_model_identifier(config_args: MLXServerConfig) -> str:
 
     Parameters
     ----------
-    config_args:
+    config_args : MLXServerConfig
         Configuration object produced by the CLI. The attribute
         ``model_path`` is read to produce the identifier.
 
@@ -92,7 +93,32 @@ def get_model_identifier(config_args: MLXServerConfig) -> str:
 
 
 async def instantiate_handler(config_args: MLXServerConfig):
-    """Instantiate and initialize the MLX handler for the given config."""
+    """Instantiate and initialize the MLX handler for the given config.
+
+    Based on the model type in the configuration, this function creates
+    the appropriate handler instance (e.g., MLXLMHandler for language
+    models, MLXVLMHandler for multimodal, etc.) and initializes it with
+    the provided settings.
+
+    Parameters
+    ----------
+    config_args : MLXServerConfig
+        Configuration object containing model type, path, and other
+        handler initialization parameters.
+
+    Returns
+    -------
+    handler
+        An initialized MLX handler instance ready for use.
+
+    Raises
+    ------
+    ValueError
+        If the model type is unsupported or required dependencies are
+        missing (e.g., mflux for image generation).
+    Exception
+        If handler initialization fails for any reason.
+    """
 
     model_identifier = get_model_identifier(config_args)
     if config_args.model_type == "image-generation":
@@ -154,7 +180,7 @@ async def instantiate_handler(config_args: MLXServerConfig):
             handler = MLXWhisperHandler(
                 model_path=model_identifier, max_concurrency=config_args.max_concurrency
             )
-        else:
+        elif config_args.model_type == "lm":
             handler = MLXLMHandler(
                 model_path=model_identifier,
                 context_length=config_args.context_length,
@@ -163,6 +189,11 @@ async def instantiate_handler(config_args: MLXServerConfig):
                 tool_call_parser=config_args.tool_call_parser,
                 reasoning_parser=config_args.reasoning_parser,
                 trust_remote_code=config_args.trust_remote_code,
+            )
+        else:
+            raise ValueError(
+                f"Invalid model_type: {config_args.model_type!r}. "
+                f"Supported types are: lm, multimodal, image-generation, image-edit, embeddings, whisper"
             )
 
         await handler.initialize(
@@ -187,12 +218,25 @@ class LazyHandlerManager:
         config_args: MLXServerConfig,
         *,
         on_change: Callable[[Any | None], None] | None = None,
+        on_activity: Callable[[], None] | None = None,
     ) -> None:
+        """Initialize the LazyHandlerManager.
+
+        Parameters
+        ----------
+        config_args : MLXServerConfig
+            Configuration arguments for the server.
+        on_change : Callable[[Any | None], None], optional
+            Callback called when the handler changes.
+        on_activity : Callable[[], None], optional
+            Callback called on activity.
+        """
         self.config_args = config_args
         self._handler = None
         self._lock = asyncio.Lock()
         self._shutdown = False
         self._on_change = on_change
+        self._on_activity = on_activity
         self._last_activity = time.monotonic()
 
         if self._on_change:
@@ -200,28 +244,68 @@ class LazyHandlerManager:
 
     @property
     def auto_unload_minutes(self) -> int | None:
+        """Get the auto-unload timeout in minutes from configuration."""
         return self.config_args.auto_unload_minutes
 
     @property
     def jit_enabled(self) -> bool:
+        """Check if JIT loading is enabled."""
         return self.config_args.jit_enabled
 
     @property
     def current_handler(self):
+        """Get the currently loaded handler instance, or None if unloaded."""
         return self._handler
 
     def record_activity(self) -> None:
+        """Record that activity has occurred for auto-unload tracking.
+
+        This method updates the last activity timestamp and calls the
+        on_activity callback if provided.
+        """
         self._last_activity = time.monotonic()
+        if self._on_activity:
+            self._on_activity()
 
     def seconds_since_last_activity(self) -> float:
+        """Return the number of seconds since the last recorded activity.
+
+        Returns
+        -------
+        float
+            Seconds since last activity.
+        """
         return time.monotonic() - self._last_activity
 
     def idle_timeout_seconds(self) -> int | None:
+        """Return the idle timeout in seconds, or None if auto-unload is disabled.
+
+        Returns
+        -------
+        int or None
+            Idle timeout in seconds, or None if disabled.
+        """
         if self.auto_unload_minutes is None:
             return None
         return self.auto_unload_minutes * 60
 
     async def ensure_loaded(self, reason: str = "request"):
+        """Ensure the handler is loaded, loading it if necessary.
+
+        If the handler is already loaded and not shutting down, records
+        activity and returns it. Otherwise, instantiates a new handler
+        and loads it.
+
+        Parameters
+        ----------
+        reason : str, default "request"
+            Reason for loading, used in log messages.
+
+        Returns
+        -------
+        Any
+            The loaded handler instance.
+        """
         if self._handler and not self._shutdown:
             self.record_activity()
             return self._handler
@@ -244,6 +328,20 @@ class LazyHandlerManager:
             return handler
 
     async def unload(self, reason: str = "manual") -> bool:
+        """Unload the current handler if loaded.
+
+        Cleans up the handler resources and clears memory caches.
+
+        Parameters
+        ----------
+        reason : str, default "manual"
+            Reason for unloading, used in log messages.
+
+        Returns
+        -------
+        bool
+            True if a handler was unloaded, False if none was loaded.
+        """
         if not self._handler:
             return False
 
@@ -265,10 +363,28 @@ class LazyHandlerManager:
         return True
 
     async def shutdown(self):
+        """Shutdown the handler manager and unload any loaded handler.
+
+        Sets the shutdown flag and unloads the handler.
+        """
         self._shutdown = True
         await self.unload("shutdown")
 
     def _format_log_message(self, action: str, reason: str) -> str:
+        """Format a log message with model identifier.
+
+        Parameters
+        ----------
+        action : str
+            The action being performed.
+        reason : str
+            The reason for the action.
+
+        Returns
+        -------
+        str
+            Formatted log message.
+        """
         identifier = f"{self.config_args.model_type}:{self.config_args.model_path}"
         return f"[{identifier}] {action} ({reason})"
 
@@ -277,6 +393,13 @@ class IdleAutoUnloadController:
     """Background helper that unloads handlers after idle periods."""
 
     def __init__(self, handler_manager: LazyHandlerManager) -> None:
+        """Initialize the IdleAutoUnloadController.
+
+        Parameters
+        ----------
+        handler_manager : LazyHandlerManager
+            The handler manager to monitor for idle periods.
+        """
         self.handler_manager = handler_manager
         self._event = asyncio.Event()
         self._task: asyncio.Task | None = None
@@ -288,6 +411,7 @@ class IdleAutoUnloadController:
         return self.handler_manager.auto_unload_minutes
 
     def start(self) -> None:
+        """Start the auto-unload background task if configured."""
         if not self.handler_manager.jit_enabled:
             return
         if self.handler_manager.auto_unload_minutes is None:
@@ -299,6 +423,7 @@ class IdleAutoUnloadController:
         self._task = asyncio.create_task(self._watch_loop())
 
     async def stop(self) -> None:
+        """Stop the auto-unload background task."""
         if not self._active:
             return
 
@@ -312,14 +437,20 @@ class IdleAutoUnloadController:
                 pass
 
     def notify_activity(self) -> None:
+        """Notify the background task of recent activity."""
         if self._active:
             self._event.set()
 
     async def _wait_for_event(self) -> None:
+        """Wait for an activity event and clear it.
+
+        This method waits for the event to be set and then clears it.
+        """
         await self._event.wait()
         self._event.clear()
 
     async def _watch_loop(self) -> None:
+        """Background loop that monitors for idle periods and unloads handlers."""
         try:
             while self._active:
                 timeout = self.handler_manager.idle_timeout_seconds()
@@ -327,13 +458,16 @@ class IdleAutoUnloadController:
                     break
 
                 if not self.handler_manager.current_handler:
-                    await self._wait_for_event()
+                    await asyncio.sleep(10)  # Wait a bit before checking again
                     continue
 
-                try:
-                    await asyncio.wait_for(self._wait_for_event(), timeout=timeout)
-                except asyncio.TimeoutError:
-                    await self.handler_manager.unload(f"Idle for {self.auto_unload_minutes} minutes")
+                if self.handler_manager.seconds_since_last_activity() >= timeout:
+                    await self.handler_manager.unload(
+                        f"Idle for {self.auto_unload_minutes} minutes"
+                    )
+                    continue
+
+                await asyncio.sleep(10)  # Poll every 10 seconds
         except asyncio.CancelledError:
             pass
 
@@ -341,26 +475,30 @@ class IdleAutoUnloadController:
 def create_lifespan(config_args: MLXServerConfig):
     """Create an async FastAPI lifespan context manager bound to configuration.
 
-    The returned context manager performs the following actions during
-    application startup:
+    The returned context manager sets up JIT-aware handler management and
+    auto-unload functionality during application startup:
 
-    - Determine the model identifier from the provided ``config_args``
-    - Instantiate the appropriate MLX handler based on ``model_type``
-      (multimodal, image-generation, image-edit, embeddings, whisper, or
-      text LM)
-    - Initialize the handler (including queuing and concurrency setup)
-    - Perform an initial memory cleanup
+    - Creates a LazyHandlerManager to manage model loading/unloading
+    - Creates an IdleAutoUnloadController for automatic unloading when idle
+    - If JIT is disabled, loads the handler immediately at startup
+    - Starts the auto-unload background task if configured
+    - Performs initial memory cleanup
 
-    During shutdown the lifespan will attempt to call the handler's
-    ``cleanup`` method and perform final memory cleanup.
+    During shutdown:
+    - Stops the auto-unload controller
+    - Shuts down the handler manager and cleans up resources
+    - Performs final memory cleanup
 
-    Args:
-        config_args: Object containing CLI configuration attributes used
-            to initialize handlers (e.g., model_type, model_path,
-            max_concurrency, queue_timeout, etc.).
+    Parameters
+    ----------
+    config_args : MLXServerConfig
+        Configuration object containing CLI settings for
+        model type, path, JIT settings, auto-unload configuration, etc.
 
-    Returns:
-        Callable: An asynccontextmanager usable as FastAPI ``lifespan``.
+    Returns
+    -------
+    Callable
+        An async context manager usable as FastAPI ``lifespan``.
     """
 
     @asynccontextmanager
@@ -374,6 +512,7 @@ def create_lifespan(config_args: MLXServerConfig):
         app.state.handler_manager = handler_manager
         auto_unload_controller = IdleAutoUnloadController(handler_manager)
         app.state.auto_unload_controller = auto_unload_controller
+        handler_manager._on_activity = auto_unload_controller.notify_activity
 
         try:
             if not config_args.jit_enabled:
@@ -415,8 +554,6 @@ app = None
 
 
 def setup_server(config_args: MLXServerConfig) -> uvicorn.Config:
-    global app
-
     """Create and configure the FastAPI app and return a Uvicorn config.
 
     This function sets up logging, constructs the FastAPI application with
@@ -425,15 +562,20 @@ def setup_server(config_args: MLXServerConfig) -> uvicorn.Config:
 
     Note: This function mutates the module-level ``app`` global variable.
 
-    Args:
-        args: Configuration object usually produced by the CLI. Expected
-            to have attributes like ``host``, ``port``, ``log_level``,
-            and logging-related fields.
+    Parameters
+    ----------
+    config_args : MLXServerConfig
+        Configuration object usually produced by the CLI. Expected
+        to have attributes like ``host``, ``port``, ``log_level``,
+        and logging-related fields.
 
-    Returns:
-        uvicorn.Config: A configuration object that can be passed to
+    Returns
+    -------
+    uvicorn.Config
+        A configuration object that can be passed to
         ``uvicorn.Server(config).run()`` to start the application.
     """
+    global app
 
     # Configure logging based on CLI parameters
     configure_logging(

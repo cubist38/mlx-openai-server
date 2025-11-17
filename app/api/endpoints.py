@@ -1,7 +1,7 @@
 """API endpoints and streaming utilities.
 
 This module provides OpenAI-compatible REST and streaming (SSE) endpoints
-for working with MLM models (chat completions, embeddings, images, audio,
+for working with LLM models (chat completions, embeddings, images, audio,
 and streaming tools). It contains helper functions for formatting
 OpenAI-style chunks and ensures deterministic tool-call IDs for streaming
 tool/function calls so clients can reassemble fragmented argument blocks.
@@ -11,8 +11,9 @@ import base64
 import json
 import random
 import time
+from collections.abc import AsyncGenerator
 from http import HTTPStatus
-from typing import Annotated, Any, AsyncGenerator, Dict, List, Optional, Union
+from typing import TYPE_CHECKING, Annotated, Any
 
 import numpy as np
 from fastapi import APIRouter, Form, HTTPException, Request
@@ -47,16 +48,52 @@ from ..schemas.openai import (
 )
 from ..utils.errors import create_error_response
 
+if TYPE_CHECKING:
+    from typing import Protocol
+
+    from ..server import LazyHandlerManager
+
+    class HandlerProtocol(Protocol):
+        async def generate_text_response(
+            self, request: ChatCompletionRequest
+        ) -> str | dict[str, Any]: ...
+        async def generate_multimodal_response(
+            self, request: ChatCompletionRequest
+        ) -> str | dict[str, Any]: ...
+        async def generate_text_stream(
+            self, request: ChatCompletionRequest
+        ) -> AsyncGenerator[str | dict[str, Any], None]: ...
+        async def generate_multimodal_stream(
+            self, request: ChatCompletionRequest
+        ) -> AsyncGenerator[str | dict[str, Any], None]: ...
+        async def generate_embeddings_response(
+            self, request: EmbeddingRequest
+        ) -> list[list[float]]: ...
+        async def generate_image(self, request: Any) -> Any: ...
+        async def edit_image(self, request: Any) -> Any: ...
+        async def generate_transcription_response(self, request: Any) -> Any: ...
+        def _prepare_transcription_request(self, request: Any) -> Any: ...
+        def generate_transcription_stream_from_data(
+            self, request_data: Any, response_format: Any
+        ) -> Any: ...
+        async def get_models(self) -> list[dict[str, Any]]: ...
+        async def get_queue_stats(self) -> dict[str, Any]: ...
+
+
 router = APIRouter()
 
 
-def _get_handler_manager(raw_request: Request):
+def _get_handler_manager(raw_request: Request) -> "LazyHandlerManager | None":
     """Retrieve the handler manager instance from the app context.
 
-    Args:
-        raw_request: FastAPI request used to access application state.
+    Parameters
+    ----------
+    raw_request : Request
+        FastAPI request used to access application state.
 
-    Returns:
+    Returns
+    -------
+    LazyHandlerManager or None
         The configured handler manager, or ``None`` if not set.
     """
     return getattr(raw_request.app.state, "handler_manager", None)
@@ -65,10 +102,14 @@ def _get_handler_manager(raw_request: Request):
 def _handler_unavailable_response(message: str = "Model handler not initialized") -> JSONResponse:
     """Return a consistent JSON error response when the handler is not loaded.
 
-    Args:
-        message: Optional error message to include in the response body.
+    Parameters
+    ----------
+    message : str, default "Model handler not initialized"
+        Optional error message to include in the response body.
 
-    Returns:
+    Returns
+    -------
+    JSONResponse
         A FastAPI ``JSONResponse`` with a 503 status and consistent payload.
     """
     return JSONResponse(
@@ -77,19 +118,24 @@ def _handler_unavailable_response(message: str = "Model handler not initialized"
     )
 
 
-async def _ensure_active_handler(raw_request: Request, reason: str):
+async def _ensure_active_handler(raw_request: Request, reason: str) -> "HandlerProtocol | None":
     """Ensure a model handler is present and loaded for the request.
 
     This function asks the handler manager to ensure a handler is loaded
     for the provided reason. If a handler is loaded and an auto-unload
     controller exists on the application, it gets notified of activity.
 
-    Args:
-        raw_request: FastAPI request used to access application state.
-        reason: Short text describing why the handler is needed (e.g.,
-            "chat-completions", "embeddings").
+    Parameters
+    ----------
+    raw_request : Request
+        FastAPI request used to access application state.
+    reason : str
+        Short text describing why the handler is needed (e.g.,
+        "chat-completions", "embeddings").
 
-    Returns:
+    Returns
+    -------
+    HandlerProtocol or None
         The active handler instance or ``None`` if no handler could be
         obtained.
     """
@@ -120,7 +166,9 @@ async def health(raw_request: Request):
     This endpoint responds immediately and does not depend on any handler
     or external state making it suitable for monitoring checks.
 
-    Returns:
+    Returns
+    -------
+    HealthCheckResponse
         A `HealthCheckResponse` with `HealthCheckStatus.OK`.
     """
     handler = getattr(raw_request.app.state, "handler", None)
@@ -140,19 +188,23 @@ async def health(raw_request: Request):
     )
 
 
-@router.get("/v1/models")
-async def models(raw_request: Request):
+@router.get("/v1/models", response_model=None)
+async def models(raw_request: Request) -> ModelsResponse | JSONResponse:
     """Return metadata for available (or fallback) models.
 
     Attempts to read metadata from a loaded handler; if none is present a
     local fallback model entry (based on server config) is returned. The
     endpoint should be fast for clients that query available models.
 
-    Args:
-        raw_request: FastAPI request with application state referencing the
-            handler manager and server configuration.
+    Parameters
+    ----------
+    raw_request : Request
+        FastAPI request with application state referencing the
+        handler manager and server configuration.
 
-    Returns:
+    Returns
+    -------
+    ModelsResponse or JSONResponse
         A `ModelsResponse` containing one or more `Model` entries.
     """
     handler_manager = _get_handler_manager(raw_request)
@@ -170,9 +222,6 @@ async def models(raw_request: Request):
                 ),
                 status_code=500,
             )
-        except:
-            # Re-raise unexpected exceptions to avoid masking them
-            raise
 
     config = getattr(raw_request.app.state, "server_config", None)
     metadata = getattr(raw_request.app.state, "model_metadata", {})
@@ -190,8 +239,8 @@ async def models(raw_request: Request):
     return ModelsResponse(data=[fallback_model])
 
 
-@router.get("/v1/queue/stats")
-async def queue_stats(raw_request: Request):
+@router.get("/v1/queue/stats", response_model=None)
+async def queue_stats(raw_request: Request) -> dict | JSONResponse:
     """Return the server request queue statistics.
 
     Args:
@@ -211,6 +260,8 @@ async def queue_stats(raw_request: Request):
     try:
         stats = await handler.get_queue_stats()
         return {"status": "ok", "queue_stats": stats}
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Failed to get queue stats: {str(e)}")
         return JSONResponse(
@@ -224,8 +275,10 @@ async def queue_stats(raw_request: Request):
 # =============================================================================
 
 
-@router.post("/v1/chat/completions")
-async def chat_completions(request: ChatCompletionRequest, raw_request: Request):
+@router.post("/v1/chat/completions", response_model=None)
+async def chat_completions(
+    request: ChatCompletionRequest, raw_request: Request
+) -> StreamingResponse | ChatCompletionResponse | JSONResponse:
     """Handle OpenAI-compatible chat completion requests.
 
     Dispatches the incoming chat completion request to a text-only or
@@ -258,21 +311,22 @@ async def chat_completions(request: ChatCompletionRequest, raw_request: Request)
 
     try:
         if isinstance(handler, MLXVLMHandler):
-            return await process_multimodal_request(handler, request, request_id)
+            return await process_multimodal_request(handler, request, raw_request)
         else:
-            return await process_text_request(handler, request, request_id)
+            return await process_text_request(handler, request, raw_request)
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Error processing chat completion request: {str(e)}", exc_info=True)
         return JSONResponse(
             content=create_error_response(str(e)), status_code=HTTPStatus.INTERNAL_SERVER_ERROR
         )
-    except:
-        # Re-raise unexpected exceptions to avoid masking them
-        raise
 
 
-@router.post("/v1/embeddings")
-async def embeddings(request: EmbeddingRequest, raw_request: Request):
+@router.post("/v1/embeddings", response_model=None)
+async def embeddings(
+    request: EmbeddingRequest, raw_request: Request
+) -> EmbeddingResponse | JSONResponse:
     """Handle embedding computation requests.
 
     This endpoint forwards the `EmbeddingRequest` to the active handler and
@@ -293,6 +347,8 @@ async def embeddings(request: EmbeddingRequest, raw_request: Request):
     try:
         embeddings = await handler.generate_embeddings_response(request)
         return create_response_embeddings(embeddings, request.model, request.encoding_format)
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Error processing embedding request: {str(e)}", exc_info=True)
         return JSONResponse(
@@ -300,8 +356,8 @@ async def embeddings(request: EmbeddingRequest, raw_request: Request):
         )
 
 
-@router.post("/v1/images/generations")
-async def image_generations(request: ImageGenerationRequest, raw_request: Request):
+@router.post("/v1/images/generations", response_model=None)
+async def image_generations(request: ImageGenerationRequest, raw_request: Request) -> JSONResponse:
     """Handle image generation requests.
 
     This endpoint accepts an `ImageGenerationRequest` and will forward it
@@ -334,6 +390,8 @@ async def image_generations(request: ImageGenerationRequest, raw_request: Reques
     try:
         image_response = await handler.generate_image(request)
         return image_response
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Error processing image generation request: {str(e)}", exc_info=True)
         return JSONResponse(
@@ -341,8 +399,10 @@ async def image_generations(request: ImageGenerationRequest, raw_request: Reques
         )
 
 
-@router.post("/v1/images/edits")
-async def create_image_edit(request: Annotated[ImageEditRequest, Form()], raw_request: Request):
+@router.post("/v1/images/edits", response_model=None)
+async def create_image_edit(
+    request: Annotated[ImageEditRequest, Form()], raw_request: Request
+) -> JSONResponse:
     """Handle image-editing requests routed to the active provider.
 
     This endpoint supports editing operations and will verify that the
@@ -375,6 +435,8 @@ async def create_image_edit(request: Annotated[ImageEditRequest, Form()], raw_re
     try:
         image_response = await handler.edit_image(request)
         return image_response
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Error processing image edit request: {str(e)}", exc_info=True)
         return JSONResponse(
@@ -382,10 +444,10 @@ async def create_image_edit(request: Annotated[ImageEditRequest, Form()], raw_re
         )
 
 
-@router.post("/v1/audio/transcriptions")
+@router.post("/v1/audio/transcriptions", response_model=None)
 async def create_audio_transcriptions(
     request: Annotated[TranscriptionRequest, Form()], raw_request: Request
-):
+) -> StreamingResponse | JSONResponse:
     """Handle audio transcription requests."""
     try:
         handler = await _ensure_active_handler(raw_request, "audio-transcriptions")
@@ -409,6 +471,8 @@ async def create_audio_transcriptions(
         else:
             transcription_response = await handler.generate_transcription_response(request)
             return transcription_response
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Error processing transcription request: {str(e)}", exc_info=True)
         return JSONResponse(
@@ -417,7 +481,7 @@ async def create_audio_transcriptions(
 
 
 def create_response_embeddings(
-    embeddings: List[float], model: str, encoding_format: str = "float"
+    embeddings: list[list[float]], model: str, encoding_format: str = "float"
 ) -> EmbeddingResponse:
     """Return an OpenAI-style EmbeddingResponse for a list of floats.
 
@@ -451,7 +515,7 @@ def create_response_embeddings(
 
 
 def create_response_chunk(
-    chunk: Union[str, Dict[str, Any]],
+    chunk: str | dict[str, Any],
     model: str,
     is_final: bool = False,
     finish_reason: Optional[str] = "stop",
@@ -553,7 +617,7 @@ def create_response_chunk(
     )
 
 
-def _yield_sse_chunk(data: Union[Dict[str, Any], ChatCompletionChunk]) -> str:
+def _yield_sse_chunk(data: dict[str, Any] | ChatCompletionChunk) -> str:
     """Format a data object or ChatCompletionChunk into SSE payload format.
 
     Args:
@@ -579,7 +643,7 @@ async def handle_stream_response(generator: AsyncGenerator, model: str, request_
     finish_reason = "stop"
     tool_call_index = -1
     usage_info = None
-    tool_call_ids: Dict[int, str] = {}
+    tool_call_ids: dict[int, str] = {}
     # Cache tool-call IDs per index to keep them stable across chunks.
 
     try:
@@ -593,6 +657,8 @@ async def handle_stream_response(generator: AsyncGenerator, model: str, request_
             request_id=request_id,
         )
         yield _yield_sse_chunk(first_chunk)
+        if on_activity:
+            on_activity()
 
         async for chunk in generator:
             if not chunk:
@@ -607,6 +673,8 @@ async def handle_stream_response(generator: AsyncGenerator, model: str, request_
                     request_id=request_id,
                 )
                 yield _yield_sse_chunk(response_chunk)
+                if on_activity:
+                    on_activity()
 
             elif isinstance(chunk, dict):
                 # Check if this is usage info from the handler
@@ -633,6 +701,14 @@ async def handle_stream_response(generator: AsyncGenerator, model: str, request_
                     payload["index"] = tool_call_index
 
                 index_for_payload = payload.get("index")
+                if index_for_payload is None and payload.get("arguments"):
+                    finish_reason = "tool_calls"
+                    tool_call_index += 1
+                    payload["index"] = tool_call_index
+                    index_for_payload = tool_call_index
+                    tool_call_ids.setdefault(
+                        index_for_payload, get_stream_tool_call_id(chat_index, index_for_payload)
+                    )
                 tool_call_id = None
                 if index_for_payload is not None:
                     tool_call_id = tool_call_ids.setdefault(
@@ -649,8 +725,8 @@ async def handle_stream_response(generator: AsyncGenerator, model: str, request_
                     tool_call_id=tool_call_id,
                 )
                 yield _yield_sse_chunk(response_chunk)
-
-            else:
+                if on_activity:
+                    on_activity()
                 error_response = create_error_response(
                     f"Invalid chunk type: {type(chunk)}",
                     "server_error",
@@ -680,8 +756,8 @@ async def handle_stream_response(generator: AsyncGenerator, model: str, request_
 
 
 async def process_multimodal_request(
-    handler, request: ChatCompletionRequest, request_id: str = None
-):
+    handler, request: ChatCompletionRequest, raw_request: Request, request_id: str = None
+) -> StreamingResponse | ChatCompletionResponse:
     """Process multimodal-specific (vision + text) chat requests.
 
     If `request.stream` is true, returns a streaming `StreamingResponse`
@@ -703,9 +779,11 @@ async def process_multimodal_request(
         logger.info(f"Processing multimodal request [request_id={request_id}]")
 
     if request.stream:
+        auto_unload_controller = getattr(raw_request.app.state, "auto_unload_controller", None)
+        on_activity = auto_unload_controller.notify_activity if auto_unload_controller else None
         return StreamingResponse(
             handle_stream_response(
-                handler.generate_multimodal_stream(request), request.model, request_id
+                handler.generate_multimodal_stream(request), request.model, on_activity, request_id
             ),
             media_type="text/event-stream",
             headers={
@@ -725,7 +803,9 @@ async def process_multimodal_request(
     return format_final_response(result, request.model, request_id)
 
 
-async def process_text_request(handler, request: ChatCompletionRequest, request_id: str = None):
+async def process_text_request(
+    handler, request: ChatCompletionRequest, raw_request: Request, request_id: str = None
+) -> StreamingResponse | ChatCompletionResponse:
     """Process text-only chat completion requests.
 
     Mirrors `process_multimodal_request` but uses text-only handler entry
@@ -744,9 +824,11 @@ async def process_text_request(handler, request: ChatCompletionRequest, request_
         logger.info(f"Processing text request [request_id={request_id}]")
 
     if request.stream:
+        auto_unload_controller = getattr(raw_request.app.state, "auto_unload_controller", None)
+        on_activity = auto_unload_controller.notify_activity if auto_unload_controller else None
         return StreamingResponse(
             handle_stream_response(
-                handler.generate_text_stream(request), request.model, request_id
+                handler.generate_text_stream(request), request.model, on_activity, request_id
             ),
             media_type="text/event-stream",
             headers={
@@ -763,7 +845,7 @@ async def process_text_request(handler, request: ChatCompletionRequest, request_
     return format_final_response(response_data, request.model, request_id, usage)
 
 
-def get_id():
+def get_id() -> str:
     """Generate a unique ID for chat completions.
 
     The returned ID combines the UNIX timestamp and a random numeric suffix
@@ -779,7 +861,7 @@ def get_id():
     return f"chatcmpl_{timestamp}{random_suffix:06d}"
 
 
-def get_tool_call_id():
+def get_tool_call_id() -> str:
     """Generate an unpredictable ID for synchronous tool call responses.
 
     This function creates a unique identifier suitable for representing a
