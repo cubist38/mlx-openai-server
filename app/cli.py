@@ -47,9 +47,11 @@ class UpperChoice(click.Choice):
         upperchoice = choice.upper()
         for opt in self.choices:
             if opt.upper() == upperchoice:
-                return upperchoice
-        raise click.BadParameter(
-            f"invalid choice: {choice!r}. (choose from {', '.join(map(repr, self.choices))})"
+                return opt  # return the canonical opt
+        self.fail(
+            f"Invalid choice: {choice}. (choose from {', '.join(self.choices)})",
+            param=None,
+            ctx=ctx,
         )
 
 

@@ -52,7 +52,8 @@ class MLXServerConfig:
         """Normalize certain CLI fields after instantiation.
 
         This method processes comma-separated LoRA paths and scales into lists,
-        and applies model-type-specific defaults for config_name.
+        applies model-type-specific defaults for config_name, validates auto-unload
+        settings, and normalizes log_level.
 
         Notes
         -----
@@ -60,6 +61,9 @@ class MLXServerConfig:
           lists when provided.
         - Apply small model-type-specific defaults for ``config_name``
           and emit warnings when values appear inconsistent.
+        - Validate that ``auto_unload_minutes`` requires ``jit_enabled`` to be True.
+        - Validate that ``auto_unload_minutes`` is positive when set.
+        - Normalize ``log_level`` to uppercase.
         """
 
         # Process comma-separated LoRA paths and scales into lists (or None)
@@ -80,11 +84,9 @@ class MLXServerConfig:
         # image-edit model types. If missing for those types, set defaults.
         if self.config_name and self.model_type not in ["image-generation", "image-edit"]:
             logger.warning(
-                "Config name parameter '%s' provided but model type is '%s'. "
+                f"Config name parameter '{self.config_name}' provided but model type is '{self.model_type}'. "
                 "Config name is only used with image-generation "
-                "and image-edit models.",
-                self.config_name,
-                self.model_type,
+                "and image-edit models."
             )
         elif self.model_type == "image-generation" and not self.config_name:
             logger.warning(
@@ -104,6 +106,9 @@ class MLXServerConfig:
                 raise ValueError("Auto-unload requires JIT loading to be enabled")
             if self.auto_unload_minutes <= 0:
                 raise ValueError("Auto-unload minutes must be a positive integer")
+
+        if isinstance(self.log_level, str):
+            self.log_level = self.log_level.upper()
 
     @property
     def model_identifier(self) -> str:

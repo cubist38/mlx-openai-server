@@ -39,12 +39,15 @@ from ..schemas.openai import (
     HealthCheckResponse,
     HealthCheckStatus,
     ImageEditRequest,
+    ImageEditResponse,
     ImageGenerationRequest,
+    ImageGenerationResponse,
     Message,
     Model,
     ModelsResponse,
     StreamingChoice,
     TranscriptionRequest,
+    TranscriptionResponse,
 )
 from ..utils.errors import create_error_response
 
@@ -69,13 +72,21 @@ if TYPE_CHECKING:
         async def generate_embeddings_response(
             self, request: EmbeddingRequest
         ) -> list[list[float]]: ...
-        async def generate_image(self, request: Any) -> Any: ...
-        async def edit_image(self, request: Any) -> Any: ...
-        async def generate_transcription_response(self, request: Any) -> Any: ...
-        def _prepare_transcription_request(self, request: Any) -> Any: ...
-        def generate_transcription_stream_from_data(
-            self, request_data: Any, response_format: Any
-        ) -> Any: ...
+        async def generate_image(
+            self, request: ImageGenerationRequest
+        ) -> ImageGenerationResponse | dict[str, Any]: ...
+        async def edit_image(
+            self, request: ImageEditRequest
+        ) -> ImageEditResponse | dict[str, Any]: ...
+        async def generate_transcription_response(
+            self, request: TranscriptionRequest
+        ) -> TranscriptionResponse | dict[str, Any]: ...
+        async def _prepare_transcription_request(
+            self, request: TranscriptionRequest
+        ) -> dict[str, Any]: ...
+        async def generate_transcription_stream_from_data(
+            self, request_data: dict[str, Any], response_format: Any
+        ) -> AsyncGenerator[TranscriptionResponse | dict[str, Any], None]: ...
         async def get_models(self) -> list[dict[str, Any]]: ...
         async def get_queue_stats(self) -> dict[str, Any]: ...
 
@@ -517,6 +528,7 @@ def create_response_embeddings(
 def create_response_chunk(
     chunk: str | dict[str, Any],
     model: str,
+    *,
     is_final: bool = False,
     finish_reason: Optional[str] = "stop",
     chat_id: Optional[str] = None,
@@ -727,6 +739,8 @@ async def handle_stream_response(generator: AsyncGenerator, model: str, request_
                 yield _yield_sse_chunk(response_chunk)
                 if on_activity:
                     on_activity()
+            else:
+                # Handle invalid chunk types
                 error_response = create_error_response(
                     f"Invalid chunk type: {type(chunk)}",
                     "server_error",
