@@ -4,7 +4,7 @@ from PIL import Image
 from loguru import logger
 from io import BytesIO
 from typing import List
-from app.core.base_processor import BaseProcessor
+from .base_processor import BaseProcessor
 
 
 class ImageProcessor(BaseProcessor):

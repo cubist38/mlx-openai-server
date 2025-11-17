@@ -1,6 +1,6 @@
-from app.core.base_processor import BaseProcessor
-from app.core.audio_processor import AudioProcessor
-from app.core.image_processor import ImageProcessor
-from app.core.video_processor import VideoProcessor
+from .audio_processor import AudioProcessor
+from .base_processor import BaseProcessor
+from .image_processor import ImageProcessor
+from .video_processor import VideoProcessor
 
 __all__ = ["BaseProcessor", "AudioProcessor", "ImageProcessor", "VideoProcessor"]

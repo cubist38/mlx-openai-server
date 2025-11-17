@@ -1,4 +1,4 @@
-from app.handler.parser.base import BaseToolParser, BaseThinkingParser
+from .base import BaseToolParser, BaseThinkingParser
 
 TOOL_OPEN = "<tool_call>"
 TOOL_CLOSE = "</tool_call>"
