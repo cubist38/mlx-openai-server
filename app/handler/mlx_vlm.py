@@ -237,8 +237,10 @@ class MLXVLMHandler:
 
                 if thinking_parser:
                     parsed_content, is_complete = thinking_parser.parse_stream(text)
+                    after_thinking_close_content = None
                     if parsed_content:
-                        after_thinking_close_content = parsed_content.pop("content", None)
+                        if isinstance(parsed_content, dict):
+                            after_thinking_close_content = parsed_content.pop("content", None)
                         yield parsed_content
                     if is_complete:
                         thinking_parser = None
