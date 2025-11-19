@@ -1,3 +1,5 @@
+"""Video processing utilities for handling video files with caching and validation."""
+
 import asyncio
 import gc
 import os
@@ -15,7 +17,7 @@ class VideoProcessor(BaseProcessor):
         # Supported video formats
         self._supported_formats = {".mp4", ".avi", ".mov"}
 
-    def _get_media_format(self, media_url: str, data: bytes = None) -> str:
+    def _get_media_format(self, media_url: str, data: bytes | None = None) -> str:
         """Determine video format from URL or data."""
         if media_url.startswith("data:"):
             # Extract format from data URL
@@ -97,10 +99,11 @@ class VideoProcessor(BaseProcessor):
 
             logger.info(f"Saved video to {cached_path} ({len(data)} bytes)")
             self._cleanup_old_files()
-            return cached_path
         except Exception as e:
             logger.error(f"Failed to save video data: {e!s}")
             raise
+        else:
+            return cached_path
 
     def _get_media_type_name(self) -> str:
         """Get media type name for logging."""

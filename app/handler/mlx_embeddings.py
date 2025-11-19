@@ -1,3 +1,5 @@
+"""Handler for MLX embeddings model with request queuing and error handling."""
+
 import gc
 from http import HTTPStatus
 import time

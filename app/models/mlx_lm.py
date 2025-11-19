@@ -1,3 +1,5 @@
+"""MLX language model wrapper with text generation and streaming capabilities."""
+
 from collections.abc import Generator
 import gc
 import os
@@ -84,6 +86,13 @@ class MLX_LM:
         return mx.array(tokens)
 
     def get_model_type(self) -> str:
+        """Get the model type identifier.
+
+        Returns
+        -------
+        str
+            The model type string.
+        """
         return self.model_type
 
     def get_embeddings(

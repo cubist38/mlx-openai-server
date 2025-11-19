@@ -1,3 +1,5 @@
+"""Base processor classes for media handling with caching and session management."""
+
 from abc import ABC, abstractmethod
 import base64
 from concurrent.futures import ThreadPoolExecutor

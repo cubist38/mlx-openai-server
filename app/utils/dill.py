@@ -34,6 +34,18 @@ class Hasher:
 
     @classmethod
     def hash_bytes(cls, value: bytes | list[bytes]) -> str:
+        """Hash bytes or list of bytes using xxHash.
+
+        Parameters
+        ----------
+        value : bytes | list[bytes]
+            The bytes or list of bytes to hash.
+
+        Returns
+        -------
+        str
+            The hexadecimal hash string.
+        """
         value = [value] if isinstance(value, bytes) else value
         m = xxhash.xxh64()
         for x in value:
@@ -42,15 +54,41 @@ class Hasher:
 
     @classmethod
     def hash(cls, value: Any) -> str:
+        """Hash any value by first serializing it with dill.
+
+        Parameters
+        ----------
+        value : Any
+            The value to hash.
+
+        Returns
+        -------
+        str
+            The hexadecimal hash string.
+        """
         return cls.hash_bytes(dumps(value))
 
     def update(self, value: Any) -> None:
+        """Update the hash with a new value.
+
+        Parameters
+        ----------
+        value : Any
+            The value to add to the hash.
+        """
         header_for_update = f"=={type(value)}=="
         value_for_update = self.hash(value)
         self.m.update(header_for_update.encode("utf8"))
         self.m.update(value_for_update.encode("utf-8"))
 
     def hexdigest(self) -> str:
+        """Get the hexadecimal digest of the hash.
+
+        Returns
+        -------
+        str
+            The hexadecimal hash string.
+        """
         return self.m.hexdigest()
 
 
@@ -61,25 +99,34 @@ class Pickler(dill.Pickler):
     _legacy_no_dict_keys_sorting = False
 
     def save(self, obj, save_persistent_id=True):
+        """Save an object to the pickle stream with enhanced dispatch handling.
+
+        Parameters
+        ----------
+        obj : Any
+            The object to pickle.
+        save_persistent_id : bool, optional
+            Whether to save persistent IDs, by default True.
+        """
         obj_type = type(obj)
         if obj_type not in self.dispatch:
             if "regex" in sys.modules:
-                import regex  # type: ignore
+                import regex  # noqa: PLC0415
 
                 if obj_type is regex.Pattern:
                     pklregister(obj_type)(_save_regexPattern)
             if "spacy" in sys.modules:
-                import spacy  # type: ignore
+                import spacy  # noqa: PLC0415
 
                 if issubclass(obj_type, spacy.Language):
                     pklregister(obj_type)(_save_spacyLanguage)
             if "tiktoken" in sys.modules:
-                import tiktoken  # type: ignore
+                import tiktoken  # noqa: PLC0415
 
                 if obj_type is tiktoken.Encoding:
                     pklregister(obj_type)(_save_tiktokenEncoding)
             if "torch" in sys.modules:
-                import torch  # type: ignore
+                import torch  # noqa: PLC0415
 
                 if issubclass(obj_type, torch.Tensor):
                     pklregister(obj_type)(_save_torchTensor)
@@ -113,6 +160,13 @@ class Pickler(dill.Pickler):
         dill.Pickler._batch_setitems(self, items)
 
     def memoize(self, obj):
+        """Memoize an object for pickling, skipping strings.
+
+        Parameters
+        ----------
+        obj : Any
+            The object to memoize.
+        """
         # Don't memoize strings since two identical strings can have different Python ids
         if type(obj) is not str:  # noqa: E721
             dill.Pickler.memoize(self, obj)
@@ -141,11 +195,19 @@ def dumps(obj):
 
 
 def log(pickler, msg):
-    pass
+    """Log a message during pickling (currently a no-op).
+
+    Parameters
+    ----------
+    pickler : Pickler
+        The pickler instance.
+    msg : str
+        The message to log.
+    """
 
 
 def _save_regexPattern(pickler, obj):
-    import regex  # type: ignore
+    import regex  # noqa: PLC0415
 
     log(pickler, f"Re: {obj}")
     args = (obj.pattern, obj.flags)
@@ -154,7 +216,7 @@ def _save_regexPattern(pickler, obj):
 
 
 def _save_tiktokenEncoding(pickler, obj):
-    import tiktoken  # type: ignore
+    import tiktoken  # noqa: PLC0415
 
     log(pickler, f"Enc: {obj}")
     args = (obj.name, obj._pat_str, obj._mergeable_ranks, obj._special_tokens)
@@ -163,7 +225,7 @@ def _save_tiktokenEncoding(pickler, obj):
 
 
 def _save_torchTensor(pickler, obj):
-    import torch  # type: ignore
+    import torch  # noqa: PLC0415
 
     # `torch.from_numpy` is not picklable in `torch>=1.11.0`
     def create_torchTensor(np_array, dtype=None):
@@ -182,7 +244,7 @@ def _save_torchTensor(pickler, obj):
 
 
 def _save_torchGenerator(pickler, obj):
-    import torch  # type: ignore
+    import torch  # noqa: PLC0415
 
     def create_torchGenerator(state):
         generator = torch.Generator()
@@ -196,7 +258,7 @@ def _save_torchGenerator(pickler, obj):
 
 
 def _save_spacyLanguage(pickler, obj):
-    import spacy  # type: ignore
+    import spacy  # noqa: PLC0415
 
     def create_spacyLanguage(config, bytes):
         lang_cls = spacy.util.get_lang_class(config["nlp"]["lang"])

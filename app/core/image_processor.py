@@ -1,4 +1,7 @@
+"""Image processing utilities for handling image files with caching and validation."""
+
 import asyncio
+import contextlib
 import gc
 from io import BytesIO
 
@@ -15,7 +18,7 @@ class ImageProcessor(BaseProcessor):
         super().__init__(max_workers, cache_size)
         Image.MAX_IMAGE_PIXELS = 100000000  # Limit to 100 megapixels
 
-    def _get_media_format(self, media_url: str, data: bytes = None) -> str:
+    def _get_media_format(self, media_url: str, data: bytes | None = None) -> str:
         """Determine image format from URL or data."""
         # For images, we always save as JPEG for consistency
         return "jpg"
@@ -105,10 +108,8 @@ class ImageProcessor(BaseProcessor):
         finally:
             # Ensure image object is closed to free memory
             if image:
-                try:
+                with contextlib.suppress(BaseException):
                     image.close()
-                except:
-                    pass
 
     async def process_image_url(self, image_url: str, resize: bool = True) -> str:
         """Process a single image URL and return path to cached file."""

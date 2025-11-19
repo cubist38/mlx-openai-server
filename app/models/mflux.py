@@ -1,8 +1,10 @@
+"""MLX Flux image generation model wrapper with configuration and error handling."""
+
 from abc import ABC, abstractmethod
-import logging
 import os
 from typing import Any
 
+from loguru import logger
 from mflux.config.model_config import ModelConfig
 from mflux.flux.flux import Config, Flux1
 from mflux.kontext.flux_kontext import Flux1Kontext
@@ -137,7 +139,6 @@ class BaseFluxModel(ABC):
     def __init__(self, model_path: str, config: ModelConfiguration):
         self.model_path = model_path
         self.config = config
-        self.logger = logging.getLogger(self.__class__.__name__)
         self._model = None
         self._is_loaded = False
 
@@ -183,7 +184,7 @@ class BaseFluxModel(ABC):
         except Exception as e:
             raise ModelGenerationError(f"Failed to prepare configuration: {e}") from e
 
-        self.logger.info(
+        logger.info(
             f"Generating image with prompt: '{prompt[:50]}...' "
             f"(steps: {generation_config.num_inference_steps}, seed: {seed})"
         )
@@ -193,12 +194,13 @@ class BaseFluxModel(ABC):
             if result is None:
                 raise ModelGenerationError("Model returned None instead of an image.")
 
-            self.logger.info("Image generated successfully")
-            return result
+            logger.info("Image generated successfully")
         except Exception as e:
             error_msg = f"Error generating image: {e}"
-            self.logger.error(error_msg)
+            logger.error(error_msg)
             raise ModelGenerationError(error_msg) from e
+        else:
+            return result
 
     def _prepare_config(self, **kwargs) -> Config:
         """Prepare configuration for image generation."""
@@ -244,7 +246,7 @@ class FluxStandardModel(BaseFluxModel):
     def _load_model(self):
         """Load the standard Flux model."""
         try:
-            self.logger.info(f"Loading {self.config.model_type} model from {self.model_path}")
+            logger.info(f"Loading {self.config.model_type} model from {self.model_path}")
 
             # Prepare lora parameters
             lora_paths = self.config.lora_paths
@@ -252,9 +254,9 @@ class FluxStandardModel(BaseFluxModel):
 
             # Log LoRA information if provided
             if lora_paths:
-                self.logger.info(f"Using LoRA adapters: {lora_paths}")
+                logger.info(f"Using LoRA adapters: {lora_paths}")
                 if lora_scales:
-                    self.logger.info(f"LoRA scales: {lora_scales}")
+                    logger.info(f"LoRA scales: {lora_scales}")
 
             self._model = Flux1(
                 model_config=self.config.model_config,
@@ -264,10 +266,10 @@ class FluxStandardModel(BaseFluxModel):
                 lora_scales=lora_scales,
             )
             self._is_loaded = True
-            self.logger.info(f"{self.config.model_type} model loaded successfully")
+            logger.info(f"{self.config.model_type} model loaded successfully")
         except Exception as e:
             error_msg = f"Failed to load {self.config.model_type} model: {e}"
-            self.logger.error(error_msg)
+            logger.error(error_msg)
             raise ModelLoadError(error_msg) from e
 
     def _generate_image(self, prompt: str, seed: int, config: Config) -> Image.Image:
@@ -278,9 +280,10 @@ class FluxStandardModel(BaseFluxModel):
                 prompt=prompt,
                 seed=seed,
             )
-            return result.image
         except Exception as e:
             raise ModelGenerationError(f"Standard model generation failed: {e}") from e
+        else:
+            return result.image
 
 
 class FluxKontextModel(BaseFluxModel):
@@ -289,13 +292,13 @@ class FluxKontextModel(BaseFluxModel):
     def _load_model(self):
         """Load the Flux Kontext model."""
         try:
-            self.logger.info(f"Loading Kontext model from {self.model_path}")
+            logger.info(f"Loading Kontext model from {self.model_path}")
             self._model = Flux1Kontext(quantize=self.config.quantize, local_path=self.model_path)
             self._is_loaded = True
-            self.logger.info("Kontext model loaded successfully")
+            logger.info("Kontext model loaded successfully")
         except Exception as e:
             error_msg = f"Failed to load Kontext model: {e}"
-            self.logger.error(error_msg)
+            logger.error(error_msg)
             raise ModelLoadError(error_msg) from e
 
     def _generate_image(self, prompt: str, seed: int, config: Config) -> Image.Image:
@@ -306,9 +309,10 @@ class FluxKontextModel(BaseFluxModel):
                 prompt=prompt,
                 seed=seed,
             )
-            return result.image
         except Exception as e:
             raise ModelGenerationError(f"Kontext model generation failed: {e}") from e
+        else:
+            return result.image
 
 
 class FluxModel:
@@ -341,7 +345,6 @@ class FluxModel:
         self.quantize = quantize
         self.lora_paths = lora_paths
         self.lora_scales = lora_scales
-        self.logger = logging.getLogger(self.__class__.__name__)
 
         # Validate configuration
         if config_name not in self._MODEL_CONFIGS:
@@ -370,13 +373,13 @@ class FluxModel:
             model_class = self._MODEL_CLASSES[config_name]
             self.flux = model_class(model_path, self.config)
 
-            self.logger.info(f"FluxModel initialized successfully with config: {config_name}")
+            logger.info(f"FluxModel initialized successfully with config: {config_name}")
             if lora_paths:
-                self.logger.info(f"LoRA adapters: {lora_paths}")
+                logger.info(f"LoRA adapters: {lora_paths}")
 
         except Exception as e:
             error_msg = f"Failed to initialize FluxModel: {e}"
-            self.logger.error(error_msg)
+            logger.error(error_msg)
             raise ModelLoadError(error_msg) from e
 
     def __call__(self, prompt: str, seed: int = 42, **kwargs) -> Image.Image:

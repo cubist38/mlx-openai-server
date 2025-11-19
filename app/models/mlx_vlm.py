@@ -1,3 +1,5 @@
+"""MLX vision-language model wrapper with multimodal text generation capabilities."""
+
 from collections.abc import Generator
 import os
 
@@ -49,14 +51,21 @@ class MLX_VLM:
         return hasattr(self.config, "video_token_id") or hasattr(self.config, "video_token_index")
 
     def get_model_type(self):
+        """Get the model type identifier.
+
+        Returns
+        -------
+        str
+            The model type string.
+        """
         return self.config.model_type
 
     def __call__(
         self,
         messages: list[dict[str, str]],
-        images: list[str] = None,
-        audios: list[str] = None,
-        videos: list[str] = None,
+        images: list[str] | None = None,
+        audios: list[str] | None = None,
+        videos: list[str] | None = None,
         stream: bool = False,
         **kwargs,
     ) -> str | Generator[str, None, None]:

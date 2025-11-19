@@ -1,3 +1,5 @@
+"""MLX embeddings model wrapper with memory management and text embedding generation."""
+
 import gc
 
 import mlx.core as mx
@@ -70,7 +72,7 @@ class MLX_Embeddings:
             if array is not None:
                 try:
                     if isinstance(array, dict):
-                        for key, value in array.items():
+                        for value in array.values():
                             if hasattr(value, "nbytes"):
                                 del value
                     elif hasattr(array, "nbytes"):
@@ -102,12 +104,13 @@ class MLX_Embeddings:
             del embeddings
             mx.clear_cache()
             gc.collect()
-            return result
         except Exception:
             # Clean up on error
             mx.clear_cache()
             gc.collect()
             raise
+        else:
+            return result
 
     def cleanup(self):
         """Explicitly cleanup resources."""

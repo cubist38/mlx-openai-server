@@ -1,3 +1,5 @@
+"""MLX Whisper speech-to-text model wrapper with audio processing utilities."""
+
 from functools import lru_cache
 
 import librosa

@@ -255,8 +255,6 @@ app = None
 
 
 def setup_server(config_args: MLXServerConfig) -> uvicorn.Config:
-    global app
-
     """Create and configure the FastAPI app and return a Uvicorn config.
 
     This function sets up logging, constructs the FastAPI application with
@@ -265,15 +263,20 @@ def setup_server(config_args: MLXServerConfig) -> uvicorn.Config:
 
     Note: This function mutates the module-level ``app`` global variable.
 
-    Args:
-        args: Configuration object usually produced by the CLI. Expected
-            to have attributes like ``host``, ``port``, ``log_level``,
-            and logging-related fields.
+    Parameters
+    ----------
+    config_args : MLXServerConfig
+        Configuration object usually produced by the CLI. Expected
+        to have attributes like ``host``, ``port``, ``log_level``,
+        and logging-related fields.
 
-    Returns:
-        uvicorn.Config: A configuration object that can be passed to
+    Returns
+    -------
+    uvicorn.Config
+        A configuration object that can be passed to
         ``uvicorn.Server(config).run()`` to start the application.
     """
+    global app
 
     # Configure logging based on CLI parameters
     configure_logging(

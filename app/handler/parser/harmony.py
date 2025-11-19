@@ -1,10 +1,10 @@
+"""Harmony parser for handling OpenAI-compatible streaming responses with tool calls."""
+
 from enum import Enum
-import logging
 from typing import Any
 
+from loguru import logger
 from openai_harmony import HarmonyEncodingName, Role, StreamableParser, load_harmony_encoding
-
-logger = logging.getLogger(__name__)
 
 
 class ChannelType(Enum):

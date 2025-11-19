@@ -1,3 +1,5 @@
+"""Parser for GLM4 MoE model output format including tool calls and thinking content."""
+
 import json
 import re
 from typing import Any

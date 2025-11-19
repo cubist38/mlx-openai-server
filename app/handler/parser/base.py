@@ -1,3 +1,5 @@
+"""Base parser classes for handling tool calls and thinking content in model outputs."""
+
 import json
 from typing import Any
 
@@ -13,12 +15,38 @@ class BaseThinkingParser:
         self.is_thinking = False
 
     def get_thinking_open(self):
+        """Get the thinking open delimiter.
+
+        Returns
+        -------
+        str
+            The thinking open delimiter string.
+        """
         return self.thinking_open
 
     def get_thinking_close(self):
+        """Get the thinking close delimiter.
+
+        Returns
+        -------
+        str
+            The thinking close delimiter string.
+        """
         return self.thinking_close
 
     def parse(self, content: str) -> tuple[str | None, str]:
+        """Parse content for thinking sections.
+
+        Parameters
+        ----------
+        content : str
+            The content to parse for thinking sections.
+
+        Returns
+        -------
+        tuple[str | None, str]
+            A tuple containing the thinking content (or None) and remaining content.
+        """
         start_thinking = content.find(self.thinking_open)
         if start_thinking == -1:
             return None, content
@@ -113,30 +141,62 @@ class BaseToolParser:
         self.state = ParseToolState.NORMAL
 
     def get_tool_open(self):
-        return self.tool_open
-
-    def get_tool_close(self):
-        return self.tool_close
-
-    def _parse_tool_content(self, tool_content: str) -> dict[str, Any] | None:
-        """
-        Parses the content of a tool call. Subclasses can override this method
-
-        to support different content formats (e.g., XML, YAML).
-        Args:
-            tool_content: The string content extracted from between the tool tags.
+        """Get the tool open delimiter.
 
         Returns
         -------
-            A dictionary representing the parsed tool call, or None if parsing fails.
+        str
+            The tool open delimiter string.
         """
-        try:
-            repaired_json = repair_json(tool_content)
-            return json.loads(repaired_json)
-        except json.JSONDecodeError:
-            raise
+        return self.tool_open
+
+    def get_tool_close(self):
+        """Get the tool close delimiter.
+
+        Returns
+        -------
+        str
+            The tool close delimiter string.
+        """
+        return self.tool_close
+
+    def _parse_tool_content(self, tool_content: str) -> dict[str, Any] | None:
+        """Parse the content of a tool call.
+
+        Subclasses can override this method to support different content formats
+        (e.g., XML, YAML).
+
+        Parameters
+        ----------
+        tool_content : str
+            The string content extracted from between the tool tags.
+
+        Returns
+        -------
+        dict[str, Any] or None
+            A dictionary representing the parsed tool call, or None if parsing fails.
+
+        Raises
+        ------
+        json.JSONDecodeError
+            If the tool content cannot be parsed as JSON.
+        """
+        repaired_json = repair_json(tool_content)
+        return json.loads(repaired_json)
 
     def parse(self, content: str) -> tuple[list[dict[str, Any]] | None, str]:
+        """Parse content for tool calls.
+
+        Parameters
+        ----------
+        content : str
+            The content to parse for tool calls.
+
+        Returns
+        -------
+        tuple[list[dict[str, Any]] | None, str]
+            A tuple containing the list of tool calls (or None) and remaining content.
+        """
         tool_calls = []
         remaining_parts = []
 

@@ -1,3 +1,5 @@
+"""OpenAI-compatible API schemas and data models for request/response validation."""
+
 from enum import Enum
 import random
 from typing import Any, ClassVar, Literal
@@ -19,6 +21,20 @@ class OpenAIBaseModel(BaseModel):
     @model_validator(mode="wrap")
     @classmethod
     def __log_extra_fields__(cls, data, handler):
+        """Log extra fields that are not part of the model schema.
+
+        Parameters
+        ----------
+        data : Any
+            The input data to validate.
+        handler : Callable
+            The validation handler function.
+
+        Returns
+        -------
+        Any
+            The validated data.
+        """
         result = handler(data)
         if not isinstance(data, dict):
             return result

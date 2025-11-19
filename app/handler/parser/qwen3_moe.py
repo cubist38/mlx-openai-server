@@ -1,3 +1,5 @@
+"""Parser for Qwen3 MoE model output format including tool calls and thinking content."""
+
 from .base import BaseThinkingParser, BaseToolParser
 
 TOOL_OPEN = "<tool_call>"

@@ -1,3 +1,5 @@
+"""Custom tokenizer class extending outlines TransformerTokenizer with custom hashing."""
+
 from outlines.models.transformers import TransformerTokenizer
 
 from .dill import Hasher
@@ -12,4 +14,11 @@ class OutlinesTransformerTokenizer(TransformerTokenizer):
     """
 
     def __hash__(self):
+        """Return hash of the tokenizer using custom Hasher.
+
+        Returns
+        -------
+        int
+            Hash value of the tokenizer.
+        """
         return hash(Hasher.hash(self.tokenizer))

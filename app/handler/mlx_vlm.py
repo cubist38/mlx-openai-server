@@ -1,3 +1,5 @@
+"""Handler for MLX vision-language model with multimodal processing and request queuing."""
+
 import asyncio
 import base64
 import gc
@@ -39,8 +41,8 @@ class MLXVLMHandler:
         max_concurrency: int = 1,
         disable_auto_resize: bool = False,
         enable_auto_tool_choice: bool = False,
-        tool_call_parser: str = None,
-        reasoning_parser: str = None,
+        tool_call_parser: str | None = None,
+        reasoning_parser: str | None = None,
         trust_remote_code: bool = False,
     ):
         """
@@ -252,8 +254,6 @@ class MLXVLMHandler:
                 parsed_response["tool_calls"] = tool_response
             parsed_response["content"] = response_text
 
-            return parsed_response
-
         except asyncio.QueueFull:
             logger.error("Too many requests. Service is at capacity.")
             content = create_error_response(
@@ -270,6 +270,8 @@ class MLXVLMHandler:
                 HTTPStatus.INTERNAL_SERVER_ERROR,
             )
             raise HTTPException(status_code=500, detail=content) from e
+        else:
+            return parsed_response
 
     async def generate_embeddings_response(self, request: EmbeddingRequest):
         """
@@ -390,13 +392,14 @@ class MLXVLMHandler:
             )
             # Force garbage collection after model inference
             gc.collect()
-            return response
 
         except Exception as e:
             logger.error(f"Error processing multimodal request: {e!s}")
             # Clean up on error
             gc.collect()
             raise
+        else:
+            return response
 
     async def get_queue_stats(self) -> dict[str, Any]:
         """
@@ -534,7 +537,6 @@ class MLXVLMHandler:
                 elif tool_choice:
                     logger.warning("Tool choice has not supported yet, will be ignored.")
                 request_dict["chat_template_kwargs"]["tools"] = tools
-            return request_dict
 
         except HTTPException:
             raise
@@ -544,6 +546,8 @@ class MLXVLMHandler:
                 f"Failed to process request: {e!s}", "bad_request", HTTPStatus.BAD_REQUEST
             )
             raise HTTPException(status_code=400, detail=content) from e
+        else:
+            return request_dict
 
     def _validate_image_url(self, url: str) -> None:
         """

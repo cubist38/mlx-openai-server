@@ -1,3 +1,5 @@
+"""Handler for MLX Whisper speech-to-text model with audio processing and streaming."""
+
 from collections.abc import AsyncGenerator
 import gc
 from http import HTTPStatus
@@ -201,13 +203,13 @@ class MLXWhisperHandler:
             # Force garbage collection after model inference
             gc.collect()
 
-            return result
-
         except Exception as e:
             logger.error(f"Error processing audio transcription request: {e!s}")
             # Clean up on error
             gc.collect()
             raise
+        else:
+            return result
 
     async def _save_uploaded_file(self, file) -> str:
         """
@@ -236,11 +238,12 @@ class MLXWhisperHandler:
                 temp_path = temp_file.name
 
             logger.debug(f"Saved uploaded file to temporary location: {temp_path}")
-            return temp_path
 
         except Exception as e:
             logger.error(f"Error saving uploaded file: {e!s}")
             raise
+        else:
+            return temp_path
 
     async def _prepare_transcription_request(self, request: TranscriptionRequest) -> dict[str, Any]:
         """
@@ -283,14 +286,14 @@ class MLXWhisperHandler:
 
             logger.debug(f"Prepared transcription request: {request_data}")
 
-            return request_data
-
         except Exception as e:
             logger.error(f"Failed to prepare transcription request: {e!s}")
             content = create_error_response(
                 f"Failed to process request: {e!s}", "bad_request", HTTPStatus.BAD_REQUEST
             )
             raise HTTPException(status_code=400, detail=content) from e
+        else:
+            return request_data
 
     async def get_queue_stats(self) -> dict[str, Any]:
         """

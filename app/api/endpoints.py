@@ -288,6 +288,22 @@ async def create_audio_transcriptions(
 def create_response_embeddings(
     embeddings: list[float], model: str, encoding_format: str = "float"
 ) -> EmbeddingResponse:
+    """Create an embedding response from embeddings data.
+
+    Parameters
+    ----------
+    embeddings : list[float]
+        The list of embeddings.
+    model : str
+        The model name.
+    encoding_format : str, optional
+        The encoding format, by default "float".
+
+    Returns
+    -------
+    EmbeddingResponse
+        The embedding response object.
+    """
     embeddings_response = []
     for index, embedding in enumerate(embeddings):
         if encoding_format == "base64":

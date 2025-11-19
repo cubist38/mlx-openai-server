@@ -1,3 +1,5 @@
+"""Version information for the mlx-openai-server package."""
+
 # Version number format: MAJOR.MINOR.PATCH
 # Major: Major version number (increments when breaking changes are introduced)
 # Minor: Minor version number (increments when new features are added)

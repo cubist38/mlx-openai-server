@@ -1,5 +1,8 @@
+"""Asynchronous request queue implementation for managing concurrent model inference tasks."""
+
 import asyncio
 from collections.abc import Awaitable, Callable
+import contextlib
 import gc
 import time
 from typing import Any, Generic, TypeVar
@@ -78,10 +81,8 @@ class RequestQueue:
         # Cancel the worker task
         if self._worker_task and not self._worker_task.done():
             self._worker_task.cancel()
-            try:
+            with contextlib.suppress(asyncio.CancelledError):
                 await self._worker_task
-            except asyncio.CancelledError:
-                pass
 
         # Cancel all pending requests
         pending_requests = list(self.active_requests.values())
@@ -207,13 +208,14 @@ class RequestQueue:
             )
             queue_time = time.time() - request.created_at
             logger.info(f"Request {request_id} queued (wait: {queue_time:.2f}s)")
-            return request
 
         except TimeoutError:
             self.active_requests.pop(request_id, None)
             raise asyncio.QueueFull(
                 "Request queue is full and timed out waiting for space"
             ) from None
+        else:
+            return request
 
     async def submit(self, request_id: str, data: Any) -> Any:
         """

@@ -1,3 +1,5 @@
+"""Handler for MLX Flux image generation model with request queuing and error handling."""
+
 import asyncio
 import base64
 import gc
