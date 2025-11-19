@@ -5,7 +5,7 @@ from fastapi import UploadFile
 
 from typing import ClassVar, Any, Dict, List, Optional, Union
 
-from pydantic import BaseModel, Field, validator, ConfigDict,model_validator
+from pydantic import BaseModel, Field, validator, ConfigDict, model_validator
 from typing_extensions import Literal, TypeAlias
 from loguru import logger
 
