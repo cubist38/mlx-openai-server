@@ -231,6 +231,22 @@ ignore = [
 ]
 fixable = ["ALL"]
 
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = [
+  "SLF001", # Private member accessed
+  #"D100", "D101", "D102", "D103", "D104", "D105", "D106", "D107",  # Docstring rules
+  "PLR2004", # Magic value used in comparison
+  "S101",    # Use of assert detected
+  "PLR0913", # Too many arguments to function call
+  "C901",    # Function is too complex
+  "E501",    # line too long
+  "B017",    # Don't assert blind Exception
+  "PT006",   # Wrong type passed to first argument
+  "S108",
+  "D401",
+  "D417",
+]
+
 [tool.ruff.lint.flake8-pytest-style]
 fixture-parentheses = false
 mark-parentheses = false
