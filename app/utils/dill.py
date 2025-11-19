@@ -15,10 +15,10 @@
 # limitations under the License.
 """Extends `dill` to support pickling more types and produce more consistent dumps."""
 
-import sys
 from io import BytesIO
+import sys
 from types import FunctionType
-from typing import Any, Dict, List, Union
+from typing import Any
 
 import dill
 import xxhash
@@ -27,13 +27,13 @@ import xxhash
 class Hasher:
     """Hasher that accepts python objects as inputs."""
 
-    dispatch: Dict = {}
+    dispatch: dict = {}
 
     def __init__(self):
         self.m = xxhash.xxh64()
 
     @classmethod
-    def hash_bytes(cls, value: Union[bytes, List[bytes]]) -> str:
+    def hash_bytes(cls, value: bytes | list[bytes]) -> str:
         value = [value] if isinstance(value, bytes) else value
         m = xxhash.xxh64()
         for x in value:

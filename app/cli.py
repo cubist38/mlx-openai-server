@@ -81,7 +81,6 @@ def cli():
     Subcommands (such as ``launch``) are registered on this group and
     invoked by the console entry point.
     """
-    pass
 
 
 @cli.command()

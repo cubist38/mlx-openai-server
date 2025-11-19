@@ -19,8 +19,8 @@ Forward explicit arguments to the CLI:
 
 import sys
 
-import uvicorn
 from loguru import logger
+import uvicorn
 
 from .config import MLXServerConfig
 from .server import setup_server
@@ -98,7 +98,7 @@ async def start(config: MLXServerConfig) -> None:
     except KeyboardInterrupt:
         logger.info("Server shutdown requested by user. Exiting...")
     except Exception as e:
-        logger.error(f"Server startup failed: {str(e)}")
+        logger.error(f"Server startup failed: {e!s}")
         sys.exit(1)
 
 
