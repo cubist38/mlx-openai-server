@@ -1,8 +1,11 @@
 """Parser for GLM4 MoE model output format including tool calls and thinking content."""
 
+import ast
 import json
 import re
 from typing import Any
+
+from loguru import logger
 
 from .base import BaseMessageConverter, BaseThinkingParser, BaseToolParser
 
@@ -42,8 +45,6 @@ class Glm4MoEToolParser(BaseToolParser):
 
         # Try literal eval for Python literals
         try:
-            import ast
-
             return ast.literal_eval(value)
         except (ValueError, SyntaxError):
             pass
@@ -72,7 +73,7 @@ class Glm4MoEToolParser(BaseToolParser):
                 arguments[arg_key] = arg_value
 
         except Exception as e:
-            print(f"Error parsing GLM4 tool call content: {tool_content}, Error: {e}")
+            logger.warning(f"Error parsing GLM4 tool call content: {tool_content}, Error: {e}")
             return None
         else:
             # Build tool call object

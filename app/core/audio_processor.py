@@ -2,7 +2,7 @@
 
 import asyncio
 import gc
-import os
+from pathlib import Path
 
 from .base_processor import BaseProcessor
 
@@ -34,7 +34,7 @@ class AudioProcessor(BaseProcessor):
                 return "aac"
         else:
             # Extract format from file extension
-            ext = os.path.splitext(media_url.lower())[1]
+            ext = Path(media_url.lower()).suffix
             if ext in self._supported_formats:
                 return ext[1:]  # Remove the dot
 
@@ -78,7 +78,7 @@ class AudioProcessor(BaseProcessor):
 
     def _process_media_data(self, data: bytes, cached_path: str, **kwargs) -> str:
         """Process audio data and save to cached path."""
-        with open(cached_path, "wb") as f:
+        with Path(cached_path).open("wb") as f:
             f.write(data)
         self._cleanup_old_files()
         return cached_path

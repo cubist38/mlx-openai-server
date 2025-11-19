@@ -244,7 +244,7 @@ class ChatCompletionRequestBase(OpenAIBaseModel):
     )
 
     @validator("messages")
-    def check_messages_not_empty(cls, v):
+    def check_messages_not_empty(cls, v):  # noqa: N805
         """Ensure that the messages list is not empty and validate message structure."""
         if not v:
             raise ValueError("messages cannot be empty")
@@ -262,14 +262,14 @@ class ChatCompletionRequestBase(OpenAIBaseModel):
         return v
 
     @validator("temperature")
-    def check_temperature(cls, v):
+    def check_temperature(cls, v):  # noqa: N805
         """Validate temperature is between 0 and 2."""
         if v is not None and (v < 0 or v > 2):
             raise ValueError("temperature must be between 0 and 2")
         return v
 
     @validator("max_tokens")
-    def check_max_tokens(cls, v):
+    def check_max_tokens(cls, v):  # noqa: N805
         """Validate max_tokens is positive and within reasonable limits."""
         if v is not None:
             if v <= 0:

@@ -4,7 +4,7 @@ from collections.abc import AsyncGenerator
 import gc
 from http import HTTPStatus
 import json
-import os
+from pathlib import Path
 import tempfile
 import time
 from typing import Any
@@ -90,7 +90,7 @@ class MLXWhisperHandler:
         temp_file_path = None
 
         try:
-            request_data = await self._prepare_transcription_request(request)
+            request_data = await self.prepare_transcription_request(request)
             temp_file_path = request_data.get("audio_path")
             response = await self.request_queue.submit(request_id, request_data)
             response_data = TranscriptionResponse(
@@ -105,9 +105,9 @@ class MLXWhisperHandler:
             return json.dumps(response_data.model_dump())
         finally:
             # Clean up temporary file
-            if temp_file_path and os.path.exists(temp_file_path):
+            if temp_file_path and Path(temp_file_path).exists():
                 try:
-                    os.unlink(temp_file_path)
+                    Path(temp_file_path).unlink()
                     logger.debug(f"Cleaned up temporary file: {temp_file_path}")
                 except Exception as e:
                     logger.warning(f"Failed to clean up temporary file {temp_file_path}: {e!s}")
@@ -173,9 +173,9 @@ class MLXWhisperHandler:
             raise
         finally:
             # Clean up temporary file
-            if temp_file_path and os.path.exists(temp_file_path):
+            if temp_file_path and Path(temp_file_path).exists():
                 try:
-                    os.unlink(temp_file_path)
+                    Path(temp_file_path).unlink()
                     logger.debug(f"Cleaned up temporary file: {temp_file_path}")
                 except Exception as e:
                     logger.warning(f"Failed to clean up temporary file {temp_file_path}: {e!s}")
@@ -224,9 +224,9 @@ class MLXWhisperHandler:
         """
         try:
             # Create a temporary file with the same extension as the uploaded file
-            file_extension = os.path.splitext(file.filename)[1] if file.filename else ".wav"
+            file_extension = Path(file.filename).suffix if file.filename else ".wav"
 
-            print("file_extension", file_extension)
+            logger.debug(f"file_extension: {file_extension}")
 
             # Read file content first (this can only be done once with FastAPI uploads)
             content = await file.read()
@@ -245,7 +245,7 @@ class MLXWhisperHandler:
         else:
             return temp_path
 
-    async def _prepare_transcription_request(self, request: TranscriptionRequest) -> dict[str, Any]:
+    async def prepare_transcription_request(self, request: TranscriptionRequest) -> dict[str, Any]:
         """
         Prepare a transcription request by parsing model parameters.
 

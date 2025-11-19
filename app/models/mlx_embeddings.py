@@ -2,6 +2,7 @@
 
 import gc
 
+from loguru import logger
 import mlx.core as mx
 from mlx_embeddings.utils import load
 
@@ -77,7 +78,7 @@ class MLX_Embeddings:
                                 del value
                     elif hasattr(array, "nbytes"):
                         del array
-                except:
+                except Exception:
                     pass
 
         # Clear MLX cache and force garbage collection
@@ -139,7 +140,7 @@ if __name__ == "__main__":
     try:
         texts = ["I like reading", "I like writing"]
         embeddings = model(texts)
-        print(f"Generated embeddings shape: {len(embeddings)} x {len(embeddings[0])}")
+        logger.info(f"Generated embeddings shape: {len(embeddings)} x {len(embeddings[0])}")
     finally:
         # Explicit cleanup
         model.cleanup()

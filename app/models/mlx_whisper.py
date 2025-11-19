@@ -3,6 +3,7 @@
 from functools import lru_cache
 
 import librosa
+from loguru import logger
 from mlx_whisper.transcribe import transcribe
 import numpy as np
 
@@ -76,4 +77,4 @@ if __name__ == "__main__":
     # Non-streaming (fastest for most use cases)
     result = model("examples/audios/podcast.wav", stream=True)
     for chunk in result:
-        print(f"[{chunk['chunk_start']:.1f}s - {chunk['chunk_end']:.1f}s]: {chunk['text']}")
+        logger.info(f"[{chunk['chunk_start']:.1f}s - {chunk['chunk_end']:.1f}s]: {chunk['text']}")

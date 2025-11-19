@@ -1,11 +1,12 @@
 """Base processor classes for media handling with caching and session management."""
 
 from abc import ABC, abstractmethod
+import asyncio
 import base64
 from concurrent.futures import ThreadPoolExecutor
 import gc
 import hashlib
-import os
+from pathlib import Path
 import tempfile
 import time
 from typing import Any
@@ -111,10 +112,10 @@ class BaseProcessor(ABC):
         current_time = time.time()
         if current_time - self._last_cleanup > self._cleanup_interval:
             try:
-                for file in os.listdir(self.temp_dir.name):
-                    file_path = os.path.join(self.temp_dir.name, file)
-                    if os.path.getmtime(file_path) < current_time - self._cleanup_interval:
-                        os.remove(file_path)
+                temp_dir_path = Path(self.temp_dir.name)
+                for file_path in temp_dir_path.iterdir():
+                    if file_path.stat().st_mtime < current_time - self._cleanup_interval:
+                        file_path.unlink()
                 self._last_cleanup = current_time
                 # Also clean up cache periodically
                 if len(self._hash_cache) > self._cache_size * 0.8:
@@ -151,21 +152,22 @@ class BaseProcessor(ABC):
         try:
             media_hash = self._get_media_hash(media_url)
             media_format = self._get_media_format(media_url)
-            cached_path = os.path.join(self.temp_dir.name, f"{media_hash}.{media_format}")
+            cached_path = Path(self.temp_dir.name) / f"{media_hash}.{media_format}"
 
-            if os.path.exists(cached_path):
+            if cached_path.exists():
                 logger.debug(f"Using cached {self._get_media_type_name()}: {cached_path}")
-                return cached_path
+                return str(cached_path)
 
-            if os.path.exists(media_url):
+            media_url_path = Path(media_url)
+            if media_url_path.exists():
                 # Copy local file to cache
-                with open(media_url, "rb") as f:
-                    data = f.read()
+                loop = asyncio.get_event_loop()
+                data = await loop.run_in_executor(None, media_url_path.read_bytes())
 
                 if not self._validate_media_data(data):
                     raise ValueError(f"Invalid {self._get_media_type_name()} file format")
 
-                return self._process_media_data(data, cached_path, **kwargs)
+                return self._process_media_data(data, str(cached_path), **kwargs)
 
             if media_url.startswith("data:"):
                 _, encoded = media_url.split(",", 1)

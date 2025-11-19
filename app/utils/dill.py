@@ -95,7 +95,7 @@ class Hasher:
 class Pickler(dill.Pickler):
     """Custom Pickler class with enhanced dispatch handling for various object types."""
 
-    dispatch = dill._dill.MetaCatchingDict(dill.Pickler.dispatch.copy())
+    dispatch = dill._dill.MetaCatchingDict(dill.Pickler.dispatch.copy())  # noqa: SLF001
     _legacy_no_dict_keys_sorting = False
 
     def save(self, obj, save_persistent_id=True):
@@ -157,7 +157,7 @@ class Pickler(dill.Pickler):
             items = sorted(items)
         except Exception:  # TypeError, decimal.InvalidOperation, etc.
             items = sorted(items, key=lambda x: Hasher.hash(x[0]))
-        dill.Pickler._batch_setitems(self, items)
+        return dill.Pickler._batch_setitems(self, items)  # noqa: SLF001
 
     def memoize(self, obj):
         """Memoize an object for pickling, skipping strings.
@@ -219,7 +219,7 @@ def _save_tiktokenEncoding(pickler, obj):
     import tiktoken  # noqa: PLC0415
 
     log(pickler, f"Enc: {obj}")
-    args = (obj.name, obj._pat_str, obj._mergeable_ranks, obj._special_tokens)
+    args = (obj.name, obj._pat_str, obj._mergeable_ranks, obj._special_tokens)  # noqa: SLF001
     pickler.save_reduce(tiktoken.Encoding, args, obj=obj)
     log(pickler, "# Enc")
 

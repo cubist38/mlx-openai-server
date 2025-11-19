@@ -4,6 +4,7 @@ import json
 from typing import Any
 
 from json_repair import repair_json
+from loguru import logger
 
 
 class BaseThinkingParser:
@@ -233,7 +234,7 @@ class BaseToolParser:
                 json_output = self._parse_tool_content(tool_content)
                 tool_calls.append(json_output)
             except json.JSONDecodeError:
-                print("Error parsing tool call: ", tool_content)
+                logger.warning(f"Error parsing tool call: {tool_content}")
                 # Continue processing remaining content after error
                 remaining_parts.append(content[pos:].strip())
                 break
@@ -267,7 +268,7 @@ class BaseToolParser:
                 try:
                     json_output = self._parse_tool_content(self.buffer)
                 except json.JSONDecodeError:
-                    print("Error parsing tool call: ", self.buffer)
+                    logger.warning(f"Error parsing tool call: {self.buffer}")
                     return None, True
                 return {
                     "name": json_output["name"],
@@ -285,7 +286,7 @@ class BaseToolParser:
                 try:
                     json_output = self._parse_tool_content(self.buffer)
                 except json.JSONDecodeError:
-                    print("Error parsing tool call: ", self.buffer)
+                    logger.warning(f"Error parsing tool call: {self.buffer}")
                     return None, False
                 return {
                     "name": json_output["name"],

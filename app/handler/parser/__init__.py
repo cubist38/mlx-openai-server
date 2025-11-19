@@ -1,3 +1,5 @@
+"""Parser classes for handling different model response formats and tool calling."""
+
 from .base import BaseThinkingParser, BaseToolParser
 from .factory import ParserFactory
 from .glm4_moe import Glm4MoEThinkingParser, Glm4MoEToolParser

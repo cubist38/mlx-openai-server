@@ -6,7 +6,7 @@ import gc
 from http import HTTPStatus
 import io
 from io import BytesIO
-import os
+from pathlib import Path
 import tempfile
 import time
 from typing import Any
@@ -289,9 +289,9 @@ class MLXFluxHandler:
 
         finally:
             # Ensure cleanup of temporary file
-            if temp_file_path and os.path.exists(temp_file_path):
+            if temp_file_path and Path(temp_file_path).exists():
                 try:
-                    os.unlink(temp_file_path)
+                    Path(temp_file_path).unlink()
                     logger.debug(f"Cleaned up temporary file: {temp_file_path}")
                 except OSError as cleanup_error:
                     logger.warning(

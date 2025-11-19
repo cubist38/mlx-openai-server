@@ -5,14 +5,12 @@ from collections.abc import Awaitable, Callable
 import contextlib
 import gc
 import time
-from typing import Any, Generic, TypeVar
+from typing import Any
 
 from loguru import logger
 
-T = TypeVar("T")
 
-
-class RequestItem(Generic[T]):
+class RequestItem[T]:
     """Represents a single request in the queue."""
 
     def __init__(self, request_id: str, data: Any):
@@ -53,7 +51,7 @@ class RequestQueue:
         self.queue_size = queue_size
         self.semaphore = asyncio.Semaphore(max_concurrency)
         self.queue = asyncio.Queue(maxsize=queue_size)
-        self.active_requests: dict[str, RequestItem] = {}
+        self.active_requests: dict[str, RequestItem[Any]] = {}
         self._worker_task = None
         self._running = False
 
@@ -93,7 +91,7 @@ class RequestQueue:
             try:
                 if hasattr(request, "data"):
                     del request.data
-            except:
+            except Exception:
                 pass
 
         self.active_requests.clear()
@@ -130,7 +128,7 @@ class RequestQueue:
                 logger.error(f"Error in worker loop: {e!s}")
 
     async def _process_request(
-        self, request: RequestItem, processor: Callable[[Any], Awaitable[Any]]
+        self, request: RequestItem[Any], processor: Callable[[Any], Awaitable[Any]]
     ):
         """
         Process a single request with timeout and error handling.
@@ -169,13 +167,13 @@ class RequestQueue:
                     try:
                         if hasattr(removed_request, "data"):
                             del removed_request.data
-                    except:
+                    except Exception:
                         pass
                 # Force garbage collection periodically to prevent memory buildup
                 if len(self.active_requests) % 10 == 0:  # Every 10 requests
                     gc.collect()
 
-    async def enqueue(self, request_id: str, data: Any) -> RequestItem:
+    async def enqueue(self, request_id: str, data: Any) -> RequestItem[Any]:
         """
         Add a request to the queue.
 

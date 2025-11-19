@@ -2,7 +2,7 @@
 
 import asyncio
 import gc
-import os
+from pathlib import Path
 
 from loguru import logger
 
@@ -30,7 +30,7 @@ class VideoProcessor(BaseProcessor):
                 return "avi"
         else:
             # Extract format from file extension
-            ext = os.path.splitext(media_url.lower())[1]
+            ext = Path(media_url.lower()).suffix
             if ext in self._supported_formats:
                 return ext[1:]  # Remove the dot
 
@@ -94,7 +94,7 @@ class VideoProcessor(BaseProcessor):
     def _process_media_data(self, data: bytes, cached_path: str, **kwargs) -> str:
         """Process video data and save to cached path."""
         try:
-            with open(cached_path, "wb") as f:
+            with Path(cached_path).open("wb") as f:
                 f.write(data)
 
             logger.info(f"Saved video to {cached_path} ({len(data)} bytes)")

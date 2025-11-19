@@ -3,16 +3,17 @@
 from collections.abc import Generator
 import os
 
+from loguru import logger
 import mlx.core as mx
 from mlx_vlm import generate, load, stream_generate
 from mlx_vlm.models.cache import make_prompt_cache
 from mlx_vlm.video_generate import process_vision_info
 
 # Default model parameters
-DEFAULT_MAX_TOKENS = os.getenv("DEFAULT_MAX_TOKENS", 8192)
-DEFAULT_TEMPERATURE = os.getenv("DEFAULT_TEMPERATURE", 0.0)
-DEFAULT_TOP_P = os.getenv("DEFAULT_TOP_P", 1.0)
-DEFAULT_SEED = os.getenv("DEFAULT_SEED", 0)
+DEFAULT_MAX_TOKENS = int(os.getenv("DEFAULT_MAX_TOKENS", "8192"))
+DEFAULT_TEMPERATURE = float(os.getenv("DEFAULT_TEMPERATURE", "0.0"))
+DEFAULT_TOP_P = float(os.getenv("DEFAULT_TOP_P", "1.0"))
+DEFAULT_SEED = int(os.getenv("DEFAULT_SEED", "0"))
 
 
 class MLX_VLM:
@@ -134,7 +135,7 @@ if __name__ == "__main__":
     model_path = "mlx-community/GLM-4.5V-4bit"
 
     model = MLX_VLM(model_path)
-    print("MODEL TYPE: ", model.get_model_type())
+    logger.info(f"MODEL TYPE: {model.get_model_type()}")
 
     tools = [
         {
@@ -174,4 +175,4 @@ if __name__ == "__main__":
         }
     ]
     response = model(messages, stream=False, **kwargs)
-    print(response)
+    logger.info(response)
