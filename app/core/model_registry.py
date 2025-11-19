@@ -2,7 +2,7 @@
 
 import asyncio
 import time
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 from loguru import logger
 
@@ -25,8 +25,8 @@ class ModelRegistry:
 
     def __init__(self):
         """Initialize empty model registry."""
-        self._handlers: Dict[str, Any] = {}
-        self._metadata: Dict[str, ModelMetadata] = {}
+        self._handlers: dict[str, Any] = {}
+        self._metadata: dict[str, ModelMetadata] = {}
         self._lock = asyncio.Lock()
         logger.info("Model registry initialized")
 
@@ -35,7 +35,7 @@ class ModelRegistry:
         model_id: str,
         handler: Any,
         model_type: str,
-        context_length: Optional[int] = None,
+        context_length: int | None = None,
     ) -> None:
         """
         Register a model handler with metadata.
@@ -66,8 +66,7 @@ class ModelRegistry:
             self._metadata[model_id] = metadata
 
             logger.info(
-                f"Registered model: {model_id} (type={model_type}, "
-                f"context_length={context_length})"
+                f"Registered model: {model_id} (type={model_type}, context_length={context_length})"
             )
 
     def get_handler(self, model_id: str) -> Any:
@@ -87,7 +86,7 @@ class ModelRegistry:
             raise KeyError(f"Model '{model_id}' not found in registry")
         return self._handlers[model_id]
 
-    def list_models(self) -> List[Dict[str, Any]]:
+    def list_models(self) -> list[dict[str, Any]]:
         """
         List all registered models with metadata.
 

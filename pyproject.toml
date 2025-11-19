@@ -38,6 +38,9 @@ dependencies = [
   "openai-harmony==0.0.4",
   "json_repair==0.52.1",
   "python-multipart==0.0.20",
+  "pydantic",
+  "httpx",
+  "rich",
 ]
 
 [dependency-groups]
