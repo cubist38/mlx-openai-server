@@ -189,6 +189,8 @@ class MLX_LM:
            **sampler_kwargs
         )
                 
+        prompt_tokens = len(input_tokens)
+
         if not stream:
             return generate(
                 self.model,
@@ -198,7 +200,7 @@ class MLX_LM:
                 max_tokens=max_tokens,
                 prompt_cache=prompt_cache,
                 logits_processors=logits_processors
-            )
+            ), prompt_tokens
         else:
             # Streaming mode: return generator of chunks
             return stream_generate(
@@ -209,4 +211,4 @@ class MLX_LM:
                 max_tokens=max_tokens,
                 prompt_cache=prompt_cache,
                 logits_processors=logits_processors
-            )
+            ), prompt_tokens

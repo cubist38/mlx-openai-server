@@ -108,6 +108,8 @@ class MLX_VLM:
 
         prompt_cache = make_prompt_cache(self.model.language_model, self.max_kv_size)
 
+        prompt_tokens = len(inputs["input_ids"][0])
+
         if stream:
             return stream_generate(
                 self.model,
@@ -115,7 +117,7 @@ class MLX_VLM:
                 prompt=text,
                 prompt_cache=prompt_cache,
                 **model_params
-            )
+            ), prompt_tokens
         else:
             return generate(
                 self.model,
@@ -123,7 +125,7 @@ class MLX_VLM:
                 prompt=text,
                 prompt_cache=prompt_cache,
                 **model_params
-            )
+            ), prompt_tokens
 
 
 if __name__ == "__main__":

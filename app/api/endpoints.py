@@ -408,7 +408,15 @@ async def process_multimodal_request(handler, request: ChatCompletionRequest, re
             media_type="text/event-stream",
             headers={"Cache-Control": "no-cache", "Connection": "keep-alive", "X-Accel-Buffering": "no"}
         )
-    return format_final_response(await handler.generate_multimodal_response(request), request.model, request_id)
+    # Extract response and usage from handler
+    result = await handler.generate_multimodal_response(request)
+    if isinstance(result, dict) and "response" in result and "usage" in result:
+        response_data = result.get("response")
+        usage = result.get("usage")
+        return format_final_response(response_data, request.model, request_id, usage)
+    
+    # Fallback for backward compatibility or if structure is different
+    return format_final_response(result, request.model, request_id)
 
 async def process_text_request(handler, request: ChatCompletionRequest, request_id: str = None):
     """Process text-only requests."""

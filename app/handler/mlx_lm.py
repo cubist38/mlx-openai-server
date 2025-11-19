@@ -197,13 +197,13 @@ class MLXLMHandler:
                 "stream": True,
                 **model_params
             }
-            response_generator = await self.request_queue.submit(request_id, request_data)
+            response_generator, prompt_tokens = await self.request_queue.submit(request_id, request_data)
             # Create appropriate parsers for this model type
 
             thinking_parser, tool_parser = self._create_parsers()
 
             is_first_chunk = True
-            completion_text = ""  # Accumulate completion for token counting
+            completion_chunks = []  # Accumulate completion for token counting
             after_thinking_close_content = None
 
             if thinking_parser and ParserFactory.has_special_parsing(self.reasoning_parser):
@@ -231,7 +231,7 @@ class MLXLMHandler:
                         continue
 
                     text = chunk.text
-                    completion_text += text
+                    completion_chunks.append(text)
 
                     if is_first_chunk:
                         if thinking_parser and ParserFactory.needs_redacted_reasoning_prefix(self.reasoning_parser):
@@ -259,6 +259,7 @@ class MLXLMHandler:
                     yield text
 
             # Count completion tokens and yield usage info at the end
+            completion_text = "".join(completion_chunks)
             completion_tokens = self._count_tokens(completion_text)
             total_tokens = prompt_tokens + completion_tokens
 
@@ -304,7 +305,7 @@ class MLXLMHandler:
                 "stream": False,
                 **model_params
             }
-            response = await self.request_queue.submit(request_id, request_data)
+            response, prompt_tokens = await self.request_queue.submit(request_id, request_data)
 
             # Count completion tokens
             completion_tokens = self._count_tokens(response if isinstance(response, str) else response.get("content", ""))

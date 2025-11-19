@@ -14,7 +14,7 @@ from ..models.mlx_vlm import MLX_VLM
 from .parser import ParserFactory
 from ..core import ImageProcessor, AudioProcessor, VideoProcessor
 from ..utils.errors import create_error_response
-from ..schemas.openai import ChatCompletionRequest, EmbeddingRequest, ChatCompletionContentPart, ChatCompletionContentPartText, ChatCompletionContentPartImage, ChatCompletionContentPartInputAudio, ChatCompletionContentPartVideo
+from ..schemas.openai import ChatCompletionRequest, EmbeddingRequest, ChatCompletionContentPart, ChatCompletionContentPartText, ChatCompletionContentPartImage, ChatCompletionContentPartInputAudio, ChatCompletionContentPartVideo, UsageInfo
 
 class MLXVLMHandler:
     """
@@ -106,6 +106,89 @@ class MLXVLMHandler:
         await self.request_queue.start(self._process_request)
         logger.info("Initialized MLXHandler and started request queue")
 
+    def _count_tokens(self, text: str) -> int:
+        """
+        Count the number of tokens in a text string.
+
+        Args:
+            text: The text to count tokens for.
+
+        Returns:
+            int: The number of tokens.
+        """
+        if not text:
+            return 0
+        try:
+            # Try to use tokenizer from processor if available
+            if hasattr(self.model.processor, "tokenizer"):
+                tokens = self.model.processor.tokenizer.encode(text, add_special_tokens=False)
+                return len(tokens)
+            # Fallback for some processors that might behave differently or don't expose tokenizer directly
+            # This part depends on specific processor implementation, but usually they have a tokenizer
+            elif hasattr(self.model.processor, "encode"):
+                 tokens = self.model.processor.encode(text, add_special_tokens=False)
+                 return len(tokens)
+            else:
+                logger.warning("Could not find tokenizer in processor to count tokens")
+                return 0
+        except Exception as e:
+            logger.warning(f"Failed to count tokens: {str(e)}")
+            return 0
+
+    def _count_message_tokens(self, messages: List[Dict[str, Any]], **kwargs) -> int:
+        """
+        Count the number of tokens in a list of messages after applying chat template.
+
+        Args:
+            messages: List of messages to count tokens for.
+            **kwargs: Additional arguments to pass to apply_chat_template.
+
+        Returns:
+            int: The number of prompt tokens.
+        """
+        try:
+            # We need to handle the fact that messages might contain images/audio which apply_chat_template might not handle directly 
+            # if we pass them as is, or it might handle them if they are formatted correctly.
+            # MLX_VLM's apply_chat_template (via processor) usually expects text-only messages or handles them if configured.
+            # However, looking at MLX_VLM.__call__, it calls self.processor.apply_chat_template with tokenize=False first.
+            
+            # Let's try to use the processor's apply_chat_template with tokenize=True if possible, 
+            # or tokenize=False and then encode.
+            
+            # For VLM, the prompt tokens also depend on images. 
+            # This is complex because image tokens depend on the model and how images are processed.
+            # For now, we will try to approximate or use the processor if it supports it.
+            
+            # Simplification: We will use the same logic as in MLX_VLM.__call__ to get the text prompt, 
+            # and then encode it. This might miss image tokens if they are added separately.
+            
+            # NOTE: Accurate token counting for VLMs is tricky without running the full preparation pipeline.
+            # We will try to get the text part at least.
+            
+            text = self.model.processor.apply_chat_template(
+                messages,
+                tokenize=False,
+                add_generation_prompt=True,
+                **kwargs
+            )
+            
+            # Now encode the text
+            return self._count_tokens(text)
+            
+        except Exception as e:
+            logger.warning(f"Failed to count message tokens: {str(e)}")
+            # Fallback: rough estimate
+            total_text = ""
+            for msg in messages:
+                content = msg.get("content", "")
+                if isinstance(content, str):
+                    total_text += content
+                elif isinstance(content, list):
+                    for part in content:
+                        if isinstance(part, dict) and part.get("type") == "text":
+                            total_text += part.get("text", "")
+            return self._count_tokens(total_text)
+
     async def generate_multimodal_stream(self, request: ChatCompletionRequest):
         """
         Generate a streaming response for multimodal chat completion requests.
@@ -124,7 +207,7 @@ class MLXVLMHandler:
             request_dict = await self._prepare_multimodal_request(request)
             
             # Submit to the multimodal queue and get the generator
-            response_generator = await self.request_queue.submit(request_id, request_dict)      
+            response_generator, prompt_tokens = await self.request_queue.submit(request_id, request_dict)      
             
             # Create appropriate parsers for this model type
             thinking_parser, tool_parser = self._create_parsers()
@@ -137,6 +220,7 @@ class MLXVLMHandler:
                     thinking_parser = None
 
             is_first_chunk = True
+            completion_chunks = [] # Accumulate completion for token counting
             after_thinking_close_content = None
 
             # Process and yield each chunk asynchronously
@@ -145,6 +229,7 @@ class MLXVLMHandler:
                     continue
                     
                 text = chunk.text
+                completion_chunks.append(text)
                 if is_first_chunk:
                     if thinking_parser and ParserFactory.needs_redacted_reasoning_prefix(self.reasoning_parser):
                         text = thinking_parser.get_thinking_open() + text
@@ -169,6 +254,19 @@ class MLXVLMHandler:
                     continue
 
                 yield text
+
+            # Count completion tokens and yield usage info at the end
+            completion_text = "".join(completion_chunks)
+            completion_tokens = self._count_tokens(completion_text)
+            total_tokens = prompt_tokens + completion_tokens
+
+            yield {
+                "__usage__": UsageInfo(
+                    prompt_tokens=prompt_tokens,
+                    completion_tokens=completion_tokens,
+                    total_tokens=total_tokens
+                )
+            }
         
         except asyncio.QueueFull:
             logger.error("Too many requests. Service is at capacity.")
@@ -197,13 +295,24 @@ class MLXVLMHandler:
             
             request_dict = await self._prepare_multimodal_request(request)
         
-            response = await self.request_queue.submit(request_id, request_dict)
+            response, prompt_tokens = await self.request_queue.submit(request_id, request_dict)
+
+            # Count completion tokens
+            completion_tokens = self._count_tokens(response.text)
+            total_tokens = prompt_tokens + completion_tokens
+
+            # Create usage info
+            usage = UsageInfo(
+                prompt_tokens=prompt_tokens,
+                completion_tokens=completion_tokens,
+                total_tokens=total_tokens
+            )
                         
             # Create appropriate parsers for this model type
             thinking_parser, tool_parser = self._create_parsers()
             
             if not thinking_parser and not tool_parser:
-                return response.text
+                return {"response": response.text, "usage": usage}
             
             parsed_response = {
                 "reasoning_content": None,
@@ -223,7 +332,7 @@ class MLXVLMHandler:
                 parsed_response["tool_calls"] = tool_response
             parsed_response["content"] = response_text
             
-            return parsed_response
+            return {"response": parsed_response, "usage": usage}
                         
         except asyncio.QueueFull:
             logger.error("Too many requests. Service is at capacity.")
