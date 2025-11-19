@@ -206,7 +206,6 @@ def launch(
     ``MLXServerConfig`` and then calls the async ``start`` routine
     which handles the event loop and server lifecycle.
     """
-
     args = MLXServerConfig(
         model_path=model_path,
         model_type=model_type,

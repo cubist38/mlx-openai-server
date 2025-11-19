@@ -55,6 +55,8 @@ class Hasher:
 
 
 class Pickler(dill.Pickler):
+    """Custom Pickler class with enhanced dispatch handling for various object types."""
+
     dispatch = dill._dill.MetaCatchingDict(dill.Pickler.dispatch.copy())
     _legacy_no_dict_keys_sorting = False
 
@@ -89,7 +91,7 @@ class Pickler(dill.Pickler):
                 if issubclass(obj_type, torch.nn.Module):
                     obj = getattr(obj, "_orig_mod", obj)
             if "transformers" in sys.modules:
-                import transformers  # type: ignore
+                import transformers  # noqa: PLC0415
 
                 if issubclass(obj_type, transformers.PreTrainedTokenizerBase):
                     pklregister(obj_type)(_save_transformersPreTrainedTokenizerBase)

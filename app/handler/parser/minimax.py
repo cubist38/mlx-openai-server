@@ -50,9 +50,7 @@ class MinimaxToolParser(BaseToolParser):
         return value
 
     def _parse_tool_content(self, tool_content: str) -> dict[str, Any] | None:
-        """
-        Overrides the base method to parse MiniMax's specific tool call format.
-        """
+        """Overrides the base method to parse MiniMax's specific tool call format."""
         try:
             # Extract function name and arguments section
             detail_match = self.func_detail_regex.search(tool_content)
@@ -70,19 +68,19 @@ class MinimaxToolParser(BaseToolParser):
                 arg_key = key.strip()
                 arg_value = self._deserialize_value(value)
                 arguments[arg_key] = arg_value
-
-            # Build tool call object
-            return {"name": func_name, "arguments": arguments}
         except Exception as e:
             print(f"Error parsing MiniMax tool call content: {tool_content}, Error: {e}")
             return None
+        else:
+            # Build tool call object
+            return {"name": func_name, "arguments": arguments}
 
 
 class MiniMaxMessageConverter(BaseMessageConverter):
-    """MiniMax-specific message format converter"""
+    """MiniMax-specific message format converter."""
 
     def _parse_arguments_string(self, arguments_str: str) -> Any:
-        """Parse MiniMax-specific argument string format"""
+        """Parse MiniMax-specific argument string format."""
         try:
             return json.loads(arguments_str)
         except json.JSONDecodeError:

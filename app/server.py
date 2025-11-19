@@ -97,7 +97,6 @@ def get_model_identifier(config_args: MLXServerConfig) -> str:
     str
         Value that identifies the model for handler initialization.
     """
-
     return config_args.model_path
 
 
@@ -122,7 +121,8 @@ def create_lifespan(config_args: MLXServerConfig):
             to initialize handlers (e.g., model_type, model_path,
             max_concurrency, queue_timeout, etc.).
 
-    Returns:
+    Returns
+    -------
         Callable: An asynccontextmanager usable as FastAPI ``lifespan``.
     """
 

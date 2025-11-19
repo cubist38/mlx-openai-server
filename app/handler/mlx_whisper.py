@@ -28,6 +28,7 @@ from ..utils.errors import create_error_response
 class MLXWhisperHandler:
     """
     Handler class for making requests to the underlying MLX Whisper model service.
+
     Provides request queuing, metrics tracking, and robust error handling for audio transcription.
     """
 
@@ -49,9 +50,7 @@ class MLXWhisperHandler:
         logger.info(f"Initialized MLXWhisperHandler with model path: {model_path}")
 
     async def get_models(self) -> list[dict[str, Any]]:
-        """
-        Get list of available models with their metadata.
-        """
+        """Get list of available models with their metadata."""
         try:
             return [
                 {
@@ -84,9 +83,7 @@ class MLXWhisperHandler:
     async def generate_transcription_response(
         self, request: TranscriptionRequest
     ) -> TranscriptionResponse:
-        """
-        Generate a transcription response for the given request.
-        """
+        """Generate a transcription response for the given request."""
         request_id = f"transcription-{uuid.uuid4()}"
         temp_file_path = None
 
@@ -120,6 +117,7 @@ class MLXWhisperHandler:
     ) -> AsyncGenerator[str, None]:
         """
         Generate a transcription stream from prepared request data.
+
         Yields SSE-formatted chunks with timing information.
 
         Args:
@@ -189,7 +187,8 @@ class MLXWhisperHandler:
         Args:
             request_data: Dictionary containing the request data.
 
-        Returns:
+        Returns
+        -------
             Dict: The model's response containing transcribed text.
         """
         try:
@@ -217,7 +216,8 @@ class MLXWhisperHandler:
         Args:
             file: The uploaded file object.
 
-        Returns:
+        Returns
+        -------
             str: Path to the temporary file.
         """
         try:
@@ -250,7 +250,8 @@ class MLXWhisperHandler:
             request: TranscriptionRequest object.
             audio_path: Path to the audio file.
 
-        Returns:
+        Returns
+        -------
             Dict containing the request data ready for the model.
         """
         try:
@@ -289,13 +290,14 @@ class MLXWhisperHandler:
             content = create_error_response(
                 f"Failed to process request: {e!s}", "bad_request", HTTPStatus.BAD_REQUEST
             )
-            raise HTTPException(status_code=400, detail=content)
+            raise HTTPException(status_code=400, detail=content) from e
 
     async def get_queue_stats(self) -> dict[str, Any]:
         """
         Get statistics from the request queue and performance metrics.
 
-        Returns:
+        Returns
+        -------
             Dict with queue and performance statistics.
         """
         queue_stats = self.request_queue.get_queue_stats()

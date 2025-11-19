@@ -181,7 +181,7 @@ class BaseFluxModel(ABC):
         try:
             generation_config = self._prepare_config(**kwargs)
         except Exception as e:
-            raise ModelGenerationError(f"Failed to prepare configuration: {e}")
+            raise ModelGenerationError(f"Failed to prepare configuration: {e}") from e
 
         self.logger.info(
             f"Generating image with prompt: '{prompt[:50]}...' "

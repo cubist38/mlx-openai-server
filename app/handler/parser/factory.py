@@ -130,7 +130,8 @@ class ParserFactory:
             parser_type: Type of parser ("thinking", "tool", or "unified")
             **kwargs: Additional arguments for parser initialization
 
-        Returns:
+        Returns
+        -------
             Parser instance or None if parser type not available
         """
         if parser_name not in PARSER_REGISTRY:
@@ -169,7 +170,8 @@ class ParserFactory:
             manual_reasoning_parser: Manually specified reasoning parser name
             manual_tool_parser: Manually specified tool parser name
 
-        Returns:
+        Returns
+        -------
             Tuple of (thinking_parser, tool_parser). Both will be None if not specified.
         """
         # Handle unified parsers (harmony) - handles both thinking and tools
@@ -213,7 +215,8 @@ class ParserFactory:
         Args:
             model_type: The type of the model (e.g., "glm4_moe", "minimax")
 
-        Returns:
+        Returns
+        -------
             Message converter instance or None if no converter needed
         """
         if model_type not in CONVERTER_REGISTRY:
@@ -230,7 +233,8 @@ class ParserFactory:
         Args:
             parser_name: Name of the parser to check
 
-        Returns:
+        Returns
+        -------
             True if parser respects enable_thinking, False otherwise
         """
         if not parser_name:
@@ -245,7 +249,8 @@ class ParserFactory:
         Args:
             parser_name: Name of the parser to check
 
-        Returns:
+        Returns
+        -------
             True if parser needs redacted_reasoning prefix, False otherwise
         """
         if not parser_name:
@@ -260,7 +265,8 @@ class ParserFactory:
         Args:
             parser_name: Name of the parser to check
 
-        Returns:
+        Returns
+        -------
             True if parser has special parsing, False otherwise
         """
         if not parser_name:

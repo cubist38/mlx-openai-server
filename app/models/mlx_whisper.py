@@ -23,6 +23,8 @@ def calculate_audio_duration(audio_path: str) -> int:
 
 
 class MLX_Whisper:
+    """MLX Whisper model wrapper for audio transcription."""
+
     def __init__(self, model_path: str):
         self.model_path = model_path
 

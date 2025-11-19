@@ -10,9 +10,7 @@ T = TypeVar("T")
 
 
 class RequestItem(Generic[T]):
-    """
-    Represents a single request in the queue.
-    """
+    """Represents a single request in the queue."""
 
     def __init__(self, request_id: str, data: Any):
         self.request_id = request_id
@@ -36,9 +34,7 @@ class RequestItem(Generic[T]):
 
 
 class RequestQueue:
-    """
-    A simple asynchronous request queue with configurable concurrency.
-    """
+    """A simple asynchronous request queue with configurable concurrency."""
 
     def __init__(self, max_concurrency: int = 2, timeout: float = 300.0, queue_size: int = 100):
         """
@@ -186,10 +182,12 @@ class RequestQueue:
             request_id: Unique ID for the request.
             data: The request data to process.
 
-        Returns:
+        Returns
+        -------
             RequestItem: The queued request item.
 
-        Raises:
+        Raises
+        ------
             asyncio.QueueFull: If the queue is full.
         """
         if not self._running:
@@ -213,7 +211,9 @@ class RequestQueue:
 
         except TimeoutError:
             self.active_requests.pop(request_id, None)
-            raise asyncio.QueueFull("Request queue is full and timed out waiting for space")
+            raise asyncio.QueueFull(
+                "Request queue is full and timed out waiting for space"
+            ) from None
 
     async def submit(self, request_id: str, data: Any) -> Any:
         """
@@ -223,10 +223,12 @@ class RequestQueue:
             request_id: Unique ID for the request.
             data: The request data to process.
 
-        Returns:
+        Returns
+        -------
             The result of processing the request.
 
-        Raises:
+        Raises
+        ------
             Various exceptions that may occur during processing.
         """
         request = await self.enqueue(request_id, data)
@@ -236,7 +238,8 @@ class RequestQueue:
         """
         Get queue statistics.
 
-        Returns:
+        Returns
+        -------
             Dict with queue statistics.
         """
         return {

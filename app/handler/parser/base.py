@@ -5,6 +5,8 @@ from json_repair import repair_json
 
 
 class BaseThinkingParser:
+    """Base class for parsing thinking content in model outputs."""
+
     def __init__(self, thinking_open: str, thinking_close: str):
         self.thinking_open = thinking_open
         self.thinking_close = thinking_close
@@ -37,7 +39,8 @@ class BaseThinkingParser:
         """
         Parse streaming chunks for thinking content.
 
-        Returns:
+        Returns
+        -------
             Tuple[parsed_content, is_complete]:
                 - parsed_content: The parsed chunk (could be str, dict, or None)
                 - is_complete: True if thinking section is complete
@@ -94,11 +97,15 @@ class BaseThinkingParser:
 
 
 class ParseToolState:
+    """Enumeration of states for tool parsing."""
+
     NORMAL = 0
     FOUND_PREFIX = 1
 
 
 class BaseToolParser:
+    """Base class for parsing tool calls in model outputs."""
+
     def __init__(self, tool_open: str, tool_close: str):
         self.tool_open = tool_open
         self.tool_close = tool_close
@@ -114,14 +121,15 @@ class BaseToolParser:
     def _parse_tool_content(self, tool_content: str) -> dict[str, Any] | None:
         """
         Parses the content of a tool call. Subclasses can override this method
+
         to support different content formats (e.g., XML, YAML).
         Args:
             tool_content: The string content extracted from between the tool tags.
 
-        Returns:
+        Returns
+        -------
             A dictionary representing the parsed tool call, or None if parsing fails.
         """
-
         try:
             repaired_json = repair_json(tool_content)
             return json.loads(repaired_json)
@@ -180,7 +188,8 @@ class BaseToolParser:
         """
         Parse streaming chunks for tool calls.
 
-        Returns:
+        Returns
+        -------
             Tuple[parsed_content, is_complete]:
                 - parsed_content: The parsed chunk (could be str, dict, or None)
                 - is_complete: True if tool call is complete
@@ -235,10 +244,10 @@ Provides generic conversion from OpenAI API message format to model-compatible f
 
 
 class BaseMessageConverter:
-    """Base message format converter class"""
+    """Base message format converter class."""
 
     def convert_messages(self, messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
-        """Convert message format to be compatible with specific model chat templates"""
+        """Convert message format to be compatible with specific model chat templates."""
         converted_messages = []
 
         for message in messages:
@@ -249,7 +258,7 @@ class BaseMessageConverter:
         return converted_messages
 
     def _convert_single_message(self, message: dict[str, Any]) -> dict[str, Any]:
-        """Convert a single message"""
+        """Convert a single message."""
         if not isinstance(message, dict):
             return message
 
@@ -261,7 +270,7 @@ class BaseMessageConverter:
         return message
 
     def _convert_tool_calls(self, tool_calls: list[dict[str, Any]]) -> None:
-        """Convert arguments format in tool calls"""
+        """Convert arguments format in tool calls."""
         for tool_call in tool_calls:
             if isinstance(tool_call, dict) and "function" in tool_call:
                 function = tool_call["function"]
@@ -271,7 +280,7 @@ class BaseMessageConverter:
                         function["arguments"] = self._parse_arguments_string(arguments)
 
     def _parse_arguments_string(self, arguments_str: str) -> Any:
-        """Parse arguments string to object, can be overridden by subclasses"""
+        """Parse arguments string to object, can be overridden by subclasses."""
         try:
             return json.loads(arguments_str)
         except json.JSONDecodeError:

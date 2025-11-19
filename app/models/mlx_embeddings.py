@@ -19,13 +19,14 @@ class MLX_Embeddings:
         Args:
             model_name (str): Name of the model to load.
 
-        Raises:
+        Raises
+        ------
             ValueError: If model loading fails.
         """
         try:
             self.model, self.tokenizer = load(model_path)
         except Exception as e:
-            raise ValueError(f"Error loading model: {e!s}")
+            raise ValueError(f"Error loading model: {e!s}") from e
 
     def _get_embeddings(self, texts: list[str], max_length: int = 512) -> mx.array:
         """
@@ -35,7 +36,8 @@ class MLX_Embeddings:
             texts: List of text inputs
             max_length: Maximum sequence length for tokenization
 
-        Returns:
+        Returns
+        -------
             MLX array of embeddings
         """
         inputs = None
@@ -88,7 +90,8 @@ class MLX_Embeddings:
             texts: List of text inputs
             max_length: Maximum sequence length for tokenization
 
-        Returns:
+        Returns
+        -------
             List of embedding vectors as float lists
         """
         try:

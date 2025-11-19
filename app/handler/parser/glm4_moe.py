@@ -50,9 +50,7 @@ class Glm4MoEToolParser(BaseToolParser):
         return value
 
     def _parse_tool_content(self, tool_content: str) -> dict[str, Any] | None:
-        """
-        Overrides the base method to parse GLM4's specific tool call format.
-        """
+        """Overrides the base method to parse GLM4's specific tool call format."""
         try:
             # Extract function name and arguments section
             detail_match = self.func_detail_regex.search(tool_content)
@@ -71,18 +69,19 @@ class Glm4MoEToolParser(BaseToolParser):
                 arg_value = self._deserialize_value(value)
                 arguments[arg_key] = arg_value
 
-            # Build tool call object
-            return {"name": func_name, "arguments": arguments}
         except Exception as e:
             print(f"Error parsing GLM4 tool call content: {tool_content}, Error: {e}")
             return None
+        else:
+            # Build tool call object
+            return {"name": func_name, "arguments": arguments}
 
 
 class Glm4MoEMessageConverter(BaseMessageConverter):
-    """GLM4 MoE-specific message format converter"""
+    """GLM4 MoE-specific message format converter."""
 
     def _parse_arguments_string(self, arguments_str: str) -> Any:
-        """Parse GLM4 MoE-specific argument string format"""
+        """Parse GLM4 MoE-specific argument string format."""
         try:
             return json.loads(arguments_str)
         except json.JSONDecodeError:

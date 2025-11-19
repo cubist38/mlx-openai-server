@@ -118,7 +118,8 @@ class VideoProcessor(BaseProcessor):
         Args:
             video_url: URL, file path, or data URL of the video
 
-        Returns:
+        Returns
+        -------
             Path to the cached video file in temp directory
         """
         return await self._process_single_media(video_url)
@@ -130,7 +131,8 @@ class VideoProcessor(BaseProcessor):
         Args:
             video_urls: List of URLs, file paths, or data URLs of videos
 
-        Returns:
+        Returns
+        -------
             List of paths to cached video files
         """
         tasks = [self.process_video_url(url) for url in video_urls]

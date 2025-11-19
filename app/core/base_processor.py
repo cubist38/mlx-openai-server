@@ -68,7 +68,7 @@ class BaseProcessor(ABC):
         gc.collect()
 
     @abstractmethod
-    def _get_media_format(self, media_url: str, data: bytes = None) -> str:
+    def _get_media_format(self, media_url: str, data: bytes | None = None) -> str:
         """Determine media format from URL or data. Must be implemented by subclasses."""
 
     @abstractmethod
@@ -100,6 +100,12 @@ class BaseProcessor(ABC):
         return self._session
 
     def _cleanup_old_files(self):
+        """Clean up old temporary files and cache entries periodically.
+
+        This method removes temporary files older than the cleanup interval
+        and evicts cache entries if the cache is near capacity. It runs
+        periodically based on the _cleanup_interval setting.
+        """
         current_time = time.time()
         if current_time - self._last_cleanup > self._cleanup_interval:
             try:
@@ -116,6 +122,30 @@ class BaseProcessor(ABC):
                 logger.warning(f"Failed to clean up old {self._get_media_type_name()} files: {e!s}")
 
     async def _process_single_media(self, media_url: str, **kwargs) -> str:
+        """Process a single media item from URL or local path.
+
+        This method handles downloading, validating, and processing media
+        from various sources (local files, HTTP URLs, base64 data URIs).
+        It uses caching to avoid reprocessing the same media.
+
+        Parameters
+        ----------
+        media_url : str
+            The URL or path to the media. Can be a local file path,
+            HTTP/HTTPS URL, or base64 data URI.
+        **kwargs
+            Additional keyword arguments passed to the processing method.
+
+        Returns
+        -------
+        str
+            Path to the processed and cached media file.
+
+        Raises
+        ------
+        ValueError
+            If the media data is invalid or processing fails.
+        """
         try:
             media_hash = self._get_media_hash(media_url)
             media_format = self._get_media_format(media_url)
@@ -160,7 +190,7 @@ class BaseProcessor(ABC):
 
         except Exception as e:
             logger.error(f"Failed to process {self._get_media_type_name()}: {e!s}")
-            raise ValueError(f"Failed to process {self._get_media_type_name()}: {e!s}")
+            raise ValueError(f"Failed to process {self._get_media_type_name()}: {e!s}") from e
         finally:
             gc.collect()
 
@@ -171,6 +201,12 @@ class BaseProcessor(ABC):
         gc.collect()
 
     async def cleanup(self):
+        """Clean up resources used by the processor.
+
+        This method closes the HTTP session, shuts down the thread executor,
+        and cleans up the temporary directory. It ensures proper resource
+        cleanup and prevents resource leaks.
+        """
         if hasattr(self, "_cleaned") and self._cleaned:
             return
         self._cleaned = True
@@ -192,12 +228,32 @@ class BaseProcessor(ABC):
             logger.warning(f"Exception cleaning up temp directory: {e!s}")
 
     async def __aenter__(self):
+        """Enter the async context manager.
+
+        Returns
+        -------
+        BaseProcessor
+            The processor instance.
+        """
         return self
 
     async def __aexit__(self, exc_type, exc, tb):
+        """Exit the async context manager and clean up resources.
+
+        Parameters
+        ----------
+        exc_type
+            The exception type, if any.
+        exc
+            The exception instance, if any.
+        tb
+            The traceback, if any.
+        """
         await self.cleanup()
 
     def __del__(self):
-        # Async cleanup cannot be reliably performed in __del__
-        # Please use 'async with Processor()' or call 'await cleanup()' explicitly.
-        pass
+        """Destructor - warns about proper cleanup.
+
+        Async cleanup cannot be reliably performed in __del__.
+        Please use 'async with Processor()' or call 'await cleanup()' explicitly.
+        """

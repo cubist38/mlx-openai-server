@@ -30,6 +30,7 @@ from ..utils.errors import create_error_response
 class MLXFluxHandler:
     """
     Handler class for making image generation requests to the underlying MLX Flux model service.
+
     Provides request queuing, metrics tracking, and robust error handling.
     """
 
@@ -78,9 +79,7 @@ class MLXFluxHandler:
             logger.info(f"Using LoRA adapters: {lora_paths} with scales: {lora_scales}")
 
     async def get_models(self) -> list[dict[str, Any]]:
-        """
-        Get list of available models with their metadata.
-        """
+        """Get list of available models with their metadata."""
         try:
             return [
                 {
@@ -108,19 +107,21 @@ class MLXFluxHandler:
         logger.info(f"Queue configuration: {queue_config}")
 
     def _parse_image_size(self, size: ImageSize):
-        """Parse image size string to width, height tuple"""
+        """Parse image size string to width, height tuple."""
         width, height = map(int, size.value.split("x"))
         return width, height
 
     async def generate_image(self, request: ImageGenerationRequest) -> ImageGenerationResponse:
         """
         Generate an image based on the request parameters.
+
         Uses the request queue for handling concurrent requests.
 
         Args:
             request: ImageGenerationRequest object containing the generation parameters.
 
-        Returns:
+        Returns
+        -------
             ImageGenerationResponse: Response containing the generated image data.
         """
         request_id = f"image-{uuid.uuid4()}"
@@ -147,11 +148,9 @@ class MLXFluxHandler:
             image_data = self._image_to_base64(image_result)
 
             # Create response
-            response = ImageGenerationResponse(
+            return ImageGenerationResponse(
                 created=int(time.time()), data=[ImageData(b64_json=image_data)]
             )
-
-            return response
 
         except asyncio.QueueFull:
             logger.error("Too many requests. Service is at capacity.")
@@ -160,13 +159,13 @@ class MLXFluxHandler:
                 "rate_limit_exceeded",
                 HTTPStatus.TOO_MANY_REQUESTS,
             )
-            raise HTTPException(status_code=429, detail=content)
+            raise HTTPException(status_code=429, detail=content) from None
         except Exception as e:
             logger.error(f"Error in image generation for request {request_id}: {e!s}")
             content = create_error_response(
                 f"Failed to generate image: {e!s}", "server_error", HTTPStatus.INTERNAL_SERVER_ERROR
             )
-            raise HTTPException(status_code=500, detail=content)
+            raise HTTPException(status_code=500, detail=content) from e
 
     async def edit_image(self, image_edit_request: ImageEditRequest) -> ImageEditResponse:
         """
@@ -175,10 +174,12 @@ class MLXFluxHandler:
         Args:
             image_edit_request: Request parameters for image editing
 
-        Returns:
+        Returns
+        -------
             ImageEditResponse: Response containing the edited image data
 
-        Raises:
+        Raises
+        ------
             HTTPException: For validation errors, queue capacity issues, or processing failures
         """
         image = image_edit_request.image
@@ -212,7 +213,9 @@ class MLXFluxHandler:
                 input_image = Image.open(io.BytesIO(image_data)).convert("RGB")
             except Exception as img_error:
                 logger.error(f"Failed to process image: {img_error!s}")
-                raise HTTPException(status_code=400, detail="Invalid or corrupted image file")
+                raise HTTPException(
+                    status_code=400, detail="Invalid or corrupted image file"
+                ) from img_error
 
             width, height = input_image.size
             if image_edit_request.size is not None:
@@ -228,7 +231,9 @@ class MLXFluxHandler:
                 temp_file.close()
             except Exception as temp_error:
                 logger.error(f"Failed to create temporary file: {temp_error!s}")
-                raise HTTPException(status_code=500, detail="Failed to process image for editing")
+                raise HTTPException(
+                    status_code=500, detail="Failed to process image for editing"
+                ) from temp_error
 
             # Prepare request data with all necessary parameters
             request_data = {
@@ -257,7 +262,6 @@ class MLXFluxHandler:
             )
 
             logger.info(f"Successfully processed image edit request {request_id}")
-            return response
 
         except asyncio.QueueFull:
             logger.error(f"Queue at capacity for image edit request {request_id}")
@@ -266,7 +270,7 @@ class MLXFluxHandler:
                 "rate_limit_exceeded",
                 HTTPStatus.TOO_MANY_REQUESTS,
             )
-            raise HTTPException(status_code=429, detail=content)
+            raise HTTPException(status_code=429, detail=content) from None
 
         except HTTPException:
             # Re-raise HTTP exceptions as-is
@@ -277,7 +281,9 @@ class MLXFluxHandler:
             content = create_error_response(
                 f"Failed to edit image: {e!s}", "server_error", HTTPStatus.INTERNAL_SERVER_ERROR
             )
-            raise HTTPException(status_code=500, detail=content)
+            raise HTTPException(status_code=500, detail=content) from e
+        else:
+            return response
 
         finally:
             # Ensure cleanup of temporary file
@@ -300,7 +306,8 @@ class MLXFluxHandler:
         Args:
             image: PIL Image object.
 
-        Returns:
+        Returns
+        -------
             str: Base64 encoded image string.
         """
         buffer = BytesIO()
@@ -316,7 +323,8 @@ class MLXFluxHandler:
         Args:
             request_data: Dictionary containing the request data.
 
-        Returns:
+        Returns
+        -------
             Image.Image: The generated PIL Image.
         """
         try:
@@ -368,19 +376,21 @@ class MLXFluxHandler:
 
             # Force garbage collection after model inference
             gc.collect()
-            return image
 
         except Exception as e:
             logger.error(f"Error processing image generation request: {e!s}")
             # Clean up on error
             gc.collect()
             raise
+        else:
+            return image
 
     async def get_queue_stats(self) -> dict[str, Any]:
         """
         Get current queue statistics.
 
-        Returns:
+        Returns
+        -------
             Dict containing queue statistics.
         """
         if not hasattr(self, "request_queue") or self.request_queue is None:
@@ -396,9 +406,7 @@ class MLXFluxHandler:
         }
 
     async def cleanup(self):
-        """
-        Clean up resources and shut down the request queue.
-        """
+        """Clean up resources and shut down the request queue."""
         if hasattr(self, "_cleaned") and self._cleaned:
             return
         self._cleaned = True
@@ -418,6 +426,7 @@ class MLXFluxHandler:
     def __del__(self):
         """
         Destructor to ensure cleanup on object deletion.
+
         Note: Async cleanup cannot be reliably performed in __del__.
         Please use 'await cleanup()' explicitly.
         """

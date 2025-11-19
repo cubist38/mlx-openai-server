@@ -68,12 +68,14 @@ class HarmonyParser:
         Args:
             text: The text chunk to parse, or None for empty chunks
 
-        Returns:
+        Returns
+        -------
             Tuple[parsed_content, is_complete]:
                 - parsed_content: The parsed chunk (could be str, dict, or None)
                 - is_complete: True if stream has ended
 
-        Raises:
+        Raises
+        ------
             Exception: If encoding or parsing fails
         """
         # Handle end of stream marker
@@ -167,7 +169,8 @@ class HarmonyParser:
             current_channel: The current harmony channel being processed
             content_data: Dictionary containing extracted content from different sources
 
-        Returns:
+        Returns
+        -------
             Tuple[parsed_content, is_complete]:
                 - parsed_content: The parsed content (str or dict)
                 - is_complete: Whether the stream has ended
@@ -215,7 +218,8 @@ class HarmonyParser:
         Args:
             channel: Optional specific channel to retrieve content for
 
-        Returns:
+        Returns
+        -------
             Dictionary of channel content
         """
         if channel and channel in self._accumulated_content:
@@ -235,13 +239,15 @@ class HarmonyParser:
         Args:
             text: The complete text response to parse
 
-        Returns:
+        Returns
+        -------
             Dictionary containing parsed content with keys:
             - reasoning_content: Analysis/thinking content
             - tool_calls: List of tool call objects
             - content: Final response content
 
-        Raises:
+        Raises
+        ------
             Exception: If encoding or parsing fails
         """
         # Initialize result structure
@@ -321,7 +327,8 @@ class HarmonyParser:
         """
         Get information about the currently parsed function.
 
-        Returns:
+        Returns
+        -------
             Dictionary with function name and accumulated arguments
         """
         return {

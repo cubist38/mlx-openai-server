@@ -4,6 +4,8 @@ from mlx_openai_server.handler.parser.base import BaseToolParser
 
 
 class TestBaseToolParser(unittest.TestCase):
+    """Test cases for BaseToolParser functionality."""
+
     def setUp(self):
         self.test_cases = [
             {

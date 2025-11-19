@@ -16,6 +16,7 @@ from ..utils.errors import create_error_response
 class MLXEmbeddingsHandler:
     """
     Handler class for making requests to the underlying MLX embeddings model service.
+
     Provides request queuing, metrics tracking, and robust error handling with memory management.
     """
 
@@ -37,9 +38,7 @@ class MLXEmbeddingsHandler:
         logger.info(f"Initialized MLXEmbeddingsHandler with model path: {model_path}")
 
     async def get_models(self) -> list[dict[str, Any]]:
-        """
-        Get list of available models with their metadata.
-        """
+        """Get list of available models with their metadata."""
         try:
             return [
                 {
@@ -69,7 +68,8 @@ class MLXEmbeddingsHandler:
         Args:
             request: EmbeddingRequest object containing the text input.
 
-        Returns:
+        Returns
+        -------
             List[float]: Embeddings for the input text.
         """
         try:
@@ -84,9 +84,7 @@ class MLXEmbeddingsHandler:
             }
 
             # Submit to the request queue
-            response = await self.request_queue.submit(request_id, request_data)
-
-            return response
+            return await self.request_queue.submit(request_id, request_data)
 
         except Exception as e:
             logger.error(f"Error in embeddings generation: {e!s}")
@@ -95,7 +93,7 @@ class MLXEmbeddingsHandler:
                 "server_error",
                 HTTPStatus.INTERNAL_SERVER_ERROR,
             )
-            raise HTTPException(status_code=500, detail=content)
+            raise HTTPException(status_code=500, detail=content) from e
 
     async def _process_request(self, request_data: dict[str, Any]) -> list[list[float]]:
         """
@@ -104,7 +102,8 @@ class MLXEmbeddingsHandler:
         Args:
             request_data: Dictionary containing the request data.
 
-        Returns:
+        Returns
+        -------
             List[List[float]]: The embeddings for the input texts.
         """
         try:
@@ -129,7 +128,8 @@ class MLXEmbeddingsHandler:
         """
         Get statistics from the request queue and performance metrics.
 
-        Returns:
+        Returns
+        -------
             Dict with queue and performance statistics.
         """
         queue_stats = self.request_queue.get_queue_stats()
@@ -159,6 +159,7 @@ class MLXEmbeddingsHandler:
     def __del__(self):
         """
         Destructor to ensure cleanup on object deletion.
+
         Note: Async cleanup cannot be reliably performed in __del__.
         Please use 'await cleanup()' explicitly.
         """
