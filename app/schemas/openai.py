@@ -60,6 +60,8 @@ class HealthCheckStatus(str, Enum):
 
 class HealthCheckResponse(OpenAIBaseModel):
     status: HealthCheckStatus = Field(..., description="The status of the health check.")
+    model_id: Optional[str] = Field(None, description="ID of the loaded model, if any.")
+    model_status: Optional[str] = Field(None, description="Status of the model handler (initialized/uninitialized).")
 
 class ErrorResponse(OpenAIBaseModel):
     object: str = Field("error", description="The object type, always 'error'.")
@@ -229,6 +231,7 @@ class ChatCompletionResponse(OpenAIBaseModel):
     model: str = Field(..., description="The model used for completion.")
     choices: List[Choice] = Field(..., description="List of choices in the response.")
     usage: Optional[UsageInfo] = Field(default=None, description="The usage of the completion.")
+    request_id: Optional[str] = Field(None, description="Request correlation ID for tracking.")
 
 class ChoiceDeltaFunctionCall(OpenAIBaseModel):
     """
@@ -275,6 +278,7 @@ class ChatCompletionChunk(OpenAIBaseModel):
     model: str = Field(..., description="The model used for the chunk.")
     object: Literal["chat.completion.chunk"] = Field(..., description="The object type, always 'chat.completion.chunk'.")
     usage: Optional[UsageInfo] = Field(default=None, description="The usage of the chunk.")
+    request_id: Optional[str] = Field(None, description="Request correlation ID for tracking.")
 
 # Embedding models
 class EmbeddingRequest(OpenAIBaseModel):
@@ -312,6 +316,7 @@ class Model(OpenAIBaseModel):
     object: str = Field("model", description="The object type, always 'model'.")
     created: int = Field(..., description="The creation timestamp.")
     owned_by: str = Field("openai", description="The owner of the model.")
+    metadata: Optional[Dict[str, Any]] = Field(None, description="Additional model metadata.")
 
 class ModelsResponse(OpenAIBaseModel):
     """

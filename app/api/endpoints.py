@@ -32,11 +32,32 @@ router = APIRouter()
 # =============================================================================
 
 @router.get("/health")
-async def health():
+async def health(raw_request: Request):
     """
-    Health check endpoint - always responds immediately without dependencies.
+    Health check endpoint - verifies handler initialization status.
+    Returns 503 if handler is not initialized, 200 otherwise.
     """
-    return HealthCheckResponse(status=HealthCheckStatus.OK)
+    handler = getattr(raw_request.app.state, 'handler', None)
+
+    if handler is None:
+        # Handler not initialized - return 503 with degraded status
+        return JSONResponse(
+            status_code=503,
+            content={
+                "status": "ok",
+                "model_id": None,
+                "model_status": "uninitialized"
+            }
+        )
+
+    # Handler initialized - extract model_id
+    model_id = getattr(handler, 'model_path', 'unknown')
+
+    return HealthCheckResponse(
+        status=HealthCheckStatus.OK,
+        model_id=model_id,
+        model_status="initialized"
+    )
 
 @router.get("/v1/models")
 async def models(raw_request: Request):
@@ -44,10 +65,21 @@ async def models(raw_request: Request):
     Get list of available models with cached response for instant delivery.
     This endpoint is defined early to ensure it's not blocked by other routes.
     """
+    # Try registry first (Phase 1+), fall back to handler for backward compat
+    registry = getattr(raw_request.app.state, 'registry', None)
+    if registry is not None:
+        try:
+            models_data = registry.list_models()
+            return ModelsResponse(data=[Model(**model) for model in models_data])
+        except Exception as e:
+            logger.error(f"Error retrieving models from registry: {str(e)}")
+            return JSONResponse(content=create_error_response(f"Failed to retrieve models: {str(e)}", "server_error", 500), status_code=500)
+
+    # Fallback to handler (Phase 0 compatibility)
     handler = raw_request.app.state.handler
     if handler is None:
         return JSONResponse(content=create_error_response("Model handler not initialized", "service_unavailable", 503), status_code=503)
-    
+
     try:
         models_data = await handler.get_models()
         return ModelsResponse(data=[Model(**model) for model in models_data])
@@ -86,15 +118,18 @@ async def chat_completions(request: ChatCompletionRequest, raw_request: Request)
     handler = raw_request.app.state.handler
     if handler is None:
         return JSONResponse(content=create_error_response("Model handler not initialized", "service_unavailable", 503), status_code=503)
-    
+
     if not isinstance(handler, MLXVLMHandler) and not isinstance(handler, MLXLMHandler):
         return JSONResponse(content=create_error_response("Unsupported model type", "unsupported_request", 400), status_code=400)
 
+    # Get request ID from middleware
+    request_id = getattr(raw_request.state, 'request_id', None)
+
     try:
         if isinstance(handler, MLXVLMHandler):
-            return await process_multimodal_request(handler, request)
+            return await process_multimodal_request(handler, request, request_id)
         else:
-            return await process_text_request(handler, request)
+            return await process_text_request(handler, request, request_id)
     except Exception as e:
         logger.error(f"Error processing chat completion request: {str(e)}", exc_info=True)
         return JSONResponse(content=create_error_response(str(e)), status_code=HTTPStatus.INTERNAL_SERVER_ERROR)
@@ -201,11 +236,11 @@ def create_response_embeddings(embeddings: List[float], model: str, encoding_for
             embeddings_response.append(EmbeddingResponseData(embedding=embedding, index=index))
     return EmbeddingResponse(data=embeddings_response, model=model)
 
-def create_response_chunk(chunk: Union[str, Dict[str, Any]], model: str, is_final: bool = False, finish_reason: Optional[str] = "stop", chat_id: Optional[str] = None, created_time: Optional[int] = None) -> ChatCompletionChunk:
+def create_response_chunk(chunk: Union[str, Dict[str, Any]], model: str, is_final: bool = False, finish_reason: Optional[str] = "stop", chat_id: Optional[str] = None, created_time: Optional[int] = None, request_id: str = None) -> ChatCompletionChunk:
     """Create a formatted response chunk for streaming."""
     chat_id = chat_id or get_id()
     created_time = created_time or int(time.time())
-    
+
     # Handle string chunks (text content)
     if isinstance(chunk, str):
         return ChatCompletionChunk(
@@ -217,9 +252,10 @@ def create_response_chunk(chunk: Union[str, Dict[str, Any]], model: str, is_fina
                 index=0,
                 delta=Delta(content=chunk, role="assistant"),
                 finish_reason=finish_reason if is_final else None
-            )]
+            )],
+            request_id=request_id
         )
-    
+
     # Handle reasoning content chunks
     if "reasoning_content" in chunk:
         return ChatCompletionChunk(
@@ -235,7 +271,8 @@ def create_response_chunk(chunk: Union[str, Dict[str, Any]], model: str, is_fina
                     content=chunk.get("content", None)
                 ),
                 finish_reason=finish_reason if is_final else None
-            )]
+            )],
+            request_id=request_id
         )
 
     # Handle tool/function call chunks
@@ -272,7 +309,8 @@ def create_response_chunk(chunk: Union[str, Dict[str, Any]], model: str, is_fina
         object="chat.completion.chunk",
         created=created_time,
         model=model,
-        choices=[StreamingChoice(index=0, delta=delta, finish_reason=finish_reason if is_final else None)]
+        choices=[StreamingChoice(index=0, delta=delta, finish_reason=finish_reason if is_final else None)],
+        request_id=request_id
     )
 
 def _yield_sse_chunk(data: Union[Dict[str, Any], ChatCompletionChunk]) -> str:
@@ -281,13 +319,14 @@ def _yield_sse_chunk(data: Union[Dict[str, Any], ChatCompletionChunk]) -> str:
         return f"data: {json.dumps(data.model_dump())}\n\n"
     return f"data: {json.dumps(data)}\n\n"
 
-async def handle_stream_response(generator: AsyncGenerator, model: str):
+async def handle_stream_response(generator: AsyncGenerator, model: str, request_id: str = None):
     """Handle streaming response generation (OpenAI-compatible)."""
     chat_index = get_id()
     created_time = int(time.time())
     finish_reason = "stop"
     tool_call_index = -1
-    
+    usage_info = None
+
     try:
         # First chunk: role-only delta, as per OpenAI
         first_chunk = ChatCompletionChunk(
@@ -295,21 +334,27 @@ async def handle_stream_response(generator: AsyncGenerator, model: str):
             object="chat.completion.chunk",
             created=created_time,
             model=model,
-            choices=[StreamingChoice(index=0, delta=Delta(role="assistant"))]
+            choices=[StreamingChoice(index=0, delta=Delta(role="assistant"))],
+            request_id=request_id
         )
         yield _yield_sse_chunk(first_chunk)
-        
+
         async for chunk in generator:
             if not chunk:
                 continue
-                
+
             if isinstance(chunk, str):
                 response_chunk = create_response_chunk(
-                    chunk, model, chat_id=chat_index, created_time=created_time
+                    chunk, model, chat_id=chat_index, created_time=created_time, request_id=request_id
                 )
                 yield _yield_sse_chunk(response_chunk)
-                
+
             elif isinstance(chunk, dict):
+                # Check if this is usage info from the handler
+                if "__usage__" in chunk:
+                    usage_info = chunk["__usage__"]
+                    continue
+
                 # Handle tool call chunks
                 payload = dict(chunk)  # Create a copy to avoid mutating the original
                 if payload.get("name"):
@@ -318,20 +363,20 @@ async def handle_stream_response(generator: AsyncGenerator, model: str):
                     payload["index"] = tool_call_index
                 elif payload.get("arguments") and "index" not in payload:
                     payload["index"] = tool_call_index
-                
+
                 response_chunk = create_response_chunk(
-                    payload, model, chat_id=chat_index, created_time=created_time
+                    payload, model, chat_id=chat_index, created_time=created_time, request_id=request_id
                 )
                 yield _yield_sse_chunk(response_chunk)
-                
+
             else:
                 error_response = create_error_response(
-                    f"Invalid chunk type: {type(chunk)}", 
-                    "server_error", 
+                    f"Invalid chunk type: {type(chunk)}",
+                    "server_error",
                     HTTPStatus.INTERNAL_SERVER_ERROR
                 )
                 yield _yield_sse_chunk(error_response)
-                
+
     except Exception as e:
         logger.error(f"Error in stream wrapper: {str(e)}", exc_info=True)
         error_response = create_error_response(
@@ -339,32 +384,49 @@ async def handle_stream_response(generator: AsyncGenerator, model: str):
         )
         yield _yield_sse_chunk(error_response)
     finally:
-        # Final chunk: finish_reason and [DONE], as per OpenAI
-        final_chunk = create_response_chunk(
-            '', model, is_final=True, finish_reason=finish_reason, chat_id=chat_index
+        # Final chunk: finish_reason with usage info, as per OpenAI
+        final_chunk = ChatCompletionChunk(
+            id=chat_index,
+            object="chat.completion.chunk",
+            created=created_time,
+            model=model,
+            choices=[StreamingChoice(index=0, delta=Delta(), finish_reason=finish_reason)],
+            usage=usage_info,
+            request_id=request_id
         )
         yield _yield_sse_chunk(final_chunk)
         yield "data: [DONE]\n\n"
 
-async def process_multimodal_request(handler, request: ChatCompletionRequest):
+async def process_multimodal_request(handler, request: ChatCompletionRequest, request_id: str = None):
     """Process multimodal-specific requests."""
-    if request.stream:
-        return StreamingResponse(
-            handle_stream_response(handler.generate_multimodal_stream(request), request.model),
-            media_type="text/event-stream",
-            headers={"Cache-Control": "no-cache", "Connection": "keep-alive", "X-Accel-Buffering": "no"}
-        )
-    return format_final_response(await handler.generate_multimodal_response(request), request.model)
+    if request_id:
+        logger.info(f"Processing multimodal request [request_id={request_id}]")
 
-async def process_text_request(handler, request: ChatCompletionRequest):
-    """Process text-only requests."""
     if request.stream:
         return StreamingResponse(
-            handle_stream_response(handler.generate_text_stream(request), request.model),
+            handle_stream_response(handler.generate_multimodal_stream(request), request.model, request_id),
             media_type="text/event-stream",
             headers={"Cache-Control": "no-cache", "Connection": "keep-alive", "X-Accel-Buffering": "no"}
         )
-    return format_final_response(await handler.generate_text_response(request), request.model)
+    return format_final_response(await handler.generate_multimodal_response(request), request.model, request_id)
+
+async def process_text_request(handler, request: ChatCompletionRequest, request_id: str = None):
+    """Process text-only requests."""
+    if request_id:
+        logger.info(f"Processing text request [request_id={request_id}]")
+
+    if request.stream:
+        return StreamingResponse(
+            handle_stream_response(handler.generate_text_stream(request), request.model, request_id),
+            media_type="text/event-stream",
+            headers={"Cache-Control": "no-cache", "Connection": "keep-alive", "X-Accel-Buffering": "no"}
+        )
+
+    # Extract response and usage from handler
+    result = await handler.generate_text_response(request)
+    response_data = result.get("response")
+    usage = result.get("usage")
+    return format_final_response(response_data, request.model, request_id, usage)
 
 def get_id():
     """
@@ -382,9 +444,9 @@ def get_tool_call_id():
     random_suffix = random.randint(0, 999999)
     return f"call_{timestamp}{random_suffix:06d}"
 
-def format_final_response(response: Union[str, Dict[str, Any]], model: str) -> ChatCompletionResponse:
+def format_final_response(response: Union[str, Dict[str, Any]], model: str, request_id: str = None, usage=None) -> ChatCompletionResponse:
     """Format the final non-streaming response."""
-    
+
     if isinstance(response, str):
         return ChatCompletionResponse(
             id=get_id(),
@@ -395,9 +457,11 @@ def format_final_response(response: Union[str, Dict[str, Any]], model: str) -> C
                 index=0,
                 message=Message(role="assistant", content=response, refusal=None, function_call=None, reasoning_content=None, tool_calls=None),
                 finish_reason="stop"
-            )]
+            )],
+            usage=usage,
+            request_id=request_id
         )
-    
+
     reasoning_content = response.get("reasoning_content", None)
     response_content = response.get("content", None)
     tool_calls = response.get("tool_calls", None)
@@ -408,7 +472,9 @@ def format_final_response(response: Union[str, Dict[str, Any]], model: str) -> C
             object="chat.completion",
             created=int(time.time()),
             model=model,
-            choices=[Choice(index=0, message=Message(role="assistant", content=response_content, reasoning_content=reasoning_content), finish_reason="stop")]
+            choices=[Choice(index=0, message=Message(role="assistant", content=response_content, reasoning_content=reasoning_content), finish_reason="stop")],
+            usage=usage,
+            request_id=request_id
         )
     for idx, tool_call in enumerate(tool_calls):
         arguments = tool_call.get("arguments")
@@ -428,9 +494,9 @@ def format_final_response(response: Union[str, Dict[str, Any]], model: str) -> C
             index=idx
         )
         tool_call_responses.append(tool_call_response)
-    
+
     message = Message(role="assistant", content=response_content, reasoning_content=reasoning_content, tool_calls=tool_call_responses)
-    
+
     return ChatCompletionResponse(
         id=get_id(),
         object="chat.completion",
@@ -440,5 +506,7 @@ def format_final_response(response: Union[str, Dict[str, Any]], model: str) -> C
             index=0,
             message=message,
             finish_reason="tool_calls"
-        )]
+        )],
+        usage=usage,
+        request_id=request_id
     )
