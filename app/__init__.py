@@ -1,5 +1,5 @@
 import os
-from app.version import __version__
+from .version import __version__
 
 # Suppress transformers warnings
 os.environ['TRANSFORMERS_VERBOSITY'] = 'error'

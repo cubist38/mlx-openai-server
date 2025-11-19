@@ -7,10 +7,10 @@ from typing import Any, Dict, List
 from fastapi import HTTPException
 from loguru import logger
 
-from app.core.queue import RequestQueue
-from app.schemas.openai import EmbeddingRequest
-from app.utils.errors import create_error_response
-from app.models.mlx_embeddings import MLX_Embeddings
+from ..core.queue import RequestQueue
+from ..schemas.openai import EmbeddingRequest
+from ..utils.errors import create_error_response
+from ..models.mlx_embeddings import MLX_Embeddings
 
 class MLXEmbeddingsHandler:
     """

@@ -9,12 +9,12 @@ from http import HTTPStatus
 from fastapi import HTTPException
 from typing import Any, Dict, List, Optional, Tuple
 
-from app.core.queue import RequestQueue
-from app.models.mlx_vlm import MLX_VLM
-from app.handler.parser import ParserFactory
-from app.core import ImageProcessor, AudioProcessor, VideoProcessor
-from app.utils.errors import create_error_response
-from app.schemas.openai import ChatCompletionRequest, EmbeddingRequest, ChatCompletionContentPart, ChatCompletionContentPartText, ChatCompletionContentPartImage, ChatCompletionContentPartInputAudio, ChatCompletionContentPartVideo
+from ..core.queue import RequestQueue
+from ..models.mlx_vlm import MLX_VLM
+from .parser import ParserFactory
+from ..core import ImageProcessor, AudioProcessor, VideoProcessor
+from ..utils.errors import create_error_response
+from ..schemas.openai import ChatCompletionRequest, EmbeddingRequest, ChatCompletionContentPart, ChatCompletionContentPartText, ChatCompletionContentPartImage, ChatCompletionContentPartInputAudio, ChatCompletionContentPartVideo
 
 class MLXVLMHandler:
     """
@@ -137,7 +137,8 @@ class MLXVLMHandler:
                     thinking_parser = None
 
             is_first_chunk = True
-            
+            after_thinking_close_content = None
+
             # Process and yield each chunk asynchronously
             for chunk in response_generator:
                 if not chunk or not chunk.text:
@@ -152,10 +153,14 @@ class MLXVLMHandler:
                 if thinking_parser:
                     parsed_content, is_complete = thinking_parser.parse_stream(text)
                     if parsed_content:
+                        after_thinking_close_content = parsed_content.pop("content", None)
                         yield parsed_content
                     if is_complete:
                         thinking_parser = None
-                    continue
+                    if after_thinking_close_content:
+                        text = after_thinking_close_content
+                    else:
+                        continue
                     
                 if tool_parser:
                     parsed_content, _ = tool_parser.parse_stream(text)

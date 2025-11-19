@@ -10,9 +10,9 @@ from http import HTTPStatus
 from fastapi import HTTPException
 from loguru import logger
 
-from app.core.queue import RequestQueue
-from app.models.mlx_whisper import MLX_Whisper, calculate_audio_duration
-from app.schemas.openai import (
+from ..core.queue import RequestQueue
+from ..models.mlx_whisper import MLX_Whisper, calculate_audio_duration
+from ..schemas.openai import (
     TranscriptionRequest, 
     TranscriptionResponse, 
     TranscriptionUsageAudio, 
@@ -21,7 +21,7 @@ from app.schemas.openai import (
     TranscriptionResponseStreamChoice,
     Delta
 )
-from app.utils.errors import create_error_response
+from ..utils.errors import create_error_response
 
 class MLXWhisperHandler:
     """

@@ -5,12 +5,12 @@ import asyncio
 from http import HTTPStatus
 from fastapi import HTTPException
 from loguru import logger
-from app.models.mlx_lm import MLX_LM
-from app.core.queue import RequestQueue
-from app.handler.parser import ParserFactory
-from app.utils.errors import create_error_response
+from ..models.mlx_lm import MLX_LM
+from ..core.queue import RequestQueue
+from .parser import ParserFactory
+from ..utils.errors import create_error_response
 from typing import Any, AsyncGenerator, Dict, List, Optional, Tuple
-from app.schemas.openai import ChatCompletionRequest, EmbeddingRequest, UsageInfo
+from ..schemas.openai import ChatCompletionRequest, EmbeddingRequest, UsageInfo
 
 
 class MLXLMHandler:
@@ -201,8 +201,10 @@ class MLXLMHandler:
             # Create appropriate parsers for this model type
 
             thinking_parser, tool_parser = self._create_parsers()
+
             is_first_chunk = True
             completion_text = ""  # Accumulate completion for token counting
+            after_thinking_close_content = None
 
             if thinking_parser and ParserFactory.has_special_parsing(self.reasoning_parser):
                 for chunk in response_generator:
@@ -239,11 +241,15 @@ class MLXLMHandler:
                     if thinking_parser:
                         parsed_content, is_complete = thinking_parser.parse_stream(text)
                         if parsed_content:
+                            after_thinking_close_content = parsed_content.pop("content", None)
                             yield parsed_content
                         if is_complete:
                             thinking_parser = None
-                        continue
-
+                        if after_thinking_close_content:
+                            text = after_thinking_close_content
+                        else:
+                            continue
+                        
                     if tool_parser:
                         parsed_content, _ = tool_parser.parse_stream(text)
                         if parsed_content:

@@ -43,8 +43,11 @@ dependencies = [
 [dependency-groups]
 dev = ["pytest", "black[jupyter]", "isort", "flake8-pyproject"]
 
-[tool.setuptools.packages.find]
-exclude = ["logs*"]
+[tool.setuptools]
+packages = ["mlx_openai_server"]
+
+[tool.setuptools.package-dir]
+mlx_openai_server = "app"
 
 [tool.setuptools.dynamic]
 version = { attr = "app.__version__" }
@@ -53,7 +56,7 @@ version = { attr = "app.__version__" }
 Homepage = "https://github.com/cubist38/mlx-openai-server"
 
 [project.scripts]
-mlx-openai-server = "app.cli:cli"
+mlx-openai-server = "mlx_openai_server.cli:cli"
 
 [build-system]
 requires = ["setuptools>=77.0"]

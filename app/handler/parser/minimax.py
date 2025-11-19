@@ -1,7 +1,7 @@
 import re
 import json
 from typing import Any, Dict, List, Optional, Tuple
-from app.handler.parser.base import BaseToolParser, BaseThinkingParser, BaseMessageConverter
+from .base import BaseToolParser, BaseThinkingParser, BaseMessageConverter
 
 TOOL_OPEN = "<minimax:tool_call>"
 TOOL_CLOSE = "</minimax:tool_call>"

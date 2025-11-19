@@ -1,6 +1,6 @@
 import random
 from enum import Enum
-from app.core.queue import T
+from ..core.queue import T
 from fastapi import UploadFile
 
 from typing import ClassVar, Any, Dict, List, Optional, Union

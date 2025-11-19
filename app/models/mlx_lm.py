@@ -9,7 +9,7 @@ from mlx_lm.generate import (
 from outlines.processors import JSONLogitsProcessor
 from mlx_lm.models.cache import make_prompt_cache
 from mlx_lm.sample_utils import make_sampler, make_logits_processors
-from app.utils.outlines_transformer_tokenizer import OutlinesTransformerTokenizer
+from ..utils.outlines_transformer_tokenizer import OutlinesTransformerTokenizer
 from typing import List, Dict, Union, Generator
 
 DEFAULT_TEMPERATURE = os.getenv("DEFAULT_TEMPERATURE", 0.7)

@@ -13,10 +13,10 @@ from typing import Any, Dict, List, Optional
 from PIL import Image
 from loguru import logger
 from fastapi import HTTPException, UploadFile
-from app.core.queue import RequestQueue
-from app.models.mflux import FluxModel
-from app.utils.errors import create_error_response
-from app.schemas.openai import ImageSize, ImageGenerationRequest, ImageGenerationResponse, ImageEditRequest, ImageEditResponse, ImageData
+from ..core.queue import RequestQueue
+from ..models.mflux import FluxModel
+from ..utils.errors import create_error_response
+from ..schemas.openai import ImageSize, ImageGenerationRequest, ImageGenerationResponse, ImageEditRequest, ImageEditResponse, ImageData
 
 
 class MLXFluxHandler:
