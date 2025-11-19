@@ -23,6 +23,8 @@ from . import (
     Qwen3ToolParser,
     Qwen3VLThinkingParser,
     Qwen3VLToolParser,
+    HermesThinkingParser,
+    HermesToolParser,
 )
 from .glm4_moe import Glm4MoEMessageConverter
 from .minimax import MiniMaxMessageConverter
@@ -56,6 +58,10 @@ PARSER_REGISTRY: Dict[str, Dict[str, Callable]] = {
     "minimax": {
         "thinking": MinimaxThinkingParser,
         "tool": MinimaxToolParser,
+    },
+    "hermes": {
+        "thinking": HermesThinkingParser,
+        "tool": HermesToolParser,
     },
 }
 
@@ -100,6 +106,11 @@ PARSER_METADATA: Dict[str, Dict[str, Any]] = {
     "minimax": {
         "respects_enable_thinking": False,
         "needs_redacted_reasoning_prefix": True,  # Needs prefix for both stream and response
+        "has_special_parsing": False,
+    },
+    "hermes": {
+        "respects_enable_thinking": False,
+        "needs_redacted_reasoning_prefix": False,  # Needs prefix for both stream and response
         "has_special_parsing": False,
     },
 }
