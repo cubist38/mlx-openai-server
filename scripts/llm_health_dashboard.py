@@ -3,12 +3,12 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass, field
 import json
 import os
 import sys
 import time
-from dataclasses import dataclass, field
-from typing import List, Literal, Optional, Tuple
+from typing import Literal
 
 try:  # Dependency guards preserve useful error messages for local runs.
     import httpx
@@ -35,49 +35,58 @@ except ImportError as exc:  # pragma: no cover
 
 
 class ModelData(BaseModel):
+    """Represents a model in the models list."""
+
     id: str
     object: Literal["model"]
-    created: Optional[int] = None
-    owned_by: Optional[str] = None
+    created: int | None = None
+    owned_by: str | None = None
 
     model_config = ConfigDict(extra="allow")
 
 
 class ModelList(BaseModel):
+    """Represents the response from the models endpoint."""
+
     object: Literal["list"]
-    data: List[ModelData]
+    data: list[ModelData]
 
     model_config = ConfigDict(extra="allow")
 
 
 @dataclass
 class DashboardSnapshot:
+    """Snapshot of the dashboard state at a point in time."""
+
     timestamp: float
     reachable: bool
-    latency_ms: Optional[float]
+    latency_ms: float | None
     status_text: str
-    models: List[ModelData]
-    active_model: Optional[ModelData]
+    models: list[ModelData]
+    active_model: ModelData | None
     stream_ok: bool
     stream_message: str
-    errors: List[str] = field(default_factory=list)
+    errors: list[str] = field(default_factory=list)
 
 
 def build_headers() -> dict[str, str]:
+    """Build authorization headers from environment variables."""
     api_key = os.getenv("OPENAI_API_KEY") or os.getenv("MLX_API_KEY")
     return {"Authorization": f"Bearer {api_key}"} if api_key else {}
 
 
 def env_base_url() -> str:
+    """Get the base URL from environment or default."""
     raw = os.getenv("MLX_URL", "http://127.0.0.1:8000")
     return raw.rstrip("/")
 
 
 def gather_snapshot(client: httpx.Client) -> DashboardSnapshot:
+    """Gather a snapshot of the server's health and models."""
     reachable = False
-    latency_ms: Optional[float] = None
+    latency_ms: float | None = None
     status_text = "unknown"
-    errors: List[str] = []
+    errors: list[str] = []
 
     start = time.perf_counter()
     try:
@@ -90,7 +99,7 @@ def gather_snapshot(client: httpx.Client) -> DashboardSnapshot:
     except Exception as exc:  # pragma: no cover - network dependent
         errors.append(f"health: {exc}")
 
-    models: List[ModelData] = []
+    models: list[ModelData] = []
     try:
         response = client.get("/v1/models")
         response.raise_for_status()
@@ -120,7 +129,7 @@ def gather_snapshot(client: httpx.Client) -> DashboardSnapshot:
     )
 
 
-def select_active_model(models: List[ModelData]) -> Optional[ModelData]:
+def select_active_model(models: list[ModelData]) -> ModelData | None:
     if not models:
         return None
     preferred = os.getenv("MLX_ACTIVE_MODEL") or os.getenv("MLX_MODEL_ID")
@@ -131,7 +140,7 @@ def select_active_model(models: List[ModelData]) -> Optional[ModelData]:
     return models[0]
 
 
-def streaming_sanity_check(client: httpx.Client, model_id: str) -> Tuple[bool, str]:
+def streaming_sanity_check(client: httpx.Client, model_id: str) -> tuple[bool, str]:
     payload = {
         "model": model_id,
         "messages": [{"role": "user", "content": "Stream 'hello dashboard'."}],

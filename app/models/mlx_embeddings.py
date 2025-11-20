@@ -1,12 +1,13 @@
 import gc
+
 import mlx.core as mx
 from mlx_embeddings.utils import load
-from typing import List, Optional
+
 
 class MLX_Embeddings:
     """
     A wrapper class for MLX Embeddings that handles memory management to prevent leaks.
-    
+
     This class provides a unified interface for generating embeddings from text inputs,
     with proper cleanup of MLX arrays and memory management.
     """
@@ -14,27 +15,29 @@ class MLX_Embeddings:
     def __init__(self, model_path: str):
         """
         Initialize the MLX_Embeddings model.
-        
+
         Args:
             model_name (str): Name of the model to load.
-            
-        Raises:
+
+        Raises
+        ------
             ValueError: If model loading fails.
         """
         try:
             self.model, self.tokenizer = load(model_path)
         except Exception as e:
-            raise ValueError(f"Error loading model: {str(e)}")
-    
-    def _get_embeddings(self, texts: List[str], max_length: int = 512) -> mx.array:
+            raise ValueError(f"Error loading model: {e!s}")
+
+    def _get_embeddings(self, texts: list[str], max_length: int = 512) -> mx.array:
         """
         Get embeddings for a list of texts with proper memory management.
-        
+
         Args:
             texts: List of text inputs
             max_length: Maximum sequence length for tokenization
-            
-        Returns:
+
+        Returns
+        -------
             MLX array of embeddings
         """
         inputs = None
@@ -42,23 +45,18 @@ class MLX_Embeddings:
         try:
             # Tokenize inputs
             inputs = self.tokenizer.batch_encode_plus(
-                texts, 
-                return_tensors="mlx", 
-                padding=True, 
-                truncation=True, 
-                max_length=max_length
+                texts, return_tensors="mlx", padding=True, truncation=True, max_length=max_length
             )
-            
+
             # Generate embeddings
             outputs = self.model(
-                inputs["input_ids"],
-                attention_mask=inputs["attention_mask"]
+                inputs["input_ids"], attention_mask=inputs["attention_mask"]
             ).text_embeds
-            
+
             # Return a copy to ensure the result persists after cleanup
             return mx.array(outputs)
-            
-        except Exception as e:
+
+        except Exception:
             # Clean up on error
             self._cleanup_arrays(inputs, outputs)
             raise
@@ -73,26 +71,27 @@ class MLX_Embeddings:
                 try:
                     if isinstance(array, dict):
                         for key, value in array.items():
-                            if hasattr(value, 'nbytes'):
+                            if hasattr(value, "nbytes"):
                                 del value
-                    elif hasattr(array, 'nbytes'):
+                    elif hasattr(array, "nbytes"):
                         del array
                 except:
                     pass
-        
+
         # Clear MLX cache and force garbage collection
         mx.clear_cache()
         gc.collect()
 
-    def __call__(self, texts: List[str], max_length: int = 512) -> List[List[float]]:
+    def __call__(self, texts: list[str], max_length: int = 512) -> list[list[float]]:
         """
         Generate embeddings for a list of texts.
-        
+
         Args:
             texts: List of text inputs
             max_length: Maximum sequence length for tokenization
-            
-        Returns:
+
+        Returns
+        -------
             List of embedding vectors as float lists
         """
         try:
@@ -104,7 +103,7 @@ class MLX_Embeddings:
             mx.clear_cache()
             gc.collect()
             return result
-        except Exception as e:
+        except Exception:
             # Clean up on error
             mx.clear_cache()
             gc.collect()
@@ -114,21 +113,22 @@ class MLX_Embeddings:
         """Explicitly cleanup resources."""
         try:
             # Clear any cached model outputs
-            if hasattr(self, 'model'):
+            if hasattr(self, "model"):
                 del self.model
-            if hasattr(self, 'tokenizer'):
+            if hasattr(self, "tokenizer"):
                 del self.tokenizer
-            
+
             # Clear MLX cache and force garbage collection
             mx.clear_cache()
             gc.collect()
-        except Exception as e:
+        except Exception:
             # Log cleanup errors but don't raise
             pass
 
     def __del__(self):
         """Destructor to ensure cleanup on object deletion."""
         self.cleanup()
+
 
 if __name__ == "__main__":
     model_path = "mlx-community/all-MiniLM-L6-v2-4bit"

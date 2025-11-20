@@ -5,7 +5,8 @@ This module provides a centralized way to create parsers through explicit
 manual specification. Parsers are only created when explicitly requested.
 """
 
-from typing import Any, Callable, Dict, Optional, Tuple
+from collections.abc import Callable
+from typing import Any
 
 from loguru import logger
 
@@ -13,6 +14,9 @@ from . import (
     Glm4MoEThinkingParser,
     Glm4MoEToolParser,
     HarmonyParser,
+    HermesThinkingParser,
+    HermesToolParser,
+    Llama4PythonicToolParser,
     MinimaxThinkingParser,
     MinimaxToolParser,
     Qwen3MoEThinkingParser,
@@ -23,15 +27,12 @@ from . import (
     Qwen3ToolParser,
     Qwen3VLThinkingParser,
     Qwen3VLToolParser,
-    HermesThinkingParser,
-    HermesToolParser,
-    Llama4PythonicToolParser,
 )
 from .glm4_moe import Glm4MoEMessageConverter
 from .minimax import MiniMaxMessageConverter
 
 # Registry mapping parser names to their classes
-PARSER_REGISTRY: Dict[str, Dict[str, Callable]] = {
+PARSER_REGISTRY: dict[str, dict[str, Callable]] = {
     "qwen3": {
         "thinking": Qwen3ThinkingParser,
         "tool": Qwen3ToolParser,
@@ -70,13 +71,13 @@ PARSER_REGISTRY: Dict[str, Dict[str, Callable]] = {
 }
 
 # Registry mapping model types to their converter classes
-CONVERTER_REGISTRY: Dict[str, Callable] = {
+CONVERTER_REGISTRY: dict[str, Callable] = {
     "glm4_moe": Glm4MoEMessageConverter,
     "minimax": MiniMaxMessageConverter,
 }
 
 # Registry mapping parser names to their metadata/properties
-PARSER_METADATA: Dict[str, Dict[str, Any]] = {
+PARSER_METADATA: dict[str, dict[str, Any]] = {
     "qwen3": {
         "respects_enable_thinking": True,  # Parser respects enable_thinking flag
         "needs_redacted_reasoning_prefix": False,  # Needs <think> prefix
@@ -129,7 +130,7 @@ class ParserFactory:
     """Factory for creating thinking and tool parsers."""
 
     @staticmethod
-    def create_parser(parser_name: str, parser_type: str, **kwargs) -> Optional[Any]:
+    def create_parser(parser_name: str, parser_type: str, **kwargs) -> Any | None:
         """
         Create a parser instance from the registry.
 
@@ -138,7 +139,8 @@ class ParserFactory:
             parser_type: Type of parser ("thinking", "tool", or "unified")
             **kwargs: Additional arguments for parser initialization
 
-        Returns:
+        Returns
+        -------
             Parser instance or None if parser type not available
         """
         if parser_name not in PARSER_REGISTRY:
@@ -161,9 +163,9 @@ class ParserFactory:
     @staticmethod
     def create_parsers(
         model_type: str,
-        manual_reasoning_parser: Optional[str] = None,
-        manual_tool_parser: Optional[str] = None,
-    ) -> Tuple[Optional[Any], Optional[Any]]:
+        manual_reasoning_parser: str | None = None,
+        manual_tool_parser: str | None = None,
+    ) -> tuple[Any | None, Any | None]:
         """
         Create thinking and tool parsers based on manual configuration.
 
@@ -177,7 +179,8 @@ class ParserFactory:
             manual_reasoning_parser: Manually specified reasoning parser name
             manual_tool_parser: Manually specified tool parser name
 
-        Returns:
+        Returns
+        -------
             Tuple of (thinking_parser, tool_parser). Both will be None if not specified.
         """
         # Handle unified parsers (harmony) - handles both thinking and tools
@@ -214,14 +217,15 @@ class ParserFactory:
         return thinking_parser, tool_parser
 
     @staticmethod
-    def create_converter(model_type: str) -> Optional[Any]:
+    def create_converter(model_type: str) -> Any | None:
         """
         Create a message converter based on model type.
 
         Args:
             model_type: The type of the model (e.g., "glm4_moe", "minimax")
 
-        Returns:
+        Returns
+        -------
             Message converter instance or None if no converter needed
         """
         if model_type not in CONVERTER_REGISTRY:
@@ -231,14 +235,15 @@ class ParserFactory:
         return converter_class()
 
     @staticmethod
-    def respects_enable_thinking(parser_name: Optional[str]) -> bool:
+    def respects_enable_thinking(parser_name: str | None) -> bool:
         """
         Check if a parser respects the enable_thinking flag.
 
         Args:
             parser_name: Name of the parser to check
 
-        Returns:
+        Returns
+        -------
             True if parser respects enable_thinking, False otherwise
         """
         if not parser_name:
@@ -246,14 +251,15 @@ class ParserFactory:
         return PARSER_METADATA.get(parser_name, {}).get("respects_enable_thinking", False)
 
     @staticmethod
-    def needs_redacted_reasoning_prefix(parser_name: Optional[str]) -> bool:
+    def needs_redacted_reasoning_prefix(parser_name: str | None) -> bool:
         """
         Check if a parser needs the <think> prefix added to responses.
 
         Args:
             parser_name: Name of the parser to check
 
-        Returns:
+        Returns
+        -------
             True if parser needs redacted_reasoning prefix, False otherwise
         """
         if not parser_name:
@@ -261,14 +267,15 @@ class ParserFactory:
         return PARSER_METADATA.get(parser_name, {}).get("needs_redacted_reasoning_prefix", False)
 
     @staticmethod
-    def has_special_parsing(parser_name: Optional[str]) -> bool:
+    def has_special_parsing(parser_name: str | None) -> bool:
         """
         Check if a parser has special parsing logic (e.g., harmony returns dict from parse()).
 
         Args:
             parser_name: Name of the parser to check
 
-        Returns:
+        Returns
+        -------
             True if parser has special parsing, False otherwise
         """
         if not parser_name:

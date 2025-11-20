@@ -15,10 +15,10 @@
 # limitations under the License.
 """Extends `dill` to support pickling more types and produce more consistent dumps."""
 
-import sys
 from io import BytesIO
+import sys
 from types import FunctionType
-from typing import Any, Dict, List, Union
+from typing import Any
 
 import dill
 import xxhash
@@ -27,13 +27,14 @@ import xxhash
 class Hasher:
     """Hasher that accepts python objects as inputs."""
 
-    dispatch: Dict = {}
+    dispatch: dict = {}
 
     def __init__(self):
         self.m = xxhash.xxh64()
 
     @classmethod
-    def hash_bytes(cls, value: Union[bytes, List[bytes]]) -> str:
+    def hash_bytes(cls, value: bytes | list[bytes]) -> str:
+        """Hash bytes or list of bytes using xxhash."""
         value = [value] if isinstance(value, bytes) else value
         m = xxhash.xxh64()
         for x in value:
@@ -42,23 +43,29 @@ class Hasher:
 
     @classmethod
     def hash(cls, value: Any) -> str:
+        """Hash a Python object by pickling it first."""
         return cls.hash_bytes(dumps(value))
 
     def update(self, value: Any) -> None:
+        """Update the hasher with a Python object."""
         header_for_update = f"=={type(value)}=="
         value_for_update = self.hash(value)
         self.m.update(header_for_update.encode("utf8"))
         self.m.update(value_for_update.encode("utf-8"))
 
     def hexdigest(self) -> str:
+        """Return the hexadecimal digest of the hash."""
         return self.m.hexdigest()
 
 
 class Pickler(dill.Pickler):
+    """Custom Pickler that extends dill with additional type support."""
+
     dispatch = dill._dill.MetaCatchingDict(dill.Pickler.dispatch.copy())
     _legacy_no_dict_keys_sorting = False
 
     def save(self, obj, save_persistent_id=True):
+        """Save an object to the pickle stream with custom handling."""
         obj_type = type(obj)
         if obj_type not in self.dispatch:
             if "regex" in sys.modules:
@@ -111,6 +118,7 @@ class Pickler(dill.Pickler):
         dill.Pickler._batch_setitems(self, items)
 
     def memoize(self, obj):
+        """Memoize an object, skipping strings to avoid id issues."""
         # Don't memoize strings since two identical strings can have different Python ids
         if type(obj) is not str:  # noqa: E721
             dill.Pickler.memoize(self, obj)
@@ -139,6 +147,7 @@ def dumps(obj):
 
 
 def log(pickler, msg):
+    """Log a message from the pickler (no-op)."""
     pass
 
 

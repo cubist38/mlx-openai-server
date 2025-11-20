@@ -3,12 +3,12 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable, Iterable
+from dataclasses import dataclass
 import json
 import os
 import sys
-import time
-from dataclasses import dataclass
-from typing import Callable, Iterable, List, Literal, Optional
+from typing import Literal
 
 try:  # Dependency guard keeps script self-explanatory when deps are missing.
     import httpx
@@ -28,43 +28,55 @@ except ImportError as exc:  # pragma: no cover
 
 
 class HealthResponse(BaseModel):
+    """Response model for health check."""
+
     status: str = Field(..., description="Server reported status string")
 
     model_config = ConfigDict(extra="allow")
 
 
 class ModelData(BaseModel):
+    """Represents a model in the models list."""
+
     id: str
     object: Literal["model"]
-    created: Optional[int] = None
-    owned_by: Optional[str] = None
+    created: int | None = None
+    owned_by: str | None = None
 
     model_config = ConfigDict(extra="allow")
 
 
 class ModelList(BaseModel):
+    """Represents the response from the models endpoint."""
+
     object: Literal["list"]
-    data: List[ModelData]
+    data: list[ModelData]
 
     model_config = ConfigDict(extra="allow")
 
 
 class ChatMessage(BaseModel):
+    """Represents a chat message."""
+
     role: Literal["system", "user", "assistant", "tool", "function"]
-    content: Optional[str]
+    content: str | None
 
     model_config = ConfigDict(extra="allow")
 
 
 class ChatChoice(BaseModel):
+    """Represents a choice in a chat completion."""
+
     index: int
     message: ChatMessage
-    finish_reason: Optional[str] = None
+    finish_reason: str | None = None
 
     model_config = ConfigDict(extra="allow")
 
 
 class Usage(BaseModel):
+    """Represents token usage."""
+
     prompt_tokens: int
     completion_tokens: int
     total_tokens: int
@@ -73,37 +85,45 @@ class Usage(BaseModel):
 
 
 class ChatCompletion(BaseModel):
+    """Represents a chat completion response."""
+
     id: str
     object: Literal["chat.completion"]
     created: int
     model: str
-    choices: List[ChatChoice]
-    usage: Optional[Usage] = None
+    choices: list[ChatChoice]
+    usage: Usage | None = None
 
     model_config = ConfigDict(extra="allow")
 
 
 class DeltaMessage(BaseModel):
-    role: Optional[Literal["system", "user", "assistant", "tool"]] = None
-    content: Optional[str] = None
+    """Represents a delta message in streaming."""
+
+    role: Literal["system", "user", "assistant", "tool"] | None = None
+    content: str | None = None
 
     model_config = ConfigDict(extra="allow")
 
 
 class ChatChunkChoice(BaseModel):
+    """Represents a choice in a streaming chunk."""
+
     index: int
     delta: DeltaMessage
-    finish_reason: Optional[str] = None
+    finish_reason: str | None = None
 
     model_config = ConfigDict(extra="allow")
 
 
 class ChatCompletionChunk(BaseModel):
+    """Represents a streaming chat completion chunk."""
+
     id: str
     object: Literal["chat.completion.chunk"]
     created: int
     model: str
-    choices: List[ChatChunkChoice]
+    choices: list[ChatChunkChoice]
 
     model_config = ConfigDict(extra="allow")
 
@@ -125,8 +145,10 @@ def build_headers() -> dict[str, str]:
 
 @dataclass
 class TestCase:
+    """Represents a test case."""
+
     name: str
-    handler: Callable[["LLMContractTester"], str]
+    handler: Callable[[LLMContractTester], str]
 
 
 class LLMContractTester:
@@ -136,15 +158,17 @@ class LLMContractTester:
         self.base_url = base_url
         self.headers = build_headers()
         self.client = httpx.Client(base_url=base_url, timeout=timeout, headers=self.headers)
-        self.model_id: Optional[str] = os.getenv("MLX_MODEL_ID")
+        self.model_id: str | None = os.getenv("MLX_MODEL_ID")
         self.results: list[tuple[str, bool, str]] = []
 
     def close(self) -> None:
+        """Close the HTTP client."""
         self.client.close()
 
     # Individual tests -----------------------------------------------------------------
 
     def test_health(self) -> str:
+        """Test the health endpoint."""
         response = self.client.get("/health")
         response.raise_for_status()
         payload = response.json()
@@ -156,10 +180,10 @@ class LLMContractTester:
         # Build detailed status message
         if model_id:
             return f"status={status}, model_status={model_status}, model_id={model_id}"
-        else:
-            return f"status={status}, model_status={model_status}"
+        return f"status={status}, model_status={model_status}"
 
     def test_models(self) -> str:
+        """Test the models endpoint."""
         response = self.client.get("/v1/models")
         response.raise_for_status()
         payload = response.json()
@@ -179,11 +203,11 @@ class LLMContractTester:
             if metadata.get("backend") != "mlx":
                 raise AssertionError(f"Expected backend='mlx', got '{metadata.get('backend')}'")
             return f"{len(model_list.data)} models, metadata: backend={metadata.get('backend')}, context={metadata.get('context_length')}"
-        else:
-            # Metadata is optional for backward compat, but warn if missing
-            return f"{len(model_list.data)} models detected (no metadata)"
+        # Metadata is optional for backward compat, but warn if missing
+        return f"{len(model_list.data)} models detected (no metadata)"
 
     def test_chat_completion(self) -> str:
+        """Test chat completion endpoint."""
         model_id = self.ensure_model_id()
         payload = {
             "model": model_id,
@@ -204,6 +228,7 @@ class LLMContractTester:
         return f"choice_count={len(completion.choices)}"
 
     def test_chat_completion_stream(self) -> str:
+        """Test streaming chat completion endpoint."""
         model_id = self.ensure_model_id()
         payload = {
             "model": model_id,
@@ -234,6 +259,7 @@ class LLMContractTester:
     # Utility methods ------------------------------------------------------------------
 
     def ensure_model_id(self) -> str:
+        """Ensure a model ID is available."""
         if not self.model_id:
             raise AssertionError(
                 "Model id unavailable. Ensure GET /v1/models succeeds or set MLX_MODEL_ID."
@@ -242,6 +268,7 @@ class LLMContractTester:
 
     @staticmethod
     def iter_sse_payloads(response: httpx.Response) -> Iterable[str]:
+        """Iterate over SSE payloads from a response."""
         for raw_line in response.iter_lines():
             if not raw_line:
                 continue
@@ -255,6 +282,7 @@ class LLMContractTester:
     # Runner ---------------------------------------------------------------------------
 
     def run(self) -> bool:
+        """Run all tests."""
         tests = [
             TestCase("GET /health", LLMContractTester.test_health),
             TestCase("GET /v1/models", LLMContractTester.test_models),
@@ -274,6 +302,7 @@ class LLMContractTester:
         return all_passed
 
     def run_single(self, test: TestCase) -> tuple[bool, str]:
+        """Run a single test."""
         try:
             detail = test.handler(self)
             return True, detail
@@ -289,6 +318,7 @@ class LLMContractTester:
 
 
 def main() -> None:
+    """Main entry point."""
     base_url = env_base_url()
     tester = LLMContractTester(base_url)
     try:

@@ -55,7 +55,6 @@ class MLXServerConfig:
         - Apply small model-type-specific defaults for ``config_name``
           and emit warnings when values appear inconsistent.
         """
-
         # Process comma-separated LoRA paths and scales into lists (or None)
         if self.lora_paths_str:
             self.lora_paths = [p.strip() for p in self.lora_paths_str.split(",") if p.strip()]
