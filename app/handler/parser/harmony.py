@@ -154,8 +154,8 @@ class HarmonyParser:
                     TypeError,
                     UnicodeDecodeError,
                     ValueError,
-                ) as token_error:
-                    logger.warning(f"Error processing token {text_token}: {token_error}")
+                ) as e:
+                    logger.warning(f"Error processing token {text_token}. {type(e).__name__}: {e}")
                     continue
 
             # Return appropriate response based on current channel
@@ -316,8 +316,8 @@ class HarmonyParser:
                             result["content"] = message.content[0].text
                             logger.debug("Extracted final content")
 
-                except (AttributeError, IndexError, KeyError, TypeError, ValueError) as msg_error:
-                    logger.warning(f"Error processing message: {msg_error}")
+                except (AttributeError, IndexError, KeyError, TypeError, ValueError) as e:
+                    logger.warning(f"Error processing message: {type(e).__name__}: {e}")
                     continue
 
         except Exception as e:

@@ -8,7 +8,7 @@ import random
 import time
 from typing import Annotated, Any, Literal, TypeAlias
 
-from fastapi import APIRouter, Form, HTTPException, Request
+from fastapi import APIRouter, Form, HTTPException, Query, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 from loguru import logger
 import numpy as np
@@ -18,6 +18,7 @@ from ..handler.mlx_embeddings import MLXEmbeddingsHandler
 from ..handler.mlx_lm import MLXLMHandler
 from ..handler.mlx_vlm import MLXVLMHandler
 from ..handler.mlx_whisper import MLXWhisperHandler
+from ..hub.errors import HubControllerError
 from ..schemas.openai import (
     ChatCompletionChunk,
     ChatCompletionMessageToolCall,
@@ -46,8 +47,31 @@ from ..schemas.openai import (
     UsageInfo,
 )
 from ..utils.errors import create_error_response
+from .hub_routes import (
+    get_cached_model_metadata,
+    get_configured_model_id,
+    get_running_hub_models,
+    hub_memory_load_model,
+    hub_memory_unload_model,
+    hub_router,
+    hub_start_model,
+    hub_status,
+    hub_status_page,
+    hub_stop_model,
+)
 
 router = APIRouter()
+router.include_router(hub_router)
+
+__all__ = [
+    "router",
+    "hub_status",
+    "hub_status_page",
+    "hub_start_model",
+    "hub_stop_model",
+    "hub_memory_load_model",
+    "hub_memory_unload_model",
+]
 
 
 MLXHandlerType: TypeAlias = (
@@ -56,9 +80,73 @@ MLXHandlerType: TypeAlias = (
 
 
 async def _get_handler_or_error(
-    raw_request: Request, reason: str
+    raw_request: Request,
+    reason: str,
+    *,
+    model_name: str | None = None,
 ) -> tuple[MLXHandlerType | None, JSONResponse | None]:
-    """Return a loaded handler or an error response if unavailable."""
+    """Return a loaded handler or an error response if unavailable.
+
+    Parameters
+    ----------
+    raw_request : Request
+        Incoming FastAPI request.
+    reason : str
+        Context string used for logging and load tracking.
+    model_name : str | None, optional
+        Explicit model identifier supplied by the caller.
+
+    Returns
+    -------
+    tuple[MLXHandlerType | None, JSONResponse | None]
+        A handler/error tuple where exactly one entry is ``None``.
+    """
+
+    controller = getattr(raw_request.app.state, "hub_controller", None)
+    if controller is not None and model_name is not None:
+        target = model_name.strip()
+        if not target:
+            return (
+                None,
+                JSONResponse(
+                    content=create_error_response(
+                        "Model name is required when running the hub server",
+                        "invalid_request_error",
+                        HTTPStatus.BAD_REQUEST,
+                    ),
+                    status_code=HTTPStatus.BAD_REQUEST,
+                ),
+            )
+        try:
+            handler = await controller.acquire_handler(target, reason=reason)
+        except HubControllerError as exc:
+            status = exc.status_code or HTTPStatus.INTERNAL_SERVER_ERROR
+            return (
+                None,
+                JSONResponse(
+                    content=create_error_response(str(exc), "service_unavailable", status),
+                    status_code=status,
+                ),
+            )
+        except HTTPException:
+            raise
+        except Exception as exc:  # pragma: no cover - defensive logging
+            logger.exception(
+                f"Unable to load handler for model '{target}'. {type(exc).__name__}: {exc}"
+            )
+            return (
+                None,
+                JSONResponse(
+                    content=create_error_response(
+                        f"Failed to load model '{target}' handler",
+                        "server_error",
+                        HTTPStatus.INTERNAL_SERVER_ERROR,
+                    ),
+                    status_code=HTTPStatus.INTERNAL_SERVER_ERROR,
+                ),
+            )
+        else:
+            return handler, None
 
     handler_manager = getattr(raw_request.app.state, "handler_manager", None)
     if handler_manager is not None:
@@ -101,28 +189,94 @@ async def _get_handler_or_error(
     return handler, None
 
 
-def _get_cached_model_metadata(raw_request: Request) -> dict[str, Any] | None:
-    """Fetch cached model metadata from application state, if available."""
+def _hub_model_required_error() -> JSONResponse:
+    """Return a standardized 400 response for missing hub model selections.
 
-    metadata_cache = getattr(raw_request.app.state, "model_metadata", None)
-    if isinstance(metadata_cache, list) and metadata_cache:
-        entry = metadata_cache[0]
-        if isinstance(entry, dict):
-            return entry
-    return None
+    Returns
+    -------
+    JSONResponse
+        A JSON response with error details.
+    """
+
+    return JSONResponse(
+        content=create_error_response(
+            "Model selection is required when the server runs in hub mode. "
+            "Include the 'model' field (or query parameter) to choose a registered model. "
+            "Call /v1/models to list available names.",
+            "invalid_request_error",
+            HTTPStatus.BAD_REQUEST,
+        ),
+        status_code=HTTPStatus.BAD_REQUEST,
+    )
 
 
-def _get_configured_model_id(raw_request: Request) -> str | None:
-    """Return the configured model identifier from config or cache."""
+def _resolve_model_name(
+    raw_request: Request,
+    model_name: str | None,
+    *,
+    provided_explicitly: bool,
+) -> tuple[str | None, JSONResponse | None]:
+    """Normalize ``model_name`` and enforce hub requirements when needed.
 
-    config = getattr(raw_request.app.state, "server_config", None)
-    if config is not None:
-        return getattr(config, "model_identifier", getattr(config, "model_path", None))
+    Parameters
+    ----------
+    raw_request : Request
+        The incoming FastAPI request.
+    model_name : str or None
+        The model name to resolve.
+    provided_explicitly : bool
+        Whether the model was explicitly provided in the request.
 
-    cached = _get_cached_model_metadata(raw_request)
-    if cached is not None:
-        return cached.get("id")
-    return None
+    Returns
+    -------
+    tuple[str or None, JSONResponse or None]
+        A tuple of (resolved_model_name, error_response) where exactly one is None.
+    """
+
+    normalized = (model_name or "").strip() or None
+    controller = getattr(raw_request.app.state, "hub_controller", None)
+    if controller is None:
+        return normalized, None
+
+    if not provided_explicitly or normalized is None:
+        return None, _hub_model_required_error()
+
+    running_models = get_running_hub_models(raw_request)
+    if running_models is not None and normalized not in running_models:
+        return (
+            None,
+            JSONResponse(
+                content=create_error_response(
+                    f"Model '{normalized}' is not started. Start the process before sending requests.",
+                    "invalid_request_error",
+                    HTTPStatus.NOT_FOUND,
+                ),
+                status_code=HTTPStatus.NOT_FOUND,
+            ),
+        )
+    return normalized, None
+
+
+def _model_field_was_provided(payload: Any) -> bool:
+    """Return True when the ``model`` field was explicitly provided.
+
+    Parameters
+    ----------
+    payload : Any
+        The request payload object.
+
+    Returns
+    -------
+    bool
+        True if the model field was explicitly set.
+    """
+
+    fields_set = getattr(payload, "model_fields_set", None)
+    if fields_set is None:
+        fields_set = getattr(payload, "__fields_set__", None)
+    if not isinstance(fields_set, set):
+        return False
+    return "model" in fields_set
 
 
 # =============================================================================
@@ -132,9 +286,21 @@ def _get_configured_model_id(raw_request: Request) -> str | None:
 
 @router.get("/health", response_model=None)
 async def health(raw_request: Request) -> HealthCheckResponse | JSONResponse:
-    """Health check endpoint aware of JIT/auto-unload state."""
+    """Health check endpoint aware of JIT/auto-unload state.
+
+    Parameters
+    ----------
+    raw_request : Request
+        The incoming FastAPI request.
+
+    Returns
+    -------
+    HealthCheckResponse or JSONResponse
+        Health status information.
+    """
     handler_manager = getattr(raw_request.app.state, "handler_manager", None)
-    configured_model_id = _get_configured_model_id(raw_request)
+    configured_model_id = get_configured_model_id(raw_request)
+    controller = getattr(raw_request.app.state, "hub_controller", None)
 
     if handler_manager is not None:
         handler = getattr(handler_manager, "current_handler", None)
@@ -147,6 +313,13 @@ async def health(raw_request: Request) -> HealthCheckResponse | JSONResponse:
             status=HealthCheckStatus.OK,
             model_id=configured_model_id,
             model_status="unloaded",
+        )
+
+    if controller is not None:
+        return HealthCheckResponse(
+            status=HealthCheckStatus.OK,
+            model_id=configured_model_id,
+            model_status="controller",
         )
 
     handler = getattr(raw_request.app.state, "handler", None)
@@ -165,16 +338,28 @@ async def health(raw_request: Request) -> HealthCheckResponse | JSONResponse:
 
 @router.get("/v1/models", response_model=None)
 async def models(raw_request: Request) -> ModelsResponse | JSONResponse:
-    """
-    Get list of available models with cached response for instant delivery.
+    """Get list of available models with cached response for instant delivery.
 
     This endpoint is defined early to ensure it's not blocked by other routes.
+
+    Parameters
+    ----------
+    raw_request : Request
+        The incoming FastAPI request.
+
+    Returns
+    -------
+    ModelsResponse or JSONResponse
+        List of available models or error response.
     """
     # Try registry first (Phase 1+), fall back to handler for backward compat
     registry = getattr(raw_request.app.state, "registry", None)
     if registry is not None:
         try:
             models_data = registry.list_models()
+            running_models = get_running_hub_models(raw_request)
+            if running_models is not None:
+                models_data = [model for model in models_data if model.get("id") in running_models]
             return ModelsResponse(object="list", data=[Model(**model) for model in models_data])
         except Exception as e:
             logger.error(f"Error retrieving models from registry. {type(e).__name__}: {e}")
@@ -187,7 +372,7 @@ async def models(raw_request: Request) -> ModelsResponse | JSONResponse:
                 status_code=HTTPStatus.INTERNAL_SERVER_ERROR,
             )
 
-    cached_metadata = _get_cached_model_metadata(raw_request)
+    cached_metadata = get_cached_model_metadata(raw_request)
     if cached_metadata is not None:
         return ModelsResponse(object="list", data=[Model(**cached_metadata)])
 
@@ -223,14 +408,37 @@ async def models(raw_request: Request) -> ModelsResponse | JSONResponse:
 
 
 @router.get("/v1/queue/stats", response_model=None)
-async def queue_stats(raw_request: Request) -> dict[str, Any] | JSONResponse:
-    """
-    Get queue statistics.
+async def queue_stats(
+    raw_request: Request, model: str | None = Query(None, description="Optional model name")
+) -> dict[str, Any] | JSONResponse:
+    """Get queue statistics.
 
     Note: queue_stats shape is handler-dependent (Flux vs LM/VLM/Whisper)
     so callers know keys may vary.
+
+    Parameters
+    ----------
+    raw_request : Request
+        The incoming FastAPI request.
+    model : str or None, optional
+        Optional model name to filter statistics.
+
+    Returns
+    -------
+    dict[str, Any] or JSONResponse
+        Queue statistics or error response.
     """
-    handler, error = await _get_handler_or_error(raw_request, "queue_stats")
+    resolved_model, validation_error = _resolve_model_name(
+        raw_request,
+        model,
+        provided_explicitly=model is not None,
+    )
+    if validation_error is not None:
+        return validation_error
+
+    handler, error = await _get_handler_or_error(
+        raw_request, "queue_stats", model_name=resolved_model
+    )
     if error is not None:
         return error
     if handler is None:
@@ -266,8 +474,34 @@ async def queue_stats(raw_request: Request) -> dict[str, Any] | JSONResponse:
 async def chat_completions(
     request: ChatCompletionRequest, raw_request: Request
 ) -> ChatCompletionResponse | StreamingResponse | JSONResponse:
-    """Handle chat completion requests."""
-    handler, error = await _get_handler_or_error(raw_request, "chat_completions")
+    """Handle chat completion requests.
+
+    Parameters
+    ----------
+    request : ChatCompletionRequest
+        The chat completion request payload.
+    raw_request : Request
+        The incoming FastAPI request.
+
+    Returns
+    -------
+    ChatCompletionResponse or StreamingResponse or JSONResponse
+        Chat completion response, stream, or error response.
+    """
+    resolved_model, validation_error = _resolve_model_name(
+        raw_request,
+        request.model,
+        provided_explicitly=_model_field_was_provided(request),
+    )
+    if validation_error is not None:
+        return validation_error
+    selected_model = resolved_model or request.model
+    if selected_model is not None:
+        request.model = selected_model
+
+    handler, error = await _get_handler_or_error(
+        raw_request, "chat_completions", model_name=selected_model
+    )
     if error is not None:
         return error
     if handler is None:
@@ -288,7 +522,6 @@ async def chat_completions(
             status_code=HTTPStatus.BAD_REQUEST,
         )
 
-    # Get request ID from middleware
     request_id = getattr(raw_request.state, "request_id", None)
 
     try:
@@ -297,7 +530,7 @@ async def chat_completions(
         return await process_text_request(handler, request, request_id)
     except HTTPException:
         raise
-    except Exception as e:
+    except Exception as e:  # pragma: no cover - defensive logging
         logger.exception(f"Error processing chat completion request: {type(e).__name__}: {e}")
         return JSONResponse(
             content=create_error_response(str(e)), status_code=HTTPStatus.INTERNAL_SERVER_ERROR
@@ -308,8 +541,34 @@ async def chat_completions(
 async def embeddings(
     request: EmbeddingRequest, raw_request: Request
 ) -> EmbeddingResponse | JSONResponse:
-    """Handle embedding requests."""
-    handler, error = await _get_handler_or_error(raw_request, "embeddings")
+    """Handle embedding requests.
+
+    Parameters
+    ----------
+    request : EmbeddingRequest
+        The embedding request payload.
+    raw_request : Request
+        The incoming FastAPI request.
+
+    Returns
+    -------
+    EmbeddingResponse or JSONResponse
+        Embedding response or error response.
+    """
+    resolved_model, validation_error = _resolve_model_name(
+        raw_request,
+        request.model,
+        provided_explicitly=_model_field_was_provided(request),
+    )
+    if validation_error is not None:
+        return validation_error
+    selected_model = resolved_model or request.model
+    if selected_model is not None:
+        request.model = selected_model
+
+    handler, error = await _get_handler_or_error(
+        raw_request, "embeddings", model_name=selected_model
+    )
     if error is not None:
         return error
     if handler is None:
@@ -333,11 +592,13 @@ async def embeddings(
         )
 
     try:
-        embeddings = await handler.generate_embeddings_response(request)
-        return create_response_embeddings(embeddings, request.model, request.encoding_format)
+        embeddings_response = await handler.generate_embeddings_response(request)
+        return create_response_embeddings(
+            embeddings_response, request.model, request.encoding_format
+        )
     except HTTPException:
         raise
-    except Exception as e:
+    except Exception as e:  # pragma: no cover - defensive logging
         logger.exception(f"Error processing embedding request: {type(e).__name__}: {e}")
         return JSONResponse(
             content=create_error_response(str(e)), status_code=HTTPStatus.INTERNAL_SERVER_ERROR
@@ -348,8 +609,34 @@ async def embeddings(
 async def image_generations(
     request: ImageGenerationRequest, raw_request: Request
 ) -> ImageGenerationResponse | JSONResponse:
-    """Handle image generation requests."""
-    handler, error = await _get_handler_or_error(raw_request, "image_generation")
+    """Handle image generation requests.
+
+    Parameters
+    ----------
+    request : ImageGenerationRequest
+        The image generation request payload.
+    raw_request : Request
+        The incoming FastAPI request.
+
+    Returns
+    -------
+    ImageGenerationResponse or JSONResponse
+        Image generation response or error response.
+    """
+    resolved_model, validation_error = _resolve_model_name(
+        raw_request,
+        request.model,
+        provided_explicitly=_model_field_was_provided(request),
+    )
+    if validation_error is not None:
+        return validation_error
+    selected_model = resolved_model or request.model
+    if selected_model is not None:
+        request.model = selected_model
+
+    handler, error = await _get_handler_or_error(
+        raw_request, "image_generation", model_name=selected_model
+    )
     if error is not None:
         return error
     if handler is None:
@@ -390,8 +677,34 @@ async def image_generations(
 async def create_image_edit(
     request: Annotated[ImageEditRequest, Form()], raw_request: Request
 ) -> ImageEditResponse | JSONResponse:
-    """Handle image editing requests with dynamic provider routing."""
-    handler, error = await _get_handler_or_error(raw_request, "image_edit")
+    """Handle image editing requests with dynamic provider routing.
+
+    Parameters
+    ----------
+    request : ImageEditRequest
+        The image edit request payload.
+    raw_request : Request
+        The incoming FastAPI request.
+
+    Returns
+    -------
+    ImageEditResponse or JSONResponse
+        Image edit response or error response.
+    """
+    resolved_model, validation_error = _resolve_model_name(
+        raw_request,
+        request.model,
+        provided_explicitly=_model_field_was_provided(request),
+    )
+    if validation_error is not None:
+        return validation_error
+    selected_model = resolved_model or request.model
+    if selected_model is not None:
+        request.model = selected_model
+
+    handler, error = await _get_handler_or_error(
+        raw_request, "image_edit", model_name=selected_model
+    )
     if error is not None:
         return error
     if handler is None:
@@ -431,8 +744,34 @@ async def create_image_edit(
 async def create_audio_transcriptions(
     request: Annotated[TranscriptionRequest, Form()], raw_request: Request
 ) -> StreamingResponse | TranscriptionResponse | JSONResponse | str:
-    """Handle audio transcription requests."""
-    handler, error = await _get_handler_or_error(raw_request, "audio_transcriptions")
+    """Handle audio transcription requests.
+
+    Parameters
+    ----------
+    request : TranscriptionRequest
+        The transcription request payload.
+    raw_request : Request
+        The incoming FastAPI request.
+
+    Returns
+    -------
+    StreamingResponse or TranscriptionResponse or JSONResponse or str
+        Transcription response, stream, or error response.
+    """
+    resolved_model, validation_error = _resolve_model_name(
+        raw_request,
+        request.model,
+        provided_explicitly=_model_field_was_provided(request),
+    )
+    if validation_error is not None:
+        return validation_error
+    selected_model = resolved_model or request.model
+    if selected_model is not None:
+        request.model = selected_model
+
+    handler, error = await _get_handler_or_error(
+        raw_request, "audio_transcriptions", model_name=selected_model
+    )
     if error is not None:
         return error
     if handler is None:
@@ -527,7 +866,32 @@ def create_response_chunk(
     request_id: str | None = None,
     tool_call_id: str | None = None,
 ) -> ChatCompletionChunk:
-    """Create a formatted response chunk for streaming."""
+    """Create a formatted response chunk for streaming.
+
+    Parameters
+    ----------
+    chunk : str or dict[str, Any]
+        The chunk content to format.
+    model : str
+        Model name for the response.
+    is_final : bool, optional
+        Whether this is the final chunk, by default False.
+    finish_reason : str or None, optional
+        Finish reason for the completion, by default "stop".
+    chat_id : str or None, optional
+        Chat completion ID, by default None.
+    created_time : int or None, optional
+        Creation timestamp, by default None.
+    request_id : str or None, optional
+        Request ID, by default None.
+    tool_call_id : str or None, optional
+        Tool call ID, by default None.
+
+    Returns
+    -------
+    ChatCompletionChunk
+        Formatted chat completion chunk.
+    """
     chat_id = chat_id or get_id()
     created_time = created_time or int(time.time())
 
@@ -625,7 +989,18 @@ def create_response_chunk(
 
 
 def _yield_sse_chunk(data: dict[str, Any] | ChatCompletionChunk) -> str:
-    """Format and yield SSE chunk data."""
+    """Format and yield SSE chunk data.
+
+    Parameters
+    ----------
+    data : dict[str, Any] or ChatCompletionChunk
+        The data to format as SSE chunk.
+
+    Returns
+    -------
+    str
+        Formatted SSE chunk string.
+    """
     if isinstance(data, ChatCompletionChunk):
         return f"data: {json.dumps(data.model_dump())}\n\n"
     return f"data: {json.dumps(data)}\n\n"
@@ -634,7 +1009,22 @@ def _yield_sse_chunk(data: dict[str, Any] | ChatCompletionChunk) -> str:
 async def handle_stream_response(
     generator: AsyncGenerator[Any, None], model: str, request_id: str | None = None
 ) -> AsyncGenerator[str, None]:
-    """Handle streaming response generation (OpenAI-compatible)."""
+    """Handle streaming response generation (OpenAI-compatible).
+
+    Parameters
+    ----------
+    generator : AsyncGenerator[Any, None]
+        The async generator yielding response chunks.
+    model : str
+        Model name for the response.
+    request_id : str or None, optional
+        Request ID, by default None.
+
+    Yields
+    ------
+    str
+        SSE-formatted response chunks.
+    """
     chat_index = get_id()
     created_time = int(time.time())
     finish_reason = "stop"
@@ -759,7 +1149,22 @@ async def handle_stream_response(
 async def process_multimodal_request(
     handler: MLXVLMHandler, request: ChatCompletionRequest, request_id: str | None = None
 ) -> ChatCompletionResponse | StreamingResponse | JSONResponse:
-    """Process multimodal-specific requests."""
+    """Process multimodal-specific requests.
+
+    Parameters
+    ----------
+    handler : MLXVLMHandler
+        The multimodal handler instance.
+    request : ChatCompletionRequest
+        The chat completion request.
+    request_id : str or None, optional
+        Request ID for logging, by default None.
+
+    Returns
+    -------
+    ChatCompletionResponse or StreamingResponse or JSONResponse
+        Processed response.
+    """
     if request_id:
         logger.info(f"Processing multimodal request [request_id={request_id}]")
 
@@ -791,7 +1196,22 @@ async def process_text_request(
     request: ChatCompletionRequest,
     request_id: str | None = None,
 ) -> ChatCompletionResponse | StreamingResponse | JSONResponse:
-    """Process text-only requests."""
+    """Process text-only requests.
+
+    Parameters
+    ----------
+    handler : MLXLMHandler or MLXVLMHandler
+        The text handler instance.
+    request : ChatCompletionRequest
+        The chat completion request.
+    request_id : str or None, optional
+        Request ID for logging, by default None.
+
+    Returns
+    -------
+    ChatCompletionResponse or StreamingResponse or JSONResponse
+        Processed response.
+    """
     if request_id:
         logger.info(f"Processing text request [request_id={request_id}]")
 
@@ -818,14 +1238,26 @@ async def process_text_request(
 
 
 def get_id() -> str:
-    """Generate a unique ID for chat completions with timestamp and random component."""
+    """Generate a unique ID for chat completions with timestamp and random component.
+
+    Returns
+    -------
+    str
+        Unique chat completion ID.
+    """
     timestamp = int(time.time())
     random_suffix = random.randint(0, 999999)
     return f"chatcmpl_{timestamp}{random_suffix:06d}"
 
 
 def get_tool_call_id() -> str:
-    """Generate a unique ID for tool calls with timestamp and random component."""
+    """Generate a unique ID for tool calls with timestamp and random component.
+
+    Returns
+    -------
+    str
+        Unique tool call ID.
+    """
     timestamp = int(time.time())
     random_suffix = random.randint(0, 999999)
     return f"call_{timestamp}{random_suffix:06d}"
@@ -837,7 +1269,24 @@ def format_final_response(
     request_id: str | None = None,
     usage: UsageInfo | None = None,
 ) -> ChatCompletionResponse:
-    """Format the final non-streaming response."""
+    """Format the final non-streaming response.
+
+    Parameters
+    ----------
+    response : str or dict[str, Any]
+        The response content.
+    model : str
+        Model name.
+    request_id : str or None, optional
+        Request ID, by default None.
+    usage : UsageInfo or None, optional
+        Usage information, by default None.
+
+    Returns
+    -------
+    ChatCompletionResponse
+        Formatted chat completion response.
+    """
     if isinstance(response, str):
         return ChatCompletionResponse(
             id=get_id(),

@@ -101,8 +101,8 @@ class Node:
 
 ### Documentation
 
-- **Docstrings required**: All modules, classes, and methods must have descriptive docstrings.
-- **Docstring format**: Use triple double-quotes. Method docstrings must follow NumPy style, with sections for Parameters, Returns, and Raises where applicable. The first line should be a concise summary; additional lines may include extended descriptions.
+- **Docstrings required**: All modules, classes, and methods, including private methods, must have descriptive docstrings.
+- **Docstring format**: Use triple double-quotes. Method docstrings, including private method docstrings, must follow NumPy style, with sections for Parameters, Returns, and Raises where applicable. The first line should be a concise summary; additional lines may include extended descriptions.
 - **Update existing docstrings**: If modifying a function's behavior, update its docstring to reflect changes.
 
 **Example:**

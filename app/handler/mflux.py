@@ -251,12 +251,12 @@ class MLXFluxHandler:
                 temp_file_path = temp_file.name
                 input_image.save(temp_file_path, format="PNG")
                 temp_file.close()
-            except Exception as temp_error:
-                logger.error(f"Failed to create temporary file: {temp_error!s}")
+            except Exception as e:
+                logger.error(f"Failed to create temporary file: {type(e).__name__}: {e}")
                 raise HTTPException(
                     status_code=HTTPStatus.INTERNAL_SERVER_ERROR,
                     detail="Failed to process image for editing",
-                ) from temp_error
+                ) from e
 
             # Prepare request data with all necessary parameters
             request_data = {

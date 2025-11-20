@@ -45,6 +45,10 @@ class MLXServerConfig:
     trust_remote_code: bool = False
     jit_enabled: bool = False
     auto_unload_minutes: int | None = None
+    name: str | None = None
+    group: str | None = None
+    is_default_model: bool = False
+    enable_status_page: bool = True
 
     # Used to capture raw CLI input before processing
     lora_paths_str: str | None = None
@@ -67,7 +71,6 @@ class MLXServerConfig:
         - Validate that ``auto_unload_minutes`` is positive when set.
         - Normalize ``log_level`` to uppercase.
         """
-
         # Process comma-separated LoRA paths and scales into lists (or None)
         if self.lora_paths_str:
             self.lora_paths = [p.strip() for p in self.lora_paths_str.split(",") if p.strip()]
@@ -111,6 +114,16 @@ class MLXServerConfig:
 
         if isinstance(self.log_level, str):
             self.log_level = self.log_level.upper()
+
+        if self.name is not None:
+            self.name = self.name.strip()
+            if not self.name:
+                self.name = None
+
+        if self.group is not None:
+            self.group = self.group.strip()
+            if not self.group:
+                self.group = None
 
     @property
     def model_identifier(self) -> str:

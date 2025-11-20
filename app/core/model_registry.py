@@ -4,174 +4,135 @@ from __future__ import annotations
 
 import asyncio
 import time
-from typing import Any
+from typing import Any, cast
 
 from loguru import logger
 
 from ..schemas.model import ModelMetadata
 
+_UNSET = object()
+
 
 class ModelRegistry:
-    """
-    Registry for managing model handlers.
-
-    Maintains a thread-safe registry of loaded models and their handlers.
-    In Phase 1, this wraps the existing single-model flow. Future phases
-    will extend this to support multi-model loading and hot-swapping.
-
-    Attributes
-    ----------
-        _handlers: Dict mapping model_id to handler instance
-        _metadata: Dict mapping model_id to ModelMetadata
-        _lock: Async lock for thread-safe operations
-    """
+    """Asyncio event-loop-safe registry for model handlers and metadata."""
 
     def __init__(self) -> None:
-        """Initialize empty model registry."""
-        self._handlers: dict[str, Any] = {}
+        self._handlers: dict[str, Any | None] = {}
         self._metadata: dict[str, ModelMetadata] = {}
+        self._extra: dict[str, dict[str, Any]] = {}
         self._lock = asyncio.Lock()
         logger.info("Model registry initialized")
 
     async def register_model(
         self,
         model_id: str,
-        handler: Any,
+        handler: Any | None,
         model_type: str,
         context_length: int | None = None,
+        metadata_extras: dict[str, Any] | None = None,
     ) -> None:
-        """
-        Register a model handler with metadata.
+        """Register a model handler with metadata."""
 
-        Args:
-            model_id: Unique identifier for the model
-            handler: Handler instance (MLXLMHandler, MLXVLMHandler, etc.)
-            model_type: Type of model (lm, multimodal, embeddings, etc.)
-            context_length: Maximum context length (if applicable)
-
-        Raises
-        ------
-            ValueError: If model_id already registered
-        """
         async with self._lock:
             if model_id in self._handlers:
                 raise ValueError(f"Model '{model_id}' is already registered")
 
-            # Create metadata
             metadata = ModelMetadata(
                 id=model_id,
                 type=model_type,
                 context_length=context_length,
                 created_at=int(time.time()),
             )
+            base_metadata = {
+                "model_type": model_type,
+                "context_length": context_length,
+                "status": "initialized" if handler else "unloaded",
+            }
+            if metadata_extras:
+                base_metadata.update(metadata_extras)
 
-            # Store handler and metadata
             self._handlers[model_id] = handler
             self._metadata[model_id] = metadata
+            self._extra[model_id] = base_metadata
 
             logger.info(
                 f"Registered model: {model_id} (type={model_type}, context_length={context_length})"
             )
 
-    def get_handler(self, model_id: str) -> Any:
-        """
-        Get handler for a specific model.
+    async def update_model_state(
+        self,
+        model_id: str,
+        *,
+        handler: Any | None | object = _UNSET,
+        status: str | None = None,
+        metadata_updates: dict[str, Any] | None = None,
+    ) -> None:
+        """Update handler attachment and metadata for a registered model."""
 
-        Args:
-            model_id: Model identifier
+        async with self._lock:
+            if model_id not in self._handlers:
+                raise KeyError(f"Model '{model_id}' not found in registry")
 
-        Returns
-        -------
-            Handler instance
+            if handler is not _UNSET:
+                self._handlers[model_id] = cast("Any | None", handler)
+                if handler is not None:
+                    self._metadata[model_id].created_at = int(time.time())
 
-        Raises
-        ------
-            KeyError: If model_id not found
-        """
+            entry = self._extra.setdefault(model_id, {})
+            if metadata_updates:
+                entry.update(metadata_updates)
+            if status is not None:
+                entry["status"] = status
+
+    async def unregister_model(self, model_id: str) -> None:
+        """Remove a model from the registry."""
+
+        async with self._lock:
+            if model_id not in self._handlers:
+                raise KeyError(f"Model '{model_id}' not found in registry")
+
+            del self._handlers[model_id]
+            del self._metadata[model_id]
+            self._extra.pop(model_id, None)
+            logger.info(f"Unregistered model: {model_id}")
+
+    def get_handler(self, model_id: str) -> Any | None:
+        """Return the handler bound to ``model_id`` (may be ``None``)."""
+
         if model_id not in self._handlers:
             raise KeyError(f"Model '{model_id}' not found in registry")
         return self._handlers[model_id]
 
     def list_models(self) -> list[dict[str, Any]]:
-        """
-        List all registered models with metadata.
+        """Return OpenAI-compatible metadata for registered models."""
 
-        Returns
-        -------
-            List of model metadata dicts in OpenAI API format
-        """
-        return [
-            {
+        output: list[dict[str, Any]] = []
+        for model_id, metadata in self._metadata.items():
+            entry = {
                 "id": metadata.id,
                 "object": metadata.object,
                 "created": metadata.created_at,
                 "owned_by": metadata.owned_by,
             }
-            for metadata in self._metadata.values()
-        ]
+            extra = self._extra.get(model_id)
+            if extra:
+                entry["metadata"] = extra
+            output.append(entry)
+        return output
 
     def get_metadata(self, model_id: str) -> ModelMetadata:
-        """
-        Get metadata for a specific model.
+        """Return the stored metadata for ``model_id``."""
 
-        Args:
-            model_id: Model identifier
-
-        Returns
-        -------
-            ModelMetadata instance
-
-        Raises
-        ------
-            KeyError: If model_id not found
-        """
         if model_id not in self._metadata:
             raise KeyError(f"Model '{model_id}' not found in registry")
         return self._metadata[model_id]
 
-    async def unregister_model(self, model_id: str) -> None:
-        """
-        Unregister a model (stub for future implementation).
-
-        In Phase 1, this just removes from registry. Future phases will
-        implement proper cleanup (handler.cleanup(), memory release, etc.).
-
-        Args:
-            model_id: Model identifier
-
-        Raises
-        ------
-            KeyError: If model_id not found
-        """
-        async with self._lock:
-            if model_id not in self._handlers:
-                raise KeyError(f"Model '{model_id}' not found in registry")
-
-            # TODO Phase 2: Call handler.cleanup() before removing
-            del self._handlers[model_id]
-            del self._metadata[model_id]
-
-            logger.info(f"Unregistered model: {model_id}")
-
     def has_model(self, model_id: str) -> bool:
-        """
-        Check if a model is registered.
+        """Return ``True`` when the model is registered."""
 
-        Args:
-            model_id: Model identifier
-
-        Returns
-        -------
-            True if model is registered, False otherwise
-        """
         return model_id in self._handlers
 
     def get_model_count(self) -> int:
-        """
-        Get count of registered models.
+        """Return how many models are registered."""
 
-        Returns
-        -------
-            Number of registered models
-        """
         return len(self._handlers)

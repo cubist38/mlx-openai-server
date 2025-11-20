@@ -7,7 +7,11 @@ from types import SimpleNamespace
 
 from fastapi.responses import JSONResponse
 from mlx_openai_server.api import endpoints
-from mlx_openai_server.schemas.openai import HealthCheckResponse, HealthCheckStatus
+from mlx_openai_server.schemas.openai import (
+    HealthCheckResponse,
+    HealthCheckStatus,
+    HubStatusResponse,
+)
 
 
 class _DummyHandler:
@@ -21,7 +25,10 @@ class _DummyHandlerManager:
 
 
 def _build_state(
-    *, handler_manager: _DummyHandlerManager | None, handler: _DummyHandler | None
+    *,
+    handler_manager: _DummyHandlerManager | None,
+    handler: _DummyHandler | None,
+    registry: object | None = None,
 ) -> SimpleNamespace:
     metadata_entry = {
         "id": "test-model",
@@ -35,6 +42,7 @@ def _build_state(
         handler=handler,
         server_config=SimpleNamespace(model_identifier="test-model"),
         model_metadata=[metadata_entry],
+        registry=registry,
     )
 
 
@@ -73,3 +81,81 @@ def test_health_reports_initialized_when_handler_loaded() -> None:
     assert isinstance(response, HealthCheckResponse)
     assert response.model_status == "initialized"
     assert response.model_id == "loaded-model"
+
+
+def test_health_reports_ok_when_controller_present() -> None:
+    """Hub controller alone should mark the health endpoint as OK."""
+
+    state = _build_state(handler_manager=None, handler=None)
+    state.hub_controller = object()
+    request = SimpleNamespace(app=SimpleNamespace(state=state))
+
+    response = asyncio.run(endpoints.health(request))
+    assert isinstance(response, HealthCheckResponse)
+    assert response.status == HealthCheckStatus.OK
+    assert response.model_status == "controller"
+
+
+def test_hub_status_prefers_registry_snapshot() -> None:
+    """Hub status should reflect registry data when available."""
+
+    registry_payload = [
+        {
+            "id": "alpha",
+            "object": "model",
+            "created": 111,
+            "owned_by": "local",
+            "metadata": {"status": "initialized"},
+        },
+        {
+            "id": "beta",
+            "object": "model",
+            "created": 222,
+            "owned_by": "local",
+            "metadata": {"status": "unloaded"},
+        },
+    ]
+
+    class _Registry:
+        def list_models(self) -> list[dict[str, object]]:
+            return registry_payload
+
+    state = _build_state(handler_manager=None, handler=None, registry=_Registry())
+    state.hub_config_path = "/tmp/does-not-exist-hub.yaml"
+    request = SimpleNamespace(app=SimpleNamespace(state=state))
+
+    response = asyncio.run(endpoints.hub_status(request))
+    assert isinstance(response, HubStatusResponse)
+    assert response.counts.registered == 2
+    assert response.counts.started == 1
+    assert response.counts.loaded == 1
+    assert response.warnings == []
+    assert response.controller_available is False
+
+
+def test_hub_status_falls_back_to_cached_metadata() -> None:
+    """When registry missing, hub status should use cached metadata with warnings."""
+
+    state = _build_state(handler_manager=None, handler=None, registry=None)
+    state.hub_config_path = "/tmp/does-not-exist-hub.yaml"
+    request = SimpleNamespace(app=SimpleNamespace(state=state))
+
+    response = asyncio.run(endpoints.hub_status(request))
+    assert isinstance(response, HubStatusResponse)
+    assert response.counts.registered == 1
+    assert response.counts.started == 0
+    assert response.warnings  # warning present
+    assert response.controller_available is False
+
+
+def test_hub_status_marks_controller_available_when_present() -> None:
+    """Controller flag reports availability when attached to app state."""
+
+    state = _build_state(handler_manager=None, handler=None, registry=None)
+    state.hub_config_path = "/tmp/does-not-exist-hub.yaml"
+    state.hub_controller = object()
+    request = SimpleNamespace(app=SimpleNamespace(state=state))
+
+    response = asyncio.run(endpoints.hub_status(request))
+    assert isinstance(response, HubStatusResponse)
+    assert response.controller_available is True

@@ -428,6 +428,100 @@ class ModelsResponse(OpenAIBaseModel):
     data: list[Model] = Field(..., description="List of models.")
 
 
+class HubStatusCounts(OpenAIBaseModel):
+    """Aggregate counters for hub/registry state."""
+
+    registered: int = Field(0, description="Number of models known to the hub registry.")
+    started: int = Field(
+        0,
+        description=(
+            "Number of models with an active worker process as reported by the hub manager."
+        ),
+    )
+    loaded: int = Field(
+        0,
+        description=(
+            "Number of models reporting an active memory handler when runtime data is available; "
+            "falls back to process-level 'running' counts otherwise."
+        ),
+    )
+
+
+class HubStatusResponse(OpenAIBaseModel):
+    """Response payload for the hub status surface."""
+
+    status: Literal["ok", "degraded"] = Field(
+        "ok",
+        description=(
+            "Overall hub status. 'degraded' indicates warnings or missing registry data but the "
+            "server is still responding."
+        ),
+    )
+    timestamp: int = Field(
+        ..., description="Unix timestamp (seconds) when this snapshot was generated."
+    )
+    host: str | None = Field(
+        None, description="Hostname bound by the shared OpenAI-compatible endpoint."
+    )
+    port: int | None = Field(
+        None, description="Port exposed by the shared OpenAI-compatible endpoint."
+    )
+    models: list[Model] = Field(
+        default_factory=list,
+        description="Registered models plus their metadata as reported by the registry.",
+    )
+    counts: HubStatusCounts = Field(
+        default_factory=lambda: HubStatusCounts(registered=0, started=0, loaded=0),
+        description="Summary counts derived from the registry snapshot.",
+    )
+    warnings: list[str] = Field(
+        default_factory=list,
+        description="Non-fatal warnings explaining why the hub status might be degraded.",
+    )
+    controller_available: bool = Field(
+        False,
+        description=(
+            "True when this FastAPI instance hosts the hub controller, which enables dashboard "
+            "memory controls and CLI load-model/unload-model commands."
+        ),
+    )
+
+
+class HubModelActionRequest(OpenAIBaseModel):
+    """Request payload for hub model lifecycle actions."""
+
+    reason: str | None = Field(
+        None,
+        description="Optional human-readable reason recorded in controller logs.",
+    )
+
+
+class HubModelActionResponse(OpenAIBaseModel):
+    """Response payload emitted after hub model actions."""
+
+    status: Literal["ok"] = Field("ok", description="Indicates the action was accepted.")
+    action: Literal["start-model", "stop-model", "load-model", "unload-model"] = Field(
+        ...,
+        description="Action that was performed.",
+    )
+    model: str = Field(..., description="Model name targeted by the action.")
+    message: str | None = Field(None, description="Additional context about the action outcome.")
+
+
+class HubServiceActionResponse(OpenAIBaseModel):
+    """Response payload for hub service management commands."""
+
+    status: Literal["ok"] = Field("ok", description="Indicates the manager accepted the command.")
+    action: Literal["start", "stop", "reload"] = Field(
+        ..., description="Service-level action executed by the hub manager."
+    )
+    message: str | None = Field(None, description="Human-readable summary of the outcome.")
+    details: dict[str, Any] | None = Field(
+        default=None,
+        description="Optional structured payload (diffs, PID info, etc.).",
+    )
+
+
 class ImageSize(str, Enum):
     """Available image sizes."""
 

@@ -44,6 +44,7 @@ import uvicorn
 
 from .api.endpoints import router
 from .config import MLXServerConfig
+from .core.model_registry import ModelRegistry
 from .handler import MFLUX_AVAILABLE, MLXFluxHandler
 from .handler.mlx_embeddings import MLXEmbeddingsHandler
 from .handler.mlx_lm import MLXLMHandler
@@ -130,6 +131,12 @@ def get_model_identifier(config_args: MLXServerConfig) -> str:
     """
 
     return config_args.model_path
+
+
+def get_registry_model_id(config_args: MLXServerConfig) -> str:
+    """Return the identifier used when registering models with the registry."""
+
+    return config_args.name or config_args.model_identifier
 
 
 def validate_mflux_config(
@@ -650,6 +657,45 @@ def create_lifespan(
             The FastAPI application instance.
         """
 
+        registry = ModelRegistry()
+        app.state.registry = registry
+        registry_model_id = get_registry_model_id(config_args)
+        base_registry_metadata = {
+            "model_path": config_args.model_identifier,
+            "model_type": config_args.model_type,
+            "context_length": config_args.context_length,
+            "jit_enabled": config_args.jit_enabled,
+            "auto_unload_minutes": config_args.auto_unload_minutes,
+            "group": config_args.group,
+        }
+        await registry.register_model(
+            model_id=registry_model_id,
+            handler=None,
+            model_type=config_args.model_type,
+            context_length=config_args.context_length,
+            metadata_extras=base_registry_metadata,
+        )
+        registry_tasks: set[asyncio.Task[None]] = set()
+
+        async def _sync_registry_update(handler: MLXHandler | None) -> None:
+            metadata_payload = dict(base_registry_metadata)
+            metadata_payload["model_path"] = getattr(
+                handler, "model_path", config_args.model_identifier
+            )
+            status = "initialized" if handler else "unloaded"
+            try:
+                await registry.update_model_state(
+                    registry_model_id,
+                    handler=handler,
+                    status=status,
+                    metadata_updates=metadata_payload,
+                )
+            except Exception as exc:  # pragma: no cover - defensive logging
+                logger.warning(
+                    f"Failed to synchronize model registry for {registry_model_id}. "
+                    f"{type(exc).__name__}: {exc}"
+                )
+
         def _update_model_metadata(handler: MLXHandler | None) -> None:
             model_metadata = getattr(app.state, "model_metadata", None)
             if not model_metadata:
@@ -667,6 +713,16 @@ def create_lifespan(
         def _update_handler(handler: MLXHandler | None) -> None:
             app.state.handler = handler
             _update_model_metadata(handler)
+            task = asyncio.create_task(_sync_registry_update(handler))
+
+            def _cleanup(done: asyncio.Task[None]) -> None:
+                registry_tasks.discard(done)
+                exc = done.exception()
+                if exc:
+                    logger.warning(f"Registry update task raised. {type(exc).__name__}: {exc}")
+
+            registry_tasks.add(task)
+            task.add_done_callback(_cleanup)
 
         handler_manager = LazyHandlerManager(config_args, on_change=_update_handler)
         app.state.handler_manager = handler_manager
@@ -701,6 +757,9 @@ def create_lifespan(
             logger.info("Resources cleaned up successfully")
         except Exception as e:
             logger.error(f"Error during shutdown. {type(e).__name__}: {e}")
+
+        if registry_tasks:
+            await asyncio.gather(*registry_tasks, return_exceptions=True)
 
         # Final memory cleanup
         mx.clear_cache()
@@ -763,10 +822,29 @@ def setup_server(config_args: MLXServerConfig) -> uvicorn.Config:
         }
     ]
 
+    configure_fastapi_app(app)
+
+    logger.info(f"Starting server on {config_args.host}:{config_args.port}")
+    return uvicorn.Config(
+        app=app,
+        host=config_args.host,
+        port=config_args.port,
+        log_level=config_args.log_level.lower(),
+        access_log=True,
+    )
+
+
+def configure_fastapi_app(app: FastAPI) -> None:
+    """Register routers, middleware, and global handlers on ``app``.
+
+    This helper centralizes FastAPI configuration that is shared between the
+    standard single-model server and the hub-aware server so both surfaces
+    expose identical middleware, routing, and error handling behavior.
+    """
+
     app.include_router(router)
     app.add_middleware(RequestTrackingMiddleware)
 
-    # Add CORS middleware
     app.add_middleware(
         CORSMiddleware,
         allow_origins=["*"],
@@ -779,76 +857,29 @@ def setup_server(config_args: MLXServerConfig) -> uvicorn.Config:
     async def add_process_time_header(
         request: Request, call_next: Callable[[Request], Awaitable[Response]]
     ) -> Response:
-        """Middleware to add processing time header and run cleanup.
+        """Attach timing metadata and trigger periodic memory cleanup."""
 
-        Measures request processing time, appends an ``X-Process-Time``
-        header, and increments a simple request counter used to trigger
-        periodic memory cleanup for long-running processes.
-
-        Parameters
-        ----------
-        request : Request
-            The incoming HTTP request.
-        call_next : Callable[[Request], Awaitable[Response]]
-            The next middleware/request handler in the chain.
-
-        Returns
-        -------
-        Response
-            The HTTP response with added processing time header.
-        """
         start_time = time.time()
         response = await call_next(request)
         process_time = time.time() - start_time
         response.headers["X-Process-Time"] = str(process_time)
 
-        # Periodic memory cleanup for long-running processes
-        if hasattr(request.app.state, "request_count"):
-            request.app.state.request_count += 1
-        else:
-            request.app.state.request_count = 1
+        request_count = getattr(request.app.state, "request_count", 0) + 1
+        request.app.state.request_count = request_count
 
-        # Clean up memory every 50 requests
-        if request.app.state.request_count % 50 == 0:
+        if request_count % 50 == 0:
             mx.clear_cache()
             gc.collect()
-            logger.debug(
-                f"Performed memory cleanup after {request.app.state.request_count} requests"
-            )
+            logger.debug(f"Performed memory cleanup after {request_count} requests")
 
         return response
 
     @app.exception_handler(Exception)
     async def global_exception_handler(_request: Request, exc: Exception) -> JSONResponse:
-        """Global exception handler that logs and returns a 500 payload.
+        """Log unexpected exceptions and emit a generic payload."""
 
-        Logs the exception (with traceback) and returns a generic JSON
-        response with a 500 status code so internal errors do not leak
-        implementation details to clients.
-
-        Parameters
-        ----------
-        _request : Request
-            The HTTP request that caused the exception (unused).
-        exc : Exception
-            The exception that was raised.
-
-        Returns
-        -------
-        JSONResponse
-            A JSON response with 500 status code and error details.
-        """
         logger.exception(f"Global exception handler caught. {type(exc).__name__}: {exc}")
         return JSONResponse(
             status_code=HTTPStatus.INTERNAL_SERVER_ERROR,
             content={"error": {"message": "Internal server error", "type": "internal_error"}},
         )
-
-    logger.info(f"Starting server on {config_args.host}:{config_args.port}")
-    return uvicorn.Config(
-        app=app,
-        host=config_args.host,
-        port=config_args.port,
-        log_level=config_args.log_level.lower(),
-        access_log=True,
-    )

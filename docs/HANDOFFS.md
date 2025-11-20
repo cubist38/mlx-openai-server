@@ -218,3 +218,181 @@ This document tracks session-to-session handoffs for the `mlx-openai-server-lab`
 - `app/server.py`
 - `tests/test_health_endpoint.py`
 - `README.md`
+
+---
+
+## Session 3: Phase 1 – Hub Bootstrap
+**Date**: 2025-11-22  
+**Branch**: `Create-hub`  
+**Goal**: Stand up the hub configuration surface (YAML + CLI scaffolding) as the first step toward multi-model orchestration.
+
+### Discoveries
+- Hub requirements introduce several net-new concerns: slugged model names, per-model logging, group-level throttling, and YAML-based defaults.
+- Existing `MLXServerConfig` needed additional metadata (`name`, `group`, `is_default_model`) so hub models can reuse the same dataclass without a parallel schema.
+- There was no YAML dependency in the project, so PyYAML was added to `pyproject.toml` for safe config parsing.
+
+### Actions Taken
+1. ✅ Added `PyYAML` dependency and created the `app/hub/` package scaffold.
+2. ✅ Implemented `app/hub/config.py` with:
+   - `MLXHubConfig` / `MLXHubGroupConfig` dataclasses
+   - Slug validation helpers and auto-created log directories
+   - Default log path resolution plus automatic per-model log-file selection when `log_file`/`no_log_file` are omitted.
+3. ✅ Extended `MLXServerConfig` to accept `name`, `group`, and `is_default_model`, keeping backwards compatibility with the existing CLI.
+4. ✅ Introduced an experimental `mlx-openai-server hub` CLI group with `start` (placeholder) and `status` subcommands that parse hub.yaml and print per-model summaries.
+5. ✅ Updated the README with a new “Hub Mode (experimental)” section describing the snake_case YAML schema, `log_path`, and example configuration; noted that orchestration will follow.
+6. ✅ Logged the new work in this handoff file for continuity.
+7. ✅ Wired the FastAPI lifespan into the `ModelRegistry`, added richer metadata/status propagation, and created regression tests for the registry/hub runtime helpers.
+
+### Next Actions
+- Wire the hub runtime into `app/server.py` so requests can be routed by `model` while respecting group `max_loaded` caps.
+- Implement background logging redirection (per-model log sinks) plus `/hub` HTTP endpoints and flash-message HTML.
+- Expand the CLI to send start/stop/load/unload operations to the hub controller once it exists.
+- Add regression tests for YAML parsing, CLI error cases, and the upcoming hub control plane.
+
+### Risks & Open Questions
+- Multi-model routing requires changes to `_get_handler_or_error` and the FastAPI lifespan to select handlers by name without regressing single-model behavior.
+- Per-model logging needs context-aware log sinks so concurrent requests do not interleave entries across files.
+- CLI semantics for `start` vs `load` vs `unload` still need to be finalized once the runtime semantics are implemented.
+
+### Files Changed
+- `pyproject.toml`
+- `app/config.py`
+- `app/cli.py`
+- `app/hub/__init__.py`
+- `app/hub/config.py` (new)
+- `README.md`
+
+---
+
+## Session 4: Phase 1 – Hub Status Surface
+**Date**: 2025-11-22  
+**Branch**: `Create-hub`  
+**Goal**: Expose a server-side `/hub/status` snapshot that surfaces registry data for the CLI and upcoming HTML dashboard.
+
+### Discoveries
+- The new `ModelRegistry` introduced in Session 3 is already wired into the FastAPI lifespan, which makes it trivial to expose a read-only view without altering handler logic.
+- Legacy single-model launches (without the registry) still populate `app.state.model_metadata`, so the HTTP endpoint can degrade gracefully by reusing that cache.
+
+### Actions Taken
+1. ✅ Added `HubStatusCounts` and `HubStatusResponse` schemas to `app/schemas/openai.py` to describe the JSON envelope shared by the CLI and dashboard.
+2. ✅ Implemented `GET /hub/status` in `app/api/endpoints.py` which reads from the registry, computes loaded/registered counts, and deduplicates warnings when falling back to cached metadata.
+3. ✅ Expanded `tests/test_health_endpoint.py` with hub-status regression coverage to ensure the endpoint prefers registry data and degrades cleanly without it.
+4. ✅ Documented the new API in the README (including a `curl` example) to guide early adopters.
+
+### Next Actions
+- Use the `/hub/status` payload to back the future `/hub` HTML dashboard and CLI streaming updates.
+- Start wiring hub orchestration (group-aware model loading/unloading) so the registry reflects multiple `LazyHandlerManager` instances instead of a single model.
+- Extend the CLI to poll `/hub/status` once the background controller exists, replacing the current `hub start` placeholder output.
+
+### Files Changed
+- `app/api/endpoints.py`
+- `app/schemas/openai.py`
+- `tests/test_health_endpoint.py`
+- `README.md`
+
+---
+
+## Session 5: Phase 1 – Hub Reservation Logic
+**Date**: 2025-11-22  
+**Branch**: `Create-hub`  
+**Goal**: Add real state transitions and group-slot accounting to `HubRuntime`, then expose the behavior through the existing `hub start` command as the first tangible orchestration step.
+
+### Discoveries
+- Group limits are easiest to enforce at the runtime planner level; tracking how many models are in `loading`/`loaded` states per group gives us deterministic capacity enforcement before handlers exist.
+- Auto-starting default models during `hub start` provides users with actionable insight (which worker processes will be hot vs on-demand) even before the controller loads handlers.
+
+### Actions Taken
+1. ✅ Extended `HubRuntime` with `can_load`, `mark_loading`, `mark_loaded`, `mark_failed`, and `mark_unloaded`, plus timestamp tracking and per-group usage counters.
+2. ✅ Taught the hub manager to auto-start default models (subject to group limits) so the service spins up only the workers operators flag as defaults.
+3. ✅ Created new regression tests in `tests/test_hub_runtime.py` that cover slot enforcement and transition sequencing to guard future controller work.
+
+### Next Actions
+- Implement a long-lived hub controller that drives these transitions by actually instantiating/tearing down handlers.
+- Surface the richer runtime state via `/hub/status` once multiple models are registered.
+- Connect the reservation logic to the ModelRegistry so reserved models appear immediately in the status API.
+
+### Files Changed
+- `app/hub/runtime.py`
+- `app/cli.py`
+- `tests/test_hub_runtime.py`
+
+---
+
+## Session 6: Phase 1 – Hub CLI & Docs Refresh
+**Date**: 2025-11-22  
+**Branch**: `Create-hub`  
+**Goal**: Document the finalized CLI flows and make the new per-request model requirement explicit for hub deployments.
+
+### Discoveries
+- Users were still following the earlier guidance to launch hub mode via `launch --hub-config`, so the README needed to highlight that the `hub` subcommand owns all hub workflows now.
+- Early adopters ran into 400 responses after enabling hub mode because existing API examples implied the `model` field was optional; the docs now need to clarify that a model name from `hub.yaml` is mandatory.
+
+### Actions Taken
+1. ✅ Expanded the README hub section with a bulletized CLI quick-reference covering `hub status` filtering, `--config` overrides, and `hub start` launch flows.
+2. ✅ Added a new "Selecting models when using hub mode" subsection that explains the required `model` field, points to `hub status`/`/hub/status` for discovery, and differentiates single-model launches.
+3. ✅ Updated the OpenAI client example to remind readers to switch the `model` argument when targeting a hub deployment and recorded the work in this handoff log.
+
+### Next Actions
+- Add dedicated CLI usage docs (or `--help` excerpts) once the controller exposes additional verbs such as `hub start-model`/`hub stop-model` and the complementary `hub load-model`/`hub unload-model` pair.
+- Continue refreshing the README as hub orchestration becomes the default experience so the distinction between single-model and hub launches remains obvious.
+
+### Files Changed
+- `README.md`
+- `docs/HANDOFFS.md`
+
+---
+
+## Session 7: Phase 1 – Hub CLI Actions & API Hooks
+**Date**: 2025-11-22  
+**Branch**: `Create-hub`  
+**Goal**: Let operators load/unload models and watch live hub status from the CLI by plumbing new HTTP endpoints through FastAPI.
+
+### Discoveries
+- The CLI already had helper plumbing for `/hub/status`, so exposing new commands only required lightweight HTTP helpers plus controller endpoints.
+- We needed dedicated API routes for start/stop actions because the controller previously only ran in-process; adding `/hub/models/{model}/start-model` and `/hub/models/{model}/stop-model` keeps the flow uniform for future automation.
+
+### Actions Taken
+1. ✅ Added `HubModelActionRequest/Response` schemas and new FastAPI routes to proxy controller `load_model`/`unload_model` actions with proper error handling.
+2. ✅ Extended the CLI with `hub start-model`, `hub stop-model`, and `hub watch` commands, wiring them to the controller endpoints alongside live status rendering and shared HTTP helpers.
+3. ✅ Created integration and CLI regression tests to cover the new endpoints and commands, ensuring HTTP calls are formed correctly and controller failures propagate.
+4. ✅ Updated the README to document the new commands so users know how to manage running hubs interactively.
+
+### Next Actions
+- Add richer error messaging/structured output for `hub watch` (e.g., columnized tables) once more metadata is available.
+- Consider authenticated variants of the new endpoints before exposing the hub server on shared networks.
+
+### Files Changed
+- `app/api/endpoints.py`
+- `app/cli.py`
+- `app/schemas/openai.py`
+- `README.md`
+- `docs/HANDOFFS.md`
+- `tests/test_hub_integration.py`
+- `tests/test_cli_hub_actions.py` (new)
+
+---
+
+## Session 8: Hub HTML Status Page
+**Date**: 2025-11-22  
+**Branch**: `Create-hub`  
+**Goal**: Ship a browser-friendly `/hub` dashboard that visualizes the existing `/hub/status` feed while respecting the `enable_status_page` toggle.
+
+### Discoveries
+- The FastAPI app already exposes `/hub/status` plus the CLI watcher, so the HTML page can rely entirely on that JSON without new controller dependencies.
+- `enable_status_page` was wired through configuration but unused; the new route now enforces the flag so operators can disable the surface when needed.
+
+### Actions Taken
+1. ✅ Added a static `/hub` HTML route that renders a lightweight dashboard, polls `/hub/status`, and surfaces warnings, counts, and model metadata.
+2. ✅ Created regression tests that verify the page loads (and is gated by `enable_status_page`).
+3. ✅ Updated the README and docs to describe the dashboard, revised the config table entry, and added usage instructions.
+
+### Next Actions
+- Continue with the observability/logging polish workstream outlined in the roadmap (per-model log bindings, structured output, etc.).
+
+### Files Changed
+- `app/api/endpoints.py`
+- `tests/test_hub_integration.py`
+- `README.md`
+- `docs/HANDOFFS.md`
+
+---
