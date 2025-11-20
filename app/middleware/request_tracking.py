@@ -1,8 +1,8 @@
 """Request tracking middleware for correlation IDs and request logging."""
 
+from collections.abc import Callable
 import time
 import uuid
-from typing import Callable
 
 from fastapi import Request, Response
 from loguru import logger
@@ -29,7 +29,8 @@ class RequestTrackingMiddleware(BaseHTTPMiddleware):
             request: Incoming FastAPI request
             call_next: Next middleware/handler in chain
 
-        Returns:
+        Returns
+        -------
             Response with X-Request-ID header added
         """
         # Get or generate request ID
@@ -43,8 +44,7 @@ class RequestTrackingMiddleware(BaseHTTPMiddleware):
         # Log request start
         start_time = time.time()
         logger.info(
-            f"Request started: {request.method} {request.url.path} "
-            f"[request_id={request_id}]"
+            f"Request started: {request.method} {request.url.path} [request_id={request_id}]"
         )
 
         try:
@@ -71,8 +71,8 @@ class RequestTrackingMiddleware(BaseHTTPMiddleware):
             duration = time.time() - start_time
             logger.error(
                 f"Request failed: {request.method} {request.url.path} "
-                f"error={str(e)} duration={duration:.3f}s "
+                f"error={e!s} duration={duration:.3f}s "
                 f"[request_id={request_id}]",
-                exc_info=True
+                exc_info=True,
             )
             raise

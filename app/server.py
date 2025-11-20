@@ -12,16 +12,16 @@ Key exports:
     ready to run.
 """
 
+from contextlib import asynccontextmanager
 import gc
 import time
-from contextlib import asynccontextmanager
 
-import mlx.core as mx
-import uvicorn
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from loguru import logger
+import mlx.core as mx
+import uvicorn
 
 from .api.endpoints import router
 from .config import MLXServerConfig
@@ -97,7 +97,6 @@ def get_model_identifier(config_args: MLXServerConfig) -> str:
     str
         Value that identifies the model for handler initialization.
     """
-
     return config_args.model_path
 
 
@@ -122,7 +121,8 @@ def create_lifespan(config_args: MLXServerConfig):
             to initialize handlers (e.g., model_type, model_path,
             max_concurrency, queue_timeout, etc.).
 
-    Returns:
+    Returns
+    -------
         Callable: An asynccontextmanager usable as FastAPI ``lifespan``.
     """
 
@@ -223,7 +223,7 @@ def create_lifespan(config_args: MLXServerConfig):
             app.state.handler = handler
 
         except Exception as e:
-            logger.error(f"Failed to initialize MLX handler: {str(e)}")
+            logger.error(f"Failed to initialize MLX handler: {e!s}")
             raise
 
         # Initial memory cleanup
@@ -241,7 +241,7 @@ def create_lifespan(config_args: MLXServerConfig):
                 await app.state.handler.cleanup()
                 logger.info("Resources cleaned up successfully")
             except Exception as e:
-                logger.error(f"Error during shutdown: {str(e)}")
+                logger.error(f"Error during shutdown: {e!s}")
 
         # Final memory cleanup
         mx.clear_cache()
@@ -255,8 +255,6 @@ app = None
 
 
 def setup_server(config_args: MLXServerConfig) -> uvicorn.Config:
-    global app
-
     """Create and configure the FastAPI app and return a Uvicorn config.
 
     This function sets up logging, constructs the FastAPI application with
@@ -266,14 +264,16 @@ def setup_server(config_args: MLXServerConfig) -> uvicorn.Config:
     Note: This function mutates the module-level ``app`` global variable.
 
     Args:
-        args: Configuration object usually produced by the CLI. Expected
+        config_args: Configuration object usually produced by the CLI. Expected
             to have attributes like ``host``, ``port``, ``log_level``,
             and logging-related fields.
 
-    Returns:
+    Returns
+    -------
         uvicorn.Config: A configuration object that can be passed to
         ``uvicorn.Server(config).run()`` to start the application.
     """
+    global app
 
     # Configure logging based on CLI parameters
     configure_logging(
@@ -338,7 +338,7 @@ def setup_server(config_args: MLXServerConfig) -> uvicorn.Config:
         response with a 500 status code so internal errors do not leak
         implementation details to clients.
         """
-        logger.error(f"Global exception handler caught: {str(exc)}", exc_info=True)
+        logger.error(f"Global exception handler caught: {exc!s}", exc_info=True)
         return JSONResponse(
             status_code=500,
             content={"error": {"message": "Internal server error", "type": "internal_error"}},

@@ -1,6 +1,4 @@
-"""
-MLX model handlers for text, multimodal, image generation, and embeddings models.
-"""
+"""MLX model handlers for text, multimodal, image generation, and embeddings models."""
 
 from .mlx_embeddings import MLXEmbeddingsHandler
 from .mlx_lm import MLXLMHandler

@@ -81,7 +81,6 @@ def cli():
     Subcommands (such as ``launch``) are registered on this group and
     invoked by the console entry point.
     """
-    pass
 
 
 @cli.command()
@@ -207,7 +206,6 @@ def launch(
     ``MLXServerConfig`` and then calls the async ``start`` routine
     which handles the event loop and server lifecycle.
     """
-
     args = MLXServerConfig(
         model_path=model_path,
         model_type=model_type,

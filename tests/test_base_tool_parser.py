@@ -1,10 +1,15 @@
+"""Tests for the base tool parser."""
+
 import unittest
 
 from mlx_openai_server.handler.parser.base import BaseToolParser
 
 
 class TestBaseToolParser(unittest.TestCase):
+    """Test cases for BaseToolParser."""
+
     def setUp(self):
+        """Set up test cases."""
         self.test_cases = [
             {
                 "name": "simple function call",
@@ -122,6 +127,7 @@ class TestBaseToolParser(unittest.TestCase):
         ]
 
     def test_parse_stream(self):
+        """Test parsing stream."""
         for test_case in self.test_cases:
             with self.subTest(msg=test_case["name"]):
                 parser = BaseToolParser("<tool_call>", "</tool_call>")
