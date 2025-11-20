@@ -38,26 +38,22 @@ This document provides comprehensive guidelines for AI coding agents contributin
 
 This project uses the following tools to maintain consistent code quality:
 
-- **Black**: Automatic code formatter with a 100-character line length (configured in `pyproject.toml`)
-- **isort**: Import statement organizer with Black-compatible profile
-- **flake8**: Style guide enforcement (configured in `pyproject.toml` to ignore `E501` and `W503`)
+- **ruff**: Automatic code formatter with options configured in `pyproject.toml`
 
 ### Formatting Workflow
 
 Before committing code changes:
 
 ```bash
-./.venv/bin/black <file_or_directory>
-./.venv/bin/isort <file_or_directory>
-./.venv/bin/flake8 <file_or_directory>
+./.venv/bin/ruff check --fix <file_or_directory>
+./.venv/bin/ruff format <file_or_directory>
 ```
 
 Alternatively, format the entire project:
 
 ```bash
-./.venv/bin/black app/ tests/
-./.venv/bin/isort app/ tests/
-./.venv/bin/flake8 app/ tests/
+./.venv/bin/ruff check --fix app/ tests/
+./.venv/bin/ruff format app/ tests/
 ```
 
 ---
@@ -68,6 +64,7 @@ Alternatively, format the entire project:
 
 - **Mandatory typing**: Add type annotations to all function signatures, method signatures, and class attributes.
 - **Return types**: Always specify return types, including `None` when applicable.
+- **Minimize `Any`**: Do not just use `Any` for typing to make the error go away. Use appropriate type annotations and only use `Any` when applicable (ex. if there are > 3 different return types possible).
 - **Forward references**: Use `from __future__ import annotations` to defer evaluation of type annotations, allowing forward references without string literals.
 - **Python 3.11+ type hints**: Use built-in generic types instead of typing module equivalents (e.g., `dict[str, Any]` instead of `Dict[str, Any]`, `list[str]` instead of `List[str]`).
 
@@ -179,7 +176,9 @@ except json.JSONDecodeError as e:
 
 ### Logging Practices
 
-- **Use loguru**: The project uses `loguru` for logging. Import it as `from loguru import logger`.
+- **Use loguru**: 
+  - The project uses `loguru` for logging. Import it as `from loguru import logger`.
+  - Use f-string format for logging strings.
 - **Appropriate log levels**:
   - `logger.debug()`: Detailed diagnostic information
   - `logger.info()`: General informational messages (startup, shutdown, major operations)
@@ -209,7 +208,7 @@ except ModelLoadError as e:
 
 - **Explicit user request required**: Only create new branches or open pull requests when the user explicitly asks for it **or** when the user includes the hashtag `#github-pull-request-agent` in their request.
 - **Asynchronous agent handoff**: The `#github-pull-request-agent` hashtag signals that the task should be handed off to the asynchronous GitHub Copilot coding agent after all planning, analysis, and preparation are complete.
-- **Default behavior**: By default, work directly on the current branch and commit changes locally without creating PRs.
+- **No staging or committing without permission**: Agents must **not** stage (`git add`) or commit changes unless the user explicitly requests it. Only make code changes to files - leave git operations to the user.
 
 ### Commit Messages
 
@@ -271,7 +270,7 @@ When an agent cannot or chooses not to follow one or more guidelines in this doc
 **Example disclosure:**
 
 > **⚠️ Deviation Notice:**  
-> The code was not formatted with Black/isort because the dev dependencies are not installed in the current environment. Run `./.venv/bin/pip install -e '.[dev]'` to enable linting/formatting tools.
+> The code was not formatted with ruff because the dev dependencies are not installed in the current environment. Run `./.venv/bin/pip install -e '.[dev]'` to enable linting/formatting tools.
 
 ### Communication Principles
 
@@ -309,10 +308,9 @@ When an agent cannot or chooses not to follow one or more guidelines in this doc
 Before finalizing any code contribution, verify:
 
 - ✅ Virtual environment (`./.venv`) is used for all operations
-- ✅ Code is formatted with Black and isort
-- ✅ Code passes flake8 linting
+- ✅ Code passes ruff linting and formatting
 - ✅ Type annotations are present on all functions/methods
-- ✅ Docstrings follow PEP 257 conventions
+- ✅ Docstrings follow NumPy style conventions
 - ✅ Specific exceptions are caught (not bare `Exception`)
 - ✅ Appropriate logging is in place
 - ✅ Existing comments are preserved

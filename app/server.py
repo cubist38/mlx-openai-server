@@ -12,16 +12,22 @@ Key exports:
     ready to run.
 """
 
-import gc
-import time
-from contextlib import asynccontextmanager
+from __future__ import annotations
 
-import mlx.core as mx
-import uvicorn
+from collections.abc import AsyncIterator, Awaitable, Callable
+from contextlib import AbstractAsyncContextManager, asynccontextmanager
+import gc
+from http import HTTPStatus
+import sys
+import time
+
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from loguru import logger
+import mlx.core as mx
+from starlette.responses import Response
+import uvicorn
 
 from .api.endpoints import router
 from .config import MLXServerConfig
@@ -59,7 +65,7 @@ def configure_logging(
 
     # Add console handler
     logger.add(
-        lambda msg: print(msg),
+        sys.stdout,
         level=log_level,
         format="<green>{time:YYYY-MM-DD HH:mm:ss}</green> | "
         "<level>{level: <8}</level> | "
@@ -97,11 +103,12 @@ def get_model_identifier(config_args: MLXServerConfig) -> str:
     str
         Value that identifies the model for handler initialization.
     """
-
     return config_args.model_path
 
 
-def create_lifespan(config_args: MLXServerConfig):
+def create_lifespan(
+    config_args: MLXServerConfig,
+) -> Callable[[FastAPI], AbstractAsyncContextManager[None]]:
     """Create an async FastAPI lifespan context manager bound to configuration.
 
     The returned context manager performs the following actions during
@@ -117,17 +124,21 @@ def create_lifespan(config_args: MLXServerConfig):
     During shutdown the lifespan will attempt to call the handler's
     ``cleanup`` method and perform final memory cleanup.
 
-    Args:
-        config_args: Object containing CLI configuration attributes used
-            to initialize handlers (e.g., model_type, model_path,
-            max_concurrency, queue_timeout, etc.).
+    Parameters
+    ----------
+    config_args : MLXServerConfig
+        Object containing CLI configuration attributes used
+        to initialize handlers (e.g., model_type, model_path,
+        max_concurrency, queue_timeout, etc.).
 
-    Returns:
-        Callable: An asynccontextmanager usable as FastAPI ``lifespan``.
+    Returns
+    -------
+    Callable
+        An asynccontextmanager usable as FastAPI ``lifespan``.
     """
 
     @asynccontextmanager
-    async def lifespan(app: FastAPI) -> None:
+    async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         """FastAPI lifespan callable that initializes MLX handlers.
 
         On startup this function selects and initializes the correct
@@ -142,6 +153,13 @@ def create_lifespan(config_args: MLXServerConfig):
             FastAPI application instance being started.
         """
         try:
+            handler: (
+                MLXVLMHandler
+                | MLXFluxHandler
+                | MLXEmbeddingsHandler
+                | MLXWhisperHandler
+                | MLXLMHandler
+            )
             model_identifier = get_model_identifier(config_args)
             if config_args.model_type == "image-generation":
                 logger.info(f"Initializing MLX handler with model name: {model_identifier}")
@@ -223,7 +241,7 @@ def create_lifespan(config_args: MLXServerConfig):
             app.state.handler = handler
 
         except Exception as e:
-            logger.error(f"Failed to initialize MLX handler: {str(e)}")
+            logger.exception(f"Failed to initialize MLX handler: {type(e).__name__}: {e}")
             raise
 
         # Initial memory cleanup
@@ -241,7 +259,7 @@ def create_lifespan(config_args: MLXServerConfig):
                 await app.state.handler.cleanup()
                 logger.info("Resources cleaned up successfully")
             except Exception as e:
-                logger.error(f"Error during shutdown: {str(e)}")
+                logger.exception(f"Error during shutdown: {type(e).__name__}: {e}")
 
         # Final memory cleanup
         mx.clear_cache()
@@ -250,31 +268,29 @@ def create_lifespan(config_args: MLXServerConfig):
     return lifespan
 
 
-# App instance will be created during setup with the correct lifespan
-app = None
+# FastAPI app instance is created during setup with the correct lifespan
 
 
 def setup_server(config_args: MLXServerConfig) -> uvicorn.Config:
-    global app
-
     """Create and configure the FastAPI app and return a Uvicorn config.
 
     This function sets up logging, constructs the FastAPI application with
     a configured lifespan, registers routes and middleware, and returns a
     :class:`uvicorn.Config` ready to be used to run the server.
 
-    Note: This function mutates the module-level ``app`` global variable.
+    Parameters
+    ----------
+    config_args : MLXServerConfig
+        Configuration object usually produced by the CLI. Expected
+        to have attributes like ``host``, ``port``, ``log_level``,
+        and logging-related fields.
 
-    Args:
-        args: Configuration object usually produced by the CLI. Expected
-            to have attributes like ``host``, ``port``, ``log_level``,
-            and logging-related fields.
-
-    Returns:
-        uvicorn.Config: A configuration object that can be passed to
+    Returns
+    -------
+    uvicorn.Config
+        A configuration object that can be passed to
         ``uvicorn.Server(config).run()`` to start the application.
     """
-
     # Configure logging based on CLI parameters
     configure_logging(
         log_file=config_args.log_file,
@@ -302,12 +318,26 @@ def setup_server(config_args: MLXServerConfig) -> uvicorn.Config:
     )
 
     @app.middleware("http")
-    async def add_process_time_header(request: Request, call_next):
+    async def add_process_time_header(
+        request: Request, call_next: Callable[[Request], Awaitable[Response]]
+    ) -> Response:
         """Middleware to add processing time header and run cleanup.
 
         Measures request processing time, appends an ``X-Process-Time``
         header, and increments a simple request counter used to trigger
         periodic memory cleanup for long-running processes.
+
+        Parameters
+        ----------
+        request : Request
+            The incoming HTTP request.
+        call_next : Callable[[Request], Awaitable[Response]]
+            The next middleware or endpoint in the chain.
+
+        Returns
+        -------
+        Response
+            The HTTP response with added headers.
         """
         start_time = time.time()
         response = await call_next(request)
@@ -331,16 +361,28 @@ def setup_server(config_args: MLXServerConfig) -> uvicorn.Config:
         return response
 
     @app.exception_handler(Exception)
-    async def global_exception_handler(request: Request, exc: Exception):
+    async def global_exception_handler(_request: Request, exc: Exception) -> JSONResponse:
         """Global exception handler that logs and returns a 500 payload.
 
         Logs the exception (with traceback) and returns a generic JSON
         response with a 500 status code so internal errors do not leak
         implementation details to clients.
+
+        Parameters
+        ----------
+        _request : Request
+            The incoming HTTP request (unused).
+        exc : Exception
+            The exception that was raised.
+
+        Returns
+        -------
+        JSONResponse
+            A JSON response with error details.
         """
-        logger.error(f"Global exception handler caught: {str(exc)}", exc_info=True)
+        logger.exception(f"Global exception handler caught: {type(exc).__name__}: {exc!s}")
         return JSONResponse(
-            status_code=500,
+            status_code=HTTPStatus.INTERNAL_SERVER_ERROR,
             content={"error": {"message": "Internal server error", "type": "internal_error"}},
         )
 

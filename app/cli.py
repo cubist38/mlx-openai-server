@@ -5,6 +5,8 @@ This module defines the Click command group used by the package and the
 the ASGI server.
 """
 
+from __future__ import annotations
+
 import asyncio
 import sys
 
@@ -17,7 +19,7 @@ from .main import start
 from .version import __version__
 
 
-class UpperChoice(click.Choice):
+class UpperChoice(click.Choice[str]):
     """Case-insensitive choice type that returns uppercase values.
 
     This small convenience subclass normalizes user input in a
@@ -26,7 +28,7 @@ class UpperChoice(click.Choice):
     where the internal representation is uppercased.
     """
 
-    def normalize_choice(self, choice, ctx):
+    def normalize_choice(self, choice: str | None, ctx: click.Context | None) -> str | None:  # type: ignore[override]
         """Return the canonical uppercase choice or raise BadParameter.
 
         Parameters
@@ -75,20 +77,19 @@ logger.add(
 🚀 Version: %(version)s
 """,
 )
-def cli():
+def cli() -> None:
     """Top-level Click command group for the MLX server CLI.
 
     Subcommands (such as ``launch``) are registered on this group and
     invoked by the console entry point.
     """
-    pass
 
 
-@cli.command()
+@cli.command(help="Start the MLX OpenAI Server with the supplied flags")
 @click.option(
     "--model-path",
     required=True,
-    help="Path to the model (required for lm, multimodal, embeddings, image-generation, image-edit, whisper model types). With `image-generation` or `image-edit` model types, it should be the local path to the model.",
+    help="Path to the model (required for lm, multimodal, embeddings, image-generation, image-edit, whisper model types). Can be a local path or Hugging Face repository ID (e.g., 'blackforestlabs/FLUX.1-dev').",
 )
 @click.option(
     "--model-type",
@@ -180,34 +181,76 @@ def cli():
     help="Enable trust_remote_code when loading models. This allows loading custom code from model repositories.",
 )
 def launch(
-    model_path,
-    model_type,
-    context_length,
-    port,
-    host,
-    max_concurrency,
-    queue_timeout,
-    queue_size,
-    quantize,
-    config_name,
-    lora_paths,
-    lora_scales,
-    disable_auto_resize,
-    log_file,
-    no_log_file,
-    log_level,
-    enable_auto_tool_choice,
-    tool_call_parser,
-    reasoning_parser,
-    trust_remote_code,
+    model_path: str,
+    model_type: str,
+    context_length: int,
+    port: int,
+    host: str,
+    max_concurrency: int,
+    queue_timeout: int,
+    queue_size: int,
+    quantize: int,
+    config_name: str | None,
+    lora_paths: str | None,
+    lora_scales: str | None,
+    disable_auto_resize: bool,
+    log_file: str | None,
+    no_log_file: bool,
+    log_level: str,
+    enable_auto_tool_choice: bool,
+    tool_call_parser: str | None,
+    reasoning_parser: str | None,
+    trust_remote_code: bool,
 ) -> None:
     """Start the FastAPI/Uvicorn server with the supplied flags.
 
     The command builds a server configuration object using
     ``MLXServerConfig`` and then calls the async ``start`` routine
     which handles the event loop and server lifecycle.
-    """
 
+    Parameters
+    ----------
+    model_path : str
+        Path to the model (required for lm, multimodal, embeddings, image-generation, image-edit, whisper model types).
+    model_type : str
+        Type of model to run (lm, multimodal, image-generation, image-edit, embeddings, whisper).
+    context_length : int
+        Context length for language models.
+    port : int
+        Port to run the server on.
+    host : str
+        Host to run the server on.
+    max_concurrency : int
+        Maximum number of concurrent requests.
+    queue_timeout : int
+        Request timeout in seconds.
+    queue_size : int
+        Maximum queue size for pending requests.
+    quantize : int
+        Quantization level for the model.
+    config_name : str or None
+        Config name of the model.
+    lora_paths : str or None
+        Path to the LoRA file(s).
+    lora_scales : str or None
+        Scale factor for the LoRA file(s).
+    disable_auto_resize : bool
+        Disable automatic model resizing.
+    log_file : str or None
+        Path to log file.
+    no_log_file : bool
+        Disable file logging entirely.
+    log_level : str
+        Set the logging level.
+    enable_auto_tool_choice : bool
+        Enable automatic tool choice.
+    tool_call_parser : str or None
+        Specify tool call parser to use.
+    reasoning_parser : str or None
+        Specify reasoning parser to use.
+    trust_remote_code : bool
+        Enable trust_remote_code when loading models.
+    """
     args = MLXServerConfig(
         model_path=model_path,
         model_type=model_type,

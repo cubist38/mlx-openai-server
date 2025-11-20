@@ -1,8 +1,10 @@
 """Model registry for managing multiple model handlers."""
 
+from __future__ import annotations
+
 import asyncio
 import time
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 from loguru import logger
 
@@ -17,16 +19,17 @@ class ModelRegistry:
     In Phase 1, this wraps the existing single-model flow. Future phases
     will extend this to support multi-model loading and hot-swapping.
 
-    Attributes:
+    Attributes
+    ----------
         _handlers: Dict mapping model_id to handler instance
         _metadata: Dict mapping model_id to ModelMetadata
         _lock: Async lock for thread-safe operations
     """
 
-    def __init__(self):
+    def __init__(self) -> None:
         """Initialize empty model registry."""
-        self._handlers: Dict[str, Any] = {}
-        self._metadata: Dict[str, ModelMetadata] = {}
+        self._handlers: dict[str, Any] = {}
+        self._metadata: dict[str, ModelMetadata] = {}
         self._lock = asyncio.Lock()
         logger.info("Model registry initialized")
 
@@ -35,7 +38,7 @@ class ModelRegistry:
         model_id: str,
         handler: Any,
         model_type: str,
-        context_length: Optional[int] = None,
+        context_length: int | None = None,
     ) -> None:
         """
         Register a model handler with metadata.
@@ -46,7 +49,8 @@ class ModelRegistry:
             model_type: Type of model (lm, multimodal, embeddings, etc.)
             context_length: Maximum context length (if applicable)
 
-        Raises:
+        Raises
+        ------
             ValueError: If model_id already registered
         """
         async with self._lock:
@@ -66,8 +70,7 @@ class ModelRegistry:
             self._metadata[model_id] = metadata
 
             logger.info(
-                f"Registered model: {model_id} (type={model_type}, "
-                f"context_length={context_length})"
+                f"Registered model: {model_id} (type={model_type}, context_length={context_length})"
             )
 
     def get_handler(self, model_id: str) -> Any:
@@ -77,21 +80,24 @@ class ModelRegistry:
         Args:
             model_id: Model identifier
 
-        Returns:
+        Returns
+        -------
             Handler instance
 
-        Raises:
+        Raises
+        ------
             KeyError: If model_id not found
         """
         if model_id not in self._handlers:
             raise KeyError(f"Model '{model_id}' not found in registry")
         return self._handlers[model_id]
 
-    def list_models(self) -> List[Dict[str, Any]]:
+    def list_models(self) -> list[dict[str, Any]]:
         """
         List all registered models with metadata.
 
-        Returns:
+        Returns
+        -------
             List of model metadata dicts in OpenAI API format
         """
         return [
@@ -111,10 +117,12 @@ class ModelRegistry:
         Args:
             model_id: Model identifier
 
-        Returns:
+        Returns
+        -------
             ModelMetadata instance
 
-        Raises:
+        Raises
+        ------
             KeyError: If model_id not found
         """
         if model_id not in self._metadata:
@@ -131,7 +139,8 @@ class ModelRegistry:
         Args:
             model_id: Model identifier
 
-        Raises:
+        Raises
+        ------
             KeyError: If model_id not found
         """
         async with self._lock:
@@ -151,7 +160,8 @@ class ModelRegistry:
         Args:
             model_id: Model identifier
 
-        Returns:
+        Returns
+        -------
             True if model is registered, False otherwise
         """
         return model_id in self._handlers
@@ -160,7 +170,8 @@ class ModelRegistry:
         """
         Get count of registered models.
 
-        Returns:
+        Returns
+        -------
             Number of registered models
         """
         return len(self._handlers)
