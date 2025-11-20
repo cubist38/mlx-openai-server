@@ -38,26 +38,22 @@ This document provides comprehensive guidelines for AI coding agents contributin
 
 This project uses the following tools to maintain consistent code quality:
 
-- **Black**: Automatic code formatter with a 100-character line length (configured in `pyproject.toml`)
-- **isort**: Import statement organizer with Black-compatible profile
-- **flake8**: Style guide enforcement (configured in `pyproject.toml` to ignore `E501` and `W503`)
+- **ruff**: Automatic code formatter with options configured in `pyproject.toml`
 
 ### Formatting Workflow
 
 Before committing code changes:
 
 ```bash
-./.venv/bin/black <file_or_directory>
-./.venv/bin/isort <file_or_directory>
-./.venv/bin/flake8 <file_or_directory>
+./.venv/bin/ruff check --fix <file_or_directory>
+./.venv/bin/ruff format <file_or_directory>
 ```
 
 Alternatively, format the entire project:
 
 ```bash
-./.venv/bin/black app/ tests/
-./.venv/bin/isort app/ tests/
-./.venv/bin/flake8 app/ tests/
+./.venv/bin/ruff check --fix app/ tests/
+./.venv/bin/ruff format app/ tests/
 ```
 
 ---
@@ -271,7 +267,7 @@ When an agent cannot or chooses not to follow one or more guidelines in this doc
 **Example disclosure:**
 
 > **⚠️ Deviation Notice:**  
-> The code was not formatted with Black/isort because the dev dependencies are not installed in the current environment. Run `./.venv/bin/pip install -e '.[dev]'` to enable linting/formatting tools.
+> The code was not formatted with ruff because the dev dependencies are not installed in the current environment. Run `./.venv/bin/pip install -e '.[dev]'` to enable linting/formatting tools.
 
 ### Communication Principles
 
@@ -309,10 +305,9 @@ When an agent cannot or chooses not to follow one or more guidelines in this doc
 Before finalizing any code contribution, verify:
 
 - ✅ Virtual environment (`./.venv`) is used for all operations
-- ✅ Code is formatted with Black and isort
-- ✅ Code passes flake8 linting
+- ✅ Code passes ruff linting and formatting
 - ✅ Type annotations are present on all functions/methods
-- ✅ Docstrings follow PEP 257 conventions
+- ✅ Docstrings follow NumPy style conventions
 - ✅ Specific exceptions are caught (not bare `Exception`)
 - ✅ Appropriate logging is in place
 - ✅ Existing comments are preserved
