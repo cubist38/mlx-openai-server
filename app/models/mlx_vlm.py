@@ -64,7 +64,7 @@ class MLX_VLM:
                 with open(chat_template_file) as f:
                     self.processor.chat_template = f.read()
         except Exception as e:
-            raise ValueError(f"Error loading model: {e!s}") from e
+            raise ValueError(f"Error loading model: {e}") from e
 
     def _is_video_model(self) -> bool:
         return hasattr(self.config, "video_token_id") or hasattr(self.config, "video_token_index")

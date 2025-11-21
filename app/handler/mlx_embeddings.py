@@ -54,7 +54,7 @@ class MLXEmbeddingsHandler:
                 }
             ]
         except Exception as e:
-            logger.error(f"Error getting models: {e!s}")
+            logger.error(f"Error getting models. {type(e).__name__}: {e}")
             return []
 
     async def initialize(self, _config: dict[str, Any]) -> None:
@@ -101,9 +101,9 @@ class MLXEmbeddingsHandler:
             )
             raise HTTPException(status_code=HTTPStatus.TOO_MANY_REQUESTS, detail=content) from None
         except Exception as e:
-            logger.error(f"Error in embeddings generation: {e!s}")
+            logger.error(f"Error in embeddings generation. {type(e).__name__}: {e}")
             content = create_error_response(
-                f"Failed to generate embeddings: {e!s}",
+                f"Failed to generate embeddings: {e}",
                 "server_error",
                 HTTPStatus.INTERNAL_SERVER_ERROR,
             )
@@ -135,7 +135,7 @@ class MLXEmbeddingsHandler:
             raise ValueError(f"Unknown request type: {request_data.get('type')}")
 
         except Exception as e:
-            logger.error(f"Error processing embeddings request: {e!s}")
+            logger.error(f"Error processing embeddings request. {type(e).__name__}: {e}")
             # Clean up on error
             gc.collect()
             raise
@@ -165,5 +165,4 @@ class MLXEmbeddingsHandler:
                 self.model.cleanup()
             logger.info("MLXEmbeddingsHandler cleanup completed successfully")
         except Exception as e:
-            logger.error(f"Error during MLXEmbeddingsHandler cleanup: {e!s}")
-            raise
+            logger.error(f"Error during MLXEmbeddingsHandler cleanup. {type(e).__name__}: {e}")

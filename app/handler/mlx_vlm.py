@@ -106,7 +106,7 @@ class MLXVLMHandler:
                 }
             ]
         except Exception as e:
-            logger.error(f"Error getting models: {e!s}")
+            logger.error(f"Error getting models. {type(e).__name__}: {e}")
             return []
 
     def _create_parsers(self) -> tuple[Any | None, Any | None]:
@@ -162,7 +162,7 @@ class MLXVLMHandler:
                 return len(tokens)
             logger.warning("Could not find tokenizer in processor to count tokens")
         except Exception as e:
-            logger.warning(f"Failed to count tokens: {e!s}")
+            logger.warning(f"Failed to count tokens. {type(e).__name__}: {e}")
         return 0
 
     def _count_message_tokens(self, messages: list[dict[str, Any]], **kwargs: Any) -> int:
@@ -207,7 +207,7 @@ class MLXVLMHandler:
             return self._count_tokens(text)
 
         except Exception as e:
-            logger.warning(f"Failed to count message tokens: {e!s}")
+            logger.warning(f"Failed to count message tokens. {type(e).__name__}: {e}")
             # Fallback: rough estimate
             total_text = ""
             for msg in messages:
@@ -324,9 +324,11 @@ class MLXVLMHandler:
             # Preserve existing HTTP error semantics from request prep
             raise
         except Exception as e:
-            logger.error(f"Error in multimodal stream generation for request {request_id}: {e!s}")
+            logger.error(
+                f"Error in multimodal stream generation for request {request_id}. {type(e).__name__}: {e}"
+            )
             content = create_error_response(
-                f"Failed to generate multimodal stream: {e!s}",
+                f"Failed to generate multimodal stream: {e}",
                 "server_error",
                 HTTPStatus.INTERNAL_SERVER_ERROR,
             )
@@ -364,9 +366,9 @@ class MLXVLMHandler:
             # Preserve existing HTTP error semantics from request prep
             raise
         except Exception as e:
-            logger.error(f"Error in multimodal response generation: {e!s}")
+            logger.error(f"Error in multimodal response generation. {type(e).__name__}: {e}")
             content = create_error_response(
-                f"Failed to generate multimodal response: {e!s}",
+                f"Failed to generate multimodal response: {e}",
                 "server_error",
                 HTTPStatus.INTERNAL_SERVER_ERROR,
             )
@@ -449,22 +451,22 @@ class MLXVLMHandler:
             try:
                 await self.request_queue.stop()
             except Exception as e:
-                logger.error(f"Error stopping request queue: {e!s}")
+                logger.error(f"Error stopping request queue: {e}")
         if hasattr(self, "image_processor"):
             try:
                 await self.image_processor.cleanup()
             except Exception as e:
-                logger.error(f"Error cleaning up image processor: {e!s}")
+                logger.error(f"Error cleaning up image processor: {e}")
         if hasattr(self, "audio_processor"):
             try:
                 await self.audio_processor.cleanup()
             except Exception as e:
-                logger.error(f"Error cleaning up audio processor: {e!s}")
+                logger.error(f"Error cleaning up audio processor: {e}")
         if hasattr(self, "video_processor"):
             try:
                 await self.video_processor.cleanup()
             except Exception as e:
-                logger.error(f"Error cleaning up video processor: {e!s}")
+                logger.error(f"Error cleaning up video processor: {e}")
 
         # Force garbage collection after cleanup
         gc.collect()
@@ -516,7 +518,7 @@ class MLXVLMHandler:
             gc.collect()
 
         except Exception as e:
-            logger.error(f"Error processing multimodal request: {e!s}")
+            logger.error(f"Error processing multimodal request. {type(e).__name__}: {e}")
             # Clean up on error
             gc.collect()
             raise
@@ -677,9 +679,9 @@ class MLXVLMHandler:
         except HTTPException:
             raise
         except Exception as e:
-            logger.error(f"Failed to prepare multimodal request: {e!s}")
+            logger.error(f"Failed to prepare multimodal request. {type(e).__name__}: {e}")
             content = create_error_response(
-                f"Failed to process request: {e!s}", "bad_request", HTTPStatus.BAD_REQUEST
+                f"Failed to process request: {e}", "bad_request", HTTPStatus.BAD_REQUEST
             )
             raise HTTPException(status_code=HTTPStatus.BAD_REQUEST, detail=content) from e
         else:
@@ -711,7 +713,7 @@ class MLXVLMHandler:
                 base64.b64decode(encoded)
             except Exception as e:
                 content = create_error_response(
-                    f"Invalid base64 image: {e!s}", "invalid_request_error", HTTPStatus.BAD_REQUEST
+                    f"Invalid base64 image: {e}", "invalid_request_error", HTTPStatus.BAD_REQUEST
                 )
                 raise HTTPException(status_code=HTTPStatus.BAD_REQUEST, detail=content) from e
 
@@ -741,6 +743,6 @@ class MLXVLMHandler:
                 base64.b64decode(encoded)
             except Exception as e:
                 content = create_error_response(
-                    f"Invalid base64 audio: {e!s}", "invalid_request_error", HTTPStatus.BAD_REQUEST
+                    f"Invalid base64 audio: {e}", "invalid_request_error", HTTPStatus.BAD_REQUEST
                 )
                 raise HTTPException(status_code=HTTPStatus.BAD_REQUEST, detail=content) from e

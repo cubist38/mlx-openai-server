@@ -143,7 +143,7 @@ class RequestQueue:
             except asyncio.CancelledError:
                 break
             except Exception as e:
-                logger.error(f"Error in worker loop: {e!s}")
+                logger.error(f"Error in worker loop. {type(e).__name__}: {e}")
 
     async def _process_request(
         self, request: RequestItem[Any], processor: Callable[[Any], Awaitable[Any]]
@@ -180,7 +180,9 @@ class RequestQueue:
                 raise
             except Exception as e:
                 request.set_exception(e)
-                logger.error(f"Error processing request {request.request_id}: {e!s}")
+                logger.error(
+                    f"Error processing request {request.request_id}. {type(e).__name__}: {e}"
+                )
 
             finally:
                 # Always remove from active requests, even if an error occurred

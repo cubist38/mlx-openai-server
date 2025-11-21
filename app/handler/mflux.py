@@ -52,7 +52,7 @@ class MLXFluxHandler:
         Initialize the handler with the specified model path.
 
         Args:
-            model_path (str): Path to the model directory or model name for Flux.
+            model_path (str): Path to the model directory, model name, or Hugging Face repository ID (e.g., 'blackforestlabs/FLUX.1-dev').
             max_concurrency (int): Maximum number of concurrent model inference tasks.
             quantize (int): Quantization level for the model.
             config_name (str): Model config name (flux-schnell, flux-dev, etc.).
@@ -98,7 +98,7 @@ class MLXFluxHandler:
                 }
             ]
         except Exception as e:
-            logger.error(f"Error getting models: {e!s}")
+            logger.error(f"Error getting models. {type(e).__name__}: {e}")
             return []
 
     async def initialize(self, queue_config: dict[str, Any] | None = None) -> None:
@@ -174,9 +174,11 @@ class MLXFluxHandler:
             )
             raise HTTPException(status_code=HTTPStatus.TOO_MANY_REQUESTS, detail=content) from None
         except Exception as e:
-            logger.error(f"Error in image generation for request {request_id}: {e!s}")
+            logger.error(
+                f"Error in image generation for request {request_id}. {type(e).__name__}: {e}"
+            )
             content = create_error_response(
-                f"Failed to generate image: {e!s}", "server_error", HTTPStatus.INTERNAL_SERVER_ERROR
+                f"Failed to generate image: {e}", "server_error", HTTPStatus.INTERNAL_SERVER_ERROR
             )
             raise HTTPException(status_code=HTTPStatus.INTERNAL_SERVER_ERROR, detail=content) from e
         else:
@@ -228,21 +230,14 @@ class MLXFluxHandler:
         temp_file_path = None
 
         try:
-            # Read and validate image data
-            image_data = await image.read()
-            if not image_data:
-                raise HTTPException(
-                    status_code=HTTPStatus.BAD_REQUEST, detail="Empty image file received"
-                )
-
-            # Load and process image using proper utility function
+            # Process image data
             try:
                 input_image = Image.open(io.BytesIO(image_data)).convert("RGB")
-            except Exception as img_error:
-                logger.error(f"Failed to process image: {img_error!s}")
+            except Exception as e:
+                logger.error(f"Failed to process image. {type(e).__name__}: {e}")
                 raise HTTPException(
                     status_code=HTTPStatus.BAD_REQUEST, detail="Invalid or corrupted image file"
-                ) from img_error
+                ) from e
 
             width, height = input_image.size
             if image_edit_request.size is not None:
@@ -304,9 +299,11 @@ class MLXFluxHandler:
             raise
 
         except Exception as e:
-            logger.error(f"Unexpected error in image edit for request {request_id}: {e!s}")
+            logger.error(
+                f"Unexpected error in image edit for request {request_id}. {type(e).__name__}: {e}"
+            )
             content = create_error_response(
-                f"Failed to edit image: {e!s}", "server_error", HTTPStatus.INTERNAL_SERVER_ERROR
+                f"Failed to edit image: {e}", "server_error", HTTPStatus.INTERNAL_SERVER_ERROR
             )
             raise HTTPException(status_code=HTTPStatus.INTERNAL_SERVER_ERROR, detail=content) from e
         else:
@@ -319,9 +316,9 @@ class MLXFluxHandler:
                 try:
                     Path(temp_file_path).unlink()
                     logger.debug(f"Cleaned up temporary file: {temp_file_path}")
-                except OSError as cleanup_error:
+                except OSError as e:
                     logger.warning(
-                        f"Failed to cleanup temporary file {temp_file_path}: {cleanup_error!s}"
+                        f"Failed to cleanup temporary file {temp_file_path}. {type(e).__name__}: {e}"
                     )
 
             # Force garbage collection to free memory
@@ -403,7 +400,7 @@ class MLXFluxHandler:
             image = self.model(prompt=prompt, seed=seed, **model_params)
 
         except Exception as e:
-            logger.error(f"Error processing image generation request: {e!s}")
+            logger.error(f"Error processing image generation request: {e}")
             # Clean up on error
             gc.collect()
             raise
@@ -453,14 +450,14 @@ class MLXFluxHandler:
                     mx.clear_cache()
                     logger.info("MLX cache cleared successfully")
                 except Exception as e:
-                    logger.error(f"Error clearing MLX cache: {e!s}")
+                    logger.error(f"Error clearing MLX cache: {e}")
 
             # Clean up request queue
             if hasattr(self, "request_queue") and self.request_queue:
                 await self.request_queue.stop()
                 logger.info("Request queue stopped successfully")
         except Exception as e:
-            logger.error(f"Error during MLXFluxHandler cleanup: {e!s}")
+            logger.error(f"Error during MLXFluxHandler cleanup. {type(e).__name__}: {e}")
 
         # Force garbage collection
         gc.collect()

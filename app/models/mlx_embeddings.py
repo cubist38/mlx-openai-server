@@ -37,7 +37,7 @@ class MLX_Embeddings:
         try:
             self.model, self.tokenizer = load(model_path)
         except Exception as e:
-            raise ValueError(f"Error loading model: {e!s}") from e
+            raise ValueError(f"Error loading model: {e}") from e
 
     def _get_embeddings(self, texts: list[str], max_length: int = 512) -> mx.array:
         """
@@ -84,7 +84,9 @@ class MLX_Embeddings:
                         # Let the caller drop its reference; nothing to mutate here.
                         pass
                 except (KeyError, AttributeError, TypeError) as e:
-                    logger.warning(f"Error during embeddings array cleanup: {e!s}")
+                    logger.warning(
+                        f"Error during embeddings array cleanup. {type(e).__name__}: {e}"
+                    )
 
     def __call__(self, texts: list[str], max_length: int = 512) -> list[list[float]]:
         """
@@ -123,7 +125,7 @@ class MLX_Embeddings:
             mx.clear_cache()
             gc.collect()
         except Exception as e:
-            logger.warning(f"Error during cleanup: {e!s}")
+            logger.warning(f"Error during cleanup. {type(e).__name__}: {e}")
 
 
 if __name__ == "__main__":

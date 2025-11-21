@@ -61,7 +61,7 @@ class MLX_LM:
                 with open(chat_template_file) as f:
                     self.tokenizer.chat_template = f.read()
         except Exception as e:
-            raise ValueError(f"Error loading model: {e!s}") from e
+            raise ValueError(f"Error loading model: {e}") from e
 
     def _get_pad_token_id(self) -> int:
         """Get a safe pad token ID, falling back through options."""

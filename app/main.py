@@ -28,12 +28,18 @@ from .version import __version__
 
 
 def print_startup_banner(config_args: MLXServerConfig) -> None:
-    """Log a compact startup banner describing the selected config.
+    """
+    Log a compact startup banner describing the selected config.
 
     The function emits human-friendly log messages that summarize the
     runtime configuration (model path/type, host/port, concurrency,
     LoRA settings, and logging options). Intended for the user-facing
     startup output only.
+
+    Parameters
+    ----------
+    config_args : MLXServerConfig
+        Configuration object containing runtime settings to display.
     """
     logger.info("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
     logger.info(f"✨ MLX Server v{__version__} Starting ✨")
@@ -78,12 +84,18 @@ def print_startup_banner(config_args: MLXServerConfig) -> None:
 
 
 async def start(config: MLXServerConfig) -> None:
-    """Run the ASGI server using the provided configuration.
+    """
+    Run the ASGI server using the provided configuration.
 
     This coroutine wires the configuration into the server setup
     routine, logs progress, and starts the Uvicorn server. It handles
     KeyboardInterrupt and logs any startup failures before exiting the
     process with a non-zero code.
+
+    Parameters
+    ----------
+    config : MLXServerConfig
+        Configuration object for server setup.
     """
     try:
         # Display startup information
@@ -98,12 +110,13 @@ async def start(config: MLXServerConfig) -> None:
     except KeyboardInterrupt:
         logger.info("Server shutdown requested by user. Exiting...")
     except Exception as e:
-        logger.error(f"Server startup failed: {e!s}")
+        logger.error(f"Server startup failed: {e}")
         sys.exit(1)
 
 
 def main() -> None:
-    """Normalize process args and dispatch to the Click CLI.
+    """
+    Normalize process args and dispatch to the Click CLI.
 
     This helper gathers command-line arguments, inserts the "launch"
     subcommand when a subcommand is omitted for backwards compatibility,

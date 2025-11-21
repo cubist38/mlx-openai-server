@@ -3,12 +3,12 @@
 from __future__ import annotations
 
 import asyncio
-import gc
-import time
-import uuid
 from collections.abc import AsyncGenerator
+import gc
 from http import HTTPStatus
+import time
 from typing import Any
+import uuid
 
 from fastapi import HTTPException
 from loguru import logger
@@ -42,15 +42,24 @@ class MLXLMHandler:
         """
         Initialize the handler with the specified model path.
 
-        Args:
-            model_path (str): Path to the model directory.
-            context_length (int): Maximum context length for the model.
-            max_concurrency (int): Maximum number of concurrent model inference tasks.
-            enable_auto_tool_choice (bool): Enable automatic tool choice.
-            tool_call_parser (str): Name of the tool call parser to use (qwen3, glm4_moe, harmony, minimax, ...)
-            reasoning_parser (str): Name of the reasoning parser to use (qwen3, qwen3_next, glm4_moe, harmony, minimax, ...)
-            trust_remote_code (bool): Enable trust_remote_code when loading models.
-            chat_template_file (str): Path to a custom chat template file.
+        Parameters
+        ----------
+        model_path : str
+            Path to the model directory.
+        context_length : int, optional
+            Maximum context length for the model, by default 32768.
+        max_concurrency : int, optional
+            Maximum number of concurrent model inference tasks, by default 1.
+        enable_auto_tool_choice : bool, optional
+            Enable automatic tool choice, by default False.
+        tool_call_parser : str or None, optional
+            Name of the tool call parser to use (qwen3, glm4_moe, harmony, minimax, ...), by default None.
+        reasoning_parser : str or None, optional
+            Name of the reasoning parser to use (qwen3, qwen3_next, glm4_moe, harmony, minimax, ...), by default None.
+        trust_remote_code : bool, optional
+            Enable trust_remote_code when loading models, by default False.
+        chat_template_file : str
+            Path to a custom chat template file.
         """
         self.model_path = model_path
         self.model = MLX_LM(
@@ -95,12 +104,15 @@ class MLXLMHandler:
         """
         Count the number of tokens in a text string.
 
-        Args:
-            text: The text to count tokens for.
+        Parameters
+        ----------
+        text : str
+            The text to count tokens for.
 
         Returns
         -------
-            int: The number of tokens.
+        int
+            The number of tokens.
         """
         if not text:
             return 0
@@ -111,13 +123,17 @@ class MLXLMHandler:
         """
         Count the number of tokens in a list of messages after applying chat template.
 
-        Args:
-            messages: List of messages to count tokens for.
-            **kwargs: Additional arguments to pass to apply_chat_template.
+        Parameters
+        ----------
+        messages : list[dict[str, str]]
+            List of messages to count tokens for.
+        **kwargs : Any
+            Additional arguments to pass to apply_chat_template.
 
         Returns
         -------
-            int: The number of prompt tokens.
+        int
+            The number of prompt tokens.
         """
         try:
             input_tokens = self.model.tokenizer.apply_chat_template(
@@ -125,7 +141,7 @@ class MLXLMHandler:
             )
             return len(input_tokens)
         except Exception as e:
-            logger.warning(f"Failed to count message tokens: {e!s}")
+            logger.warning(f"Failed to count message tokens. {type(e).__name__}: {e}")
             # Fallback: rough estimate
             total_text = " ".join(
                 [msg.get("content", "") for msg in messages if isinstance(msg.get("content"), str)]
@@ -179,7 +195,7 @@ class MLXLMHandler:
                 }
             ]
         except Exception as e:
-            logger.error(f"Error getting models: {e!s}")
+            logger.error(f"Error getting models. {type(e).__name__}: {e}")
             return []
 
     async def initialize(self, queue_config: dict[str, Any] | None = None) -> None:
@@ -202,12 +218,15 @@ class MLXLMHandler:
 
         Uses the request queue for handling concurrent requests.
 
-        Args:
-            request: ChatCompletionRequest object containing the messages.
+        Parameters
+        ----------
+        request : ChatCompletionRequest
+            ChatCompletionRequest object containing the messages.
 
         Yields
         ------
-            str or dict: Response chunks (str) followed by usage info (dict) at the end.
+        str or dict
+            Response chunks (str) followed by usage info (dict) at the end.
         """
         request_id = f"text-{uuid.uuid4()}"
 
@@ -311,9 +330,11 @@ class MLXLMHandler:
             )
             raise HTTPException(status_code=HTTPStatus.TOO_MANY_REQUESTS, detail=content) from None
         except Exception as e:
-            logger.error(f"Error in text stream generation for request {request_id}: {e!s}")
+            logger.error(
+                f"Error in text stream generation for request {request_id}. {type(e).__name__}: {e}"
+            )
             content = create_error_response(
-                f"Failed to generate text stream: {e!s}",
+                f"Failed to generate text stream: {e}",
                 "server_error",
                 HTTPStatus.INTERNAL_SERVER_ERROR,
             )
@@ -325,12 +346,15 @@ class MLXLMHandler:
 
         Uses the request queue for handling concurrent requests.
 
-        Args:
-            request: ChatCompletionRequest object containing the messages.
+        Parameters
+        ----------
+        request : ChatCompletionRequest
+            ChatCompletionRequest object containing the messages.
 
         Returns
         -------
-            dict: Response content and usage info.
+        dict
+            Response content and usage info.
         """
         request_id = f"text-{uuid.uuid4()}"
 
@@ -359,9 +383,9 @@ class MLXLMHandler:
             )
             raise HTTPException(status_code=HTTPStatus.TOO_MANY_REQUESTS, detail=content) from None
         except Exception as e:
-            logger.error(f"Error in text response generation: {e!s}")
+            logger.error(f"Error in text response generation. {type(e).__name__}: {e}")
             content = create_error_response(
-                f"Failed to generate text response: {e!s}",
+                f"Failed to generate text response: {e}",
                 "server_error",
                 HTTPStatus.INTERNAL_SERVER_ERROR,
             )
@@ -422,12 +446,15 @@ class MLXLMHandler:
         """
         Generate embeddings for a given text input.
 
-        Args:
-            request: EmbeddingRequest object containing the text input.
+        Parameters
+        ----------
+        request : EmbeddingRequest
+            EmbeddingRequest object containing the text input.
 
         Returns
         -------
-            list[list[float]]: Embeddings for the input text.
+        list[list[float]]
+            Embeddings for the input text.
         """
         response: list[list[float]]
         try:
@@ -449,9 +476,9 @@ class MLXLMHandler:
             )
             raise HTTPException(status_code=HTTPStatus.TOO_MANY_REQUESTS, detail=content) from None
         except Exception as e:
-            logger.error(f"Error in embeddings generation: {e!s}")
+            logger.error(f"Error in embeddings generation. {type(e).__name__}: {e}")
             content = create_error_response(
-                f"Failed to generate embeddings: {e!s}",
+                f"Failed to generate embeddings: {e}",
                 "server_error",
                 HTTPStatus.INTERNAL_SERVER_ERROR,
             )
@@ -463,12 +490,15 @@ class MLXLMHandler:
         """
         Process a text request. This is the worker function for the request queue.
 
-        Args:
-            request_data: Dictionary containing the request data.
+        Parameters
+        ----------
+        request_data : dict[str, Any]
+            Dictionary containing the request data.
 
         Returns
         -------
-            tuple[Any, int]: The model's response and prompt token count.
+        tuple[Any, int]
+            The model's response and prompt token count.
         """
         try:
             # Check if the request is for embeddings
@@ -506,7 +536,7 @@ class MLXLMHandler:
             gc.collect()
 
         except Exception as e:
-            logger.error(f"Error processing text request: {e!s}")
+            logger.error(f"Error processing text request. {type(e).__name__}: {e}")
             # Clean up on error
             gc.collect()
             raise
@@ -536,7 +566,7 @@ class MLXLMHandler:
                 await self.request_queue.stop()
             logger.info("MLXLMHandler cleanup completed successfully")
         except Exception as e:
-            logger.error(f"Error during MLXLMHandler cleanup: {e!s}")
+            logger.error(f"Error during MLXLMHandler cleanup. {type(e).__name__}: {e}")
 
     async def _prepare_text_request(
         self, request: ChatCompletionRequest
@@ -544,11 +574,14 @@ class MLXLMHandler:
         """
         Prepare a text request by parsing model parameters and verifying the format of messages.
 
-        Args:
-            request: ChatCompletionRequest object containing the messages.
+        Parameters
+        ----------
+        request : ChatCompletionRequest
+            ChatCompletionRequest object containing the messages.
 
         Returns
         -------
+        tuple[list[dict[str, str]], dict[str, Any]]
             Tuple containing the formatted chat messages and model parameters.
         """
         try:
@@ -617,9 +650,9 @@ class MLXLMHandler:
             chat_messages.extend(non_system_messages)
             request_dict.pop("messages", None)
         except Exception as e:
-            logger.error(f"Failed to prepare text request: {e!s}")
+            logger.error(f"Failed to prepare text request. {type(e).__name__}: {e}")
             content = create_error_response(
-                f"Failed to process request: {e!s}", "bad_request", HTTPStatus.BAD_REQUEST
+                f"Failed to process request: {e}", "bad_request", HTTPStatus.BAD_REQUEST
             )
             raise HTTPException(status_code=HTTPStatus.BAD_REQUEST, detail=content) from e
         else:
