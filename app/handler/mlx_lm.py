@@ -562,14 +562,13 @@ class MLXLMHandler:
                     continue
                 if isinstance(content, list):
                     # For LM models, extract only text content and concatenate
-                    text_parts = []
-                    for item in content:
-                        if (
-                            isinstance(item, dict)
-                            and item.get("type") == "text"
-                            and item.get("text")
-                        ):
-                            text_parts.append(item["text"])
+                    text_parts = [
+                        item["text"]
+                        for item in content
+                        if isinstance(item, dict)
+                        and item.get("type") == "text"
+                        and item.get("text")
+                    ]
                     content = "\n".join(text_parts) if text_parts else ""
 
                 message["content"] = content

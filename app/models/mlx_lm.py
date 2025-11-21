@@ -18,13 +18,13 @@ from outlines.processors import JSONLogitsProcessor
 
 from ..utils.outlines_transformer_tokenizer import OutlinesTransformerTokenizer
 
-DEFAULT_TEMPERATURE = os.getenv("DEFAULT_TEMPERATURE", 0.7)
-DEFAULT_TOP_P = os.getenv("DEFAULT_TOP_P", 0.95)
-DEFAULT_TOP_K = os.getenv("DEFAULT_TOP_K", 20)
-DEFAULT_MIN_P = os.getenv("DEFAULT_MIN_P", 0.0)
-DEFAULT_SEED = os.getenv("DEFAULT_SEED", 0)
-DEFAULT_MAX_TOKENS = os.getenv("DEFAULT_MAX_TOKENS", 8192)
-DEFAULT_BATCH_SIZE = os.getenv("DEFAULT_BATCH_SIZE", 32)
+DEFAULT_TEMPERATURE = float(os.getenv("DEFAULT_TEMPERATURE", "0.7"))
+DEFAULT_TOP_P = float(os.getenv("DEFAULT_TOP_P", "0.95"))
+DEFAULT_TOP_K = int(os.getenv("DEFAULT_TOP_K", "20"))
+DEFAULT_MIN_P = float(os.getenv("DEFAULT_MIN_P", "0.0"))
+DEFAULT_SEED = int(os.getenv("DEFAULT_SEED", "0"))
+DEFAULT_MAX_TOKENS = int(os.getenv("DEFAULT_MAX_TOKENS", "8192"))
+DEFAULT_BATCH_SIZE = int(os.getenv("DEFAULT_BATCH_SIZE", "32"))
 
 
 class MLX_LM:

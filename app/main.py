@@ -110,7 +110,7 @@ def main():
     and delegates execution to :func:`app.cli.cli` through
     ``cli.main``.
     """
-    from .cli import cli
+    from .cli import cli  # noqa: PLC0415
 
     args = [str(x) for x in sys.argv[1:]]
     # Keep backwards compatibility: Add 'launch' subcommand if none is provided

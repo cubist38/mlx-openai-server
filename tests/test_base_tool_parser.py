@@ -138,17 +138,11 @@ class TestBaseToolParser(unittest.TestCase):
                     if result:
                         outputs.append(result)
 
-                self.assertEqual(
-                    len(outputs),
-                    len(test_case["expected_outputs"]),
-                    f"Expected {len(test_case['expected_outputs'])} outputs, got {len(outputs)}",
+                assert len(outputs) == len(test_case["expected_outputs"]), (
+                    f"Expected {len(test_case['expected_outputs'])} outputs, got {len(outputs)}"
                 )
 
-                for i, (output, expected) in enumerate(zip(outputs, test_case["expected_outputs"])):
-                    self.assertEqual(
-                        output, expected, f"Chunk {i}: Expected {expected}, got {output}"
-                    )
-
-
-if __name__ == "__main__":
-    unittest.main()
+                for i, (output, expected) in enumerate(
+                    zip(outputs, test_case["expected_outputs"], strict=True)
+                ):
+                    assert output == expected, f"Chunk {i}: Expected {expected}, got {output}"

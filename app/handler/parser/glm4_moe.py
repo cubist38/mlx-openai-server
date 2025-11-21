@@ -5,6 +5,7 @@ This module provides specialized parsers for GLM4 MoE model's tool calls and
 thinking traces, handling GLM4-specific JSON parsing and message conversion.
 """
 
+import ast
 import json
 import re
 from typing import Any
@@ -49,8 +50,6 @@ class Glm4MoEToolParser(BaseToolParser):
 
         # Try literal eval for Python literals
         try:
-            import ast
-
             return ast.literal_eval(value)
         except (ValueError, SyntaxError):
             pass

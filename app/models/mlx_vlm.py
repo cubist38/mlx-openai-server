@@ -15,10 +15,10 @@ from mlx_vlm.models.cache import make_prompt_cache
 from mlx_vlm.video_generate import process_vision_info
 
 # Default model parameters
-DEFAULT_MAX_TOKENS = os.getenv("DEFAULT_MAX_TOKENS", 8192)
-DEFAULT_TEMPERATURE = os.getenv("DEFAULT_TEMPERATURE", 0.0)
-DEFAULT_TOP_P = os.getenv("DEFAULT_TOP_P", 1.0)
-DEFAULT_SEED = os.getenv("DEFAULT_SEED", 0)
+DEFAULT_MAX_TOKENS = int(os.getenv("DEFAULT_MAX_TOKENS", "8192"))
+DEFAULT_TEMPERATURE = float(os.getenv("DEFAULT_TEMPERATURE", "0.0"))
+DEFAULT_TOP_P = float(os.getenv("DEFAULT_TOP_P", "1.0"))
+DEFAULT_SEED = int(os.getenv("DEFAULT_SEED", "0"))
 
 
 class MLX_VLM:
@@ -79,9 +79,9 @@ class MLX_VLM:
     def __call__(
         self,
         messages: list[dict[str, str]],
-        images: list[str] = None,
-        audios: list[str] = None,
-        videos: list[str] = None,
+        images: list[str] | None = None,
+        audios: list[str] | None = None,
+        videos: list[str] | None = None,
         stream: bool = False,
         **kwargs,
     ) -> str | Generator[str, None, None]:

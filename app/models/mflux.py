@@ -6,7 +6,7 @@ including Flux1 and Flux1Kontext variants with different configurations.
 """
 
 from abc import ABC, abstractmethod
-import os
+from pathlib import Path
 from typing import Any
 
 from loguru import logger
@@ -156,7 +156,7 @@ class BaseFluxModel(ABC):
     def _validate_model_path(self) -> bool:
         """Validate that the model path exists or is a valid model name."""
         # Check if it's a file path
-        if os.path.exists(self.model_path):
+        if Path(self.model_path).exists():
             return True
 
         # Check if it's a valid model name (for downloading)
@@ -240,7 +240,7 @@ class BaseFluxModel(ABC):
         # Add image_path if provided (for inpainting/editing)
         if "image_path" in kwargs:
             image_path = kwargs["image_path"]
-            if not os.path.exists(image_path):
+            if not Path(image_path).exists():
                 raise ModelGenerationError(f"Image path does not exist: {image_path}")
             config_params["image_path"] = image_path
 
@@ -422,11 +422,11 @@ class FluxModel:
             "type": self.config.model_type,
             "default_steps": self.config.default_steps,
             "default_guidance": self.config.default_guidance,
-            "is_loaded": self.flux._is_loaded if hasattr(self.flux, "_is_loaded") else False,
+            "is_loaded": self.flux._is_loaded if hasattr(self.flux, "_is_loaded") else False,  # noqa: SLF001
             "lora_paths": self.config.lora_paths,
             "lora_scales": self.config.lora_scales,
         }
 
     def is_loaded(self) -> bool:
         """Check if the model is loaded and ready for inference."""
-        return hasattr(self.flux, "_is_loaded") and self.flux._is_loaded
+        return hasattr(self.flux, "_is_loaded") and self.flux._is_loaded  # noqa: SLF001
