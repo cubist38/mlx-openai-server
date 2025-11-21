@@ -94,7 +94,7 @@ class AudioProcessor(BaseProcessor):
         """Process a single audio URL and return path to cached file."""
         return await self._process_single_media(audio_url)
 
-    async def process_audio_urls(self, audio_urls: list[str]) -> list[str | Exception]:
+    async def process_audio_urls(self, audio_urls: list[str]) -> list[str | BaseException]:
         """Process multiple audio URLs and return paths to cached files."""
         tasks = [self.process_audio_url(url) for url in audio_urls]
         results = await asyncio.gather(*tasks, return_exceptions=True)

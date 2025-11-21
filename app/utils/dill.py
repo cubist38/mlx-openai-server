@@ -15,19 +15,24 @@
 # limitations under the License.
 """Extends `dill` to support pickling more types and produce more consistent dumps."""
 
+from collections.abc import Callable, Iterable
 from io import BytesIO
 import sys
 from types import FunctionType
-from typing import Any, ClassVar
+from typing import TYPE_CHECKING, Any, BinaryIO, ClassVar
 
 import dill
 import xxhash
+
+if TYPE_CHECKING:
+    import spacy
+    import torch
 
 
 class Hasher:
     """Hasher that accepts python objects as inputs."""
 
-    dispatch: ClassVar[dict] = {}
+    dispatch: ClassVar[dict[Any, Any]] = {}
 
     def __init__(self) -> None:
         self.m = xxhash.xxh64()
@@ -106,16 +111,17 @@ class Pickler(dill.Pickler):
             obj = getattr(obj, "_torchdynamo_orig_callable", obj)
         dill.Pickler.save(self, obj, save_persistent_id=save_persistent_id)
 
-    def _batch_setitems(self, items: Any) -> None:
+    def _batch_setitems(self, items: Iterable[tuple[Any, Any]]) -> None:
         if self._legacy_no_dict_keys_sorting:
-            return super()._batch_setitems(items)
+            super()._batch_setitems(items)
+            return
         # Ignore the order of keys in a dict
         try:
             # Faster, but fails for unorderable elements
-            items = sorted(items)
+            sorted_items = sorted(items)
         except Exception:  # TypeError, decimal.InvalidOperation, etc.
-            items = sorted(items, key=lambda x: Hasher.hash(x[0]))
-        return super()._batch_setitems(items)
+            sorted_items = sorted(items, key=lambda x: Hasher.hash(x[0]))
+        super()._batch_setitems(sorted_items)
 
     def memoize(self, obj: Any) -> None:
         """Memoize an object, skipping strings to avoid id issues."""
@@ -124,7 +130,7 @@ class Pickler(dill.Pickler):
             dill.Pickler.memoize(self, obj)
 
 
-def pklregister(t: Any) -> None:
+def pklregister(t: Any) -> Callable[[Any], Any]:
     """Register a custom reducer for the type."""
 
     def proxy(func: Any) -> Any:
@@ -134,12 +140,12 @@ def pklregister(t: Any) -> None:
     return proxy
 
 
-def dump(obj: Any, file: Any) -> None:
+def dump(obj: Any, file: BinaryIO) -> None:
     """Pickle an object to a file."""
     Pickler(file, recurse=True).dump(obj)
 
 
-def dumps(obj: Any) -> Any:
+def dumps(obj: Any) -> bytes:
     """Pickle an object to a string."""
     file = BytesIO()
     dump(obj, file)
@@ -172,7 +178,7 @@ def _save_torchTensor(pickler: Any, obj: Any) -> None:
     import torch  # noqa: PLC0415
 
     # `torch.from_numpy` is not picklable in `torch>=1.11.0`
-    def create_torchTensor(np_array: Any, dtype: Any = None) -> Any:
+    def create_torchTensor(np_array: Any, dtype: Any = None) -> "torch.Tensor":
         tensor = torch.from_numpy(np_array)
         if dtype:
             tensor = tensor.type(dtype)
@@ -180,7 +186,7 @@ def _save_torchTensor(pickler: Any, obj: Any) -> None:
 
     log(pickler, f"To: {obj}")
     if obj.dtype == torch.bfloat16:
-        args = (obj.detach().to(torch.float).cpu().numpy(), torch.bfloat16)
+        args: tuple[Any, ...] = (obj.detach().to(torch.float).cpu().numpy(), torch.bfloat16)
     else:
         args = (obj.detach().cpu().numpy(),)
     pickler.save_reduce(create_torchTensor, args, obj=obj)
@@ -190,7 +196,7 @@ def _save_torchTensor(pickler: Any, obj: Any) -> None:
 def _save_torchGenerator(pickler: Any, obj: Any) -> None:
     import torch  # noqa: PLC0415
 
-    def create_torchGenerator(state: Any) -> Any:
+    def create_torchGenerator(state: Any) -> "torch.Generator":
         generator = torch.Generator()
         generator.set_state(state)
         return generator
@@ -204,7 +210,7 @@ def _save_torchGenerator(pickler: Any, obj: Any) -> None:
 def _save_spacyLanguage(pickler: Any, obj: Any) -> None:
     import spacy  # noqa: PLC0415
 
-    def create_spacyLanguage(config: Any, bytes: Any) -> Any:
+    def create_spacyLanguage(config: Any, bytes: Any) -> "spacy.Language":
         lang_cls = spacy.util.get_lang_class(config["nlp"]["lang"])
         lang_inst = lang_cls.from_config(config)
         return lang_inst.from_bytes(bytes)

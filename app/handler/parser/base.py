@@ -242,7 +242,18 @@ class BaseToolParser:
             A dictionary representing the parsed tool call, or None if parsing fails.
         """
         repaired_json = repair_json(tool_content)
-        return json.loads(repaired_json)
+        try:
+            parsed = json.loads(repaired_json)
+        except json.JSONDecodeError:
+            logger.warning(f"Error decoding JSON for tool content: {tool_content}")
+            return None
+
+        if isinstance(parsed, dict):
+            return parsed
+
+        # If the parsed content is not a dict, treat it as unparsable for tool calls.
+        logger.warning(f"Parsed tool content is not a dict: {parsed!r}")
+        return None
 
     def parse(self, content: str) -> tuple[list[dict[str, Any]], str]:
         """

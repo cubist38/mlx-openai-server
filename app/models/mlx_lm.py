@@ -7,9 +7,9 @@ streaming, and caching capabilities.
 
 from __future__ import annotations
 
-from collections.abc import Generator
 import gc
 import os
+from collections.abc import Generator
 from typing import Any
 
 import mlx.core as mx
@@ -17,7 +17,7 @@ from mlx_lm.generate import generate, stream_generate
 from mlx_lm.models.cache import make_prompt_cache
 from mlx_lm.sample_utils import make_logits_processors, make_sampler
 from mlx_lm.utils import load
-from outlines.processors import JSONLogitsProcessor
+from outlines.processors import OutlinesLogitsProcessor
 
 from ..utils.outlines_transformer_tokenizer import OutlinesTransformerTokenizer
 
@@ -47,7 +47,7 @@ class MLX_LM:
         chat_template_file: str = None,
     ) -> None:
         try:
-            self.model, self.tokenizer = load(
+            self.model, self.tokenizer, *_ = load(
                 model_path, lazy=False, tokenizer_config={"trust_remote_code": trust_remote_code}
             )
             self.pad_token_id = self.tokenizer.pad_token_id
@@ -125,7 +125,7 @@ class MLX_LM:
         str
             The model type string.
         """
-        return self.model_type
+        return str(self.model_type)
 
     def get_embeddings(
         self, prompts: list[str], batch_size: int = DEFAULT_BATCH_SIZE, *, normalize: bool = True
@@ -142,25 +142,26 @@ class MLX_LM:
             List of embeddings as lists of floats (one embedding per input prompt)
         """
         # Process in batches to optimize memory usage
-        all_embeddings = []
+        all_embeddings: list[list[float]] = []
         try:
             for i in range(0, len(prompts), batch_size):
                 batch_prompts = prompts[i : i + batch_size]
                 tokenized_batch = self._batch_process(batch_prompts, batch_size)
 
                 # Convert to MLX array for efficient computation
-                tokenized_batch = mx.array(tokenized_batch)
+                tokenized_array = mx.array(tokenized_batch)
 
                 try:
                     # Compute embeddings for batch
-                    batch_embeddings = self.model.model(tokenized_batch)
+                    batch_embeddings = self.model.model(tokenized_array)
                     pooled_embedding = self._apply_pooling_strategy(batch_embeddings)
                     if normalize:
                         pooled_embedding = self._apply_l2_normalization(pooled_embedding)
-                    all_embeddings.extend(pooled_embedding.tolist())
+                    all_embeddings.extend(pooled_embedding.tolist())  # type: ignore[arg-type]
                 finally:
                     # Explicitly free MLX arrays to prevent memory leaks
                     del tokenized_batch
+                    del tokenized_array
                     if "batch_embeddings" in locals():
                         del batch_embeddings
                     if "pooled_embedding" in locals():
@@ -178,7 +179,7 @@ class MLX_LM:
 
     def __call__(
         self, messages: list[dict[str, str]], *, stream: bool = False, **kwargs: Any
-    ) -> tuple[str | Generator[str, None, None], int]:
+    ) -> tuple[str | Generator[Any, None, None], int]:
         """
         Generate text response from the model.
 
@@ -211,7 +212,7 @@ class MLX_LM:
         json_schema = kwargs.get("schema")
         if json_schema:
             logits_processors.append(
-                JSONLogitsProcessor(
+                OutlinesLogitsProcessor(  # type: ignore[abstract,call-arg]
                     schema=json_schema, tokenizer=self.outlines_tokenizer, tensor_library_name="mlx"
                 )
             )

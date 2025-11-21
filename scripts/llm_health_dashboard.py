@@ -8,7 +8,7 @@ from dataclasses import dataclass, field
 import json
 import os
 import time
-from typing import Literal
+from typing import Any, Literal
 
 from loguru import logger
 
@@ -209,7 +209,7 @@ def streaming_sanity_check(client: httpx.Client, model_id: str) -> tuple[bool, s
     return True, f"chunks={chunk_count} chars~{content_chars}"
 
 
-def parse_chunk(data: dict) -> dict:
+def parse_chunk(data: dict[str, Any]) -> dict[str, Any]:
     """
     Parse and validate a streaming response chunk.
 
@@ -217,12 +217,12 @@ def parse_chunk(data: dict) -> dict:
 
     Parameters
     ----------
-    data : dict
+    data : dict[str, Any]
         The parsed JSON data from a streaming chunk.
 
     Returns
     -------
-    dict
+    dict[str, Any]
         The validated chunk data.
 
     Raises

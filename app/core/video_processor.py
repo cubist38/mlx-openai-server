@@ -6,6 +6,7 @@ import asyncio
 import gc
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse
 
 from loguru import logger
 
@@ -39,7 +40,13 @@ class VideoProcessor(BaseProcessor):
                 return "flv"
         else:
             # Extract format from file extension
-            ext = Path(media_url.lower()).suffix
+            parsed = urlparse(media_url)
+            if parsed.scheme:
+                # It's a URL, get the path part
+                path = parsed.path
+            else:
+                path = media_url
+            ext = Path(path.lower()).suffix
             if ext in self._supported_formats:
                 return ext[1:]  # Remove the dot
 
@@ -135,7 +142,7 @@ class VideoProcessor(BaseProcessor):
         """
         return await self._process_single_media(video_url)
 
-    async def process_video_urls(self, video_urls: list[str]) -> list[str | Exception]:
+    async def process_video_urls(self, video_urls: list[str]) -> list[str | BaseException]:
         """
         Process multiple video URLs and return paths to cached files.
 
@@ -144,7 +151,7 @@ class VideoProcessor(BaseProcessor):
 
         Returns
         -------
-            List of cached file paths or Exception instances for failed items
+            List of cached file paths or BaseException instances for failed items
         """
         tasks = [self.process_video_url(url) for url in video_urls]
         results = await asyncio.gather(*tasks, return_exceptions=True)

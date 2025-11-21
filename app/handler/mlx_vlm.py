@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator, Generator
 import gc
 from http import HTTPStatus
 import time
@@ -296,7 +296,7 @@ class MLXVLMHandler:
                         yield parsed_content
                     continue
 
-                yield text
+                yield {"content": text}
 
             # Count completion tokens and yield usage info at the end
             completion_text = "".join(completion_chunks)
@@ -466,7 +466,7 @@ class MLXVLMHandler:
 
     async def _process_request(
         self, request_data: dict[str, Any]
-    ) -> tuple[str | AsyncGenerator[str, None], int]:
+    ) -> tuple[str | AsyncGenerator[str, None] | Generator[str, None, None], int]:
         """
         Process a multimodal request. This is the worker function for the request queue.
 
@@ -531,7 +531,10 @@ class MLXVLMHandler:
         self, content_part: ChatCompletionContentPart
     ) -> dict[str, Any]:
         """Reformat a multimodal message content part into a dictionary."""
-        if isinstance(content_part, ChatCompletionContentPartImage):
+        if (
+            isinstance(content_part, ChatCompletionContentPartImage)
+            and content_part.image_url is not None
+        ):
             image_url = content_part.image_url.url
             # Validate base64 data URLs before processing
             self._validate_image_url(image_url)
@@ -540,14 +543,20 @@ class MLXVLMHandler:
             )
             return {"content_part": {"type": "image", "image": image_path}, "path": image_path}
 
-        if isinstance(content_part, ChatCompletionContentPartInputAudio):
+        if (
+            isinstance(content_part, ChatCompletionContentPartInputAudio)
+            and content_part.input_audio is not None
+        ):
             audio_url = content_part.input_audio.data
             # Validate base64 data URLs before processing
             self._validate_audio_data(audio_url)
             audio_path = await self.audio_processor.process_audio_url(audio_url)
             return {"content_part": {"type": "audio", "audio": audio_path}, "path": audio_path}
 
-        if isinstance(content_part, ChatCompletionContentPartVideo):
+        if (
+            isinstance(content_part, ChatCompletionContentPartVideo)
+            and content_part.video_url is not None
+        ):
             video_url = content_part.video_url.url
             # Note: Video validation could be added here if needed
             video_path = await self.video_processor.process_video_url(video_url)

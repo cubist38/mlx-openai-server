@@ -2,7 +2,7 @@
 
 import unittest
 
-from mlx_openai_server.handler.parser.base import BaseToolParser
+from mlx_openai_server.handler.parser.base import BaseToolParser  # type: ignore[import-not-found]
 
 
 class TestBaseToolParser(unittest.TestCase):
