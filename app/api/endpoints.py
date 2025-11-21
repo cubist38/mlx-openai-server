@@ -130,13 +130,14 @@ async def queue_stats(raw_request: Request):
 
     try:
         stats = await handler.get_queue_stats()
-        return {"status": "ok", "queue_stats": stats}
     except Exception as e:
         logger.error(f"Failed to get queue stats: {e!s}")
         return JSONResponse(
             content=create_error_response("Failed to get queue stats", "server_error", 500),
             status_code=500,
         )
+    else:
+        return {"status": "ok", "queue_stats": stats}
 
 
 # =============================================================================
@@ -223,12 +224,13 @@ async def image_generations(request: ImageGenerationRequest, raw_request: Reques
 
     try:
         image_response = await handler.generate_image(request)
-        return image_response
     except Exception as e:
         logger.error(f"Error processing image generation request: {e!s}", exc_info=True)
         return JSONResponse(
             content=create_error_response(str(e)), status_code=HTTPStatus.INTERNAL_SERVER_ERROR
         )
+    else:
+        return image_response
 
 
 @router.post("/v1/images/edits")
@@ -255,12 +257,13 @@ async def create_image_edit(request: Annotated[ImageEditRequest, Form()], raw_re
         )
     try:
         image_response = await handler.edit_image(request)
-        return image_response
     except Exception as e:
         logger.error(f"Error processing image edit request: {e!s}", exc_info=True)
         return JSONResponse(
             content=create_error_response(str(e)), status_code=HTTPStatus.INTERNAL_SERVER_ERROR
         )
+    else:
+        return image_response
 
 
 @router.post("/v1/audio/transcriptions")
@@ -293,12 +296,13 @@ async def create_audio_transcriptions(
                 },
             )
         transcription_response = await handler.generate_transcription_response(request)
-        return transcription_response
     except Exception as e:
         logger.error(f"Error processing transcription request: {e!s}", exc_info=True)
         return JSONResponse(
             content=create_error_response(str(e)), status_code=HTTPStatus.INTERNAL_SERVER_ERROR
         )
+    else:
+        return transcription_response
 
 
 def create_response_embeddings(
@@ -342,7 +346,7 @@ def create_response_chunk(
     finish_reason: str | None = "stop",
     chat_id: str | None = None,
     created_time: int | None = None,
-    request_id: str = None,
+    request_id: str | None = None,
 ) -> ChatCompletionChunk:
     """Create a formatted response chunk for streaming."""
     chat_id = chat_id or get_id()
@@ -427,7 +431,9 @@ def _yield_sse_chunk(data: dict[str, Any] | ChatCompletionChunk) -> str:
     return f"data: {json.dumps(data)}\n\n"
 
 
-async def handle_stream_response(generator: AsyncGenerator, model: str, request_id: str = None):
+async def handle_stream_response(
+    generator: AsyncGenerator, model: str, request_id: str | None = None
+):
     """Handle streaming response generation (OpenAI-compatible)."""
     chat_index = get_id()
     created_time = int(time.time())
@@ -515,7 +521,7 @@ async def handle_stream_response(generator: AsyncGenerator, model: str, request_
 
 
 async def process_multimodal_request(
-    handler, request: ChatCompletionRequest, request_id: str = None
+    handler, request: ChatCompletionRequest, request_id: str | None = None
 ):
     """Process multimodal-specific requests."""
     if request_id:
@@ -544,7 +550,9 @@ async def process_multimodal_request(
     return format_final_response(result, request.model, request_id)
 
 
-async def process_text_request(handler, request: ChatCompletionRequest, request_id: str = None):
+async def process_text_request(
+    handler, request: ChatCompletionRequest, request_id: str | None = None
+):
     """Process text-only requests."""
     if request_id:
         logger.info(f"Processing text request [request_id={request_id}]")
@@ -584,7 +592,7 @@ def get_tool_call_id():
 
 
 def format_final_response(
-    response: str | dict[str, Any], model: str, request_id: str = None, usage=None
+    response: str | dict[str, Any], model: str, request_id: str | None = None, usage=None
 ) -> ChatCompletionResponse:
     """Format the final non-streaming response."""
     if isinstance(response, str):

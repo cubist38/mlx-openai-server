@@ -18,7 +18,7 @@ class TestBaseToolParser(unittest.TestCase):
 #</tool_call>#
 #<tool_call>#
 #{"#name#":# "#get#_weather#",# "#arguments#":# {"#city#":# "#Sy#dney#"}}
-#</tool_call>##""".split("#"),
+#</tool_call>##""".split("#"),  # noqa: SIM905
                 "expected_outputs": [
                     {"name": "get_weather", "arguments": ""},
                     {"name": None, "arguments": ' {"'},
@@ -43,7 +43,7 @@ class TestBaseToolParser(unittest.TestCase):
                 "name": "code function call",
                 "chunks": r"""<tool_call>@@
 @@{"@@name@@":@@ "@@python@@",@@ "@@arguments@@":@@ {"@@code@@":@@ "@@def@@ calculator@@(a@@,@@ b@@,@@ operation@@):\@@n@@   @@ if@@ operation@@ ==@@ '@@add@@'\@@n@@       @@ return@@ a@@ +@@ b@@\n@@   @@ if@@ operation@@ ==@@ '@@subtract@@'\@@n@@       @@ return@@ a@@ -@@ b@@\n@@   @@ if@@ operation@@ ==@@ '@@multiply@@'\@@n@@       @@ return@@ a@@ *@@ b@@\n@@   @@ if@@ operation@@ ==@@ '@@divide@@'\@@n@@       @@ return@@ a@@ /@@ b@@\n@@   @@ return@@ '@@Invalid@@ operation@@'@@"}}
-@@</tool_call>@@@@""".split("@@"),
+@@</tool_call>@@@@""".split("@@"),  # noqa: SIM905
                 "expected_outputs": [
                     {"name": "python", "arguments": ""},
                     {"name": None, "arguments": ' {"'},

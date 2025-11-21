@@ -88,8 +88,6 @@ class MLXEmbeddingsHandler:
             # Submit to the request queue
             response = await self.request_queue.submit(request_id, request_data)
 
-            return response
-
         except Exception as e:
             logger.error(f"Error in embeddings generation: {e!s}")
             content = create_error_response(
@@ -97,7 +95,9 @@ class MLXEmbeddingsHandler:
                 "server_error",
                 HTTPStatus.INTERNAL_SERVER_ERROR,
             )
-            raise HTTPException(status_code=500, detail=content)
+            raise HTTPException(status_code=500, detail=content) from e
+        else:
+            return response
 
     async def _process_request(self, request_data: dict[str, Any]) -> list[list[float]]:
         """

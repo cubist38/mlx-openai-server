@@ -1,22 +1,80 @@
+"""
+Base parser classes for handling thinking and tool parsing in model outputs.
+
+This module provides abstract base classes for parsing structured content from
+language model outputs, including thinking traces and tool calls.
+"""
+
 import json
 from typing import Any
 
 from json_repair import repair_json
+from loguru import logger
 
 
 class BaseThinkingParser:
+    """
+    Base class for parsing thinking traces from model outputs.
+
+    This class provides the foundation for extracting thinking content
+    enclosed in opening and closing tags from language model responses.
+    """
+
     def __init__(self, thinking_open: str, thinking_close: str):
+        """
+        Initialize the thinking parser with opening and closing tags.
+
+        Parameters
+        ----------
+        thinking_open : str
+            The opening tag for thinking content.
+        thinking_close : str
+            The closing tag for thinking content.
+        """
         self.thinking_open = thinking_open
         self.thinking_close = thinking_close
         self.is_thinking = False
 
     def get_thinking_open(self):
+        """
+        Get the opening tag for thinking content.
+
+        Returns
+        -------
+        str
+            The opening tag string.
+        """
         return self.thinking_open
 
     def get_thinking_close(self):
+        """
+        Get the closing tag for thinking content.
+
+        Returns
+        -------
+        str
+            The closing tag string.
+        """
         return self.thinking_close
 
     def parse(self, content: str) -> tuple[str | None, str]:
+        """
+        Parse thinking content from the given text.
+
+        Extracts thinking content enclosed between the opening and closing tags,
+        returning the thinking content and remaining text.
+
+        Parameters
+        ----------
+        content : str
+            The text content to parse for thinking traces.
+
+        Returns
+        -------
+        tuple[str | None, str]
+            A tuple of (thinking_content, remaining_content). thinking_content is
+            None if no thinking tags are found.
+        """
         start_thinking = content.find(self.thinking_open)
         if start_thinking == -1:
             return None, content
@@ -37,11 +95,20 @@ class BaseThinkingParser:
         """
         Parse streaming chunks for thinking content.
 
+        Processes incremental text chunks to extract thinking content as it streams,
+        maintaining state across multiple calls.
+
+        Parameters
+        ----------
+        chunk : str | None
+            The text chunk to parse. If None, returns current state.
+
         Returns
         -------
-            Tuple[parsed_content, is_complete]:
-                - parsed_content: The parsed chunk (could be str, dict, or None)
-                - is_complete: True if thinking section is complete
+        tuple[Any | None, bool]
+            A tuple of (parsed_content, is_complete) where parsed_content is the
+            extracted thinking content and is_complete indicates if the thinking
+            section has finished.
         """
         if chunk is None:
             return None, False
@@ -95,41 +162,100 @@ class BaseThinkingParser:
 
 
 class ParseToolState:
+    """
+    Enumeration of states for tool parsing.
+
+    Used to track the current state during incremental parsing of tool calls.
+    """
+
     NORMAL = 0
     FOUND_PREFIX = 1
 
 
 class BaseToolParser:
+    """
+    Base class for parsing tool calls from model outputs.
+
+    This class provides the foundation for extracting and parsing tool calls
+    enclosed in opening and closing tags from language model responses.
+    """
+
     def __init__(self, tool_open: str, tool_close: str):
+        """
+        Initialize the tool parser with opening and closing tags.
+
+        Parameters
+        ----------
+        tool_open : str
+            The opening tag for tool calls.
+        tool_close : str
+            The closing tag for tool calls.
+        """
         self.tool_open = tool_open
         self.tool_close = tool_close
         self.buffer = ""
         self.state = ParseToolState.NORMAL
 
     def get_tool_open(self):
+        """
+        Get the opening tag for tool calls.
+
+        Returns
+        -------
+        str
+            The opening tag string.
+        """
         return self.tool_open
 
     def get_tool_close(self):
+        """
+        Get the closing tag for tool calls.
+
+        Returns
+        -------
+        str
+            The closing tag string.
+        """
         return self.tool_close
 
     def _parse_tool_content(self, tool_content: str) -> dict[str, Any] | None:
         """
-        Parses the content of a tool call. Subclasses can override this method
-        to support different content formats (e.g., XML, YAML).
-        Args:
-            tool_content: The string content extracted from between the tool tags.
+        Parse the content of a tool call.
+
+        Subclasses can override this method to support different content formats
+        (e.g., XML, YAML).
+
+        Parameters
+        ----------
+        tool_content : str
+            The string content extracted from between the tool tags.
 
         Returns
         -------
+        dict[str, Any] | None
             A dictionary representing the parsed tool call, or None if parsing fails.
         """
-        try:
-            repaired_json = repair_json(tool_content)
-            return json.loads(repaired_json)
-        except json.JSONDecodeError:
-            raise
+        repaired_json = repair_json(tool_content)
+        return json.loads(repaired_json)
 
     def parse(self, content: str) -> tuple[list[dict[str, Any]] | None, str]:
+        """
+        Parse tool calls from the given content.
+
+        Extracts and parses all tool calls enclosed in the opening and closing tags,
+        returning the parsed tool calls and remaining content.
+
+        Parameters
+        ----------
+        content : str
+            The text content to parse for tool calls.
+
+        Returns
+        -------
+        tuple[list[dict[str, Any]] | None, str]
+            A tuple of (tool_calls, remaining_content) where tool_calls is a list
+            of parsed tool call dictionaries.
+        """
         tool_calls = []
         remaining_parts = []
 
@@ -166,7 +292,7 @@ class BaseToolParser:
                 json_output = self._parse_tool_content(tool_content)
                 tool_calls.append(json_output)
             except json.JSONDecodeError:
-                print("Error parsing tool call: ", tool_content)
+                logger.warning("Error parsing tool call: {}", tool_content)
                 # Continue processing remaining content after error
                 remaining_parts.append(content[pos:].strip())
                 break
@@ -181,11 +307,20 @@ class BaseToolParser:
         """
         Parse streaming chunks for tool calls.
 
+        Processes incremental text chunks to extract tool calls as they stream,
+        maintaining state across multiple calls.
+
+        Parameters
+        ----------
+        chunk : str | None
+            The text chunk to parse. If None, returns current state.
+
         Returns
         -------
-            Tuple[parsed_content, is_complete]:
-                - parsed_content: The parsed chunk (could be str, dict, or None)
-                - is_complete: True if tool call is complete
+        tuple[Any | None, bool]
+            A tuple of (parsed_content, is_complete) where parsed_content is the
+            extracted tool call data and is_complete indicates if the tool call
+            has finished.
         """
         if chunk is None:
             return None, True
@@ -200,7 +335,7 @@ class BaseToolParser:
                 try:
                     json_output = self._parse_tool_content(self.buffer)
                 except json.JSONDecodeError:
-                    print("Error parsing tool call: ", self.buffer)
+                    logger.warning("Error parsing tool call: {}", self.buffer)
                     return None, True
                 return {
                     "name": json_output["name"],
@@ -218,7 +353,7 @@ class BaseToolParser:
                 try:
                     json_output = self._parse_tool_content(self.buffer)
                 except json.JSONDecodeError:
-                    print("Error parsing tool call: ", self.buffer)
+                    logger.warning("Error parsing tool call: {}", self.buffer)
                     return None, False
                 return {
                     "name": json_output["name"],

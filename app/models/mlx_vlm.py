@@ -1,6 +1,14 @@
+"""
+MLX vision-language model wrapper.
+
+This module provides a wrapper class for MLX vision-language models with text
+generation, streaming, and multimodal capabilities.
+"""
+
 from collections.abc import Generator
 import os
 
+from loguru import logger
 import mlx.core as mx
 from mlx_vlm import generate, load, stream_generate
 from mlx_vlm.models.cache import make_prompt_cache
@@ -52,12 +60,20 @@ class MLX_VLM:
                 with open(chat_template_file) as f:
                     self.processor.chat_template = f.read()
         except Exception as e:
-            raise ValueError(f"Error loading model: {e!s}")
+            raise ValueError(f"Error loading model: {e!s}") from e
 
     def _is_video_model(self):
         return hasattr(self.config, "video_token_id") or hasattr(self.config, "video_token_index")
 
     def get_model_type(self):
+        """
+        Get the model type identifier.
+
+        Returns
+        -------
+        str
+            The model type string.
+        """
         return self.config.model_type
 
     def __call__(
@@ -80,7 +96,7 @@ class MLX_VLM:
 
         Returns
         -------
-            Union[str, Generator[str, None, None]]:
+            str | Generator[str, None, None]:
                 - If stream=False: Complete response as string
                 - If stream=True: Generator yielding response chunks
         """
@@ -139,7 +155,7 @@ if __name__ == "__main__":
     chat_template_file = "examples/chat_templates/llama4.jinja"
 
     model = MLX_VLM(model_path, chat_template_file=chat_template_file)
-    print("MODEL TYPE: ", model.get_model_type())
+    logger.info(f"MODEL TYPE: {model.get_model_type()}")
 
     tools = [
         {
@@ -180,4 +196,4 @@ if __name__ == "__main__":
         }
     ]
     response = model(messages, stream=False, **kwargs)
-    print(response)
+    logger.info("{}", response)

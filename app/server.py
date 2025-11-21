@@ -14,6 +14,7 @@ Key exports:
 
 from contextlib import asynccontextmanager
 import gc
+import sys
 import time
 
 from fastapi import FastAPI, Request
@@ -59,7 +60,7 @@ def configure_logging(
 
     # Add console handler
     logger.add(
-        lambda msg: print(msg),
+        sys.stdout,
         level=log_level,
         format="<green>{time:YYYY-MM-DD HH:mm:ss}</green> | "
         "<level>{level: <8}</level> | "

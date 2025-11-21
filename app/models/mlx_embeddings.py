@@ -1,5 +1,13 @@
+"""
+MLX embeddings model wrapper.
+
+This module provides a wrapper class for MLX embeddings models with memory
+management and caching capabilities.
+"""
+
 import gc
 
+from loguru import logger
 import mlx.core as mx
 from mlx_embeddings.utils import load
 
@@ -26,7 +34,7 @@ class MLX_Embeddings:
         try:
             self.model, self.tokenizer = load(model_path)
         except Exception as e:
-            raise ValueError(f"Error loading model: {e!s}")
+            raise ValueError(f"Error loading model: {e!s}") from e
 
     def _get_embeddings(self, texts: list[str], max_length: int = 512) -> mx.array:
         """
@@ -70,12 +78,12 @@ class MLX_Embeddings:
             if array is not None:
                 try:
                     if isinstance(array, dict):
-                        for key, value in array.items():
+                        for value in array.values():
                             if hasattr(value, "nbytes"):
                                 del value
                     elif hasattr(array, "nbytes"):
                         del array
-                except:
+                except Exception:
                     pass
 
         # Clear MLX cache and force garbage collection
@@ -102,12 +110,13 @@ class MLX_Embeddings:
             del embeddings
             mx.clear_cache()
             gc.collect()
-            return result
         except Exception:
             # Clean up on error
             mx.clear_cache()
             gc.collect()
             raise
+        else:
+            return result
 
     def cleanup(self):
         """Explicitly cleanup resources."""
@@ -136,7 +145,7 @@ if __name__ == "__main__":
     try:
         texts = ["I like reading", "I like writing"]
         embeddings = model(texts)
-        print(f"Generated embeddings shape: {len(embeddings)} x {len(embeddings[0])}")
+        logger.info("Generated embeddings shape: {} x {}", len(embeddings), len(embeddings[0]))
     finally:
         # Explicit cleanup
         model.cleanup()

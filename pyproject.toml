@@ -217,6 +217,8 @@ ignore = [
   "TRY301", # Abstract 'raise' to an inner function
   "TRY400", # Use `logging.exception` instead of `logging.error`
 
+  "UP046", # Generic class uses `Generic` subclass instead of type parameters (Remove when minimum Python version is 3.12+)
+
   # May conflict with the formatter, https://docs.astral.sh/ruff/formatter/#conflicting-lint-rules
   "W191",
   "E111",

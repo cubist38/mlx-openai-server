@@ -1,3 +1,10 @@
+"""
+Parsers for Hermes model response formats.
+
+This module provides specialized parsers for Hermes model's tool calls and
+thinking traces, using XML-like tags for structured output parsing.
+"""
+
 from .base import BaseThinkingParser, BaseToolParser
 
 THINKING_OPEN = "<think>"

@@ -96,13 +96,13 @@ class VideoProcessor(BaseProcessor):
         try:
             with open(cached_path, "wb") as f:
                 f.write(data)
-
-            logger.info(f"Saved video to {cached_path} ({len(data)} bytes)")
-            self._cleanup_old_files()
-            return cached_path
         except Exception as e:
             logger.error(f"Failed to save video data: {e!s}")
             raise
+        else:
+            logger.info(f"Saved video to {cached_path} ({len(data)} bytes)")
+            self._cleanup_old_files()
+            return cached_path
 
     def _get_media_type_name(self) -> str:
         """Get media type name for logging."""

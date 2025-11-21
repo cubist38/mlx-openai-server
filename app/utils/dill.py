@@ -148,7 +148,6 @@ def dumps(obj):
 
 def log(pickler, msg):
     """Log a message from the pickler (no-op)."""
-    pass
 
 
 def _save_regexPattern(pickler, obj):

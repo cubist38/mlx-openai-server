@@ -1,6 +1,14 @@
+"""
+MLX Whisper model wrapper for audio transcription.
+
+This module provides a wrapper class for MLX Whisper models with audio
+transcription and processing capabilities.
+"""
+
 from functools import lru_cache
 
 import librosa
+from loguru import logger
 from mlx_whisper.transcribe import transcribe
 import numpy as np
 
@@ -23,6 +31,13 @@ def calculate_audio_duration(audio_path: str) -> int:
 
 
 class MLX_Whisper:
+    """
+    Wrapper class for MLX Whisper audio transcription models.
+
+    Provides methods for loading models and transcribing audio files
+    using MLX Whisper implementations.
+    """
+
     def __init__(self, model_path: str):
         self.model_path = model_path
 
@@ -72,4 +87,6 @@ if __name__ == "__main__":
     # Non-streaming (fastest for most use cases)
     result = model("examples/audios/podcast.wav", stream=True)
     for chunk in result:
-        print(f"[{chunk['chunk_start']:.1f}s - {chunk['chunk_end']:.1f}s]: {chunk['text']}")
+        logger.info(
+            "[{:.1f}s - {:.1f}s]: {}", chunk["chunk_start"], chunk["chunk_end"], chunk["text"]
+        )

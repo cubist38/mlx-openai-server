@@ -31,8 +31,8 @@ class MLXLMHandler:
         context_length: int = 32768,
         max_concurrency: int = 1,
         enable_auto_tool_choice: bool = False,
-        tool_call_parser: str = None,
-        reasoning_parser: str = None,
+        tool_call_parser: str | None = None,
+        reasoning_parser: str | None = None,
         trust_remote_code: bool = False,
         chat_template_file: str = None,
     ):
@@ -75,6 +75,7 @@ class MLXLMHandler:
     def _create_parsers(self) -> tuple[Any | None, Any | None]:
         """
         Create appropriate parsers based on model type and available tools.
+
         Uses ParserFactory for centralized parser creation logic.
 
         Returns
@@ -195,6 +196,7 @@ class MLXLMHandler:
     ) -> AsyncGenerator[str, None]:
         """
         Generate a streaming response for text-only chat completion requests.
+
         Uses the request queue for handling concurrent requests.
 
         Args:
@@ -299,7 +301,7 @@ class MLXLMHandler:
                 "rate_limit_exceeded",
                 HTTPStatus.TOO_MANY_REQUESTS,
             )
-            raise HTTPException(status_code=429, detail=content)
+            raise HTTPException(status_code=429, detail=content) from None
         except Exception as e:
             logger.error(f"Error in text stream generation for request {request_id}: {e!s}")
             content = create_error_response(
@@ -307,11 +309,12 @@ class MLXLMHandler:
                 "server_error",
                 HTTPStatus.INTERNAL_SERVER_ERROR,
             )
-            raise HTTPException(status_code=500, detail=content)
+            raise HTTPException(status_code=500, detail=content) from e
 
     async def generate_text_response(self, request: ChatCompletionRequest) -> dict[str, Any]:
         """
         Generate a complete response for text-only chat completion requests.
+
         Uses the request queue for handling concurrent requests.
 
         Args:
@@ -332,7 +335,23 @@ class MLXLMHandler:
 
             request_data = {"messages": chat_messages, "stream": False, **model_params}
             response, prompt_tokens = await self.request_queue.submit(request_id, request_data)
-
+        except asyncio.QueueFull:
+            logger.error("Too many requests. Service is at capacity.")
+            content = create_error_response(
+                "Too many requests. Service is at capacity.",
+                "rate_limit_exceeded",
+                HTTPStatus.TOO_MANY_REQUESTS,
+            )
+            raise HTTPException(status_code=429, detail=content) from None
+        except Exception as e:
+            logger.error(f"Error in text response generation: {e!s}")
+            content = create_error_response(
+                f"Failed to generate text response: {e!s}",
+                "server_error",
+                HTTPStatus.INTERNAL_SERVER_ERROR,
+            )
+            raise HTTPException(status_code=500, detail=content) from e
+        else:
             # Count completion tokens
             completion_tokens = self._count_tokens(
                 response if isinstance(response, str) else response.get("content", "")
@@ -384,23 +403,6 @@ class MLXLMHandler:
 
             return {"response": parsed_response, "usage": usage}
 
-        except asyncio.QueueFull:
-            logger.error("Too many requests. Service is at capacity.")
-            content = create_error_response(
-                "Too many requests. Service is at capacity.",
-                "rate_limit_exceeded",
-                HTTPStatus.TOO_MANY_REQUESTS,
-            )
-            raise HTTPException(status_code=429, detail=content)
-        except Exception as e:
-            logger.error(f"Error in text response generation: {e!s}")
-            content = create_error_response(
-                f"Failed to generate text response: {e!s}",
-                "server_error",
-                HTTPStatus.INTERNAL_SERVER_ERROR,
-            )
-            raise HTTPException(status_code=500, detail=content)
-
     async def generate_embeddings_response(self, request: EmbeddingRequest):
         """
         Generate embeddings for a given text input.
@@ -422,8 +424,6 @@ class MLXLMHandler:
             # Submit to the request queue
             response = await self.request_queue.submit(request_id, request_data)
 
-            return response
-
         except Exception as e:
             logger.error(f"Error in embeddings generation: {e!s}")
             content = create_error_response(
@@ -431,7 +431,9 @@ class MLXLMHandler:
                 "server_error",
                 HTTPStatus.INTERNAL_SERVER_ERROR,
             )
-            raise HTTPException(status_code=500, detail=content)
+            raise HTTPException(status_code=500, detail=content) from e
+        else:
+            return response
 
     async def _process_request(self, request_data: dict[str, Any]) -> str:
         """
@@ -476,13 +478,14 @@ class MLXLMHandler:
             response = self.model(messages=refined_messages, stream=stream, **model_params)
             # Force garbage collection after model inference
             gc.collect()
-            return response
 
         except Exception as e:
             logger.error(f"Error processing text request: {e!s}")
             # Clean up on error
             gc.collect()
             raise
+        else:
+            return response
 
     async def get_queue_stats(self) -> dict[str, Any]:
         """
@@ -592,11 +595,12 @@ class MLXLMHandler:
 
             # Add all non-system messages after the merged system message
             chat_messages.extend(non_system_messages)
-            return chat_messages, request_dict
 
         except Exception as e:
             logger.error(f"Failed to prepare text request: {e!s}")
             content = create_error_response(
                 f"Failed to process request: {e!s}", "bad_request", HTTPStatus.BAD_REQUEST
             )
-            raise HTTPException(status_code=400, detail=content)
+            raise HTTPException(status_code=400, detail=content) from e
+        else:
+            return chat_messages, request_dict
