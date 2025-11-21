@@ -283,7 +283,7 @@ async def create_audio_transcriptions(
 
         if request.stream:
             # procoess the request before sending to the handler
-            request_data = await handler._prepare_transcription_request(request)
+            request_data = await handler.prepare_transcription_request(request)
             return StreamingResponse(
                 handler.generate_transcription_stream_from_data(
                     request_data, request.response_format

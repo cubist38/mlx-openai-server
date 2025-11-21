@@ -61,7 +61,7 @@ class Hasher:
 class Pickler(dill.Pickler):
     """Custom Pickler that extends dill with additional type support."""
 
-    dispatch = dill._dill.MetaCatchingDict(dill.Pickler.dispatch.copy())
+    dispatch = dill._dill.MetaCatchingDict(dill.Pickler.dispatch.copy())  # noqa: SLF001
     _legacy_no_dict_keys_sorting = False
 
     def save(self, obj, save_persistent_id=True):
@@ -69,22 +69,22 @@ class Pickler(dill.Pickler):
         obj_type = type(obj)
         if obj_type not in self.dispatch:
             if "regex" in sys.modules:
-                import regex  # type: ignore
+                import regex  # noqa: PLC0415
 
                 if obj_type is regex.Pattern:
                     pklregister(obj_type)(_save_regexPattern)
             if "spacy" in sys.modules:
-                import spacy  # type: ignore
+                import spacy  # noqa: PLC0415
 
                 if issubclass(obj_type, spacy.Language):
                     pklregister(obj_type)(_save_spacyLanguage)
             if "tiktoken" in sys.modules:
-                import tiktoken  # type: ignore
+                import tiktoken  # noqa: PLC0415
 
                 if obj_type is tiktoken.Encoding:
                     pklregister(obj_type)(_save_tiktokenEncoding)
             if "torch" in sys.modules:
-                import torch  # type: ignore
+                import torch  # noqa: PLC0415
 
                 if issubclass(obj_type, torch.Tensor):
                     pklregister(obj_type)(_save_torchTensor)
@@ -96,7 +96,7 @@ class Pickler(dill.Pickler):
                 if issubclass(obj_type, torch.nn.Module):
                     obj = getattr(obj, "_orig_mod", obj)
             if "transformers" in sys.modules:
-                import transformers  # type: ignore
+                import transformers  # noqa: PLC0415
 
                 if issubclass(obj_type, transformers.PreTrainedTokenizerBase):
                     pklregister(obj_type)(_save_transformersPreTrainedTokenizerBase)
@@ -115,7 +115,7 @@ class Pickler(dill.Pickler):
             items = sorted(items)
         except Exception:  # TypeError, decimal.InvalidOperation, etc.
             items = sorted(items, key=lambda x: Hasher.hash(x[0]))
-        dill.Pickler._batch_setitems(self, items)
+        return super()._batch_setitems(items)
 
     def memoize(self, obj):
         """Memoize an object, skipping strings to avoid id issues."""
@@ -151,7 +151,7 @@ def log(pickler, msg):
 
 
 def _save_regexPattern(pickler, obj):
-    import regex  # type: ignore
+    import regex  # noqa: PLC0415
 
     log(pickler, f"Re: {obj}")
     args = (obj.pattern, obj.flags)
@@ -160,16 +160,16 @@ def _save_regexPattern(pickler, obj):
 
 
 def _save_tiktokenEncoding(pickler, obj):
-    import tiktoken  # type: ignore
+    import tiktoken  # noqa: PLC0415
 
     log(pickler, f"Enc: {obj}")
-    args = (obj.name, obj._pat_str, obj._mergeable_ranks, obj._special_tokens)
+    args = (obj.name, obj._pat_str, obj._mergeable_ranks, obj._special_tokens)  # noqa: SLF001
     pickler.save_reduce(tiktoken.Encoding, args, obj=obj)
     log(pickler, "# Enc")
 
 
 def _save_torchTensor(pickler, obj):
-    import torch  # type: ignore
+    import torch  # noqa: PLC0415
 
     # `torch.from_numpy` is not picklable in `torch>=1.11.0`
     def create_torchTensor(np_array, dtype=None):
@@ -188,7 +188,7 @@ def _save_torchTensor(pickler, obj):
 
 
 def _save_torchGenerator(pickler, obj):
-    import torch  # type: ignore
+    import torch  # noqa: PLC0415
 
     def create_torchGenerator(state):
         generator = torch.Generator()
@@ -202,7 +202,7 @@ def _save_torchGenerator(pickler, obj):
 
 
 def _save_spacyLanguage(pickler, obj):
-    import spacy  # type: ignore
+    import spacy  # noqa: PLC0415
 
     def create_spacyLanguage(config, bytes):
         lang_cls = spacy.util.get_lang_class(config["nlp"]["lang"])

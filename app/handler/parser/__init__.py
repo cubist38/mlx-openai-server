@@ -12,6 +12,7 @@ from .qwen3_next import Qwen3NextThinkingParser, Qwen3NextToolParser
 from .qwen3_vl import Qwen3VLThinkingParser, Qwen3VLToolParser
 
 __all__ = [
+    "BaseMessageConverter",
     "BaseToolParser",
     "BaseThinkingParser",
     "Qwen3ToolParser",
@@ -25,6 +26,7 @@ __all__ = [
     "Qwen3NextThinkingParser",
     "Qwen3VLToolParser",
     "Qwen3VLThinkingParser",
+    "MiniMaxMessageConverter",
     "MinimaxToolParser",
     "MinimaxThinkingParser",
     "HermesThinkingParser",

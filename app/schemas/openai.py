@@ -2,11 +2,11 @@
 
 from enum import Enum
 import random
-from typing import Any, ClassVar, Literal, TypeAlias
+from typing import Any, ClassVar, Literal
 
 from fastapi import UploadFile
 from loguru import logger
-from pydantic import BaseModel, ConfigDict, Field, model_validator, validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
 class OpenAIBaseModel(BaseModel):
@@ -140,7 +140,7 @@ class ChatCompletionContentPartText(OpenAIBaseModel):
     type: Literal["text"] = Field(..., description="The type of content, e.g., 'text'.")
 
 
-ChatCompletionContentPart: TypeAlias = (
+type ChatCompletionContentPart = (
     ChatCompletionContentPartImage
     | ChatCompletionContentPartVideo
     | ChatCompletionContentPartInputAudio
@@ -234,7 +234,8 @@ class ChatCompletionRequestBase(OpenAIBaseModel):
         20, description="Repetition context size for token generation."
     )
 
-    @validator("messages")
+    @field_validator("messages")
+    @classmethod
     def check_messages_not_empty(cls, v):
         """Ensure that the messages list is not empty and validate message structure."""
         if not v:
@@ -252,14 +253,16 @@ class ChatCompletionRequestBase(OpenAIBaseModel):
 
         return v
 
-    @validator("temperature")
+    @field_validator("temperature")
+    @classmethod
     def check_temperature(cls, v):
         """Validate temperature is between 0 and 2."""
         if v is not None and (v < 0 or v > 2):
             raise ValueError("temperature must be between 0 and 2")
         return v
 
-    @validator("max_tokens")
+    @field_validator("max_tokens")
+    @classmethod
     def check_max_tokens(cls, v):
         """Validate max_tokens is positive and within reasonable limits."""
         if v is not None:

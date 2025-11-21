@@ -231,7 +231,7 @@ def parse_chunk(data: dict) -> dict:
     """
     # We only need to ensure essential OpenAI chunk keys exist.
     if not isinstance(data, dict):
-        raise ValueError("Chunk payload must be a JSON object")
+        raise TypeError("Chunk payload must be a JSON object")
     required = {"id", "object", "created", "model", "choices"}
     missing = required - data.keys()
     if missing:
@@ -400,15 +400,17 @@ def main() -> None:
     headers = build_headers()
     refresh_seconds = float(os.getenv("MLX_DASHBOARD_REFRESH", "2"))
 
-    with httpx.Client(base_url=base_url, headers=headers, timeout=30.0) as client:
-        with Live(console=console, screen=True, refresh_per_second=4) as live:
-            try:
-                while True:
-                    snapshot = gather_snapshot(client)
-                    live.update(render_dashboard(snapshot, base_url))
-                    time.sleep(refresh_seconds)
-            except KeyboardInterrupt:
-                console.print("\nExiting dashboard...")
+    with (
+        httpx.Client(base_url=base_url, headers=headers, timeout=30.0) as client,
+        Live(console=console, screen=True, refresh_per_second=4) as live,
+    ):
+        try:
+            while True:
+                snapshot = gather_snapshot(client)
+                live.update(render_dashboard(snapshot, base_url))
+                time.sleep(refresh_seconds)
+        except KeyboardInterrupt:
+            console.print("\nExiting dashboard...")
 
 
 if __name__ == "__main__":

@@ -7,8 +7,8 @@ def create_error_response(
     message: str,
     err_type: str = "internal_error",
     status_code: int | HTTPStatus = HTTPStatus.INTERNAL_SERVER_ERROR,
-    param: str = None,
-    code: str = None,
+    param: str | None = None,
+    code: str | None = None,
 ):
     """Create a standardized error response dictionary."""
     return {

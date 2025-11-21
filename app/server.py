@@ -251,8 +251,7 @@ def create_lifespan(config_args: MLXServerConfig):
     return lifespan
 
 
-# App instance will be created during setup with the correct lifespan
-app = None
+# FastAPI app instance is created during setup with the correct lifespan
 
 
 def setup_server(config_args: MLXServerConfig) -> uvicorn.Config:
@@ -261,8 +260,6 @@ def setup_server(config_args: MLXServerConfig) -> uvicorn.Config:
     This function sets up logging, constructs the FastAPI application with
     a configured lifespan, registers routes and middleware, and returns a
     :class:`uvicorn.Config` ready to be used to run the server.
-
-    Note: This function mutates the module-level ``app`` global variable.
 
     Args:
         config_args: Configuration object usually produced by the CLI. Expected
@@ -274,8 +271,6 @@ def setup_server(config_args: MLXServerConfig) -> uvicorn.Config:
         uvicorn.Config: A configuration object that can be passed to
         ``uvicorn.Server(config).run()`` to start the application.
     """
-    global app
-
     # Configure logging based on CLI parameters
     configure_logging(
         log_file=config_args.log_file,

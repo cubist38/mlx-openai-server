@@ -1,6 +1,6 @@
 """Model metadata schemas for model registry."""
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class ModelMetadata(BaseModel):
@@ -16,6 +16,8 @@ class ModelMetadata(BaseModel):
         capabilities: Optional dict of model capabilities
     """
 
+    model_config = ConfigDict(frozen=False)
+
     id: str = Field(..., description="Unique model identifier")
     type: str = Field(
         ...,
@@ -27,8 +29,3 @@ class ModelMetadata(BaseModel):
     created_at: int = Field(..., description="Unix timestamp when model was loaded")
     object: str = Field(default="model", description="Object type, always 'model'")
     owned_by: str = Field(default="local", description="Model owner/organization")
-
-    class Config:
-        """Pydantic configuration."""
-
-        frozen = False
