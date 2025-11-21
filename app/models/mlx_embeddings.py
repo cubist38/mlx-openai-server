@@ -7,7 +7,7 @@ management and caching capabilities.
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import MutableMapping
 import gc
 from typing import Protocol, cast
 
@@ -20,6 +20,15 @@ class ArrayLike(Protocol):
     """Protocol for array-like objects with nbytes attribute."""
 
     nbytes: int
+
+
+class ModelLoadError(ValueError):
+    """Exception raised when model loading fails."""
+
+    def __init__(self, model_path: str, original_exception: Exception) -> None:
+        self.model_path = model_path
+        self.original_exception = original_exception
+        super().__init__(f"Failed to load model from {model_path}: {original_exception}")
 
 
 class MLX_Embeddings:
@@ -39,12 +48,12 @@ class MLX_Embeddings:
 
         Raises
         ------
-            ValueError: If model loading fails.
+            ModelLoadError: If model loading fails.
         """
         try:
             self.model, self.tokenizer = load(model_path)
         except Exception as e:
-            raise ValueError(f"Error loading model: {e}") from e
+            raise ModelLoadError(model_path, e) from e
 
     def _get_embeddings(self, texts: list[str], max_length: int = 512) -> mx.array:
         """
@@ -78,18 +87,15 @@ class MLX_Embeddings:
             # Always clean up intermediate arrays
             self._cleanup_arrays(inputs, outputs)
 
-    def _cleanup_arrays(self, *arrays: Mapping[str, ArrayLike] | ArrayLike | None) -> None:
+    def _cleanup_arrays(self, *arrays: MutableMapping[str, ArrayLike] | ArrayLike | None) -> None:
         """Clean up MLX arrays to free memory."""
         for array in arrays:
             if array is not None:
                 try:
-                    if isinstance(array, dict):
+                    if isinstance(array, MutableMapping):
                         for key, value in list(array.items()):
                             if hasattr(value, "nbytes"):
                                 del array[key]
-                    elif hasattr(array, "nbytes"):
-                        # Let the caller drop its reference; nothing to mutate here.
-                        pass
                 except (KeyError, AttributeError, TypeError) as e:
                     logger.warning(
                         f"Error during embeddings array cleanup. {type(e).__name__}: {e}"

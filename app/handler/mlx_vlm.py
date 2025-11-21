@@ -86,7 +86,7 @@ class MLXVLMHandler:
         # and to ensure we don't overload the model with too many concurrent requests
         self.request_queue = RequestQueue(max_concurrency=max_concurrency)
 
-        logger.info(f"Initialized MLXHandler with model path: {model_path}")
+        logger.info(f"Initialized MLXVLMHandler with model path: {model_path}")
         if disable_auto_resize:
             logger.info("Auto-resize is disabled for image processing")
 
@@ -581,13 +581,15 @@ class MLXVLMHandler:
 
     async def _prepare_multimodal_request(self, request: ChatCompletionRequest) -> dict[str, Any]:
         """
-        Prepare the multimodal request by processing messages with text, images, and audio.
+        Prepare the multimodal request by processing messages with text, images, and videos.
 
         This method:
-        1. Extracts text messages, image URLs, and audio data from the request
-        2. Processes image URLs and audio data to get local file paths
+        1. Extracts text messages, image URLs, and video data from the request
+        2. Processes image URLs and video data to get local file paths
         3. Prepares model parameters
         4. Returns processed data ready for model inference
+
+        Note: Audio input is currently not supported and will result in a 400 error.
 
         Args:
             request (ChatCompletionRequest): The incoming request containing messages and parameters.
@@ -597,7 +599,6 @@ class MLXVLMHandler:
             dict[str, Any]: A dictionary containing processed request data with keys:
                 - messages: List of processed chat messages
                 - images: List of processed image paths
-                - audios: List of processed audio paths
                 - videos: List of processed video paths
                 - temperature, top_p, etc.: Model parameters
         """

@@ -89,18 +89,14 @@ class MLXFluxHandler:
 
     async def get_models(self) -> list[dict[str, Any]]:
         """Get list of available models with their metadata."""
-        try:
-            return [
-                {
-                    "id": self.model_path,
-                    "object": "model",
-                    "created": self.model_created,
-                    "owned_by": "local",
-                }
-            ]
-        except Exception as e:
-            logger.error(f"Error getting models. {type(e).__name__}: {e}")
-            return []
+        return [
+            {
+                "id": self.model_path,
+                "object": "model",
+                "created": self.model_created,
+                "owned_by": "local",
+            }
+        ]
 
     async def initialize(self, queue_config: dict[str, Any] | None = None) -> None:
         """Initialize the handler and start the request queue."""
@@ -174,6 +170,9 @@ class MLXFluxHandler:
                 HTTPStatus.TOO_MANY_REQUESTS,
             )
             raise HTTPException(status_code=HTTPStatus.TOO_MANY_REQUESTS, detail=content) from None
+        except HTTPException:
+            # Preserve structured HTTP errors from downstream handlers
+            raise
         except Exception as e:
             logger.error(
                 f"Error in image generation for request {request_id}. {type(e).__name__}: {e}"
@@ -400,16 +399,12 @@ class MLXFluxHandler:
             # Generate image. Run the (potentially heavy) synchronous model call
             # in a thread executor so we don't block the event loop.
             loop = asyncio.get_running_loop()
-            try:
-                image = await loop.run_in_executor(
-                    None, functools.partial(self.model, prompt=prompt, seed=seed, **model_params)
-                )
-            except Exception as e:
-                logger.error(f"Model inference raised exception. {type(e).__name__}: {e}")
-                raise
+            image = await loop.run_in_executor(
+                None, functools.partial(self.model, prompt=prompt, seed=seed, **model_params)
+            )
 
-        except Exception as e:
-            logger.error(f"Error processing image generation request. {type(e).__name__}: {e}")
+        except Exception:
+            logger.exception("Error processing image generation request")
             # Clean up on error
             gc.collect()
             raise

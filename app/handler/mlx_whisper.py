@@ -10,12 +10,13 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import AsyncGenerator, Generator
+import functools
 import gc
 from http import HTTPStatus
 from pathlib import Path
 import tempfile
 import time
-from typing import Any
+from typing import Any, cast
 import uuid
 
 from fastapi import HTTPException, UploadFile
@@ -79,9 +80,15 @@ class MLXWhisperHandler:
                 "queue_size": 50,
             }
         self.request_queue = RequestQueue(
-            max_concurrency=queue_config.get("max_concurrency", 1),
-            timeout=queue_config.get("timeout", 600),
-            queue_size=queue_config.get("queue_size", 50),
+            max_concurrency=queue_config.get(
+                "max_concurrency", self.request_queue.max_concurrency if self.request_queue else 1
+            ),
+            timeout=queue_config.get(
+                "timeout", self.request_queue.timeout if self.request_queue else 600
+            ),
+            queue_size=queue_config.get(
+                "queue_size", self.request_queue.queue_size if self.request_queue else 50
+            ),
         )
         await self.request_queue.start(self._process_request)
         logger.info("Initialized MLXWhisperHandler and started request queue")
@@ -142,7 +149,10 @@ class MLXWhisperHandler:
             audio_path = request_data.pop("audio_path")
 
             def create_generator() -> Generator[dict[str, Any], None, None]:
-                return self.model(audio_path=audio_path, **request_data)
+                return cast(
+                    "Generator[dict[str, Any], None, None]",
+                    self.model(audio_path=audio_path, **request_data),
+                )
 
             generator = await loop.run_in_executor(None, create_generator)
 
@@ -210,8 +220,11 @@ class MLXWhisperHandler:
             # Extract request parameters
             audio_path = request_data.pop("audio_path")
 
-            # Call the model with the audio file
-            result = self.model(audio_path=audio_path, **request_data)
+            # Call the model with the audio file in a thread executor
+            loop = asyncio.get_running_loop()
+            result = await loop.run_in_executor(
+                None, functools.partial(self.model, audio_path=audio_path, **request_data)
+            )
 
             # Force garbage collection after model inference
             gc.collect()
