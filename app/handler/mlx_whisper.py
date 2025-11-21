@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import AsyncGenerator, Generator
-import functools
 import gc
 from http import HTTPStatus
 from pathlib import Path
@@ -23,7 +22,7 @@ from fastapi import HTTPException, UploadFile
 from loguru import logger
 
 from ..core.queue import RequestQueue
-from ..models.mlx_whisper import MLX_Whisper, calculate_audio_duration
+from ..models.mlx_whisper import MLX_Whisper
 from ..schemas.openai import (
     Delta,
     TranscriptionRequest,
@@ -104,11 +103,10 @@ class MLXWhisperHandler:
             request_data = await self.prepare_transcription_request(request)
             temp_file_path = request_data.get("audio_path")
             response = await self.request_queue.submit(request_id, request_data)
+            duration_seconds = int(response.get("duration", 0))
             response_data = TranscriptionResponse(
                 text=response["text"],
-                usage=TranscriptionUsageAudio(
-                    type="duration", seconds=int(calculate_audio_duration(temp_file_path))
-                ),
+                usage=TranscriptionUsageAudio(type="duration", seconds=duration_seconds),
             )
             if request.response_format == TranscriptionResponseFormat.JSON:
                 return response_data
@@ -222,9 +220,14 @@ class MLXWhisperHandler:
 
             # Call the model with the audio file in a thread executor
             loop = asyncio.get_running_loop()
-            result = await loop.run_in_executor(
-                None, functools.partial(self.model, audio_path=audio_path, **request_data)
-            )
+
+            def _run_model() -> dict[str, Any]:
+                return cast(
+                    "dict[str, Any]",
+                    self.model(audio_path=audio_path, **request_data),
+                )
+
+            result: dict[str, Any] = await loop.run_in_executor(None, _run_model)
 
             # Force garbage collection after model inference
             gc.collect()
@@ -235,7 +238,7 @@ class MLXWhisperHandler:
             gc.collect()
             raise
         else:
-            return result  # type: ignore[return-value]
+            return result
 
     async def _save_uploaded_file(self, file: UploadFile) -> str:
         """
@@ -310,13 +313,21 @@ class MLXWhisperHandler:
             if request.prompt is not None:
                 request_data["initial_prompt"] = request.prompt
 
-            # Map additional parameters if they exist
-            decode_options = {}
-            if request.language is not None:
-                decode_options["language"] = request.language
-
-            # Add decode options to request data
-            request_data.update(decode_options)
+            # Map additional tuning parameters if they exist
+            if request.top_p is not None:
+                request_data["top_p"] = request.top_p
+            if request.top_k is not None:
+                request_data["top_k"] = request.top_k
+            if request.min_p is not None:
+                request_data["min_p"] = request.min_p
+            if request.seed is not None:
+                request_data["seed"] = request.seed
+            if request.frequency_penalty is not None:
+                request_data["frequency_penalty"] = request.frequency_penalty
+            if request.repetition_penalty is not None:
+                request_data["repetition_penalty"] = request.repetition_penalty
+            if request.presence_penalty is not None:
+                request_data["presence_penalty"] = request.presence_penalty
 
             logger.debug(f"Prepared transcription request: {request_data}")
 
