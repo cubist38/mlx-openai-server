@@ -25,7 +25,7 @@ class MLX_Embeddings:
         Initialize the MLX_Embeddings model.
 
         Args:
-            model_name (str): Name of the model to load.
+            model_path (str): Path to the model to load.
 
         Raises
         ------

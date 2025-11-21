@@ -14,7 +14,7 @@ from .base_processor import BaseProcessor
 class ImageProcessor(BaseProcessor):
     """Image processor for handling image files with caching, validation, and processing."""
 
-    def __init__(self, max_workers: int = 4, cache_size: int = 1000):
+    def __init__(self, max_workers: int = 4, cache_size: int = 1000) -> None:
         super().__init__(max_workers, cache_size)
         Image.MAX_IMAGE_PIXELS = 100000000  # Limit to 100 megapixels
 
@@ -115,7 +115,9 @@ class ImageProcessor(BaseProcessor):
         """Process a single image URL and return path to cached file."""
         return await self._process_single_media(image_url, resize=resize)
 
-    async def process_image_urls(self, image_urls: list[str], resize: bool = True) -> list[str]:
+    async def process_image_urls(
+        self, image_urls: list[str], resize: bool = True
+    ) -> list[str | Exception]:
         """Process multiple image URLs and return paths to cached files."""
         tasks = [self.process_image_url(url, resize=resize) for url in image_urls]
         results = await asyncio.gather(*tasks, return_exceptions=True)

@@ -306,13 +306,13 @@ async def create_audio_transcriptions(
 
 
 def create_response_embeddings(
-    embeddings: list[float], model: str, encoding_format: str = "float"
+    embeddings: list[list[float]], model: str, encoding_format: str = "float"
 ) -> EmbeddingResponse:
     """Create embedding response data from embeddings list.
 
     Parameters
     ----------
-    embeddings : list[float]
+    embeddings : list[list[float]]
         List of embedding vectors.
     model : str
         Model name used for embeddings.

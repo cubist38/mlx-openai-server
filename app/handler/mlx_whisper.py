@@ -81,9 +81,9 @@ class MLXWhisperHandler:
                 "queue_size": 50,
             }
         self.request_queue = RequestQueue(
-            max_concurrency=queue_config.get("max_concurrency"),
-            timeout=queue_config.get("timeout"),
-            queue_size=queue_config.get("queue_size"),
+            max_concurrency=queue_config.get("max_concurrency", 1),
+            timeout=queue_config.get("timeout", 600),
+            queue_size=queue_config.get("queue_size", 50),
         )
         await self.request_queue.start(self._process_request)
         logger.info("Initialized MLXWhisperHandler and started request queue")

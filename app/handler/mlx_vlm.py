@@ -125,9 +125,9 @@ class MLXVLMHandler:
         if not queue_config:
             queue_config = {"max_concurrency": 1, "timeout": 300, "queue_size": 100}
         self.request_queue = RequestQueue(
-            max_concurrency=queue_config.get("max_concurrency"),
-            timeout=queue_config.get("timeout"),
-            queue_size=queue_config.get("queue_size"),
+            max_concurrency=queue_config.get("max_concurrency", 1),
+            timeout=queue_config.get("timeout", 300),
+            queue_size=queue_config.get("queue_size", 100),
         )
         await self.request_queue.start(self._process_request)
         logger.info("Initialized MLXHandler and started request queue")
@@ -397,7 +397,7 @@ class MLXVLMHandler:
 
         Returns
         -------
-            list[float]: Embeddings for the input text or images
+            list[list[float]]: Embeddings for the input text or images
         """
         try:
             # Create a unique request ID

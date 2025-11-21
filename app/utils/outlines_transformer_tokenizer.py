@@ -13,6 +13,6 @@ class OutlinesTransformerTokenizer(TransformerTokenizer):
     https://github.com/dottxt-ai/outlines/blob/69418d/outlines/models/transformers.py#L117
     """
 
-    def __hash__(self):
+    def __hash__(self) -> int:
         """Return a hash based on the tokenizer using custom hasher."""
         return hash(Hasher.hash(self.tokenizer))

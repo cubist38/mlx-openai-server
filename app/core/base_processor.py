@@ -8,7 +8,6 @@ import hashlib
 from pathlib import Path
 import tempfile
 import time
-from typing import Any
 
 import aiofiles
 import aiohttp
@@ -18,7 +17,7 @@ from loguru import logger
 class BaseProcessor(ABC):
     """Base class for media processors with common caching and session management."""
 
-    def __init__(self, max_workers: int = 4, cache_size: int = 1000):
+    def __init__(self, max_workers: int = 4, cache_size: int = 1000) -> None:
         # Use tempfile for macOS-efficient temporary file handling
         self.temp_dir = tempfile.TemporaryDirectory()
         self._session: aiohttp.ClientSession | None = None
@@ -87,8 +86,8 @@ class BaseProcessor(ABC):
         """Get maximum file size in bytes. Must be implemented by subclasses."""
 
     @abstractmethod
-    def _process_media_data(self, data: bytes, cached_path: str, **kwargs) -> dict[str, Any]:
-        """Process media data and save to cached path. Must be implemented by subclasses."""
+    def _process_media_data(self, data: bytes, cached_path: str, **kwargs) -> str:
+        """Process media data and save to cached path and return the cached file path."""
 
     @abstractmethod
     def _get_media_type_name(self) -> str:
