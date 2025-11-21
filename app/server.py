@@ -124,14 +124,17 @@ def create_lifespan(
     During shutdown the lifespan will attempt to call the handler's
     ``cleanup`` method and perform final memory cleanup.
 
-    Args:
-        config_args: Object containing CLI configuration attributes used
-            to initialize handlers (e.g., model_type, model_path,
-            max_concurrency, queue_timeout, etc.).
+    Parameters
+    ----------
+    config_args : MLXServerConfig
+        Object containing CLI configuration attributes used
+        to initialize handlers (e.g., model_type, model_path,
+        max_concurrency, queue_timeout, etc.).
 
     Returns
     -------
-        Callable: An asynccontextmanager usable as FastAPI ``lifespan``.
+    Callable
+        An asynccontextmanager usable as FastAPI ``lifespan``.
     """
 
     @asynccontextmanager
@@ -238,7 +241,7 @@ def create_lifespan(
             app.state.handler = handler
 
         except Exception as e:
-            logger.exception(f"Failed to initialize MLX handler: {e!s}")
+            logger.exception(f"Failed to initialize MLX handler: {type(e).__name__}: {e}")
             raise
 
         # Initial memory cleanup
@@ -256,7 +259,7 @@ def create_lifespan(
                 await app.state.handler.cleanup()
                 logger.info("Resources cleaned up successfully")
             except Exception as e:
-                logger.exception(f"Error during shutdown: {e!s}")
+                logger.exception(f"Error during shutdown: {type(e).__name__}: {e}")
 
         # Final memory cleanup
         mx.clear_cache()
@@ -275,14 +278,17 @@ def setup_server(config_args: MLXServerConfig) -> uvicorn.Config:
     a configured lifespan, registers routes and middleware, and returns a
     :class:`uvicorn.Config` ready to be used to run the server.
 
-    Args:
-        config_args: Configuration object usually produced by the CLI. Expected
-            to have attributes like ``host``, ``port``, ``log_level``,
-            and logging-related fields.
+    Parameters
+    ----------
+    config_args : MLXServerConfig
+        Configuration object usually produced by the CLI. Expected
+        to have attributes like ``host``, ``port``, ``log_level``,
+        and logging-related fields.
 
     Returns
     -------
-        uvicorn.Config: A configuration object that can be passed to
+    uvicorn.Config
+        A configuration object that can be passed to
         ``uvicorn.Server(config).run()`` to start the application.
     """
     # Configure logging based on CLI parameters
@@ -320,6 +326,18 @@ def setup_server(config_args: MLXServerConfig) -> uvicorn.Config:
         Measures request processing time, appends an ``X-Process-Time``
         header, and increments a simple request counter used to trigger
         periodic memory cleanup for long-running processes.
+
+        Parameters
+        ----------
+        request : Request
+            The incoming HTTP request.
+        call_next : Callable[[Request], Awaitable[Response]]
+            The next middleware or endpoint in the chain.
+
+        Returns
+        -------
+        Response
+            The HTTP response with added headers.
         """
         start_time = time.time()
         response = await call_next(request)
@@ -349,8 +367,20 @@ def setup_server(config_args: MLXServerConfig) -> uvicorn.Config:
         Logs the exception (with traceback) and returns a generic JSON
         response with a 500 status code so internal errors do not leak
         implementation details to clients.
+
+        Parameters
+        ----------
+        _request : Request
+            The incoming HTTP request (unused).
+        exc : Exception
+            The exception that was raised.
+
+        Returns
+        -------
+        JSONResponse
+            A JSON response with error details.
         """
-        logger.exception(f"Global exception handler caught: {exc!s}")
+        logger.exception(f"Global exception handler caught: {type(exc).__name__}: {exc!s}")
         return JSONResponse(
             status_code=HTTPStatus.INTERNAL_SERVER_ERROR,
             content={"error": {"message": "Internal server error", "type": "internal_error"}},

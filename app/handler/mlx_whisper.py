@@ -71,7 +71,7 @@ class MLXWhisperHandler:
                 }
             ]
         except Exception as e:
-            logger.error(f"Error getting models: {e!s}")
+            logger.error(f"Error getting models. {type(e).__name__}: {e}")
             return []
 
     async def initialize(self, queue_config: dict[str, Any] | None = None) -> None:
@@ -118,7 +118,7 @@ class MLXWhisperHandler:
                     Path(temp_file_path).unlink()
                     logger.debug(f"Cleaned up temporary file: {temp_file_path}")
                 except Exception as e:
-                    logger.warning(f"Failed to clean up temporary file {temp_file_path}: {e!s}")
+                    logger.warning(f"Failed to clean up temporary file {temp_file_path}: {e}")
             # Force garbage collection
             gc.collect()
 
@@ -186,7 +186,7 @@ class MLXWhisperHandler:
             yield "data: [DONE]\n\n"
 
         except Exception as e:
-            logger.error(f"Error during transcription streaming: {e!s}")
+            logger.error(f"Error during transcription streaming. {type(e).__name__}: {e}")
             raise
         finally:
             # Clean up temporary file
@@ -195,7 +195,7 @@ class MLXWhisperHandler:
                     Path(temp_file_path).unlink()
                     logger.debug(f"Cleaned up temporary file: {temp_file_path}")
                 except Exception as e:
-                    logger.warning(f"Failed to clean up temporary file {temp_file_path}: {e!s}")
+                    logger.warning(f"Failed to clean up temporary file {temp_file_path}: {e}")
             # Clean up
             gc.collect()
 
@@ -221,7 +221,7 @@ class MLXWhisperHandler:
             gc.collect()
 
         except Exception as e:
-            logger.error(f"Error processing audio transcription request: {e!s}")
+            logger.error(f"Error processing audio transcription request. {type(e).__name__}: {e}")
             # Clean up on error
             gc.collect()
             raise
@@ -257,13 +257,13 @@ class MLXWhisperHandler:
             logger.debug(f"Saved uploaded file to temporary location: {temp_path}")
 
         except OSError as e:
-            logger.error(f"Error saving uploaded file ({e.__class__.__name__}): {e}")
+            logger.error(f"Error saving uploaded file. ({type(e).__name__}): {e}")
             raise HTTPException(
                 status_code=HTTPStatus.INTERNAL_SERVER_ERROR,
                 detail="Internal server error while saving uploaded file",
             ) from e
         except Exception as e:
-            logger.error(f"Error saving uploaded file ({e.__class__.__name__}): {e!s}")
+            logger.error(f"Error saving uploaded file. ({type(e).__name__}): {e}")
             raise
         else:
             return temp_path
@@ -314,9 +314,9 @@ class MLXWhisperHandler:
         except HTTPException:
             raise
         except Exception as e:
-            logger.error(f"Failed to prepare transcription request: {e!s}")
+            logger.error(f"Failed to prepare transcription request. {type(e).__name__}: {e}")
             content = create_error_response(
-                f"Failed to process request: {e!s}", "bad_request", HTTPStatus.BAD_REQUEST
+                f"Failed to process request: {e}", "bad_request", HTTPStatus.BAD_REQUEST
             )
             raise HTTPException(status_code=HTTPStatus.BAD_REQUEST, detail=content) from e
         else:
@@ -345,4 +345,4 @@ class MLXWhisperHandler:
                 await self.request_queue.stop()
             logger.info("MLXWhisperHandler cleanup completed successfully")
         except Exception as e:
-            logger.error(f"Error during MLXWhisperHandler cleanup: {e!s}")
+            logger.error(f"Error during MLXWhisperHandler cleanup. {type(e).__name__}: {e}")

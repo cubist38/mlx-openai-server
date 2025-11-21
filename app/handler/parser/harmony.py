@@ -51,7 +51,7 @@ class HarmonyParser:
             self.enc = load_harmony_encoding(HarmonyEncodingName.HARMONY_GPT_OSS)
             self.parser = StreamableParser(self.enc, role=Role.ASSISTANT)
         except Exception as e:
-            logger.error(f"Failed to initialize harmony encoding: {e}")
+            logger.error(f"Failed to initialize harmony encoding: {type(e).__name__}: {e}")
             raise
 
         # Configuration
@@ -170,7 +170,9 @@ class HarmonyParser:
             )
 
         except (AttributeError, KeyError, TypeError, ValueError) as e:
-            logger.exception(f"Error in parse_stream with known exception type: {e}")
+            logger.exception(
+                f"Error in parse_stream with known exception type: {type(e).__name__}: {e}"
+            )
             return None, self.end_stream
 
     def _build_response(
@@ -216,7 +218,9 @@ class HarmonyParser:
                 if contents:
                     return "".join(contents), self.end_stream
         except (KeyError, TypeError, ValueError) as e:
-            logger.error(f"Error building response for channel {current_channel}: {e}")
+            logger.error(
+                f"Error building response for channel {current_channel}: {type(e).__name__}: {e}"
+            )
 
         return None, self.end_stream
 
@@ -318,7 +322,7 @@ class HarmonyParser:
 
         except Exception as e:
             # Safety net for unexpected errors during encoding/parsing
-            logger.error(f"Error in parse method: {e}")
+            logger.error(f"Error in parse method: {type(e).__name__}: {e}")
             # Return partial results if available, don't raise
 
         return result

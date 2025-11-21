@@ -54,7 +54,7 @@ class MLX_VLM:
             self.max_kv_size = context_length
             self.config = self.model.config
         except Exception as e:
-            raise ValueError(f"Error loading model: {e!s}") from e
+            raise ValueError(f"Error loading model: {e}") from e
 
     def _is_video_model(self) -> bool:
         return hasattr(self.config, "video_token_id") or hasattr(self.config, "video_token_index")

@@ -89,7 +89,7 @@ def cli() -> None:
 @click.option(
     "--model-path",
     required=True,
-    help="Path to the model (required for lm, multimodal, embeddings, image-generation, image-edit, whisper model types). With `image-generation` or `image-edit` model types, it should be the local path to the model.",
+    help="Path to the model (required for lm, multimodal, embeddings, image-generation, image-edit, whisper model types). Can be a local path or Hugging Face repository ID (e.g., 'blackforestlabs/FLUX.1-dev').",
 )
 @click.option(
     "--model-type",
@@ -207,6 +207,49 @@ def launch(
     The command builds a server configuration object using
     ``MLXServerConfig`` and then calls the async ``start`` routine
     which handles the event loop and server lifecycle.
+
+    Parameters
+    ----------
+    model_path : str
+        Path to the model (required for lm, multimodal, embeddings, image-generation, image-edit, whisper model types).
+    model_type : str
+        Type of model to run (lm, multimodal, image-generation, image-edit, embeddings, whisper).
+    context_length : int
+        Context length for language models.
+    port : int
+        Port to run the server on.
+    host : str
+        Host to run the server on.
+    max_concurrency : int
+        Maximum number of concurrent requests.
+    queue_timeout : int
+        Request timeout in seconds.
+    queue_size : int
+        Maximum queue size for pending requests.
+    quantize : int
+        Quantization level for the model.
+    config_name : str or None
+        Config name of the model.
+    lora_paths : str or None
+        Path to the LoRA file(s).
+    lora_scales : str or None
+        Scale factor for the LoRA file(s).
+    disable_auto_resize : bool
+        Disable automatic model resizing.
+    log_file : str or None
+        Path to log file.
+    no_log_file : bool
+        Disable file logging entirely.
+    log_level : str
+        Set the logging level.
+    enable_auto_tool_choice : bool
+        Enable automatic tool choice.
+    tool_call_parser : str or None
+        Specify tool call parser to use.
+    reasoning_parser : str or None
+        Specify reasoning parser to use.
+    trust_remote_code : bool
+        Enable trust_remote_code when loading models.
     """
     args = MLXServerConfig(
         model_path=model_path,

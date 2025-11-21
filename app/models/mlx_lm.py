@@ -51,7 +51,7 @@ class MLX_LM:
             self.max_kv_size = context_length
             self.outlines_tokenizer = OutlinesTransformerTokenizer(self.tokenizer)  # type: ignore[arg-type]
         except Exception as e:
-            raise ValueError(f"Error loading model: {e!s}") from e
+            raise ValueError(f"Error loading model: {e}") from e
 
     def _get_pad_token_id(self) -> int:
         """Get a safe pad token ID, falling back through options."""

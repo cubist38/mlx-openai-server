@@ -1,8 +1,7 @@
 """Request tracking middleware for correlation IDs and request logging."""
 
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 import time
-from typing import Any
 import uuid
 
 from fastapi import Request, Response
@@ -22,7 +21,9 @@ class RequestTrackingMiddleware(BaseHTTPMiddleware):
     - Logs request start/end with timing information
     """
 
-    async def dispatch(self, request: Request, call_next: Callable[..., Any]) -> Response:
+    async def dispatch(
+        self, request: Request, call_next: Callable[[Request], Awaitable[Response]]
+    ) -> Response:
         """
         Process each request with correlation ID tracking.
 
@@ -68,11 +69,10 @@ class RequestTrackingMiddleware(BaseHTTPMiddleware):
         except Exception as e:
             # Log error with request ID
             duration = time.time() - start_time
-            logger.error(
-                f"Request failed: {request.method} {request.url.path} "
-                f"error={e!s} duration={duration:.3f}s "
-                f"[request_id={request_id}]",
-                exc_info=True,
+            logger.exception(
+                f"Request failed: {request.method} {request.url.path}. "
+                f"{type(e).__name__}: {e}, duration={duration:.3f}s "
+                f"[request_id={request_id}]"
             )
             raise
         return response

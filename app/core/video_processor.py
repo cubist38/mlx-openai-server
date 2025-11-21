@@ -113,7 +113,7 @@ class VideoProcessor(BaseProcessor):
             with Path(cached_path).open("wb") as f:
                 f.write(data)
         except Exception as e:
-            logger.error(f"Failed to save video data: {e!s}")
+            logger.error(f"Failed to save video data. {type(e).__name__}: {e}")
             raise
         else:
             logger.info(f"Saved video to {cached_path} ({len(data)} bytes)")

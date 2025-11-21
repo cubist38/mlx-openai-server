@@ -91,10 +91,10 @@ async def models(raw_request: Request) -> ModelsResponse | JSONResponse:
             models_data = registry.list_models()
             return ModelsResponse(object="list", data=[Model(**model) for model in models_data])
         except Exception as e:
-            logger.error(f"Error retrieving models from registry: {e!s}")
+            logger.error(f"Error retrieving models from registry. {type(e).__name__}: {e}")
             return JSONResponse(
                 content=create_error_response(
-                    f"Failed to retrieve models: {e!s}",
+                    f"Failed to retrieve models: {e}",
                     "server_error",
                     HTTPStatus.INTERNAL_SERVER_ERROR,
                 ),
@@ -119,10 +119,10 @@ async def models(raw_request: Request) -> ModelsResponse | JSONResponse:
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Error retrieving models: {e!s}")
+        logger.error(f"Error retrieving models. {type(e).__name__}: {e}")
         return JSONResponse(
             content=create_error_response(
-                f"Failed to retrieve models: {e!s}",
+                f"Failed to retrieve models: {e}",
                 "server_error",
                 HTTPStatus.INTERNAL_SERVER_ERROR,
             ),
@@ -152,7 +152,7 @@ async def queue_stats(raw_request: Request) -> dict[str, Any] | JSONResponse:
     try:
         stats = await handler.get_queue_stats()
     except Exception as e:
-        logger.error(f"Failed to get queue stats: {e!s}")
+        logger.error(f"Failed to get queue stats: {e}")
         return JSONResponse(
             content=create_error_response(
                 "Failed to get queue stats", "server_error", HTTPStatus.INTERNAL_SERVER_ERROR
@@ -202,7 +202,7 @@ async def chat_completions(
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Error processing chat completion request: {e!s}", exc_info=True)
+        logger.exception(f"Error processing chat completion request: {type(e).__name__}: {e}")
         return JSONResponse(
             content=create_error_response(str(e)), status_code=HTTPStatus.INTERNAL_SERVER_ERROR
         )
@@ -230,7 +230,7 @@ async def embeddings(
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Error processing embedding request: {e!s}", exc_info=True)
+        logger.exception(f"Error processing embedding request: {type(e).__name__}: {e}")
         return JSONResponse(
             content=create_error_response(str(e)), status_code=HTTPStatus.INTERNAL_SERVER_ERROR
         )
@@ -268,7 +268,7 @@ async def image_generations(
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Error processing image generation request: {e!s}", exc_info=True)
+        logger.exception(f"Error processing image generation request: {type(e).__name__}: {e}")
         return JSONResponse(
             content=create_error_response(str(e)), status_code=HTTPStatus.INTERNAL_SERVER_ERROR
         )
@@ -307,7 +307,7 @@ async def create_image_edit(
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Error processing image edit request: {e!s}", exc_info=True)
+        logger.exception(f"Error processing image edit request: {type(e).__name__}: {e}")
         return JSONResponse(
             content=create_error_response(str(e)), status_code=HTTPStatus.INTERNAL_SERVER_ERROR
         )
@@ -350,7 +350,7 @@ async def create_audio_transcriptions(
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Error processing transcription request: {e!s}", exc_info=True)
+        logger.exception(f"Error processing transcription request: {type(e).__name__}: {e}")
         return JSONResponse(
             content=create_error_response(str(e)), status_code=HTTPStatus.INTERNAL_SERVER_ERROR
         )
@@ -571,12 +571,12 @@ async def handle_stream_response(
                 yield _yield_sse_chunk(error_response)
 
     except HTTPException as e:
-        logger.error(f"HTTPException in stream wrapper: {e!s}", exc_info=True)
+        logger.exception(f"HTTPException in stream wrapper: {type(e).__name__}: {e}")
         detail = e.detail if isinstance(e.detail, dict) else {"message": str(e)}
         error_response = detail  # type: ignore[assignment]
         yield _yield_sse_chunk(error_response)
     except Exception as e:
-        logger.error(f"Error in stream wrapper: {e!s}", exc_info=True)
+        logger.exception(f"Error in stream wrapper: {type(e).__name__}: {e}")
         error_response = create_error_response(
             str(e), "server_error", HTTPStatus.INTERNAL_SERVER_ERROR
         )

@@ -157,12 +157,16 @@ class BaseFluxModel(ABC):
         self._load_model()
 
     def _validate_model_path(self) -> bool:
-        """Validate that the model path exists or is a valid model name."""
+        """Validate that the model path exists or is a valid model identifier."""
         # Check if it's a file path
         if Path(self.model_path).exists():
             return True
 
-        # Check if it's a valid model name (for downloading)
+        # Check if it's a valid model identifier (contains '/' for repo IDs or known model names)
+        if "/" in self.model_path:
+            return True
+
+        # Check if it's a known model name (for downloading)
         valid_model_names = ["flux-dev", "flux-schnell", "flux-krea-dev", "flux-kontext-dev"]
         return self.model_path in valid_model_names
 
@@ -193,10 +197,7 @@ class BaseFluxModel(ABC):
             raise ModelGenerationError(f"Failed to prepare configuration: {e}") from e
 
         logger.info(
-            "Generating image with prompt: '{:.50}...' (steps: {}, seed: {})",
-            prompt,
-            generation_config.num_inference_steps,
-            seed,
+            f"Generating image with prompt: '{prompt:.50}...' (steps: {generation_config.num_inference_steps}, seed: {seed})",
         )
 
         try:

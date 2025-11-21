@@ -120,7 +120,9 @@ class BaseProcessor(ABC):
                     self._evict_oldest_cache_entries()
                 gc.collect()  # Force garbage collection after cleanup
             except Exception as e:
-                logger.warning(f"Failed to clean up old {self._get_media_type_name()} files: {e!s}")
+                logger.warning(
+                    f"Failed to clean up old {self._get_media_type_name()} files. {type(e).__name__}: {e}"
+                )
 
     async def _process_single_media(self, media_url: str, **kwargs: Any) -> str:
         try:
@@ -195,8 +197,8 @@ class BaseProcessor(ABC):
                 return self._process_media_data(data, cached_path, **kwargs)
 
         except Exception as e:
-            logger.error(f"Failed to process {self._get_media_type_name()}: {e!s}")
-            raise ValueError(f"Failed to process {self._get_media_type_name()}: {e!s}") from e
+            logger.error(f"Failed to process {self._get_media_type_name()} {type(e).__name__}: {e}")
+            raise ValueError(f"Failed to process {self._get_media_type_name()}: {e}") from e
         finally:
             gc.collect()
 
@@ -218,15 +220,15 @@ class BaseProcessor(ABC):
             if self._session and not self._session.closed:
                 await self._session.close()
         except Exception as e:
-            logger.warning(f"Exception closing aiohttp session: {e!s}")
+            logger.warning(f"Exception closing aiohttp session. {type(e).__name__}: {e}")
         try:
             self.executor.shutdown(wait=True)
         except Exception as e:
-            logger.warning(f"Exception shutting down executor: {e!s}")
+            logger.warning(f"Exception shutting down executor. {type(e).__name__}: {e}")
         try:
             self.temp_dir.cleanup()
         except Exception as e:
-            logger.warning(f"Exception cleaning up temp directory: {e!s}")
+            logger.warning(f"Exception cleaning up temp directory. {type(e).__name__}: {e}")
 
     async def __aenter__(self) -> Self:
         """Enter async context manager."""
