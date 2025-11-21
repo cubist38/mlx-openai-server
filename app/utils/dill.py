@@ -190,7 +190,7 @@ def _save_torchTensor(pickler: Any, obj: Any) -> None:
 def _save_torchGenerator(pickler: Any, obj: Any) -> None:
     import torch  # noqa: PLC0415
 
-    def create_torchGenerator(state):
+    def create_torchGenerator(state: Any) -> Any:
         generator = torch.Generator()
         generator.set_state(state)
         return generator
@@ -201,10 +201,10 @@ def _save_torchGenerator(pickler: Any, obj: Any) -> None:
     log(pickler, "# Ge")
 
 
-def _save_spacyLanguage(pickler, obj) -> None:
+def _save_spacyLanguage(pickler: Any, obj: Any) -> None:
     import spacy  # noqa: PLC0415
 
-    def create_spacyLanguage(config, bytes):
+    def create_spacyLanguage(config: Any, bytes: Any) -> Any:
         lang_cls = spacy.util.get_lang_class(config["nlp"]["lang"])
         lang_inst = lang_cls.from_config(config)
         return lang_inst.from_bytes(bytes)
@@ -215,7 +215,7 @@ def _save_spacyLanguage(pickler, obj) -> None:
     log(pickler, "# Sp")
 
 
-def _save_transformersPreTrainedTokenizerBase(pickler, obj) -> None:
+def _save_transformersPreTrainedTokenizerBase(pickler: Any, obj: Any) -> None:
     log(pickler, f"Tok: {obj}")
     # Ignore the `cache` attribute
     state = obj.__dict__

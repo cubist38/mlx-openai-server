@@ -1,5 +1,7 @@
 """MLX Flux model handler for image generation."""
 
+from __future__ import annotations
+
 import asyncio
 import base64
 import gc
@@ -14,6 +16,7 @@ import uuid
 
 from fastapi import HTTPException
 from loguru import logger
+import mlx.core as mx
 from PIL import Image
 
 from ..core.queue import RequestQueue
@@ -53,8 +56,8 @@ class MLXFluxHandler:
             max_concurrency (int): Maximum number of concurrent model inference tasks.
             quantize (int): Quantization level for the model.
             config_name (str): Model config name (flux-schnell, flux-dev, etc.).
-            lora_paths (list[str]): List of LoRA adapter paths.
-            lora_scales (list[float]): List of LoRA scales.
+            lora_paths (list[str] | None): Optional list of LoRA adapter paths. Defaults to None (no LoRA adapters used).
+            lora_scales (list[float] | None): Optional list of LoRA scales. Defaults to None (no LoRA adapters used).
         """
         self.model_path = model_path
         self.quantize = quantize
@@ -100,7 +103,9 @@ class MLXFluxHandler:
         if not queue_config:
             queue_config = {"max_concurrency": 1, "timeout": 300, "queue_size": 100}
         self.request_queue = RequestQueue(
-            max_concurrency=queue_config.get("max_concurrency", 1),
+            max_concurrency=queue_config.get(
+                "max_concurrency", self.request_queue.max_concurrency if self.request_queue else 1
+            ),
             timeout=queue_config.get("timeout", 300),
             queue_size=queue_config.get("queue_size", 100),
         )
@@ -108,7 +113,7 @@ class MLXFluxHandler:
         logger.info("Initialized MLXFluxHandler and started request queue")
         logger.info(f"Queue configuration: {queue_config}")
 
-    def _parse_image_size(self, size: ImageSize):
+    def _parse_image_size(self, size: ImageSize) -> tuple[int, int]:
         """Parse image size string to width, height tuple."""
         width, height = map(int, size.value.split("x"))
         return width, height
@@ -408,13 +413,29 @@ class MLXFluxHandler:
         }
 
     async def cleanup(self) -> None:
-        """Clean up resources and shut down the request queue."""
+        """
+        Clean up resources and shut down the request queue.
+
+        This method releases model resources by clearing MLX cache and stops
+        the request queue. Model unloading should be handled externally if needed.
+        """
         if hasattr(self, "_cleaned") and self._cleaned:
             return
         self._cleaned = True
 
         try:
             logger.info("Cleaning up MLXFluxHandler resources")
+
+            # Clean up model resources
+            if hasattr(self, "model") and self.model:
+                try:
+                    logger.info("Clearing MLX cache for model resources")
+                    mx.clear_cache()
+                    logger.info("MLX cache cleared successfully")
+                except Exception as e:
+                    logger.error(f"Error clearing MLX cache: {e!s}")
+
+            # Clean up request queue
             if hasattr(self, "request_queue") and self.request_queue:
                 await self.request_queue.stop()
                 logger.info("Request queue stopped successfully")

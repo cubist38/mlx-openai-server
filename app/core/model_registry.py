@@ -1,5 +1,7 @@
 """Model registry for managing multiple model handlers."""
 
+from __future__ import annotations
+
 import asyncio
 import time
 from typing import Any
@@ -24,7 +26,7 @@ class ModelRegistry:
         _lock: Async lock for thread-safe operations
     """
 
-    def __init__(self):
+    def __init__(self) -> None:
         """Initialize empty model registry."""
         self._handlers: dict[str, Any] = {}
         self._metadata: dict[str, ModelMetadata] = {}

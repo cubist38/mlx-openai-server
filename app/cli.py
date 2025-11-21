@@ -5,8 +5,11 @@ This module defines the Click command group used by the package and the
 the ASGI server.
 """
 
+from __future__ import annotations
+
 import asyncio
 import sys
+from typing import Any
 
 import click
 from loguru import logger
@@ -26,14 +29,14 @@ class UpperChoice(click.Choice):
     where the internal representation is uppercased.
     """
 
-    def normalize_choice(self, choice, ctx) -> str | None:
+    def normalize_choice(self, choice: str, _ctx: Any) -> str | None:
         """Return the canonical uppercase choice or raise BadParameter.
 
         Parameters
         ----------
         choice:
             Raw value supplied by the user (may be ``None``).
-        ctx:
+        _ctx:
             Click context object (unused here but part of the API).
 
         Returns
@@ -179,26 +182,26 @@ def cli() -> None:
     help="Enable trust_remote_code when loading models. This allows loading custom code from model repositories.",
 )
 def launch(
-    model_path,
-    model_type,
-    context_length,
-    port,
-    host,
-    max_concurrency,
-    queue_timeout,
-    queue_size,
-    quantize,
-    config_name,
-    lora_paths,
-    lora_scales,
-    disable_auto_resize,
-    log_file,
-    no_log_file,
-    log_level,
-    enable_auto_tool_choice,
-    tool_call_parser,
-    reasoning_parser,
-    trust_remote_code,
+    model_path: str,
+    model_type: str,
+    context_length: int,
+    port: int,
+    host: str,
+    max_concurrency: int,
+    queue_timeout: float,
+    queue_size: int,
+    quantize: int,
+    config_name: str | None,
+    lora_paths: list[str],
+    lora_scales: list[float],
+    disable_auto_resize: bool,
+    log_file: str | None,
+    no_log_file: bool,
+    log_level: str,
+    enable_auto_tool_choice: bool,
+    tool_call_parser: str | None,
+    reasoning_parser: str | None,
+    trust_remote_code: bool,
 ) -> None:
     """Start the FastAPI/Uvicorn server with the supplied flags.
 

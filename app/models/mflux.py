@@ -5,14 +5,14 @@ This module provides classes for loading and using MFlux models for image genera
 including Flux1 and Flux1Kontext variants with different configurations.
 """
 
+from __future__ import annotations
+
 from abc import ABC, abstractmethod
+from collections.abc import Callable
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import Any, ClassVar
 
 from loguru import logger
-
-if TYPE_CHECKING:
-    from typing import ClassVar
 from mflux.config.model_config import ModelConfig
 from mflux.flux.flux import Config, Flux1
 from mflux.kontext.flux_kontext import Flux1Kontext
@@ -79,7 +79,7 @@ class ModelConfiguration:
         quantize: int = 8,
         lora_paths: list[str] | None = None,
         lora_scales: list[float] | None = None,
-    ) -> "ModelConfiguration":
+    ) -> ModelConfiguration:
         """Create configuration for Flux Schnell model."""
         return cls(
             model_type="schnell",
@@ -97,7 +97,7 @@ class ModelConfiguration:
         quantize: int = 8,
         lora_paths: list[str] | None = None,
         lora_scales: list[float] | None = None,
-    ) -> "ModelConfiguration":
+    ) -> ModelConfiguration:
         """Create configuration for Flux Dev model."""
         return cls(
             model_type="dev",
@@ -115,7 +115,7 @@ class ModelConfiguration:
         quantize: int = 8,
         lora_paths: list[str] | None = None,
         lora_scales: list[float] | None = None,
-    ) -> "ModelConfiguration":
+    ) -> ModelConfiguration:
         """Create configuration for Flux Krea Dev model."""
         return cls(
             model_type="krea-dev",
@@ -128,7 +128,7 @@ class ModelConfiguration:
         )
 
     @classmethod
-    def kontext(cls, quantize: int = 8) -> "ModelConfiguration":
+    def kontext(cls, quantize: int = 8) -> ModelConfiguration:
         """Create configuration for Flux Kontext model."""
         return cls(
             model_type="kontext",
@@ -163,7 +163,7 @@ class BaseFluxModel(ABC):
             return True
 
         # Check if it's a valid model name (for downloading)
-        valid_model_names = ["flux-dev", "flux-schnell", "flux-kontext-dev"]
+        valid_model_names = ["flux-dev", "flux-schnell", "flux-krea-dev", "flux-kontext-dev"]
         return self.model_path in valid_model_names
 
     @abstractmethod
@@ -174,7 +174,7 @@ class BaseFluxModel(ABC):
     def _generate_image(self, prompt: str, seed: int, config: Config) -> Image.Image:
         """Generate image using the specific model implementation."""
 
-    def __call__(self, prompt: str, seed: int = 42, **kwargs) -> Image.Image:
+    def __call__(self, prompt: str, seed: int = 42, **kwargs: Any) -> Image.Image:
         """Generate an image from a text prompt."""
         if not self._is_loaded:
             raise ModelLoadError("Model is not loaded. Cannot generate image.")
@@ -212,7 +212,7 @@ class BaseFluxModel(ABC):
         else:
             return result
 
-    def _prepare_config(self, **kwargs) -> Config:
+    def _prepare_config(self, **kwargs: Any) -> Config:
         """Prepare configuration for image generation."""
         # Validate dimensions
         width = kwargs.get("width", 1024)
@@ -256,7 +256,7 @@ class FluxStandardModel(BaseFluxModel):
     def _load_model(self) -> None:
         """Load the standard Flux model."""
         try:
-            logger.info("Loading {} model from {}", self.config.model_type, self.model_path)
+            logger.info(f"Loading {self.config.model_type} model from {self.model_path}")
 
             # Prepare lora parameters
             lora_paths = self.config.lora_paths
@@ -264,9 +264,9 @@ class FluxStandardModel(BaseFluxModel):
 
             # Log LoRA information if provided
             if lora_paths:
-                logger.info("Using LoRA adapters: {}", lora_paths)
+                logger.info(f"Using LoRA adapters: {lora_paths}")
                 if lora_scales:
-                    logger.info("LoRA scales: {}", lora_scales)
+                    logger.info(f"LoRA scales: {lora_scales}")
 
             self._model = Flux1(
                 model_config=self.config.model_config,
@@ -276,7 +276,7 @@ class FluxStandardModel(BaseFluxModel):
                 lora_scales=lora_scales,
             )
             self._is_loaded = True
-            logger.info("{} model loaded successfully", self.config.model_type)
+            logger.info(f"{self.config.model_type} model loaded successfully")
         except Exception as e:
             error_msg = f"Failed to load {self.config.model_type} model: {e}"
             logger.error(error_msg)
@@ -302,7 +302,7 @@ class FluxKontextModel(BaseFluxModel):
     def _load_model(self) -> None:
         """Load the Flux Kontext model."""
         try:
-            logger.info("Loading Kontext model from {}", self.model_path)
+            logger.info(f"Loading Kontext model from {self.model_path}")
             self._model = Flux1Kontext(quantize=self.config.quantize, local_path=self.model_path)
             self._is_loaded = True
             logger.info("Kontext model loaded successfully")
@@ -328,14 +328,14 @@ class FluxKontextModel(BaseFluxModel):
 class FluxModel:
     """Factory class for creating and managing Flux models."""
 
-    _MODEL_CONFIGS: "ClassVar[dict[str, ModelConfiguration]]" = {
+    _MODEL_CONFIGS: ClassVar[dict[str, Callable[..., ModelConfiguration]]] = {
         "flux-schnell": ModelConfiguration.schnell,
         "flux-dev": ModelConfiguration.dev,
         "flux-krea-dev": ModelConfiguration.krea_dev,
         "flux-kontext-dev": ModelConfiguration.kontext,
     }
 
-    _MODEL_CLASSES: "ClassVar[dict[str, type[FluxStandardModel | FluxKontextModel]]]" = {
+    _MODEL_CLASSES: ClassVar[dict[str, type[FluxStandardModel | FluxKontextModel]]] = {
         "flux-schnell": FluxStandardModel,
         "flux-dev": FluxStandardModel,
         "flux-krea-dev": FluxStandardModel,
@@ -383,16 +383,16 @@ class FluxModel:
             model_class = self._MODEL_CLASSES[config_name]
             self.flux = model_class(model_path, self.config)
 
-            logger.info("FluxModel initialized successfully with config: {}", config_name)
+            logger.info(f"FluxModel initialized successfully with config: {config_name}")
             if lora_paths:
-                logger.info("LoRA adapters: {}", lora_paths)
+                logger.info(f"LoRA adapters: {lora_paths}")
 
         except Exception as e:
             error_msg = f"Failed to initialize FluxModel: {e}"
             logger.error(error_msg)
             raise ModelLoadError(error_msg) from e
 
-    def __call__(self, prompt: str, seed: int = 42, **kwargs) -> Image.Image:
+    def __call__(self, prompt: str, seed: int = 42, **kwargs: Any) -> Image.Image:
         """Generate an image using the configured model."""
         return self.flux(prompt, seed, **kwargs)
 

@@ -5,6 +5,8 @@ This module provides abstract base classes for parsing structured content from
 language model outputs, including thinking traces and tool calls.
 """
 
+from __future__ import annotations
+
 import json
 from typing import Any
 
@@ -35,25 +37,23 @@ class BaseThinkingParser:
         self.thinking_close = thinking_close
         self.is_thinking = False
 
-    def get_thinking_open(self):
+    def get_thinking_open(self) -> str:
         """
         Get the opening tag for thinking content.
 
         Returns
         -------
-        str
-            The opening tag string.
+            str: The opening tag.
         """
         return self.thinking_open
 
-    def get_thinking_close(self):
+    def get_thinking_close(self) -> str:
         """
         Get the closing tag for thinking content.
 
         Returns
         -------
-        str
-            The closing tag string.
+            str: The closing tag.
         """
         return self.thinking_close
 
@@ -202,26 +202,25 @@ class BaseToolParser:
         self.tool_close = tool_close
         self.buffer = ""
         self.state = ParseToolState.NORMAL
+        self.pending_text = ""
 
-    def get_tool_open(self):
+    def get_tool_open(self) -> str:
         """
         Get the opening tag for tool calls.
 
         Returns
         -------
-        str
-            The opening tag string.
+            str: The opening tag.
         """
         return self.tool_open
 
-    def get_tool_close(self):
+    def get_tool_close(self) -> str:
         """
         Get the closing tag for tool calls.
 
         Returns
         -------
-        str
-            The closing tag string.
+            str: The closing tag.
         """
         return self.tool_close
 
@@ -299,7 +298,7 @@ class BaseToolParser:
                 json_output = self._parse_tool_content(tool_content)
                 tool_calls.append(json_output)
             except json.JSONDecodeError:
-                logger.warning("Error parsing tool call: {}", tool_content)
+                logger.warning(f"Error parsing tool call: {tool_content}")
                 # Continue processing remaining content after error
                 remaining_parts.append(content[end_tool:].strip())
                 break
@@ -330,7 +329,17 @@ class BaseToolParser:
             has finished.
         """
         if chunk is None:
+            if self.pending_text:
+                text = self.pending_text
+                self.pending_text = ""
+                return text, True
             return None, True
+
+        # If there's pending text from a previous complete tool call, return it first
+        if self.pending_text:
+            text = self.pending_text
+            self.pending_text = ""
+            return text, False
 
         if self.tool_open in chunk:
             self.state = ParseToolState.FOUND_PREFIX
@@ -339,10 +348,14 @@ class BaseToolParser:
             if end_tool_index != -1:
                 self.buffer = chunk[start_tool_index + len(self.tool_open) : end_tool_index]
                 self.state = ParseToolState.NORMAL
+                # Store any text after the closing tag
+                after_close = chunk[end_tool_index + len(self.tool_close) :]
+                if after_close:
+                    self.pending_text = after_close
                 try:
                     json_output = self._parse_tool_content(self.buffer)
                 except json.JSONDecodeError:
-                    logger.warning("Error parsing tool call: {}", self.buffer)
+                    logger.warning(f"Error parsing tool call: {self.buffer}")
                     return None, True
                 return {
                     "name": json_output["name"],
@@ -357,10 +370,14 @@ class BaseToolParser:
             end_tool_index = chunk.find(self.tool_close)
             if end_tool_index != -1:
                 self.buffer += chunk[:end_tool_index]
+                # Store any text after the closing tag
+                after_close = chunk[end_tool_index + len(self.tool_close) :]
+                if after_close:
+                    self.pending_text = after_close
                 try:
                     json_output = self._parse_tool_content(self.buffer)
                 except json.JSONDecodeError:
-                    logger.warning("Error parsing tool call: {}", self.buffer)
+                    logger.warning(f"Error parsing tool call: {self.buffer}")
                     return None, False
                 return {
                     "name": json_output["name"],

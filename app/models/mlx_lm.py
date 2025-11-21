@@ -5,6 +5,8 @@ This module provides a wrapper class for MLX language models with text generatio
 streaming, and caching capabilities.
 """
 
+from __future__ import annotations
+
 from collections.abc import Generator
 import gc
 import os

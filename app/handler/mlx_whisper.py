@@ -6,6 +6,8 @@ requests using MLX Whisper models, with support for streaming responses and
 request queuing.
 """
 
+from __future__ import annotations
+
 import asyncio
 from collections.abc import AsyncGenerator
 import gc
@@ -16,7 +18,7 @@ import time
 from typing import Any
 import uuid
 
-from fastapi import HTTPException
+from fastapi import HTTPException, UploadFile
 from loguru import logger
 
 from ..core.queue import RequestQueue
@@ -143,7 +145,7 @@ class MLXWhisperHandler:
             loop = asyncio.get_event_loop()
             audio_path = request_data.pop("audio_path")
 
-            def collect_chunks():
+            def collect_chunks() -> list[dict[str, Any]]:
                 """Collect all chunks from the synchronous generator."""
                 generator = self.model(audio_path=audio_path, **request_data)
                 return list(generator)
@@ -225,7 +227,7 @@ class MLXWhisperHandler:
         else:
             return result
 
-    async def _save_uploaded_file(self, file) -> str:
+    async def _save_uploaded_file(self, file: UploadFile) -> str:
         """
         Save the uploaded file to a temporary location.
 
@@ -240,7 +242,7 @@ class MLXWhisperHandler:
             # Create a temporary file with the same extension as the uploaded file
             file_extension = Path(file.filename).suffix if file.filename else ".wav"
 
-            logger.debug("file_extension: {}", file_extension)
+            logger.debug(f"file_extension: {file_extension}")
 
             # Read file content first (this can only be done once with FastAPI uploads)
             content = await file.read()
@@ -253,8 +255,13 @@ class MLXWhisperHandler:
 
             logger.debug(f"Saved uploaded file to temporary location: {temp_path}")
 
+        except OSError as e:
+            logger.error("Error saving uploaded file (%s): %s", e.__class__.__name__, str(e))
+            raise HTTPException(
+                status_code=500, detail="Internal server error while saving uploaded file"
+            ) from e
         except Exception as e:
-            logger.error(f"Error saving uploaded file: {e!s}")
+            logger.error(f"Error saving uploaded file ({e.__class__.__name__}): {e!s}")
             raise
         else:
             return temp_path
@@ -263,13 +270,15 @@ class MLXWhisperHandler:
         """
         Prepare a transcription request by parsing model parameters.
 
+        The function saves the uploaded file and returns its path along with other
+        request fields ready for the model.
+
         Args:
             request: TranscriptionRequest object.
-            audio_path: Path to the audio file.
 
         Returns
         -------
-            Dict containing the request data ready for the model.
+            Dict containing the saved audio path and other request data ready for the model.
         """
         try:
             file = request.file
@@ -311,17 +320,13 @@ class MLXWhisperHandler:
 
     async def get_queue_stats(self) -> dict[str, Any]:
         """
-        Get statistics from the request queue and performance metrics.
+        Get statistics from the request queue.
 
         Returns
         -------
-            Dict with queue and performance statistics.
+            Dict with queue statistics.
         """
-        queue_stats = self.request_queue.get_queue_stats()
-
-        return {
-            "queue_stats": queue_stats,
-        }
+        return self.request_queue.get_queue_stats()
 
     async def cleanup(self) -> None:
         """

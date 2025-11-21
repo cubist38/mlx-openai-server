@@ -1,5 +1,7 @@
 """Base processor classes for media processing with caching and validation."""
 
+from __future__ import annotations
+
 from abc import ABC, abstractmethod
 import base64
 from concurrent.futures import ThreadPoolExecutor
@@ -8,6 +10,8 @@ import hashlib
 from pathlib import Path
 import tempfile
 import time
+from types import TracebackType
+from typing import Any, Self
 
 import aiofiles
 import aiohttp
@@ -53,7 +57,7 @@ class BaseProcessor(ABC):
         self._cache_access_times[media_url] = time.time()
         return hash_value
 
-    def _evict_oldest_cache_entries(self):
+    def _evict_oldest_cache_entries(self) -> None:
         """Remove oldest 20% of cache entries to make room."""
         if not self._cache_access_times:
             return
@@ -86,7 +90,7 @@ class BaseProcessor(ABC):
         """Get maximum file size in bytes. Must be implemented by subclasses."""
 
     @abstractmethod
-    def _process_media_data(self, data: bytes, cached_path: str, **kwargs) -> str:
+    def _process_media_data(self, data: bytes, cached_path: str, **kwargs: Any) -> str:
         """Process media data and save to cached path and return the cached file path."""
 
     @abstractmethod
@@ -101,7 +105,7 @@ class BaseProcessor(ABC):
             )
         return self._session
 
-    def _cleanup_old_files(self):
+    def _cleanup_old_files(self) -> None:
         current_time = time.time()
         if current_time - self._last_cleanup > self._cleanup_interval:
             try:
@@ -117,7 +121,7 @@ class BaseProcessor(ABC):
             except Exception as e:
                 logger.warning(f"Failed to clean up old {self._get_media_type_name()} files: {e!s}")
 
-    async def _process_single_media(self, media_url: str, **kwargs) -> str:
+    async def _process_single_media(self, media_url: str, **kwargs: Any) -> str:
         try:
             media_hash = self._get_media_hash(media_url)
             media_format = self._get_media_format(media_url)
@@ -166,13 +170,13 @@ class BaseProcessor(ABC):
         finally:
             gc.collect()
 
-    def clear_cache(self):
+    def clear_cache(self) -> None:
         """Manually clear the hash cache to free memory."""
         self._hash_cache.clear()
         self._cache_access_times.clear()
         gc.collect()
 
-    async def cleanup(self):
+    async def cleanup(self) -> None:
         """Clean up resources and caches."""
         if hasattr(self, "_cleaned") and self._cleaned:
             return
@@ -194,13 +198,18 @@ class BaseProcessor(ABC):
         except Exception as e:
             logger.warning(f"Exception cleaning up temp directory: {e!s}")
 
-    async def __aenter__(self):
+    async def __aenter__(self) -> Self:
         """Enter async context manager."""
         return self
 
-    async def __aexit__(self, exc_type, exc, tb):
+    async def __aexit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc: BaseException | None,
+        tb: TracebackType | None,
+    ) -> None:
         """Exit async context manager and cleanup."""
         await self.cleanup()
 
-    def __del__(self):
+    def __del__(self) -> None:
         """Destructor - async cleanup cannot be performed here."""

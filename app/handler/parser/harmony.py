@@ -212,7 +212,7 @@ class HarmonyParser:
                 contents = content_data.get("contents", [])
                 if contents:
                     return "".join(contents), self.end_stream
-        except Exception as e:
+        except (KeyError, TypeError, ValueError) as e:
             logger.error(f"Error building response for channel {current_channel}: {e}")
 
         return None, self.end_stream
@@ -312,7 +312,7 @@ class HarmonyParser:
                             result["content"] = message.content[0].text
                             logger.debug("Extracted final content")
 
-                except Exception as msg_error:
+                except (AttributeError, IndexError, KeyError, TypeError, ValueError) as msg_error:
                     logger.warning(f"Error processing message: {msg_error}")
                     continue
 

@@ -38,6 +38,7 @@ from ..schemas.openai import (
     ModelsResponse,
     StreamingChoice,
     TranscriptionRequest,
+    UsageInfo,
 )
 from ..utils.errors import create_error_response
 
@@ -74,7 +75,7 @@ async def health(raw_request: Request) -> Any:
 
 
 @router.get("/v1/models")
-async def models(raw_request: Request):
+async def models(raw_request: Request) -> ModelsResponse:
     """
     Get list of available models with cached response for instant delivery.
 
@@ -92,7 +93,7 @@ async def models(raw_request: Request):
                 content=create_error_response(
                     f"Failed to retrieve models: {e!s}", "server_error", 500
                 ),
-                status_code=500,
+                status_code=HTTPStatus.INTERNAL_SERVER_ERROR,
             )
 
     # Fallback to handler (Phase 0 compatibility)
@@ -117,7 +118,7 @@ async def models(raw_request: Request):
 
 
 @router.get("/v1/queue/stats")
-async def queue_stats(raw_request: Request):
+async def queue_stats(raw_request: Request) -> Any:
     """Get queue statistics."""
     handler = raw_request.app.state.handler
     if handler is None:
@@ -146,7 +147,7 @@ async def queue_stats(raw_request: Request):
 
 
 @router.post("/v1/chat/completions")
-async def chat_completions(request: ChatCompletionRequest, raw_request: Request):
+async def chat_completions(request: ChatCompletionRequest, raw_request: Request) -> Any:
     """Handle chat completion requests."""
     handler = raw_request.app.state.handler
     if handler is None:
@@ -180,7 +181,7 @@ async def chat_completions(request: ChatCompletionRequest, raw_request: Request)
 
 
 @router.post("/v1/embeddings")
-async def embeddings(request: EmbeddingRequest, raw_request: Request):
+async def embeddings(request: EmbeddingRequest, raw_request: Request) -> EmbeddingResponse:
     """Handle embedding requests."""
     handler = raw_request.app.state.handler
     if handler is None:
@@ -204,7 +205,7 @@ async def embeddings(request: EmbeddingRequest, raw_request: Request):
 
 
 @router.post("/v1/images/generations")
-async def image_generations(request: ImageGenerationRequest, raw_request: Request):
+async def image_generations(request: ImageGenerationRequest, raw_request: Request) -> Any:
     """Handle image generation requests."""
     handler = raw_request.app.state.handler
     if handler is None:
@@ -240,7 +241,9 @@ async def image_generations(request: ImageGenerationRequest, raw_request: Reques
 
 
 @router.post("/v1/images/edits")
-async def create_image_edit(request: Annotated[ImageEditRequest, Form()], raw_request: Request):
+async def create_image_edit(
+    request: Annotated[ImageEditRequest, Form()], raw_request: Request
+) -> Any:
     """Handle image editing requests with dynamic provider routing."""
     handler = raw_request.app.state.handler
     if handler is None:
@@ -277,7 +280,7 @@ async def create_image_edit(request: Annotated[ImageEditRequest, Form()], raw_re
 @router.post("/v1/audio/transcriptions")
 async def create_audio_transcriptions(
     request: Annotated[TranscriptionRequest, Form()], raw_request: Request
-):
+) -> Any:
     """Handle audio transcription requests."""
     try:
         handler = raw_request.app.state.handler
@@ -398,6 +401,23 @@ def create_response_chunk(
             request_id=request_id,
         )
 
+    # Handle dict chunks with only content (no reasoning or tool calls)
+    if "content" in chunk and isinstance(chunk["content"], str):
+        return ChatCompletionChunk(
+            id=chat_id,
+            object="chat.completion.chunk",
+            created=created_time,
+            model=model,
+            choices=[
+                StreamingChoice(
+                    index=0,
+                    delta=Delta(content=chunk["content"], role="assistant"),
+                    finish_reason=finish_reason if is_final else None,
+                )
+            ],
+            request_id=request_id,
+        )
+
     # Handle tool/function call chunks
     function_call = None
     if "name" in chunk:
@@ -441,7 +461,7 @@ def _yield_sse_chunk(data: dict[str, Any] | ChatCompletionChunk) -> str:
 
 async def handle_stream_response(
     generator: AsyncGenerator, model: str, request_id: str | None = None
-):
+) -> AsyncGenerator[str, None]:
     """Handle streaming response generation (OpenAI-compatible)."""
     chat_index = get_id()
     created_time = int(time.time())
@@ -511,12 +531,15 @@ async def handle_stream_response(
         logger.error(f"HTTPException in stream wrapper: {e!s}", exc_info=True)
         detail = e.detail if isinstance(e.detail, dict) else {"message": str(e)}
         error_response = detail
+        yield _yield_sse_chunk(error_response)
+        finish_reason = "error"
     except Exception as e:
         logger.error(f"Error in stream wrapper: {e!s}", exc_info=True)
         error_response = create_error_response(
             str(e), "server_error", HTTPStatus.INTERNAL_SERVER_ERROR
         )
         yield _yield_sse_chunk(error_response)
+        finish_reason = "error"
     finally:
         # Final chunk: finish_reason with usage info, as per OpenAI
         final_chunk = ChatCompletionChunk(
@@ -533,8 +556,8 @@ async def handle_stream_response(
 
 
 async def process_multimodal_request(
-    handler, request: ChatCompletionRequest, request_id: str | None = None
-):
+    handler: Any, request: ChatCompletionRequest, request_id: str | None = None
+) -> Any:
     """Process multimodal-specific requests."""
     if request_id:
         logger.info(f"Processing multimodal request [request_id={request_id}]")
@@ -563,8 +586,8 @@ async def process_multimodal_request(
 
 
 async def process_text_request(
-    handler, request: ChatCompletionRequest, request_id: str | None = None
-):
+    handler: Any, request: ChatCompletionRequest, request_id: str | None = None
+) -> Any:
     """Process text-only requests."""
     if request_id:
         logger.info(f"Processing text request [request_id={request_id}]")
@@ -589,14 +612,14 @@ async def process_text_request(
     return format_final_response(response_data, request.model, request_id, usage)
 
 
-def get_id():
+def get_id() -> str:
     """Generate a unique ID for chat completions with timestamp and random component."""
     timestamp = int(time.time())
     random_suffix = random.randint(0, 999999)
     return f"chatcmpl_{timestamp}{random_suffix:06d}"
 
 
-def get_tool_call_id():
+def get_tool_call_id() -> str:
     """Generate a unique ID for tool calls with timestamp and random component."""
     timestamp = int(time.time())
     random_suffix = random.randint(0, 999999)
@@ -604,7 +627,10 @@ def get_tool_call_id():
 
 
 def format_final_response(
-    response: str | dict[str, Any], model: str, request_id: str | None = None, usage=None
+    response: str | dict[str, Any],
+    model: str,
+    request_id: str | None = None,
+    usage: UsageInfo | None = None,
 ) -> ChatCompletionResponse:
     """Format the final non-streaming response."""
     if isinstance(response, str):

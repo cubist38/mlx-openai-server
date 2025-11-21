@@ -1,5 +1,8 @@
 """MLX embeddings model handler for text embeddings."""
 
+from __future__ import annotations
+
+import asyncio
 import gc
 from http import HTTPStatus
 import time
@@ -63,7 +66,7 @@ class MLXEmbeddingsHandler:
         """
         await self.request_queue.start(self._process_request)
 
-    async def generate_embeddings_response(self, request: EmbeddingRequest):
+    async def generate_embeddings_response(self, request: EmbeddingRequest) -> list[list[float]]:
         """
         Generate embeddings for a given text input.
 
@@ -88,6 +91,14 @@ class MLXEmbeddingsHandler:
             # Submit to the request queue
             response = await self.request_queue.submit(request_id, request_data)
 
+        except asyncio.QueueFull:
+            logger.error("Too many requests. Service is at capacity.")
+            content = create_error_response(
+                "Too many requests. Service is at capacity.",
+                "rate_limit_exceeded",
+                HTTPStatus.TOO_MANY_REQUESTS,
+            )
+            raise HTTPException(status_code=429, detail=content) from None
         except Exception as e:
             logger.error(f"Error in embeddings generation: {e!s}")
             content = create_error_response(
@@ -130,17 +141,13 @@ class MLXEmbeddingsHandler:
 
     async def get_queue_stats(self) -> dict[str, Any]:
         """
-        Get statistics from the request queue and performance metrics.
+        Get statistics from the request queue.
 
         Returns
         -------
-            Dict with queue and performance statistics.
+            Dict with queue statistics.
         """
-        queue_stats = self.request_queue.get_queue_stats()
-
-        return {
-            "queue_stats": queue_stats,
-        }
+        return self.request_queue.get_queue_stats()
 
     async def cleanup(self) -> None:
         """
