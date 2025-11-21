@@ -233,11 +233,18 @@ class MLXVLMHandler:
         -------
             AsyncGenerator: Yields response chunks.
         """
-        # Create a unique request ID
-        request_id = f"multimodal-{uuid.uuid4()}"
-
         try:
+            # Enforce streaming mode for queued multimodal requests to ensure
+            # the underlying model returns a generator instead of a full string.
+            request.stream = True
+
+            # Create a unique request ID
+            request_id = f"multimodal-{uuid.uuid4()}"
+
             request_dict = await self._prepare_multimodal_request(request)
+
+            # Ensure the request data seen by _process_request is also marked as streaming
+            request_dict["stream"] = True
 
             # Submit to the multimodal queue and get the generator
             response_generator, prompt_tokens = await self.request_queue.submit(
