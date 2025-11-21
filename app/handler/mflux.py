@@ -74,6 +74,9 @@ class MLXFluxHandler:
         )
         self.model_created = int(time.time())  # Store creation time when model is loaded
 
+        # Initialize cleanup flag
+        self._cleaned: bool = False
+
         # Initialize request queue for image generation tasks
         self.request_queue = RequestQueue(max_concurrency=max_concurrency)
 
@@ -156,7 +159,8 @@ class MLXFluxHandler:
 
             # Create response
             response = ImageGenerationResponse(
-                created=int(time.time()), data=[ImageData(b64_json=image_data)]
+                created=int(time.time()),
+                data=[ImageData(b64_json=image_data)],  # type: ignore[call-arg]
             )
 
         except asyncio.QueueFull:
@@ -267,7 +271,8 @@ class MLXFluxHandler:
 
             # Create response
             response = ImageEditResponse(
-                created=int(time.time()), data=[ImageData(b64_json=image_data_b64)]
+                created=int(time.time()),
+                data=[ImageData(b64_json=image_data_b64)],  # type: ignore[call-arg]
             )
 
         except asyncio.QueueFull:

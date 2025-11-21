@@ -51,7 +51,7 @@ router = APIRouter()
 
 
 @router.get("/health")
-async def health(raw_request: Request) -> Any:
+async def health(raw_request: Request) -> HealthCheckResponse | JSONResponse:
     """
     Health check endpoint - verifies handler initialization status.
 
@@ -75,7 +75,7 @@ async def health(raw_request: Request) -> Any:
 
 
 @router.get("/v1/models")
-async def models(raw_request: Request) -> ModelsResponse:
+async def models(raw_request: Request) -> ModelsResponse | JSONResponse:
     """
     Get list of available models with cached response for instant delivery.
 
@@ -86,7 +86,7 @@ async def models(raw_request: Request) -> ModelsResponse:
     if registry is not None:
         try:
             models_data = registry.list_models()
-            return ModelsResponse(data=[Model(**model) for model in models_data])
+            return ModelsResponse(object="list", data=[Model(**model) for model in models_data])
         except Exception as e:
             logger.error(f"Error retrieving models from registry: {e!s}")
             return JSONResponse(
@@ -110,7 +110,7 @@ async def models(raw_request: Request) -> ModelsResponse:
 
     try:
         models_data = await handler.get_models()
-        return ModelsResponse(data=[Model(**model) for model in models_data])
+        return ModelsResponse(object="list", data=[Model(**model) for model in models_data])
     except Exception as e:
         logger.error(f"Error retrieving models: {e!s}")
         return JSONResponse(
@@ -158,7 +158,7 @@ async def queue_stats(raw_request: Request) -> dict[str, Any] | JSONResponse:
 
 
 @router.post("/v1/chat/completions")
-async def chat_completions(request: ChatCompletionRequest, raw_request: Request) -> Any:
+async def chat_completions(request: ChatCompletionRequest, raw_request: Request) -> ChatCompletionResponse | StreamingResponse | JSONResponse:
     """Handle chat completion requests."""
     handler = getattr(raw_request.app.state, "handler", None)
     if handler is None:
@@ -192,7 +192,7 @@ async def chat_completions(request: ChatCompletionRequest, raw_request: Request)
 
 
 @router.post("/v1/embeddings")
-async def embeddings(request: EmbeddingRequest, raw_request: Request) -> EmbeddingResponse:
+async def embeddings(request: EmbeddingRequest, raw_request: Request) -> EmbeddingResponse | JSONResponse:
     """Handle embedding requests."""
     handler = getattr(raw_request.app.state, "handler", None)
     if handler is None:
@@ -358,7 +358,7 @@ def create_response_embeddings(
             )
         else:
             embeddings_response.append(EmbeddingResponseData(embedding=embedding, index=index))
-    return EmbeddingResponse(data=embeddings_response, model=model)
+    return EmbeddingResponse(object="list", data=embeddings_response, model=model, usage=None)
 
 
 def create_response_chunk(
@@ -385,8 +385,8 @@ def create_response_chunk(
             choices=[
                 StreamingChoice(
                     index=0,
-                    delta=Delta(content=chunk, role="assistant"),
-                    finish_reason=finish_reason if is_final else None,
+                    delta=Delta(content=chunk, role="assistant"),  # type: ignore[call-arg]
+                    finish_reason=finish_reason if is_final else None,  # type: ignore[arg-type]
                 )
             ],
             request_id=request_id,
@@ -406,8 +406,8 @@ def create_response_chunk(
                         reasoning_content=chunk["reasoning_content"],
                         role="assistant",
                         content=chunk.get("content", None),
-                    ),
-                    finish_reason=finish_reason if is_final else None,
+                    ),  # type: ignore[call-arg]
+                    finish_reason=finish_reason if is_final else None,  # type: ignore[arg-type]
                 )
             ],
             request_id=request_id,
@@ -423,8 +423,8 @@ def create_response_chunk(
             choices=[
                 StreamingChoice(
                     index=0,
-                    delta=Delta(content=chunk["content"], role="assistant"),
-                    finish_reason=finish_reason if is_final else None,
+                    delta=Delta(content=chunk["content"], role="assistant"),  # type: ignore[call-arg]
+                    finish_reason=finish_reason if is_final else None,  # type: ignore[arg-type]
                 )
             ],
             request_id=request_id,
@@ -433,12 +433,12 @@ def create_response_chunk(
     # Handle tool/function call chunks
     function_call = None
     if "name" in chunk:
-        function_call = ChoiceDeltaFunctionCall(name=chunk["name"])
+        function_call = ChoiceDeltaFunctionCall(name=chunk["name"], arguments=None)
         if "arguments" in chunk:
             function_call.arguments = chunk["arguments"]
     elif "arguments" in chunk:
         # Handle case where arguments come before name (streaming)
-        function_call = ChoiceDeltaFunctionCall(arguments=chunk["arguments"])
+        function_call = ChoiceDeltaFunctionCall(name=None, arguments=chunk["arguments"])
 
     if function_call:
         # Validate index exists before accessing
@@ -447,10 +447,10 @@ def create_response_chunk(
             index=tool_index, type="function", id=get_tool_call_id(), function=function_call
         )
 
-        delta = Delta(content=None, role="assistant", tool_calls=[tool_chunk])
+        delta = Delta(content=None, role="assistant", tool_calls=[tool_chunk])  # type: ignore[call-arg]
     else:
         # Fallback: create empty delta if no recognized chunk type
-        delta = Delta(role="assistant")
+        delta = Delta(role="assistant")  # type: ignore[call-arg]
 
     return ChatCompletionChunk(
         id=chat_id,
@@ -458,7 +458,7 @@ def create_response_chunk(
         created=created_time,
         model=model,
         choices=[
-            StreamingChoice(index=0, delta=delta, finish_reason=finish_reason if is_final else None)
+            StreamingChoice(index=0, delta=delta, finish_reason=finish_reason if is_final else None)  # type: ignore[arg-type]
         ],
         request_id=request_id,
     )
@@ -472,7 +472,7 @@ def _yield_sse_chunk(data: dict[str, Any] | ChatCompletionChunk) -> str:
 
 
 async def handle_stream_response(
-    generator: AsyncGenerator, model: str, request_id: str | None = None
+    generator: AsyncGenerator[Any, None], model: str, request_id: str | None = None
 ) -> AsyncGenerator[str, None]:
     """Handle streaming response generation (OpenAI-compatible)."""
     chat_index = get_id()
@@ -488,7 +488,7 @@ async def handle_stream_response(
             object="chat.completion.chunk",
             created=created_time,
             model=model,
-            choices=[StreamingChoice(index=0, delta=Delta(role="assistant"))],
+            choices=[StreamingChoice(index=0, delta=Delta(role="assistant"))],  # type: ignore[call-arg]
             request_id=request_id,
         )
         yield _yield_sse_chunk(first_chunk)
@@ -542,7 +542,7 @@ async def handle_stream_response(
     except HTTPException as e:
         logger.error(f"HTTPException in stream wrapper: {e!s}", exc_info=True)
         detail = e.detail if isinstance(e.detail, dict) else {"message": str(e)}
-        error_response = detail
+        error_response = detail  # type: ignore[assignment]
         yield _yield_sse_chunk(error_response)
         finish_reason = "error"
     except Exception as e:
@@ -559,7 +559,7 @@ async def handle_stream_response(
             object="chat.completion.chunk",
             created=created_time,
             model=model,
-            choices=[StreamingChoice(index=0, delta=Delta(), finish_reason=finish_reason)],
+            choices=[StreamingChoice(index=0, delta=Delta(), finish_reason=finish_reason)],  # type: ignore[call-arg,arg-type]
             usage=usage_info,
             request_id=request_id,
         )
@@ -569,7 +569,7 @@ async def handle_stream_response(
 
 async def process_multimodal_request(
     handler: MLXVLMHandler, request: ChatCompletionRequest, request_id: str | None = None
-) -> Any:
+) -> ChatCompletionResponse | StreamingResponse | JSONResponse:
     """Process multimodal-specific requests."""
     if request_id:
         logger.info(f"Processing multimodal request [request_id={request_id}]")
@@ -591,7 +591,7 @@ async def process_multimodal_request(
     if isinstance(result, dict) and "response" in result and "usage" in result:
         response_data = result.get("response")
         usage = result.get("usage")
-        return format_final_response(response_data, request.model, request_id, usage)
+        return format_final_response(response_data, request.model, request_id, usage)  # type: ignore[arg-type]
 
     # Fallback for backward compatibility or if structure is different
     return format_final_response(result, request.model, request_id)
@@ -601,7 +601,7 @@ async def process_text_request(
     handler: MLXLMHandler | MLXVLMHandler,
     request: ChatCompletionRequest,
     request_id: str | None = None,
-) -> Any:
+) -> ChatCompletionResponse | StreamingResponse | JSONResponse:
     """Process text-only requests."""
     if request_id:
         logger.info(f"Processing text request [request_id={request_id}]")
@@ -609,7 +609,7 @@ async def process_text_request(
     if request.stream:
         return StreamingResponse(
             handle_stream_response(
-                handler.generate_text_stream(request), request.model, request_id
+                handler.generate_text_stream(request), request.model, request_id  # type: ignore[union-attr]
             ),
             media_type="text/event-stream",
             headers={
@@ -620,10 +620,10 @@ async def process_text_request(
         )
 
     # Extract response and usage from handler
-    result = await handler.generate_text_response(request)
+    result = await handler.generate_text_response(request)  # type: ignore[union-attr]
     response_data = result.get("response")
     usage = result.get("usage")
-    return format_final_response(response_data, request.model, request_id, usage)
+    return format_final_response(response_data, request.model, request_id, usage)  # type: ignore[arg-type]
 
 
 def get_id() -> str:
@@ -660,9 +660,9 @@ def format_final_response(
                         role="assistant",
                         content=response,
                         refusal=None,
-                        function_call=None,
                         reasoning_content=None,
                         tool_calls=None,
+                        tool_call_id=None,
                     ),
                     finish_reason="stop",
                 )
@@ -688,6 +688,9 @@ def format_final_response(
                         role="assistant",
                         content=response_content,
                         reasoning_content=reasoning_content,
+                        refusal=None,
+                        tool_calls=None,
+                        tool_call_id=None,
                     ),
                     finish_reason="stop",
                 )
@@ -713,6 +716,8 @@ def format_final_response(
         content=response_content,
         reasoning_content=reasoning_content,
         tool_calls=tool_call_responses,
+        refusal=None,
+        tool_call_id=None,
     )
 
     return ChatCompletionResponse(

@@ -32,6 +32,7 @@ class BaseProcessor(ABC):
         # Replace lru_cache with manual cache for better control
         self._hash_cache: dict[str, str] = {}
         self._cache_access_times: dict[str, float] = {}
+        self._cleaned: bool = False
 
     def _get_media_hash(self, media_url: str) -> str:
         """Get hash for media URL with manual caching that can be cleared."""

@@ -120,8 +120,8 @@ class ImageProcessor(BaseProcessor):
 
     async def process_image_urls(
         self, image_urls: list[str], resize: bool = True
-    ) -> list[str | Exception]:
-        """Process multiple image URLs and return paths to cached files."""
+    ) -> list[str | BaseException]:
+        """Process multiple image URLs and return paths to cached files (exceptions may be BaseException)."""
         tasks = [self.process_image_url(url, resize=resize) for url in image_urls]
         results = await asyncio.gather(*tasks, return_exceptions=True)
         # Force garbage collection after batch processing

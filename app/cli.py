@@ -20,7 +20,7 @@ from .main import start
 from .version import __version__
 
 
-class UpperChoice(click.Choice):
+class UpperChoice(click.Choice[str]):
     """Case-insensitive choice type that returns uppercase values.
 
     This small convenience subclass normalizes user input in a
@@ -29,7 +29,7 @@ class UpperChoice(click.Choice):
     where the internal representation is uppercased.
     """
 
-    def normalize_choice(self, choice: str, _ctx: Any) -> str | None:
+    def normalize_choice(self, choice: str, _ctx: Any) -> str | None:  # type: ignore[override]
         """Return the canonical uppercase choice or raise BadParameter.
 
         Parameters
@@ -188,12 +188,12 @@ def launch(
     port: int,
     host: str,
     max_concurrency: int,
-    queue_timeout: float,
+    queue_timeout: int,
     queue_size: int,
     quantize: int,
     config_name: str | None,
-    lora_paths: list[str],
-    lora_scales: list[float],
+    lora_paths: str | None,
+    lora_scales: str | None,
     disable_auto_resize: bool,
     log_file: str | None,
     no_log_file: bool,

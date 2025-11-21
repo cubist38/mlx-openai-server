@@ -22,30 +22,48 @@ classifiers = [
 ]
 
 dependencies = [
-  "mlx-vlm>=0.3.6,<0.4",
-  "mlx-lm==0.28.3",
-  "torchvision>=0.23.0,<0.30",
-  "mlx-whisper>=0.4.3,<0.5",
-  "mlx-embeddings>=0.0.4,<0.1",
-  "fastapi>=0.115.14,<0.130",
-  "av>=16.0.1,<17",
-  "uvicorn>=0.35.0,<0.40",
-  "pillow>=11,<13",
-  "click>=8.2.1,<8.4",
-  "loguru>=0.7.3,<0.8",
-  "outlines>=1.1.1,<1.3",
-  "librosa>=0.11.0,<0.12",
-  "openai-harmony>=0.0.4,<0.1",
-  "json_repair>=0.52.1,<0.60",
-  "python-multipart>=0.0.20,<0.0.25",
-  "pydantic>=2,<3",
-  "httpx>=0.28,<1",
   "aiofiles>=25,<26",
+  "av>=16.0.1,<17",
+  "click>=8.2.1,<8.4",
+  "fastapi>=0.115.14,<0.130",
+  "httpx>=0.28,<1",
+  "json_repair>=0.52.1,<0.60",
+  "librosa>=0.11.0,<0.12",
+  "loguru>=0.7.3,<0.8",
+  "mlx>=0.30",                        # Needed due to a typing issue in <0.30
+  "mlx-embeddings>=0.0.4,<0.1",
+  "mlx-lm==0.28.3",
+  "mlx-vlm>=0.3.7",
+  "mlx-whisper>=0.4.3,<0.5",
+  "numpy>=2.2.0,<2.4",
+  "openai-harmony>=0.0.4,<0.1",
+  "outlines>=1.1.1,<1.3",
+  "pillow>=11,<13",
+  "pydantic>=2,<3",
+  "python-multipart>=0.0.20,<0.0.25",
   "rich>=14,<15",
+  "uvicorn>=0.35.0,<0.40",
 ]
 
 [dependency-groups]
-dev = ["pytest", "ruff", "codespell"]
+dev = [
+  "codespell",
+  "mypy",
+  "pre-commit",
+  "pytest",
+  "ruff",
+  "types-aiofiles",
+  "types-cffi",
+  "types-PyMySQL",
+  "types-pyRFC3339",
+  "types-python-dateutil",
+  "types-PyYAML",
+  "types-regex",
+  "types-requests",
+  "types-setuptools",
+]
+image-generation = ["mflux @ git+https://github.com/cubist38/mflux.git"]
+enhanced-caching = ["spacy", "regex", "tiktoken", "torch", "transformers"]
 
 [tool.setuptools]
 packages = ["mlx_openai_server"]
@@ -69,6 +87,9 @@ build-backend = "setuptools.build_meta"
 [tool.codespell]
 skip = "*.py,*.toml,*.ipynb"
 quiet-level = 3
+
+[tool.pytest.ini_options]
+addopts = "--tb=short"
 
 [tool.ruff]
 line-length = 100
@@ -274,3 +295,26 @@ max-complexity = 25
 [tool.ruff.lint.pydocstyle]
 property-decorators = ["propcache.cached_property"]
 convention = "numpy"
+
+[tool.mypy]
+check_untyped_defs = true
+disallow_any_generics = true
+disallow_incomplete_defs = true
+disallow_untyped_defs = true
+no_implicit_optional = true
+warn_redundant_casts = true
+warn_return_any = true
+warn_unused_configs = true
+warn_unused_ignores = true
+disable_error_code = ["import-untyped"]
+files = ["app", "scripts"]
+exclude = ["tests"]
+python_executable = "./.venv/bin/python"
+
+[[tool.mypy.overrides]]
+module = ["dill.*", "mflux.*", "openai_harmony.*", "spacy.*"]
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = ["untyped_package.*"]
+follow_untyped_imports = true

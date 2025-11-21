@@ -21,7 +21,7 @@ class RequestItem(Generic[T]):
         self.request_id = request_id
         self.data = data
         self.created_at = time.time()
-        self.future = asyncio.Future()
+        self.future: asyncio.Future[T] = asyncio.Future()
 
     def set_result(self, result: T) -> None:
         """Set the result for this request."""
@@ -56,11 +56,11 @@ class RequestQueue:
         self.timeout = timeout
         self.queue_size = queue_size
         self.semaphore = asyncio.Semaphore(max_concurrency)
-        self.queue = asyncio.Queue(maxsize=queue_size)
-        self.active_requests: dict[str, RequestItem] = {}
-        self._worker_task = None
+        self.queue: asyncio.Queue[RequestItem[Any]] = asyncio.Queue(maxsize=queue_size)
+        self.active_requests: dict[str, RequestItem[Any]] = {}
+        self._worker_task: asyncio.Task[None] | None = None
         self._running = False
-        self._tasks: set[asyncio.Task] = set()
+        self._tasks: set[asyncio.Task[None]] = set()
 
     async def start(self, processor: Callable[[Any], Awaitable[Any]]) -> None:
         """
@@ -146,7 +146,7 @@ class RequestQueue:
                 logger.error(f"Error in worker loop: {e!s}")
 
     async def _process_request(
-        self, request: RequestItem, processor: Callable[[Any], Awaitable[Any]]
+        self, request: RequestItem[Any], processor: Callable[[Any], Awaitable[Any]]
     ) -> None:
         """
         Process a single request with timeout and error handling.
@@ -191,7 +191,7 @@ class RequestQueue:
                 if len(self.active_requests) % 10 == 0:  # Every 10 requests
                     gc.collect()
 
-    async def enqueue(self, request_id: str, data: Any) -> RequestItem:
+    async def enqueue(self, request_id: str, data: Any) -> RequestItem[Any]:
         """
         Add a request to the queue.
 

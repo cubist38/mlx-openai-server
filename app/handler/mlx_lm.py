@@ -133,14 +133,14 @@ class MLXLMHandler:
         -------
             dict: Metadata about the model including context_length, backend, etc.
         """
-        metadata = {
+        metadata: dict[str, Any] = {
             "backend": "mlx",
             "modality": "text",
         }
 
         # Add context length
         if hasattr(self.model, "max_kv_size"):
-            metadata["context_length"] = self.model.max_kv_size
+            metadata["context_length"] = int(self.model.max_kv_size)
 
         # Add vocab size if available
         if hasattr(self.model.tokenizer, "vocab_size"):
@@ -148,7 +148,7 @@ class MLXLMHandler:
 
         # Add model family/type if available
         if hasattr(self.model, "model_type") and self.model.model_type:
-            metadata["model_family"] = self.model.model_type
+            metadata["model_family"] = str(self.model.model_type)
 
         # Add dtype info if available from model config
         if hasattr(self.model.model, "dtype"):
@@ -189,7 +189,7 @@ class MLXLMHandler:
 
     async def generate_text_stream(
         self, request: ChatCompletionRequest
-    ) -> AsyncGenerator[str, None]:
+    ) -> AsyncGenerator[str | dict[str, Any], None]:
         """
         Generate a streaming response for text-only chat completion requests.
 
@@ -449,7 +449,7 @@ class MLXLMHandler:
             )
             raise HTTPException(status_code=500, detail=content) from e
         else:
-            return response
+            return response  # type: ignore[no-any-return]
 
     async def _process_request(self, request_data: dict[str, Any]) -> tuple[Any, int]:
         """

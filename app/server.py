@@ -15,7 +15,7 @@ Key exports:
 from __future__ import annotations
 
 from collections.abc import AsyncIterator, Awaitable, Callable
-from contextlib import asynccontextmanager
+from contextlib import AbstractAsyncContextManager, asynccontextmanager
 import gc
 import sys
 import time
@@ -105,7 +105,9 @@ def get_model_identifier(config_args: MLXServerConfig) -> str:
     return config_args.model_path
 
 
-def create_lifespan(config_args: MLXServerConfig) -> Callable[[FastAPI], AsyncIterator[None]]:
+def create_lifespan(
+    config_args: MLXServerConfig,
+) -> Callable[[FastAPI], AbstractAsyncContextManager[None, bool | None]]:
     """Create an async FastAPI lifespan context manager bound to configuration.
 
     The returned context manager performs the following actions during
@@ -147,6 +149,13 @@ def create_lifespan(config_args: MLXServerConfig) -> Callable[[FastAPI], AsyncIt
             FastAPI application instance being started.
         """
         try:
+            handler: (
+                MLXVLMHandler
+                | MLXFluxHandler
+                | MLXEmbeddingsHandler
+                | MLXWhisperHandler
+                | MLXLMHandler
+            )
             model_identifier = get_model_identifier(config_args)
             if config_args.model_type == "image-generation":
                 logger.info(f"Initializing MLX handler with model name: {model_identifier}")
