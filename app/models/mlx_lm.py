@@ -136,10 +136,13 @@ class MLX_LM:
         Args:
             prompts: List of text prompts
             batch_size: Size of batches for processing
+            normalize: Whether to apply L2-normalization to each pooled embedding.
+                When True, normalized embeddings are returned. When False, raw pooled vectors are returned.
 
         Returns
         -------
-            List of embeddings as lists of floats (one embedding per input prompt)
+            List of embeddings as lists of floats, with a one-to-one mapping to input prompts.
+            Embeddings may be L2-normalized depending on the normalize parameter.
         """
         # Process in batches to optimize memory usage
         all_embeddings: list[list[float]] = []

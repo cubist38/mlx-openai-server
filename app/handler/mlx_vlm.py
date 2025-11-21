@@ -649,6 +649,9 @@ class MLXVLMHandler:
                             HTTPStatus.BAD_REQUEST,
                         )
                         raise HTTPException(status_code=HTTPStatus.BAD_REQUEST, detail=content)
+                elif message.role == "tool":
+                    chat_messages.append({"role": "tool", "content": message.content})
+                    continue
 
             chat_template_kwargs = request.chat_template_kwargs.model_dump()
             request_dict = {

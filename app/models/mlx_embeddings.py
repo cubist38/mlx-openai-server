@@ -7,12 +7,19 @@ management and caching capabilities.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 import gc
-from typing import Any, cast
+from typing import Protocol, cast
 
 from loguru import logger
 import mlx.core as mx
 from mlx_embeddings.utils import load
+
+
+class ArrayLike(Protocol):
+    """Protocol for array-like objects with nbytes attribute."""
+
+    nbytes: int
 
 
 class MLX_Embeddings:
@@ -71,7 +78,7 @@ class MLX_Embeddings:
             # Always clean up intermediate arrays
             self._cleanup_arrays(inputs, outputs)
 
-    def _cleanup_arrays(self, *arrays: Any) -> None:
+    def _cleanup_arrays(self, *arrays: Mapping[str, ArrayLike] | ArrayLike | None) -> None:
         """Clean up MLX arrays to free memory."""
         for array in arrays:
             if array is not None:

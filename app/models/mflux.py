@@ -225,12 +225,14 @@ class BaseFluxModel(ABC):
             raise ModelGenerationError("Height must be a positive integer.")
 
         # Validate steps
-        steps = kwargs.get("num_inference_steps", self.config.default_steps)
+        steps = kwargs.get("steps", kwargs.get("num_inference_steps", self.config.default_steps))
         if not isinstance(steps, int) or steps <= 0:
             raise ModelGenerationError("Number of inference steps must be a positive integer.")
 
         # Validate guidance
-        guidance = kwargs.get("guidance", self.config.default_guidance)
+        guidance = kwargs.get(
+            "guidance_scale", kwargs.get("guidance", self.config.default_guidance)
+        )
         if not isinstance(guidance, (int, float)) or guidance < 0:
             raise ModelGenerationError("Guidance must be a non-negative number.")
 

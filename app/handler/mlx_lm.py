@@ -329,6 +329,9 @@ class MLXLMHandler:
                 HTTPStatus.TOO_MANY_REQUESTS,
             )
             raise HTTPException(status_code=HTTPStatus.TOO_MANY_REQUESTS, detail=content) from None
+        except HTTPException:
+            # Preserve structured HTTP errors from request preparation/handlers
+            raise
         except Exception as e:
             logger.error(
                 f"Error in text stream generation for request {request_id}. {type(e).__name__}: {e}"
@@ -382,6 +385,9 @@ class MLXLMHandler:
                 HTTPStatus.TOO_MANY_REQUESTS,
             )
             raise HTTPException(status_code=HTTPStatus.TOO_MANY_REQUESTS, detail=content) from None
+        except HTTPException:
+            # Preserve structured HTTP errors from request preparation/handlers
+            raise
         except Exception as e:
             logger.error(f"Error in text response generation. {type(e).__name__}: {e}")
             content = create_error_response(
