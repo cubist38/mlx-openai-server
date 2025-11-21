@@ -12,6 +12,9 @@ Key exports:
     ready to run.
 """
 
+from __future__ import annotations
+
+from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
 import gc
 import sys
@@ -103,7 +106,7 @@ def get_model_identifier(config_args: MLXServerConfig) -> str:
     return config_args.model_path
 
 
-def create_lifespan(config_args: MLXServerConfig) -> Any:
+def create_lifespan(config_args: MLXServerConfig) -> Callable[[FastAPI], AsyncIterator[None]]:
     """Create an async FastAPI lifespan context manager bound to configuration.
 
     The returned context manager performs the following actions during
@@ -130,7 +133,7 @@ def create_lifespan(config_args: MLXServerConfig) -> Any:
     """
 
     @asynccontextmanager
-    async def lifespan(app: FastAPI) -> None:
+    async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         """FastAPI lifespan callable that initializes MLX handlers.
 
         On startup this function selects and initializes the correct
@@ -302,7 +305,7 @@ def setup_server(config_args: MLXServerConfig) -> uvicorn.Config:
     )
 
     @app.middleware("http")
-    async def add_process_time_header(request: Request, call_next) -> Response:
+    async def add_process_time_header(request: Request, call_next: Any) -> Response:
         """Middleware to add processing time header and run cleanup.
 
         Measures request processing time, appends an ``X-Process-Time``
@@ -331,7 +334,7 @@ def setup_server(config_args: MLXServerConfig) -> uvicorn.Config:
         return response
 
     @app.exception_handler(Exception)
-    async def global_exception_handler(request: Request, exc: Exception) -> JSONResponse:
+    async def global_exception_handler(_request: Request, exc: Exception) -> JSONResponse:
         """Global exception handler that logs and returns a 500 payload.
 
         Logs the exception (with traceback) and returns a generic JSON

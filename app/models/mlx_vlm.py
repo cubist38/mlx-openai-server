@@ -5,6 +5,8 @@ This module provides a wrapper class for MLX vision-language models with text
 generation, streaming, and multimodal capabilities.
 """
 
+from __future__ import annotations
+
 from collections.abc import Generator
 import os
 from typing import Any
@@ -197,4 +199,4 @@ if __name__ == "__main__":
         }
     ]
     response = model(messages, stream=False, **kwargs)
-    logger.info("{}", response)
+    logger.info(f"{response}")

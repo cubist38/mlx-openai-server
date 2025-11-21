@@ -79,8 +79,16 @@ class Glm4MoEToolParser(BaseToolParser):
 
             # Build tool call object
 
-        except Exception as e:
-            logger.warning("Error parsing GLM4 tool call content: {}, Error: {}", tool_content, e)
+        except (
+            re.error,
+            ValueError,
+            SyntaxError,
+            KeyError,
+            IndexError,
+            AttributeError,
+            TypeError,
+        ) as e:
+            logger.warning(f"Error parsing GLM4 tool call content: {tool_content}, Error: {e}")
             return None
         else:
             return {"name": func_name, "arguments": arguments}

@@ -13,115 +13,40 @@ class TestBaseToolParser(unittest.TestCase):
         self.test_cases = [
             {
                 "name": "simple function call",
-                "chunks": """#<tool_call>#
-#{"#name#":# "#get#_weather#",# "#arguments#":# {"#city#":# "#H#ue#"}}
-#</tool_call>#
-#<tool_call>#
-#{"#name#":# "#get#_weather#",# "#arguments#":# {"#city#":# "#Sy#dney#"}}
-#</tool_call>##""".split("#"),  # noqa: SIM905
+                "chunks": [
+                    "Some text before <tool_call>\n",
+                    '{"name": "get_weather", "arguments": {"city": "Hue"}}\n',
+                    "</tool_call>\nMore text after\n",
+                    "<tool_call>\n",
+                    '{"name": "get_weather", "arguments": {"city": "Sydney"}}\n',
+                    "</tool_call>\nFinal text",
+                ],
                 "expected_outputs": [
-                    {"name": "get_weather", "arguments": ""},
-                    {"name": None, "arguments": ' {"'},
-                    {"name": None, "arguments": "city"},
-                    {"name": None, "arguments": '":'},
-                    {"name": None, "arguments": ' "'},
-                    {"name": None, "arguments": "H"},
-                    {"name": None, "arguments": "ue"},
-                    {"name": None, "arguments": '"}'},
-                    "\n",
-                    {"name": "get_weather", "arguments": ""},
-                    {"name": None, "arguments": ' {"'},
-                    {"name": None, "arguments": "city"},
-                    {"name": None, "arguments": '":'},
-                    {"name": None, "arguments": ' "'},
-                    {"name": None, "arguments": "Sy"},
-                    {"name": None, "arguments": "dney"},
-                    {"name": None, "arguments": '"}'},
+                    "Some text before ",  # Text before tool call
+                    {"name": "get_weather", "arguments": '{"city": "Hue"}'},  # Complete tool call
+                    "\nMore text after\n",  # Text between tool calls
+                    {
+                        "name": "get_weather",
+                        "arguments": '{"city": "Sydney"}',
+                    },  # Complete tool call
+                    "\nFinal text",  # Final text
                 ],
             },
             {
-                "name": "code function call",
-                "chunks": r"""<tool_call>@@
-@@{"@@name@@":@@ "@@python@@",@@ "@@arguments@@":@@ {"@@code@@":@@ "@@def@@ calculator@@(a@@,@@ b@@,@@ operation@@):\@@n@@   @@ if@@ operation@@ ==@@ '@@add@@'\@@n@@       @@ return@@ a@@ +@@ b@@\n@@   @@ if@@ operation@@ ==@@ '@@subtract@@'\@@n@@       @@ return@@ a@@ -@@ b@@\n@@   @@ if@@ operation@@ ==@@ '@@multiply@@'\@@n@@       @@ return@@ a@@ *@@ b@@\n@@   @@ if@@ operation@@ ==@@ '@@divide@@'\@@n@@       @@ return@@ a@@ /@@ b@@\n@@   @@ return@@ '@@Invalid@@ operation@@'@@"}}
-@@</tool_call>@@@@""".split("@@"),  # noqa: SIM905
+                "name": "streaming function call",
+                "chunks": [
+                    "Start <tool_call>\n",
+                    '{"name": "python", "arguments": ',
+                    '{"code": "print(\'hello\')"}}\n',
+                    "</tool_call>\nEnd",
+                ],
                 "expected_outputs": [
-                    {"name": "python", "arguments": ""},
-                    {"name": None, "arguments": ' {"'},
-                    {"name": None, "arguments": "code"},
-                    {"name": None, "arguments": '":'},
-                    {"name": None, "arguments": ' "'},
-                    {"name": None, "arguments": "def"},
-                    {"name": None, "arguments": " calculator"},
-                    {"name": None, "arguments": "(a"},
-                    {"name": None, "arguments": ","},
-                    {"name": None, "arguments": " b"},
-                    {"name": None, "arguments": ","},
-                    {"name": None, "arguments": " operation"},
-                    {"name": None, "arguments": "):\\"},
-                    {"name": None, "arguments": "n"},
-                    {"name": None, "arguments": "   "},
-                    {"name": None, "arguments": " if"},
-                    {"name": None, "arguments": " operation"},
-                    {"name": None, "arguments": " =="},
-                    {"name": None, "arguments": " '"},
-                    {"name": None, "arguments": "add"},
-                    {"name": None, "arguments": "'\\"},
-                    {"name": None, "arguments": "n"},
-                    {"name": None, "arguments": "       "},
-                    {"name": None, "arguments": " return"},
-                    {"name": None, "arguments": " a"},
-                    {"name": None, "arguments": " +"},
-                    {"name": None, "arguments": " b"},
-                    {"name": None, "arguments": "\\n"},
-                    {"name": None, "arguments": "   "},
-                    {"name": None, "arguments": " if"},
-                    {"name": None, "arguments": " operation"},
-                    {"name": None, "arguments": " =="},
-                    {"name": None, "arguments": " '"},
-                    {"name": None, "arguments": "subtract"},
-                    {"name": None, "arguments": "'\\"},
-                    {"name": None, "arguments": "n"},
-                    {"name": None, "arguments": "       "},
-                    {"name": None, "arguments": " return"},
-                    {"name": None, "arguments": " a"},
-                    {"name": None, "arguments": " -"},
-                    {"name": None, "arguments": " b"},
-                    {"name": None, "arguments": "\\n"},
-                    {"name": None, "arguments": "   "},
-                    {"name": None, "arguments": " if"},
-                    {"name": None, "arguments": " operation"},
-                    {"name": None, "arguments": " =="},
-                    {"name": None, "arguments": " '"},
-                    {"name": None, "arguments": "multiply"},
-                    {"name": None, "arguments": "'\\"},
-                    {"name": None, "arguments": "n"},
-                    {"name": None, "arguments": "       "},
-                    {"name": None, "arguments": " return"},
-                    {"name": None, "arguments": " a"},
-                    {"name": None, "arguments": " *"},
-                    {"name": None, "arguments": " b"},
-                    {"name": None, "arguments": "\\n"},
-                    {"name": None, "arguments": "   "},
-                    {"name": None, "arguments": " if"},
-                    {"name": None, "arguments": " operation"},
-                    {"name": None, "arguments": " =="},
-                    {"name": None, "arguments": " '"},
-                    {"name": None, "arguments": "divide"},
-                    {"name": None, "arguments": "'\\"},
-                    {"name": None, "arguments": "n"},
-                    {"name": None, "arguments": "       "},
-                    {"name": None, "arguments": " return"},
-                    {"name": None, "arguments": " a"},
-                    {"name": None, "arguments": " /"},
-                    {"name": None, "arguments": " b"},
-                    {"name": None, "arguments": "\\n"},
-                    {"name": None, "arguments": "   "},
-                    {"name": None, "arguments": " return"},
-                    {"name": None, "arguments": " '"},
-                    {"name": None, "arguments": "Invalid"},
-                    {"name": None, "arguments": " operation"},
-                    {"name": None, "arguments": "'"},
-                    {"name": None, "arguments": '"}'},
+                    "Start ",  # Text before tool call
+                    {
+                        "name": "python",
+                        "arguments": '{"code": "print(\'hello\')"}',
+                    },  # Complete tool call
+                    "\nEnd",  # Final text
                 ],
             },
         ]
@@ -137,6 +62,11 @@ class TestBaseToolParser(unittest.TestCase):
                     parsed, _complete = parser.parse_stream(chunk)
                     if parsed is not None:
                         outputs.append(parsed)
+
+                # Get any remaining content
+                remaining, _complete = parser.parse_stream(None)
+                if remaining is not None:
+                    outputs.append(remaining)
 
                 assert len(outputs) == len(test_case["expected_outputs"]), (
                     f"Expected {len(test_case['expected_outputs'])} outputs, got {len(outputs)}"

@@ -64,6 +64,7 @@ Alternatively, format the entire project:
 
 - **Mandatory typing**: Add type annotations to all function signatures, method signatures, and class attributes.
 - **Return types**: Always specify return types, including `None` when applicable.
+- **Minimize `Any`**: Do not just use `Any` for typing to make the error go away. Use appropriate type annotations and only use `Any` when applicable (ex. if there are > 3 different return types possible).
 - **Forward references**: Use `from __future__ import annotations` to defer evaluation of type annotations, allowing forward references without string literals.
 - **Python 3.11+ type hints**: Use built-in generic types instead of typing module equivalents (e.g., `dict[str, Any]` instead of `Dict[str, Any]`, `list[str]` instead of `List[str]`).
 
@@ -207,7 +208,7 @@ except ModelLoadError as e:
 
 - **Explicit user request required**: Only create new branches or open pull requests when the user explicitly asks for it **or** when the user includes the hashtag `#github-pull-request-agent` in their request.
 - **Asynchronous agent handoff**: The `#github-pull-request-agent` hashtag signals that the task should be handed off to the asynchronous GitHub Copilot coding agent after all planning, analysis, and preparation are complete.
-- **Default behavior**: By default, work directly on the current branch and commit changes locally without creating PRs.
+- **No staging or committing without permission**: Agents must **not** stage (`git add`) or commit changes unless the user explicitly requests it. Only make code changes to files - leave git operations to the user.
 
 ### Commit Messages
 

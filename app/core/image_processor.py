@@ -1,9 +1,12 @@
 """Image processing utilities for MLX OpenAI server."""
 
+from __future__ import annotations
+
 import asyncio
 import contextlib
 import gc
 from io import BytesIO
+from typing import Any
 
 from loguru import logger
 from PIL import Image
@@ -18,7 +21,7 @@ class ImageProcessor(BaseProcessor):
         super().__init__(max_workers, cache_size)
         Image.MAX_IMAGE_PIXELS = 100000000  # Limit to 100 megapixels
 
-    def _get_media_format(self, media_url: str, data: bytes | None = None) -> str:
+    def _get_media_format(self, _media_url: str, _data: bytes | None = None) -> str:
         """Determine image format from URL or data."""
         # For images, we always save as JPEG for consistency
         return "jpg"
@@ -92,7 +95,7 @@ class ImageProcessor(BaseProcessor):
             return image.convert("RGB")
         return image
 
-    def _process_media_data(self, data: bytes, cached_path: str, **kwargs) -> str:
+    def _process_media_data(self, data: bytes, cached_path: str, **kwargs: Any) -> str:
         """Process image data and save to cached path."""
         image = None
         resize = kwargs.get("resize", True)

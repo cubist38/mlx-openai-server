@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Generator
 from dataclasses import dataclass, field
 import json
 import os
@@ -241,7 +242,7 @@ def parse_chunk(data: dict) -> dict:
     return data
 
 
-def iter_sse_payloads(response: httpx.Response):
+def iter_sse_payloads(response: httpx.Response) -> Generator[str, None, None]:
     """
     Iterate over Server-Sent Events payloads from a streaming response.
 

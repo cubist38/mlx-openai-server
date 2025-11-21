@@ -21,14 +21,14 @@ CHUNK_SIZE = 30
 
 
 @lru_cache(maxsize=32)
-def load_audio(fname: str) -> Any:
+def load_audio(fname: str) -> np.ndarray:
     """Load and cache audio file. Cache size limited to 32 recent files."""
     a, _ = librosa.load(fname, sr=SAMPLING_RATE, dtype=np.float32)
     return a
 
 
 @lru_cache(maxsize=32)
-def calculate_audio_duration(audio_path: str) -> int:
+def calculate_audio_duration(audio_path: str) -> float:
     """Calculate the duration of the audio file in seconds."""
     audio = load_audio(audio_path)
     return len(audio) / SAMPLING_RATE

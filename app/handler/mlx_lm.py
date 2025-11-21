@@ -1,5 +1,7 @@
 """MLX language model handler for text-only chat completions."""
 
+from __future__ import annotations
+
 import asyncio
 import gc
 import time
@@ -105,7 +107,7 @@ class MLXLMHandler:
         tokens = self.model.tokenizer.encode(text, add_special_tokens=False)
         return len(tokens)
 
-    def _count_message_tokens(self, messages: list[dict[str, str]], **kwargs) -> int:
+    def _count_message_tokens(self, messages: list[dict[str, str]], **kwargs: Any) -> int:
         """
         Count the number of tokens in a list of messages after applying chat template.
 
@@ -222,7 +224,7 @@ class MLXLMHandler:
                 "stream": True,
                 "prompt_tokens": prompt_tokens,
             }
-            response_generator, prompt_tokens_returned = await self.request_queue.submit(
+            response_generator, _prompt_tokens_returned = await self.request_queue.submit(
                 request_id, request_data
             )
             # Create appropriate parsers for this model type
@@ -345,7 +347,7 @@ class MLXLMHandler:
                 "stream": False,
                 "prompt_tokens": prompt_tokens,
             }
-            response, prompt_tokens_returned = await self.request_queue.submit(
+            response, _prompt_tokens_returned = await self.request_queue.submit(
                 request_id, request_data
             )
         except asyncio.QueueFull:
@@ -504,17 +506,13 @@ class MLXLMHandler:
 
     async def get_queue_stats(self) -> dict[str, Any]:
         """
-        Get statistics from the request queue and performance metrics.
+        Get statistics from the request queue.
 
         Returns
         -------
-            Dict with queue and performance statistics.
+            Dict with queue statistics.
         """
-        queue_stats = self.request_queue.get_queue_stats()
-
-        return {
-            "queue_stats": queue_stats,
-        }
+        return self.request_queue.get_queue_stats()
 
     async def cleanup(self) -> None:
         """

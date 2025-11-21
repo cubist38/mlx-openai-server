@@ -1,5 +1,7 @@
 """Asynchronous request queue with concurrency control."""
 
+from __future__ import annotations
+
 import asyncio
 from collections.abc import Awaitable, Callable
 import contextlib
@@ -15,7 +17,7 @@ T = TypeVar("T")
 class RequestItem(Generic[T]):
     """Represents a single request in the queue."""
 
-    def __init__(self, request_id: str, data: Any) -> None:
+    def __init__(self, request_id: str, data: T) -> None:
         self.request_id = request_id
         self.data = data
         self.created_at = time.time()
@@ -60,7 +62,7 @@ class RequestQueue:
         self._running = False
         self._tasks: set[asyncio.Task] = set()
 
-    async def start(self, processor: Callable[[Any], Awaitable[Any]]):
+    async def start(self, processor: Callable[[Any], Awaitable[Any]]) -> None:
         """
         Start the queue worker.
 
@@ -74,7 +76,7 @@ class RequestQueue:
         self._worker_task = asyncio.create_task(self._worker_loop(processor))
         logger.info(f"Started request queue with max concurrency: {self.max_concurrency}")
 
-    async def stop(self):
+    async def stop(self) -> None:
         """Stop the queue worker."""
         if not self._running:
             return

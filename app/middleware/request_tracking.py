@@ -74,5 +74,4 @@ class RequestTrackingMiddleware(BaseHTTPMiddleware):
                 exc_info=True,
             )
             raise
-        else:
-            return response
+        return response

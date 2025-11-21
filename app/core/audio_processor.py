@@ -1,8 +1,11 @@
 """Audio processing utilities for MLX OpenAI server."""
 
+from __future__ import annotations
+
 import asyncio
 import gc
 from pathlib import Path
+from typing import Any
 
 from .base_processor import BaseProcessor
 
@@ -15,7 +18,7 @@ class AudioProcessor(BaseProcessor):
         # Supported audio formats
         self._supported_formats = {".mp3", ".wav"}
 
-    def _get_media_format(self, media_url: str, data: bytes | None = None) -> str:
+    def _get_media_format(self, media_url: str, _data: bytes | None = None) -> str:
         """Determine audio format from URL or data."""
         if media_url.startswith("data:"):
             # Extract format from data URL
@@ -76,7 +79,7 @@ class AudioProcessor(BaseProcessor):
         """Get maximum file size in bytes."""
         return 500 * 1024 * 1024  # 500 MB limit for audio
 
-    def _process_media_data(self, data: bytes, cached_path: str, **kwargs) -> str:
+    def _process_media_data(self, data: bytes, cached_path: str, **kwargs: Any) -> str:
         """Process audio data and save to cached path."""
         with Path(cached_path).open("wb") as f:
             f.write(data)

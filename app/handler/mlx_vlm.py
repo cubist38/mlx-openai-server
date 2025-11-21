@@ -1,7 +1,10 @@
 """MLX vision-language model handler for multimodal chat completions."""
 
+from __future__ import annotations
+
 import asyncio
 import base64
+from collections.abc import AsyncGenerator
 import gc
 from http import HTTPStatus
 import time
@@ -161,7 +164,7 @@ class MLXVLMHandler:
             logger.warning(f"Failed to count tokens: {e!s}")
         return 0
 
-    def _count_message_tokens(self, messages: list[dict[str, Any]], **kwargs) -> int:
+    def _count_message_tokens(self, messages: list[dict[str, Any]], **kwargs: Any) -> int:
         """
         Count the number of tokens in a list of messages after applying chat template.
 
@@ -216,7 +219,9 @@ class MLXVLMHandler:
                             total_text += part.get("text", "")
             return self._count_tokens(total_text)
 
-    async def generate_multimodal_stream(self, request: ChatCompletionRequest):
+    async def generate_multimodal_stream(
+        self, request: ChatCompletionRequest
+    ) -> AsyncGenerator[dict[str, Any], None]:
         """
         Generate a streaming response for multimodal chat completion requests.
 
@@ -324,7 +329,7 @@ class MLXVLMHandler:
             )
             raise HTTPException(status_code=500, detail=content) from e
 
-    async def generate_multimodal_response(self, request: ChatCompletionRequest):
+    async def generate_multimodal_response(self, request: ChatCompletionRequest) -> dict[str, Any]:
         """
         Generate a complete response for multimodal chat completion requests.
 
@@ -396,7 +401,7 @@ class MLXVLMHandler:
 
             return {"response": parsed_response, "usage": usage}
 
-    async def generate_embeddings_response(self, request: EmbeddingRequest):
+    async def generate_embeddings_response(self, request: EmbeddingRequest) -> list[list[float]]:
         """
         Generate embeddings for a given text input.
 
@@ -528,17 +533,13 @@ class MLXVLMHandler:
 
     async def get_queue_stats(self) -> dict[str, Any]:
         """
-        Get statistics from the request queue and performance metrics.
+        Get statistics from the request queue.
 
         Returns
         -------
-            Dict with queue and performance statistics.
+            Dict with queue statistics.
         """
-        queue_stats = self.request_queue.get_queue_stats()
-
-        return {
-            "queue_stats": queue_stats,
-        }
+        return self.request_queue.get_queue_stats()
 
     async def _reformat_multimodal_content_part(
         self, content_part: ChatCompletionContentPart

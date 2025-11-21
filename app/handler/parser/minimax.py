@@ -80,9 +80,7 @@ class MinimaxToolParser(BaseToolParser):
             # Build tool call object
 
         except Exception as e:
-            logger.warning(
-                "Error parsing MiniMax tool call content: {}, Error: {}", tool_content, e
-            )
+            logger.warning(f"Error parsing MiniMax tool call content: {tool_content}, Error: {e}")
             return None
         else:
             return {"name": func_name, "arguments": arguments}
