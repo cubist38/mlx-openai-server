@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import asyncio
 import sys
-from typing import Any
 
 import click
 from loguru import logger
@@ -29,7 +28,7 @@ class UpperChoice(click.Choice[str]):
     where the internal representation is uppercased.
     """
 
-    def normalize_choice(self, choice: str, _ctx: Any) -> str | None:  # type: ignore[override]
+    def normalize_choice(self, choice: str | None, _ctx: click.Context | None) -> str | None:  # type: ignore[override]
         """Return the canonical uppercase choice or raise BadParameter.
 
         Parameters

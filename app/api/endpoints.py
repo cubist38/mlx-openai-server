@@ -32,12 +32,15 @@ from ..schemas.openai import (
     HealthCheckResponse,
     HealthCheckStatus,
     ImageEditRequest,
+    ImageEditResponse,
     ImageGenerationRequest,
+    ImageGenerationResponse,
     Message,
     Model,
     ModelsResponse,
     StreamingChoice,
     TranscriptionRequest,
+    TranscriptionResponse,
     UsageInfo,
 )
 from ..utils.errors import create_error_response
@@ -62,7 +65,7 @@ async def health(raw_request: Request) -> HealthCheckResponse | JSONResponse:
     if handler is None:
         # Handler not initialized - return 503 with degraded status
         return JSONResponse(
-            status_code=503,
+            status_code=HTTPStatus.SERVICE_UNAVAILABLE,
             content={"status": "unhealthy", "model_id": None, "model_status": "uninitialized"},
         )
 
@@ -103,14 +106,18 @@ async def models(raw_request: Request) -> ModelsResponse | JSONResponse:
     if handler is None:
         return JSONResponse(
             content=create_error_response(
-                "Model handler not initialized", "service_unavailable", 503
+                "Model handler not initialized",
+                "service_unavailable",
+                HTTPStatus.SERVICE_UNAVAILABLE,
             ),
-            status_code=503,
+            status_code=HTTPStatus.SERVICE_UNAVAILABLE,
         )
 
     try:
         models_data = await handler.get_models()
         return ModelsResponse(object="list", data=[Model(**model) for model in models_data])
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Error retrieving models: {e!s}")
         return JSONResponse(
@@ -135,9 +142,11 @@ async def queue_stats(raw_request: Request) -> dict[str, Any] | JSONResponse:
     if handler is None:
         return JSONResponse(
             content=create_error_response(
-                "Model handler not initialized", "service_unavailable", 503
+                "Model handler not initialized",
+                "service_unavailable",
+                HTTPStatus.SERVICE_UNAVAILABLE,
             ),
-            status_code=503,
+            status_code=HTTPStatus.SERVICE_UNAVAILABLE,
         )
 
     try:
@@ -145,8 +154,10 @@ async def queue_stats(raw_request: Request) -> dict[str, Any] | JSONResponse:
     except Exception as e:
         logger.error(f"Failed to get queue stats: {e!s}")
         return JSONResponse(
-            content=create_error_response("Failed to get queue stats", "server_error", 500),
-            status_code=500,
+            content=create_error_response(
+                "Failed to get queue stats", "server_error", HTTPStatus.INTERNAL_SERVER_ERROR
+            ),
+            status_code=HTTPStatus.INTERNAL_SERVER_ERROR,
         )
     else:
         return {"status": "ok", "queue_stats": stats}
@@ -158,21 +169,27 @@ async def queue_stats(raw_request: Request) -> dict[str, Any] | JSONResponse:
 
 
 @router.post("/v1/chat/completions")
-async def chat_completions(request: ChatCompletionRequest, raw_request: Request) -> ChatCompletionResponse | StreamingResponse | JSONResponse:
+async def chat_completions(
+    request: ChatCompletionRequest, raw_request: Request
+) -> ChatCompletionResponse | StreamingResponse | JSONResponse:
     """Handle chat completion requests."""
     handler = getattr(raw_request.app.state, "handler", None)
     if handler is None:
         return JSONResponse(
             content=create_error_response(
-                "Model handler not initialized", "service_unavailable", 503
+                "Model handler not initialized",
+                "service_unavailable",
+                HTTPStatus.SERVICE_UNAVAILABLE,
             ),
-            status_code=503,
+            status_code=HTTPStatus.SERVICE_UNAVAILABLE,
         )
 
     if not isinstance(handler, MLXVLMHandler) and not isinstance(handler, MLXLMHandler):
         return JSONResponse(
-            content=create_error_response("Unsupported model type", "unsupported_request", 400),
-            status_code=400,
+            content=create_error_response(
+                "Unsupported model type", "unsupported_request", HTTPStatus.BAD_REQUEST
+            ),
+            status_code=HTTPStatus.BAD_REQUEST,
         )
 
     # Get request ID from middleware
@@ -192,15 +209,19 @@ async def chat_completions(request: ChatCompletionRequest, raw_request: Request)
 
 
 @router.post("/v1/embeddings")
-async def embeddings(request: EmbeddingRequest, raw_request: Request) -> EmbeddingResponse | JSONResponse:
+async def embeddings(
+    request: EmbeddingRequest, raw_request: Request
+) -> EmbeddingResponse | JSONResponse:
     """Handle embedding requests."""
     handler = getattr(raw_request.app.state, "handler", None)
     if handler is None:
         return JSONResponse(
             content=create_error_response(
-                "Model handler not initialized", "service_unavailable", 503
+                "Model handler not initialized",
+                "service_unavailable",
+                HTTPStatus.SERVICE_UNAVAILABLE,
             ),
-            status_code=503,
+            status_code=HTTPStatus.SERVICE_UNAVAILABLE,
         )
 
     try:
@@ -216,15 +237,19 @@ async def embeddings(request: EmbeddingRequest, raw_request: Request) -> Embeddi
 
 
 @router.post("/v1/images/generations")
-async def image_generations(request: ImageGenerationRequest, raw_request: Request) -> Any:
+async def image_generations(
+    request: ImageGenerationRequest, raw_request: Request
+) -> ImageGenerationResponse | JSONResponse:
     """Handle image generation requests."""
     handler = getattr(raw_request.app.state, "handler", None)
     if handler is None:
         return JSONResponse(
             content=create_error_response(
-                "Model handler not initialized", "service_unavailable", 503
+                "Model handler not initialized",
+                "service_unavailable",
+                HTTPStatus.SERVICE_UNAVAILABLE,
             ),
-            status_code=503,
+            status_code=HTTPStatus.SERVICE_UNAVAILABLE,
         )
 
     # Check if the handler is an MLXFluxHandler
@@ -233,13 +258,13 @@ async def image_generations(request: ImageGenerationRequest, raw_request: Reques
             content=create_error_response(
                 "Image generation requests require an image generation model. Use --model-type image-generation.",
                 "unsupported_request",
-                400,
+                HTTPStatus.BAD_REQUEST,
             ),
-            status_code=400,
+            status_code=HTTPStatus.BAD_REQUEST,
         )
 
     try:
-        image_response = await handler.generate_image(request)
+        image_response: ImageGenerationResponse = await handler.generate_image(request)
     except HTTPException:
         raise
     except Exception as e:
@@ -254,15 +279,17 @@ async def image_generations(request: ImageGenerationRequest, raw_request: Reques
 @router.post("/v1/images/edits")
 async def create_image_edit(
     request: Annotated[ImageEditRequest, Form()], raw_request: Request
-) -> Any:
+) -> ImageEditResponse | JSONResponse:
     """Handle image editing requests with dynamic provider routing."""
     handler = getattr(raw_request.app.state, "handler", None)
     if handler is None:
         return JSONResponse(
             content=create_error_response(
-                "Model handler not initialized", "service_unavailable", 503
+                "Model handler not initialized",
+                "service_unavailable",
+                HTTPStatus.SERVICE_UNAVAILABLE,
             ),
-            status_code=503,
+            status_code=HTTPStatus.SERVICE_UNAVAILABLE,
         )
 
     # Check if the handler is an MLXFluxHandler
@@ -271,12 +298,12 @@ async def create_image_edit(
             content=create_error_response(
                 "Image editing requests require an image generation model. Use --model-type image-generation.",
                 "unsupported_request",
-                400,
+                HTTPStatus.BAD_REQUEST,
             ),
-            status_code=400,
+            status_code=HTTPStatus.BAD_REQUEST,
         )
     try:
-        image_response = await handler.edit_image(request)
+        image_response: ImageEditResponse = await handler.edit_image(request)
     except HTTPException:
         raise
     except Exception as e:
@@ -291,16 +318,18 @@ async def create_image_edit(
 @router.post("/v1/audio/transcriptions")
 async def create_audio_transcriptions(
     request: Annotated[TranscriptionRequest, Form()], raw_request: Request
-) -> Any:
+) -> StreamingResponse | TranscriptionResponse | JSONResponse | str:
     """Handle audio transcription requests."""
     try:
         handler = getattr(raw_request.app.state, "handler", None)
         if handler is None:
             return JSONResponse(
                 content=create_error_response(
-                    "Model handler not initialized", "service_unavailable", 503
+                    "Model handler not initialized",
+                    "service_unavailable",
+                    HTTPStatus.SERVICE_UNAVAILABLE,
                 ),
-                status_code=503,
+                status_code=HTTPStatus.SERVICE_UNAVAILABLE,
             )
 
         if request.stream:
@@ -315,7 +344,9 @@ async def create_audio_transcriptions(
                     "X-Accel-Buffering": "no",
                 },
             )
-        transcription_response = await handler.generate_transcription_response(request)
+        transcription_response: (
+            TranscriptionResponse | str
+        ) = await handler.generate_transcription_response(request)
     except HTTPException:
         raise
     except Exception as e:
@@ -544,14 +575,12 @@ async def handle_stream_response(
         detail = e.detail if isinstance(e.detail, dict) else {"message": str(e)}
         error_response = detail  # type: ignore[assignment]
         yield _yield_sse_chunk(error_response)
-        finish_reason = "error"
     except Exception as e:
         logger.error(f"Error in stream wrapper: {e!s}", exc_info=True)
         error_response = create_error_response(
             str(e), "server_error", HTTPStatus.INTERNAL_SERVER_ERROR
         )
         yield _yield_sse_chunk(error_response)
-        finish_reason = "error"
     finally:
         # Final chunk: finish_reason with usage info, as per OpenAI
         final_chunk = ChatCompletionChunk(
@@ -609,7 +638,9 @@ async def process_text_request(
     if request.stream:
         return StreamingResponse(
             handle_stream_response(
-                handler.generate_text_stream(request), request.model, request_id  # type: ignore[union-attr]
+                handler.generate_text_stream(request),  # type: ignore[union-attr]
+                request.model,
+                request_id,
             ),
             media_type="text/event-stream",
             headers={

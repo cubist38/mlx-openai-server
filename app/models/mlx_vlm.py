@@ -78,7 +78,7 @@ class MLX_VLM:
         str
             The model type string.
         """
-        return self.config.model_type
+        return str(self.config.model_type)
 
     def __call__(
         self,
@@ -91,7 +91,7 @@ class MLX_VLM:
         Generate text response from images and messages.
 
         Args:
-            messages (list[dict[str, str]]): List of message dictionaries with 'role' and 'content' keys.
+            messages (list[dict[str, Any]]): OpenAI-style message dicts (including multimodal content).
             stream (bool, optional): Whether to stream the response. Defaults to False.
             **kwargs: Additional model parameters (chat_template_kwargs, temperature, max_tokens, etc.)
 

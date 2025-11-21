@@ -309,7 +309,7 @@ class MLXLMHandler:
                 "rate_limit_exceeded",
                 HTTPStatus.TOO_MANY_REQUESTS,
             )
-            raise HTTPException(status_code=429, detail=content) from None
+            raise HTTPException(status_code=HTTPStatus.TOO_MANY_REQUESTS, detail=content) from None
         except Exception as e:
             logger.error(f"Error in text stream generation for request {request_id}: {e!s}")
             content = create_error_response(
@@ -317,7 +317,7 @@ class MLXLMHandler:
                 "server_error",
                 HTTPStatus.INTERNAL_SERVER_ERROR,
             )
-            raise HTTPException(status_code=500, detail=content) from e
+            raise HTTPException(status_code=HTTPStatus.INTERNAL_SERVER_ERROR, detail=content) from e
 
     async def generate_text_response(self, request: ChatCompletionRequest) -> dict[str, Any]:
         """
@@ -357,7 +357,7 @@ class MLXLMHandler:
                 "rate_limit_exceeded",
                 HTTPStatus.TOO_MANY_REQUESTS,
             )
-            raise HTTPException(status_code=429, detail=content) from None
+            raise HTTPException(status_code=HTTPStatus.TOO_MANY_REQUESTS, detail=content) from None
         except Exception as e:
             logger.error(f"Error in text response generation: {e!s}")
             content = create_error_response(
@@ -365,7 +365,7 @@ class MLXLMHandler:
                 "server_error",
                 HTTPStatus.INTERNAL_SERVER_ERROR,
             )
-            raise HTTPException(status_code=500, detail=content) from e
+            raise HTTPException(status_code=HTTPStatus.INTERNAL_SERVER_ERROR, detail=content) from e
         else:
             # Count completion tokens
             completion_tokens = self._count_tokens(
@@ -429,6 +429,7 @@ class MLXLMHandler:
         -------
             list[list[float]]: Embeddings for the input text.
         """
+        response: list[list[float]]
         try:
             # Create a unique request ID
             request_id = f"embeddings-{uuid.uuid4()}"
@@ -446,7 +447,7 @@ class MLXLMHandler:
                 "rate_limit_exceeded",
                 HTTPStatus.TOO_MANY_REQUESTS,
             )
-            raise HTTPException(status_code=429, detail=content) from None
+            raise HTTPException(status_code=HTTPStatus.TOO_MANY_REQUESTS, detail=content) from None
         except Exception as e:
             logger.error(f"Error in embeddings generation: {e!s}")
             content = create_error_response(
@@ -454,9 +455,9 @@ class MLXLMHandler:
                 "server_error",
                 HTTPStatus.INTERNAL_SERVER_ERROR,
             )
-            raise HTTPException(status_code=500, detail=content) from e
+            raise HTTPException(status_code=HTTPStatus.INTERNAL_SERVER_ERROR, detail=content) from e
         else:
-            return response  # type: ignore[no-any-return]
+            return response
 
     async def _process_request(self, request_data: dict[str, Any]) -> tuple[Any, int]:
         """
@@ -566,9 +567,9 @@ class MLXLMHandler:
             if request_dict.get("response_format", None):
                 response_format = request_dict.pop("response_format", None)
                 if response_format.get("type") == "json_schema":
-                    request_dict["schema"] = response_format.get("json_schema", None).get(
-                        "schema", None
-                    )
+                    json_schema = response_format.get("json_schema")
+                    if isinstance(json_schema, dict):
+                        request_dict["schema"] = json_schema.get("schema")
 
             # Format chat messages and merge system messages into index 0
             chat_messages = []
@@ -620,6 +621,6 @@ class MLXLMHandler:
             content = create_error_response(
                 f"Failed to process request: {e!s}", "bad_request", HTTPStatus.BAD_REQUEST
             )
-            raise HTTPException(status_code=400, detail=content) from e
+            raise HTTPException(status_code=HTTPStatus.BAD_REQUEST, detail=content) from e
         else:
             return chat_messages, request_dict

@@ -50,9 +50,9 @@ class MLXWhisperHandler:
             model_path (str): Path to the model directory.
             max_concurrency (int): Maximum number of concurrent model inference tasks.
         """
-        self.model_path = model_path
-        self.model = MLX_Whisper(model_path)
-        self.model_created = int(time.time())  # Store creation time when model is loaded
+        self.model_path: str = model_path
+        self.model: MLX_Whisper = MLX_Whisper(model_path)
+        self.model_created: int = int(time.time())  # Store creation time when model is loaded
 
         # Initialize request queue for audio transcription tasks
         self.request_queue = RequestQueue(max_concurrency=max_concurrency)
@@ -142,13 +142,13 @@ class MLXWhisperHandler:
             request_data["stream"] = True
 
             # Offload synchronous generator to thread pool to avoid blocking event loop
-            loop = asyncio.get_event_loop()
+            loop = asyncio.get_running_loop()
             audio_path = request_data.pop("audio_path")
 
             def collect_chunks() -> list[dict[str, Any]]:
                 """Collect all chunks from the synchronous generator."""
                 generator = self.model(audio_path=audio_path, **request_data)
-                return list(generator)
+                return list(generator)  # type: ignore[arg-type]
 
             # Run the synchronous generator collection in a thread
             chunks = await loop.run_in_executor(None, collect_chunks)
@@ -226,7 +226,7 @@ class MLXWhisperHandler:
             gc.collect()
             raise
         else:
-            return result
+            return result  # type: ignore[return-value]
 
     async def _save_uploaded_file(self, file: UploadFile) -> str:
         """
@@ -259,7 +259,8 @@ class MLXWhisperHandler:
         except OSError as e:
             logger.error(f"Error saving uploaded file ({e.__class__.__name__}): {e}")
             raise HTTPException(
-                status_code=500, detail="Internal server error while saving uploaded file"
+                status_code=HTTPStatus.INTERNAL_SERVER_ERROR,
+                detail="Internal server error while saving uploaded file",
             ) from e
         except Exception as e:
             logger.error(f"Error saving uploaded file ({e.__class__.__name__}): {e!s}")
@@ -317,7 +318,7 @@ class MLXWhisperHandler:
             content = create_error_response(
                 f"Failed to process request: {e!s}", "bad_request", HTTPStatus.BAD_REQUEST
             )
-            raise HTTPException(status_code=400, detail=content) from e
+            raise HTTPException(status_code=HTTPStatus.BAD_REQUEST, detail=content) from e
         else:
             return request_data
 

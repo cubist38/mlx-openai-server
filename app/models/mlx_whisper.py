@@ -21,7 +21,7 @@ CHUNK_SIZE = 30
 
 
 @lru_cache(maxsize=32)
-def load_audio(fname: str) -> np.ndarray:
+def load_audio(fname: str) -> np.ndarray:  # type: ignore[type-arg]
     """Load and cache audio file. Cache size limited to 32 recent files."""
     a, _ = librosa.load(fname, sr=SAMPLING_RATE, dtype=np.float32)
     return a
@@ -87,7 +87,8 @@ class MLX_Whisper:
         """
         if stream:
             return self._transcribe_generator(audio_path, **kwargs)
-        return transcribe(audio_path, path_or_hf_repo=self.model_path, **kwargs)
+        tc: dict[str, Any] = transcribe(audio_path, path_or_hf_repo=self.model_path, **kwargs)
+        return tc
 
 
 if __name__ == "__main__":
@@ -95,6 +96,7 @@ if __name__ == "__main__":
     # Non-streaming (fastest for most use cases)
     result = model("examples/audios/podcast.wav", stream=True)
     for chunk in result:
+        chunk_dict = chunk if isinstance(chunk, dict) else {}
         logger.info(
-            "[{:.1f}s - {:.1f}s]: {}", chunk["chunk_start"], chunk["chunk_end"], chunk["text"]
+            f"[{chunk_dict.get('chunk_start', 0):.1f}s - {chunk_dict.get('chunk_end', 0):.1f}s]: {chunk_dict.get('text', '')}"
         )

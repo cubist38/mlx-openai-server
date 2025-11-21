@@ -2,6 +2,7 @@
 
 from collections.abc import Callable
 import time
+from typing import Any
 import uuid
 
 from fastapi import Request, Response
@@ -21,7 +22,7 @@ class RequestTrackingMiddleware(BaseHTTPMiddleware):
     - Logs request start/end with timing information
     """
 
-    async def dispatch(self, request: Request, call_next: Callable) -> Response:
+    async def dispatch(self, request: Request, call_next: Callable[..., Any]) -> Response:
         """
         Process each request with correlation ID tracking.
 
@@ -49,7 +50,7 @@ class RequestTrackingMiddleware(BaseHTTPMiddleware):
 
         try:
             # Process request
-            response = await call_next(request)
+            response: Response = await call_next(request)
 
             # Calculate duration
             duration = time.time() - start_time

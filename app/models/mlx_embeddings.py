@@ -8,7 +8,7 @@ management and caching capabilities.
 from __future__ import annotations
 
 import gc
-from typing import Any
+from typing import Any, cast
 
 from loguru import logger
 import mlx.core as mx
@@ -102,7 +102,7 @@ class MLX_Embeddings:
         try:
             embeddings = self._get_embeddings(texts, max_length)
             # Convert to Python list and return
-            return embeddings.tolist()
+            return cast("list[list[float]]", embeddings.tolist())
         finally:
             # Clean up the embeddings array and global cache
             if embeddings is not None:

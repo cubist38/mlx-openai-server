@@ -71,9 +71,9 @@ class BaseThinkingParser:
 
         Returns
         -------
-        tuple[list[dict[str, Any]], str]
-            A tuple of (tool_calls, remaining_content) where tool_calls is a list
-            of parsed tool call dictionaries.
+        tuple[str | None, str]
+            A tuple of (thinking_content, remaining_content) where thinking_content
+            is the extracted thinking content or None if no thinking block was found.
         """
         start_thinking = content.find(self.thinking_open)
         if start_thinking == -1:
@@ -314,7 +314,7 @@ class BaseToolParser:
             except json.JSONDecodeError:
                 logger.warning(f"Error parsing tool call: {tool_content}")
                 # Continue processing remaining content after error
-                remaining_parts.append(content[end_tool:].strip())
+                remaining_parts.append(content[start_tool:].strip())
                 break
 
             # Move position past the closing tag

@@ -172,7 +172,12 @@ class RequestQueue:
                     TimeoutError(f"Request processing timed out after {self.timeout}s")
                 )
                 logger.warning(f"Request {request.request_id} timed out after {self.timeout}s")
-
+            except asyncio.CancelledError as e:
+                # Propagate cancellation but ensure the future is not left hanging
+                if not request.future.done():
+                    request.future.set_exception(e)
+                logger.info(f"Request {request.request_id} was cancelled")
+                raise
             except Exception as e:
                 request.set_exception(e)
                 logger.error(f"Error processing request {request.request_id}: {e!s}")

@@ -23,8 +23,8 @@ class ImageProcessor(BaseProcessor):
 
     def _get_media_format(self, _media_url: str, _data: bytes | None = None) -> str:
         """Determine image format from URL or data."""
-        # For images, we always save as JPEG for consistency
-        return "jpg"
+        # For images, we always save as PNG for consistency
+        return "png"
 
     def _validate_media_data(self, data: bytes) -> bool:
         """Validate basic image data."""
