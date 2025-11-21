@@ -72,7 +72,7 @@ class MLXEmbeddingsHandler:
 
         Returns
         -------
-            list[float]: Embeddings for the input text.
+            list[list[float]]: Embeddings for the input text.
         """
         try:
             # Create a unique request ID

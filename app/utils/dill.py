@@ -106,7 +106,7 @@ class Pickler(dill.Pickler):
             obj = getattr(obj, "_torchdynamo_orig_callable", obj)
         dill.Pickler.save(self, obj, save_persistent_id=save_persistent_id)
 
-    def _batch_setitems(self, items):
+    def _batch_setitems(self, items) -> None:
         if self._legacy_no_dict_keys_sorting:
             return super()._batch_setitems(items)
         # Ignore the order of keys in a dict
@@ -117,7 +117,7 @@ class Pickler(dill.Pickler):
             items = sorted(items, key=lambda x: Hasher.hash(x[0]))
         return super()._batch_setitems(items)
 
-    def memoize(self, obj):
+    def memoize(self, obj) -> None:
         """Memoize an object, skipping strings to avoid id issues."""
         # Don't memoize strings since two identical strings can have different Python ids
         if type(obj) is not str:  # noqa: E721

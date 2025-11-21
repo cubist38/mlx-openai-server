@@ -69,13 +69,13 @@ class MLX_VLM:
 
     def __call__(
         self,
-        messages: list[dict[str, str]],
+        messages: list[dict[str, object]],
         images: list[str] | None = None,
         audios: list[str] | None = None,
         videos: list[str] | None = None,
         stream: bool = False,
         **kwargs,
-    ) -> str | Generator[str, None, None]:
+    ) -> tuple[str | Generator[str, None, None], int]:
         """
         Generate text response from images and messages.
 
@@ -87,9 +87,10 @@ class MLX_VLM:
 
         Returns
         -------
-            str | Generator[str, None, None]:
-                - If stream=False: Complete response as string
-                - If stream=True: Generator yielding response chunks
+            tuple[str | Generator[str, None, None], int]:
+                A tuple where:
+                - First element: Complete response as string (if stream=False) or Generator yielding response chunks (if stream=True)
+                - Second element: Number of prompt tokens used
         """
         if images and videos:
             raise ValueError("Cannot process both images and videos in the same request")

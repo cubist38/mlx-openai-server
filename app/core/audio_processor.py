@@ -10,7 +10,7 @@ from .base_processor import BaseProcessor
 class AudioProcessor(BaseProcessor):
     """Audio processor for handling audio files with caching and validation."""
 
-    def __init__(self, max_workers: int = 4, cache_size: int = 1000):
+    def __init__(self, max_workers: int = 4, cache_size: int = 1000) -> None:
         super().__init__(max_workers, cache_size)
         # Supported audio formats
         self._supported_formats = {".mp3", ".wav"}
@@ -91,7 +91,7 @@ class AudioProcessor(BaseProcessor):
         """Process a single audio URL and return path to cached file."""
         return await self._process_single_media(audio_url)
 
-    async def process_audio_urls(self, audio_urls: list[str]) -> list[str]:
+    async def process_audio_urls(self, audio_urls: list[str]) -> list[str | Exception]:
         """Process multiple audio URLs and return paths to cached files."""
         tasks = [self.process_audio_url(url) for url in audio_urls]
         results = await asyncio.gather(*tasks, return_exceptions=True)

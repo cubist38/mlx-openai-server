@@ -15,7 +15,7 @@ T = TypeVar("T")
 class RequestItem(Generic[T]):
     """Represents a single request in the queue."""
 
-    def __init__(self, request_id: str, data: Any):
+    def __init__(self, request_id: str, data: Any) -> None:
         self.request_id = request_id
         self.data = data
         self.created_at = time.time()
@@ -39,7 +39,9 @@ class RequestItem(Generic[T]):
 class RequestQueue:
     """A simple asynchronous request queue with configurable concurrency."""
 
-    def __init__(self, max_concurrency: int = 2, timeout: float = 300.0, queue_size: int = 100):
+    def __init__(
+        self, max_concurrency: int = 2, timeout: float = 300.0, queue_size: int = 100
+    ) -> None:
         """
         Initialize the request queue.
 
@@ -56,6 +58,7 @@ class RequestQueue:
         self.active_requests: dict[str, RequestItem] = {}
         self._worker_task = None
         self._running = False
+        self._tasks: set[asyncio.Task] = set()
 
     async def start(self, processor: Callable[[Any], Awaitable[Any]]):
         """
@@ -84,6 +87,14 @@ class RequestQueue:
             with contextlib.suppress(asyncio.CancelledError):
                 await self._worker_task
 
+        # Cancel all in-flight tasks
+        for task in self._tasks:
+            if not task.done():
+                task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await asyncio.gather(*self._tasks, return_exceptions=True)
+        self._tasks.clear()
+
         # Cancel all pending requests
         pending_requests = list(self.active_requests.values())
         for request in pending_requests:
@@ -93,8 +104,8 @@ class RequestQueue:
             try:
                 if hasattr(request, "data"):
                     del request.data
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug("Failed to remove request.data", exc_info=e)
 
         self.active_requests.clear()
 
@@ -109,7 +120,7 @@ class RequestQueue:
         gc.collect()
         logger.info("Stopped request queue")
 
-    async def _worker_loop(self, processor: Callable[[Any], Awaitable[Any]]):
+    async def _worker_loop(self, processor: Callable[[Any], Awaitable[Any]]) -> None:
         """
         Process queue items in main worker loop.
 
@@ -122,7 +133,9 @@ class RequestQueue:
                 request = await self.queue.get()
 
                 # Process the request with concurrency control
-                asyncio.create_task(self._process_request(request, processor))
+                task = asyncio.create_task(self._process_request(request, processor))
+                self._tasks.add(task)
+                task.add_done_callback(self._tasks.discard)
 
             except asyncio.CancelledError:
                 break
@@ -131,7 +144,7 @@ class RequestQueue:
 
     async def _process_request(
         self, request: RequestItem, processor: Callable[[Any], Awaitable[Any]]
-    ):
+    ) -> None:
         """
         Process a single request with timeout and error handling.
 
@@ -169,8 +182,8 @@ class RequestQueue:
                     try:
                         if hasattr(removed_request, "data"):
                             del removed_request.data
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        logger.debug("Failed to remove request.data", exc_info=e)
                 # Force garbage collection periodically to prevent memory buildup
                 if len(self.active_requests) % 10 == 0:  # Every 10 requests
                     gc.collect()
@@ -252,6 +265,6 @@ class RequestQueue:
         }
 
     # Alias for the async stop method to maintain consistency in cleanup interfaces
-    async def stop_async(self):
+    async def stop_async(self) -> None:
         """Alias for stop - stops the queue worker asynchronously."""
         await self.stop()

@@ -12,12 +12,12 @@ from .base_processor import BaseProcessor
 class VideoProcessor(BaseProcessor):
     """Video processor for handling video files with caching, validation, and processing."""
 
-    def __init__(self, max_workers: int = 4, cache_size: int = 1000):
+    def __init__(self, max_workers: int = 4, cache_size: int = 1000) -> None:
         super().__init__(max_workers, cache_size)
         # Supported video formats
         self._supported_formats = {".mp4", ".avi", ".mov"}
 
-    def _get_media_format(self, media_url: str, data: bytes | None = None) -> str:
+    def _get_media_format(self, media_url: str, _data: bytes | None = None) -> str:
         """Determine video format from URL or data."""
         if media_url.startswith("data:"):
             # Extract format from data URL
@@ -65,7 +65,7 @@ class VideoProcessor(BaseProcessor):
         ]
 
         for sig, offset in video_signatures:
-            if len(data) > offset + len(sig):
+            if len(data) >= offset + len(sig):
                 if data[offset : offset + len(sig)] == sig:
                     # Additional validation for AVI
                     if sig == b"RIFF" and len(data) > 12:
@@ -126,7 +126,7 @@ class VideoProcessor(BaseProcessor):
         """
         return await self._process_single_media(video_url)
 
-    async def process_video_urls(self, video_urls: list[str]) -> list[str]:
+    async def process_video_urls(self, video_urls: list[str]) -> list[str | Exception]:
         """
         Process multiple video URLs and return paths to cached files.
 

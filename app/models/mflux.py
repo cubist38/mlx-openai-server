@@ -7,9 +7,12 @@ including Flux1 and Flux1Kontext variants with different configurations.
 
 from abc import ABC, abstractmethod
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from loguru import logger
+
+if TYPE_CHECKING:
+    from typing import ClassVar
 from mflux.config.model_config import ModelConfig
 from mflux.flux.flux import Config, Flux1
 from mflux.kontext.flux_kontext import Flux1Kontext
@@ -201,10 +204,10 @@ class BaseFluxModel(ABC):
             if result is None:
                 raise ModelGenerationError("Model returned None instead of an image.")
 
-            self.logger.info("Image generated successfully")
+            logger.info("Image generated successfully")
         except Exception as e:
             error_msg = f"Error generating image: {e}"
-            self.logger.error(error_msg)
+            logger.error(error_msg)
             raise ModelGenerationError(error_msg) from e
         else:
             return result
@@ -276,7 +279,7 @@ class FluxStandardModel(BaseFluxModel):
             logger.info("{} model loaded successfully", self.config.model_type)
         except Exception as e:
             error_msg = f"Failed to load {self.config.model_type} model: {e}"
-            self.logger.error(error_msg)
+            logger.error(error_msg)
             raise ModelLoadError(error_msg) from e
 
     def _generate_image(self, prompt: str, seed: int, config: Config) -> Image.Image:
@@ -302,10 +305,10 @@ class FluxKontextModel(BaseFluxModel):
             logger.info("Loading Kontext model from {}", self.model_path)
             self._model = Flux1Kontext(quantize=self.config.quantize, local_path=self.model_path)
             self._is_loaded = True
-            self.logger.info("Kontext model loaded successfully")
+            logger.info("Kontext model loaded successfully")
         except Exception as e:
             error_msg = f"Failed to load Kontext model: {e}"
-            self.logger.error(error_msg)
+            logger.error(error_msg)
             raise ModelLoadError(error_msg) from e
 
     def _generate_image(self, prompt: str, seed: int, config: Config) -> Image.Image:
@@ -325,14 +328,14 @@ class FluxKontextModel(BaseFluxModel):
 class FluxModel:
     """Factory class for creating and managing Flux models."""
 
-    _MODEL_CONFIGS = {
+    _MODEL_CONFIGS: "ClassVar[dict[str, ModelConfiguration]]" = {
         "flux-schnell": ModelConfiguration.schnell,
         "flux-dev": ModelConfiguration.dev,
         "flux-krea-dev": ModelConfiguration.krea_dev,
         "flux-kontext-dev": ModelConfiguration.kontext,
     }
 
-    _MODEL_CLASSES = {
+    _MODEL_CLASSES: "ClassVar[dict[str, type[FluxStandardModel | FluxKontextModel]]]" = {
         "flux-schnell": FluxStandardModel,
         "flux-dev": FluxStandardModel,
         "flux-krea-dev": FluxStandardModel,
@@ -386,7 +389,7 @@ class FluxModel:
 
         except Exception as e:
             error_msg = f"Failed to initialize FluxModel: {e}"
-            self.logger.error(error_msg)
+            logger.error(error_msg)
             raise ModelLoadError(error_msg) from e
 
     def __call__(self, prompt: str, seed: int = 42, **kwargs) -> Image.Image:

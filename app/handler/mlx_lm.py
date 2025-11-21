@@ -28,13 +28,14 @@ class MLXLMHandler:
     def __init__(
         self,
         model_path: str,
+        *,
         context_length: int = 32768,
         max_concurrency: int = 1,
         enable_auto_tool_choice: bool = False,
         tool_call_parser: str | None = None,
         reasoning_parser: str | None = None,
         trust_remote_code: bool = False,
-    ):
+    ) -> None:
         """
         Initialize the handler with the specified model path.
 
@@ -177,9 +178,9 @@ class MLXLMHandler:
         if not queue_config:
             queue_config = {"max_concurrency": 1, "timeout": 300, "queue_size": 100}
         self.request_queue = RequestQueue(
-            max_concurrency=queue_config.get("max_concurrency"),
-            timeout=queue_config.get("timeout"),
-            queue_size=queue_config.get("queue_size"),
+            max_concurrency=queue_config.get("max_concurrency", 1),
+            timeout=queue_config.get("timeout", 300),
+            queue_size=queue_config.get("queue_size", 100),
         )
         await self.request_queue.start(self._process_request)
         logger.info("Initialized MLXHandler and started request queue")
@@ -405,7 +406,7 @@ class MLXLMHandler:
 
         Returns
         -------
-            list[float]: Embeddings for the input text.
+            list[list[float]]: Embeddings for the input text.
         """
         try:
             # Create a unique request ID

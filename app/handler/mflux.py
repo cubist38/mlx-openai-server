@@ -398,7 +398,7 @@ class MLXFluxHandler:
         if not hasattr(self, "request_queue") or self.request_queue is None:
             return {"error": "Request queue not initialized"}
 
-        stats = await self.request_queue.get_stats()
+        stats = self.request_queue.get_queue_stats()
         return {
             "queue_size": stats.get("queue_size", 0),
             "active_requests": stats.get("active_requests", 0),
