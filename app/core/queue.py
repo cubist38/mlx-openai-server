@@ -90,11 +90,12 @@ class RequestQueue:
                 await self._worker_task
 
         # Cancel all in-flight tasks
-        for task in self._tasks:
+        tasks_snapshot = list(self._tasks)
+        for task in tasks_snapshot:
             if not task.done():
                 task.cancel()
         with contextlib.suppress(asyncio.CancelledError):
-            await asyncio.gather(*self._tasks, return_exceptions=True)
+            await asyncio.gather(*tasks_snapshot, return_exceptions=True)
         self._tasks.clear()
 
         # Cancel all pending requests
@@ -107,7 +108,7 @@ class RequestQueue:
                 if hasattr(request, "data"):
                     del request.data
             except Exception as e:
-                logger.debug("Failed to remove request.data", exc_info=e)
+                logger.opt(exception=e).debug("Failed to remove request.data")
 
         self.active_requests.clear()
 
@@ -185,7 +186,7 @@ class RequestQueue:
                         if hasattr(removed_request, "data"):
                             del removed_request.data
                     except Exception as e:
-                        logger.debug("Failed to remove request.data", exc_info=e)
+                        logger.opt(exception=e).debug("Failed to remove request.data")
                 # Force garbage collection periodically to prevent memory buildup
                 if len(self.active_requests) % 10 == 0:  # Every 10 requests
                     gc.collect()

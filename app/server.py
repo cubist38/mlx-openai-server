@@ -14,12 +14,11 @@ Key exports:
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterator, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
 import gc
 import sys
 import time
-from typing import Any
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -305,7 +304,9 @@ def setup_server(config_args: MLXServerConfig) -> uvicorn.Config:
     )
 
     @app.middleware("http")
-    async def add_process_time_header(request: Request, call_next: Any) -> Response:
+    async def add_process_time_header(
+        request: Request, call_next: Callable[[Request], Awaitable[Response]]
+    ) -> Response:
         """Middleware to add processing time header and run cleanup.
 
         Measures request processing time, appends an ``X-Process-Time``

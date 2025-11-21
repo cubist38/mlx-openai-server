@@ -78,7 +78,7 @@ class MLXWhisperHandler:
         """Initialize the handler and start the request queue."""
         if not queue_config:
             queue_config = {
-                "max_concurrency": 1,
+                "max_concurrency": self.request_queue.max_concurrency,
                 "timeout": 600,  # Longer timeout for audio processing
                 "queue_size": 50,
             }
@@ -256,7 +256,7 @@ class MLXWhisperHandler:
             logger.debug(f"Saved uploaded file to temporary location: {temp_path}")
 
         except OSError as e:
-            logger.error("Error saving uploaded file (%s): %s", e.__class__.__name__, str(e))
+            logger.error(f"Error saving uploaded file ({e.__class__.__name__}): {e}")
             raise HTTPException(
                 status_code=500, detail="Internal server error while saving uploaded file"
             ) from e
@@ -309,6 +309,8 @@ class MLXWhisperHandler:
 
             logger.debug(f"Prepared transcription request: {request_data}")
 
+        except HTTPException:
+            raise
         except Exception as e:
             logger.error(f"Failed to prepare transcription request: {e!s}")
             content = create_error_response(

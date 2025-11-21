@@ -79,7 +79,7 @@ class MinimaxToolParser(BaseToolParser):
 
             # Build tool call object
 
-        except Exception as e:
+        except (AttributeError, KeyError, TypeError, ValueError, re.error) as e:
             logger.warning(f"Error parsing MiniMax tool call content: {tool_content}, Error: {e}")
             return None
         else:

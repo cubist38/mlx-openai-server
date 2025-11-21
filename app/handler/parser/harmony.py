@@ -78,10 +78,6 @@ class HarmonyParser:
             Tuple[parsed_content, is_complete]:
                 - parsed_content: The parsed chunk (could be str, dict, or None)
                 - is_complete: True if stream has ended
-
-        Raises
-        ------
-            Exception: If encoding or parsing fails
         """
         # Handle end of stream marker
         if text == self.end_tool_chunk:
@@ -246,6 +242,7 @@ class HarmonyParser:
 
         This method processes the entire text at once (non-streaming) and extracts
         reasoning content, tool calls, and final content based on harmony channels.
+        Parsing errors are logged and partial results are returned when possible.
 
         Args:
             text: The complete text response to parse
@@ -256,10 +253,6 @@ class HarmonyParser:
             - reasoning_content: Analysis/thinking content
             - tool_calls: List of tool call objects
             - content: Final response content
-
-        Raises
-        ------
-            Exception: If encoding or parsing fails
         """
         # Initialize result structure
         result = {"reasoning_content": None, "tool_calls": None, "content": None}
@@ -317,6 +310,7 @@ class HarmonyParser:
                     continue
 
         except Exception as e:
+            # Safety net for unexpected errors during encoding/parsing
             logger.error(f"Error in parse method: {e}")
             # Return partial results if available, don't raise
 

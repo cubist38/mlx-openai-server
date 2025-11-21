@@ -288,7 +288,7 @@ class ChatCompletionRequest(ChatCompletionRequestBase):
 
     stream: bool = Field(False, description="Whether to stream the response.")
     chat_template_kwargs: ChatTemplateKwargs = Field(
-        ChatTemplateKwargs(), description="Arguments for the chat template."
+        default_factory=ChatTemplateKwargs, description="Arguments for the chat template."
     )
 
 

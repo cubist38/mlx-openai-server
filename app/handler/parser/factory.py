@@ -22,7 +22,7 @@ from .qwen3_vl import Qwen3VLThinkingParser, Qwen3VLToolParser
 
 # Registry mapping parser names to their classes
 PARSER_REGISTRY: dict[
-    str, dict[str, type[BaseThinkingParser] | type[BaseToolParser] | Callable]
+    str, dict[str, type[BaseThinkingParser] | type[BaseToolParser] | type[HarmonyParser] | Callable]
 ] = {
     "qwen3": {
         "thinking": Qwen3ThinkingParser,
@@ -123,7 +123,7 @@ class ParserFactory:
     @staticmethod
     def create_parser(
         parser_name: str, parser_type: str, **kwargs: Any
-    ) -> BaseThinkingParser | BaseToolParser | None:
+    ) -> BaseThinkingParser | BaseToolParser | HarmonyParser | None:
         """
         Create a parser instance from the registry.
 
@@ -162,7 +162,8 @@ class ParserFactory:
         manual_tool_parser: str | None = None,
         **kwargs: Any,
     ) -> tuple[
-        BaseThinkingParser | BaseToolParser | None, BaseThinkingParser | BaseToolParser | None
+        BaseThinkingParser | BaseToolParser | HarmonyParser | None,
+        BaseThinkingParser | BaseToolParser | HarmonyParser | None,
     ]:
         """
         Create thinking and tool parsers based on manual configuration.

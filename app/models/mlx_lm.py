@@ -63,6 +63,16 @@ class MLX_LM:
         except Exception as e:
             raise ValueError(f"Error loading model: {e!s}") from e
 
+    def _get_pad_token_id(self) -> int:
+        """Get a safe pad token ID, falling back through options."""
+        if self.pad_token_id is not None:
+            return int(self.pad_token_id)
+        if hasattr(self.tokenizer, "pad_token_id") and self.tokenizer.pad_token_id is not None:
+            return int(self.tokenizer.pad_token_id)
+        if hasattr(self.tokenizer, "eos_token_id") and self.tokenizer.eos_token_id is not None:
+            return int(self.tokenizer.eos_token_id)
+        return 0
+
     def _apply_pooling_strategy(self, embeddings: mx.array) -> mx.array:
         return mx.mean(embeddings, axis=1)
 
@@ -90,9 +100,12 @@ class MLX_LM:
             # Find max length in batch
             max_length = max(len(tokens) for tokens in tokenized_batch)
 
+            # Get safe pad token ID
+            pad_token_id = self._get_pad_token_id()
+
             # Pad tokens in a vectorized way
             for tokens in tokenized_batch:
-                padding = [self.pad_token_id] * (max_length - len(tokens))
+                padding = [pad_token_id] * (max_length - len(tokens))
                 all_tokenized.append(tokens + padding)
 
         return all_tokenized

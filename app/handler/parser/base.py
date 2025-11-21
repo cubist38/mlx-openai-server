@@ -71,9 +71,9 @@ class BaseThinkingParser:
 
         Returns
         -------
-        tuple[str | None, str]
-            A tuple of (thinking_content, remaining_content). thinking_content is
-            None if no thinking tags are found.
+        tuple[list[dict[str, Any]], str]
+            A tuple of (tool_calls, remaining_content) where tool_calls is a list
+            of parsed tool call dictionaries.
         """
         start_thinking = content.find(self.thinking_open)
         if start_thinking == -1:
@@ -244,7 +244,7 @@ class BaseToolParser:
         repaired_json = repair_json(tool_content)
         return json.loads(repaired_json)
 
-    def parse(self, content: str) -> tuple[list[dict[str, Any]] | None, str]:
+    def parse(self, content: str) -> tuple[list[dict[str, Any]], str]:
         """
         Parse tool calls from the given content.
 
@@ -296,7 +296,10 @@ class BaseToolParser:
             tool_content = content[search_start:end_tool].strip()
             try:
                 json_output = self._parse_tool_content(tool_content)
-                tool_calls.append(json_output)
+                if json_output is None:
+                    logger.warning(f"Skipping unparsable tool call chunk: {tool_content}")
+                else:
+                    tool_calls.append(json_output)
             except json.JSONDecodeError:
                 logger.warning(f"Error parsing tool call: {tool_content}")
                 # Continue processing remaining content after error
@@ -329,17 +332,17 @@ class BaseToolParser:
             has finished.
         """
         if chunk is None:
+            # Flush any remaining pending text
             if self.pending_text:
                 text = self.pending_text
                 self.pending_text = ""
                 return text, True
             return None, True
 
-        # If there's pending text from a previous complete tool call, return it first
+        # If there's pending text, prepend it to the new chunk
         if self.pending_text:
-            text = self.pending_text
+            chunk = self.pending_text + chunk
             self.pending_text = ""
-            return text, False
 
         if self.tool_open in chunk:
             self.state = ParseToolState.FOUND_PREFIX
@@ -357,10 +360,19 @@ class BaseToolParser:
                 except json.JSONDecodeError:
                     logger.warning(f"Error parsing tool call: {self.buffer}")
                     return None, True
-                return {
-                    "name": json_output["name"],
-                    "arguments": json.dumps(json_output["arguments"]),
-                }, True
+                if json_output is None:
+                    logger.warning(f"Skipping unparsable tool call chunk: {self.buffer}")
+                    return None, True
+                if (
+                    isinstance(json_output, dict)
+                    and "name" in json_output
+                    and "arguments" in json_output
+                ):
+                    return {
+                        "name": json_output["name"],
+                        "arguments": json.dumps(json_output["arguments"]),
+                    }, True
+                return None, False
 
             self.buffer += chunk[start_tool_index + len(self.tool_open) :]
 
@@ -379,10 +391,19 @@ class BaseToolParser:
                 except json.JSONDecodeError:
                     logger.warning(f"Error parsing tool call: {self.buffer}")
                     return None, False
-                return {
-                    "name": json_output["name"],
-                    "arguments": json.dumps(json_output["arguments"]),
-                }, True
+                if json_output is None:
+                    logger.warning(f"Skipping unparsable tool call chunk: {self.buffer}")
+                    return None, True
+                if (
+                    isinstance(json_output, dict)
+                    and "name" in json_output
+                    and "arguments" in json_output
+                ):
+                    return {
+                        "name": json_output["name"],
+                        "arguments": json.dumps(json_output["arguments"]),
+                    }, True
+                return None, False
             self.buffer += chunk
             return None, False
 

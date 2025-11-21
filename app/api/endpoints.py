@@ -91,13 +91,15 @@ async def models(raw_request: Request) -> ModelsResponse:
             logger.error(f"Error retrieving models from registry: {e!s}")
             return JSONResponse(
                 content=create_error_response(
-                    f"Failed to retrieve models: {e!s}", "server_error", 500
+                    f"Failed to retrieve models: {e!s}",
+                    "server_error",
+                    HTTPStatus.INTERNAL_SERVER_ERROR,
                 ),
                 status_code=HTTPStatus.INTERNAL_SERVER_ERROR,
             )
 
     # Fallback to handler (Phase 0 compatibility)
-    handler = raw_request.app.state.handler
+    handler = getattr(raw_request.app.state, "handler", None)
     if handler is None:
         return JSONResponse(
             content=create_error_response(
@@ -118,8 +120,13 @@ async def models(raw_request: Request) -> ModelsResponse:
 
 
 @router.get("/v1/queue/stats")
-async def queue_stats(raw_request: Request) -> Any:
-    """Get queue statistics."""
+async def queue_stats(raw_request: Request) -> dict[str, Any] | JSONResponse:
+    """
+    Get queue statistics.
+
+    Note: queue_stats shape is handler-dependent (Flux vs LM/VLM/Whisper)
+    so callers know keys may vary.
+    """
     handler = raw_request.app.state.handler
     if handler is None:
         return JSONResponse(
@@ -353,6 +360,7 @@ def create_response_embeddings(
 def create_response_chunk(
     chunk: str | dict[str, Any],
     model: str,
+    *,
     is_final: bool = False,
     finish_reason: str | None = "stop",
     chat_id: str | None = None,
@@ -556,7 +564,7 @@ async def handle_stream_response(
 
 
 async def process_multimodal_request(
-    handler: Any, request: ChatCompletionRequest, request_id: str | None = None
+    handler: MLXVLMHandler, request: ChatCompletionRequest, request_id: str | None = None
 ) -> Any:
     """Process multimodal-specific requests."""
     if request_id:
@@ -586,7 +594,9 @@ async def process_multimodal_request(
 
 
 async def process_text_request(
-    handler: Any, request: ChatCompletionRequest, request_id: str | None = None
+    handler: MLXLMHandler | MLXVLMHandler,
+    request: ChatCompletionRequest,
+    request_id: str | None = None,
 ) -> Any:
     """Process text-only requests."""
     if request_id:

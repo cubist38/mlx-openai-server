@@ -79,7 +79,7 @@ class AudioProcessor(BaseProcessor):
         """Get maximum file size in bytes."""
         return 500 * 1024 * 1024  # 500 MB limit for audio
 
-    def _process_media_data(self, data: bytes, cached_path: str, **kwargs: Any) -> str:
+    def _process_media_data(self, data: bytes, cached_path: str, **_kwargs: Any) -> str:
         """Process audio data and save to cached path."""
         with Path(cached_path).open("wb") as f:
             f.write(data)

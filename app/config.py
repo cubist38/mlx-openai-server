@@ -73,11 +73,9 @@ class MLXServerConfig:
         # image-edit model types. If missing for those types, set defaults.
         if self.config_name and self.model_type not in ["image-generation", "image-edit"]:
             logger.warning(
-                "Config name parameter '%s' provided but model type is '%s'. "
+                f"Config name parameter '{self.config_name}' provided but model type is '{self.model_type}'. "
                 "Config name is only used with image-generation "
-                "and image-edit models.",
-                self.config_name,
-                self.model_type,
+                "and image-edit models."
             )
         elif self.model_type == "image-generation" and not self.config_name:
             logger.warning(

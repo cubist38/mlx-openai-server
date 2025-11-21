@@ -411,40 +411,18 @@ class MLXVLMHandler:
         Returns
         -------
             list[list[float]]: Embeddings for the input text or images
+
+        Raises
+        ------
+            HTTPException: Embeddings are not supported for VLM models
         """
-        try:
-            # Create a unique request ID
-            image_url = request.image_url
-            # Process the image URL to get a local file path
-            images = []
-            if request.image_url:
-                image_path = await self.image_processor.process_image_url(
-                    image_url, resize=not self.disable_auto_resize
-                )
-                images.append(image_path)
-            request_id = f"embeddings-{uuid.uuid4()}"
-            if isinstance(request.input, str):
-                request.input = [request.input]
-            request_data = {
-                "type": "embeddings",
-                "input": request.input,
-                "model": request.model,
-                "images": images,
-            }
-
-            # Submit to the request queue
-            response = await self.request_queue.submit(request_id, request_data)
-
-        except Exception as e:
-            logger.error(f"Error in embeddings generation: {e!s}")
-            content = create_error_response(
-                f"Failed to generate embeddings: {e!s}",
-                "server_error",
-                HTTPStatus.INTERNAL_SERVER_ERROR,
-            )
-            raise HTTPException(status_code=500, detail=content) from e
-        else:
-            return response
+        # Embeddings are not supported for VLM models
+        content = create_error_response(
+            "Embeddings are not supported for VLM models",
+            "bad_request",
+            HTTPStatus.BAD_REQUEST,
+        )
+        raise HTTPException(status_code=400, detail=content)
 
     def __del__(self) -> None:
         """Cleanup resources on deletion."""
@@ -484,7 +462,9 @@ class MLXVLMHandler:
             logger.error(f"Error during MLXVLMHandler cleanup: {e!s}")
             raise
 
-    async def _process_request(self, request_data: dict[str, Any]) -> str:
+    async def _process_request(
+        self, request_data: dict[str, Any]
+    ) -> str | AsyncGenerator[str, None]:
         """
         Process a multimodal request. This is the worker function for the request queue.
 
@@ -493,15 +473,24 @@ class MLXVLMHandler:
 
         Returns
         -------
-            str: The model's response.
+            str | AsyncGenerator[str, None]: The model's response, either as a complete string or a streaming generator.
         """
         try:
+            # Handle embeddings requests separately if MLX_VLM supports them
+            if request_data.get("type") == "embeddings":
+                # TODO: Implement embeddings logic or raise NotImplementedError
+                raise NotImplementedError("Embeddings not yet supported for VLM models")
+
             # Extract request parameters
             images = request_data.get("images", [])
             audios = request_data.get("audios", [])
             videos = request_data.get("videos", [])
             messages = request_data.get("messages", [])
             stream = request_data.get("stream", False)
+
+            # Audio is not supported for VLM models
+            if audios:
+                raise ValueError("Audio input is not supported for VLM models")
 
             # Remove these keys from model_params
             model_params = request_data.copy()
@@ -514,7 +503,6 @@ class MLXVLMHandler:
             # Call the model
             response = self.model(
                 images=images,
-                audios=audios,
                 videos=videos,
                 messages=messages,
                 stream=stream,

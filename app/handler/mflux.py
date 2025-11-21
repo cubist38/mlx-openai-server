@@ -405,11 +405,11 @@ class MLXFluxHandler:
 
         stats = self.request_queue.get_queue_stats()
         return {
+            "running": stats.get("running", False),
             "queue_size": stats.get("queue_size", 0),
+            "max_queue_size": stats.get("max_queue_size", 0),
             "active_requests": stats.get("active_requests", 0),
-            "completed_requests": stats.get("completed_requests", 0),
-            "failed_requests": stats.get("failed_requests", 0),
-            "average_processing_time": stats.get("average_processing_time", 0),
+            "max_concurrency": stats.get("max_concurrency", 0),
         }
 
     async def cleanup(self) -> None:

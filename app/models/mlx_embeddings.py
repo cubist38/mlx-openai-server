@@ -67,10 +67,6 @@ class MLX_Embeddings:
             # Return a copy to ensure the result persists after cleanup
             return mx.array(outputs)
 
-        except Exception:
-            # Clean up on error
-            self._cleanup_arrays(inputs, outputs)
-            raise
         finally:
             # Always clean up intermediate arrays
             self._cleanup_arrays(inputs, outputs)
@@ -87,12 +83,8 @@ class MLX_Embeddings:
                     elif hasattr(array, "nbytes"):
                         # Let the caller drop its reference; nothing to mutate here.
                         pass
-                except Exception as e:
+                except (KeyError, AttributeError, TypeError) as e:
                     logger.warning(f"Error during embeddings array cleanup: {e!s}")
-
-        # Clear MLX cache and force garbage collection
-        mx.clear_cache()
-        gc.collect()
 
     def __call__(self, texts: list[str], max_length: int = 512) -> list[list[float]]:
         """
@@ -106,21 +98,17 @@ class MLX_Embeddings:
         -------
             List of embedding vectors as float lists
         """
+        embeddings = None
         try:
             embeddings = self._get_embeddings(texts, max_length)
             # Convert to Python list and return
-            result = embeddings.tolist()
-            # Clean up the embeddings array
-            del embeddings
+            return embeddings.tolist()
+        finally:
+            # Clean up the embeddings array and global cache
+            if embeddings is not None:
+                del embeddings
             mx.clear_cache()
             gc.collect()
-        except Exception:
-            # Clean up on error
-            mx.clear_cache()
-            gc.collect()
-            raise
-        else:
-            return result
 
     def cleanup(self) -> None:
         """Explicitly cleanup resources."""
