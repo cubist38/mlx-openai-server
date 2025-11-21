@@ -8,6 +8,7 @@ streaming, and caching capabilities.
 from collections.abc import Generator
 import gc
 import os
+from typing import Any
 
 import mlx.core as mx
 from mlx_lm.generate import generate, stream_generate
@@ -39,9 +40,10 @@ class MLX_LM:
         self,
         model_path: str,
         context_length: int = 32768,
+        *,
         trust_remote_code: bool = False,
         chat_template_file: str = None,
-    ):
+    ) -> None:
         try:
             self.model, self.tokenizer = load(
                 model_path, lazy=False, tokenizer_config={"trust_remote_code": trust_remote_code}
@@ -93,7 +95,7 @@ class MLX_LM:
 
         return all_tokenized
 
-    def _preprocess_prompt(self, prompt: str) -> list[int]:
+    def _preprocess_prompt(self, prompt: str) -> mx.array:
         """Tokenize a single prompt efficiently."""
         add_special_tokens = self.bos_token is None or not prompt.startswith(self.bos_token)
         tokens = self.tokenizer.encode(prompt, add_special_tokens=add_special_tokens)
@@ -112,7 +114,7 @@ class MLX_LM:
 
     def get_embeddings(
         self, prompts: list[str], batch_size: int = DEFAULT_BATCH_SIZE, normalize: bool = True
-    ) -> list[float]:
+    ) -> list[list[float]]:
         """
         Get embeddings for a list of prompts efficiently.
 
@@ -122,7 +124,7 @@ class MLX_LM:
 
         Returns
         -------
-            List of embeddings as float arrays
+            List of embeddings as lists of floats (one embedding per input prompt)
         """
         # Process in batches to optimize memory usage
         all_embeddings = []
@@ -160,8 +162,8 @@ class MLX_LM:
         return all_embeddings
 
     def __call__(
-        self, messages: list[dict[str, str]], stream: bool = False, **kwargs
-    ) -> str | Generator[str, None, None]:
+        self, messages: list[dict[str, str]], stream: bool = False, **kwargs: Any
+    ) -> tuple[str | Generator[str, None, None], int]:
         """
         Generate text response from the model.
 

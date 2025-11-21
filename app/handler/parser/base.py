@@ -20,7 +20,7 @@ class BaseThinkingParser:
     enclosed in opening and closing tags from language model responses.
     """
 
-    def __init__(self, thinking_open: str, thinking_close: str):
+    def __init__(self, thinking_open: str, thinking_close: str) -> None:
         """
         Initialize the thinking parser with opening and closing tags.
 
@@ -124,12 +124,19 @@ class BaseThinkingParser:
                 # Check if thinking_close is also in this chunk (both tags in same chunk)
                 if self.thinking_close in after_open:
                     close_idx = after_open.find(self.thinking_close)
-                    self.is_thinking = False
-                    # Return content before open tag + content after close tag
+                    reasoning = after_open[:close_idx]
                     after_close = after_open[close_idx + len(self.thinking_close) :]
-                    return (before_open + after_close) if (
-                        before_open + after_close
-                    ) else None, True
+                    self.is_thinking = False
+
+                    if reasoning:
+                        result = {"reasoning_content": reasoning}
+                        if before_open or after_close:
+                            result["content"] = before_open + after_close
+                        return result, True
+
+                    # No reasoning content, just return outer text if any
+                    outer = before_open + after_close
+                    return outer if outer else None, True
 
                 # Only opening tag found, return content before it (if any) and reasoning content after
                 # If there's content after the opening tag, return it as reasoning_content
@@ -180,7 +187,7 @@ class BaseToolParser:
     enclosed in opening and closing tags from language model responses.
     """
 
-    def __init__(self, tool_open: str, tool_close: str):
+    def __init__(self, tool_open: str, tool_close: str) -> None:
         """
         Initialize the tool parser with opening and closing tags.
 
@@ -294,7 +301,7 @@ class BaseToolParser:
             except json.JSONDecodeError:
                 logger.warning("Error parsing tool call: {}", tool_content)
                 # Continue processing remaining content after error
-                remaining_parts.append(content[pos:].strip())
+                remaining_parts.append(content[end_tool:].strip())
                 break
 
             # Move position past the closing tag
@@ -387,8 +394,6 @@ class BaseMessageConverter:
 
     def _convert_single_message(self, message: dict[str, Any]) -> dict[str, Any]:
         """Convert a single message."""
-        if not isinstance(message, dict):
-            return message
 
         # Convert function.arguments from string to object in tool_calls
         tool_calls = message.get("tool_calls")

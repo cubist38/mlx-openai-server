@@ -6,9 +6,9 @@ from http import HTTPStatus
 import json
 import random
 import time
-from typing import Annotated, Any
+from typing import Annotated, Any, Literal
 
-from fastapi import APIRouter, Form, Request
+from fastapi import APIRouter, Form, HTTPException, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 from loguru import logger
 import numpy as np
@@ -50,7 +50,7 @@ router = APIRouter()
 
 
 @router.get("/health")
-async def health(raw_request: Request):
+async def health(raw_request: Request) -> Any:
     """
     Health check endpoint - verifies handler initialization status.
 
@@ -170,6 +170,8 @@ async def chat_completions(request: ChatCompletionRequest, raw_request: Request)
         if isinstance(handler, MLXVLMHandler):
             return await process_multimodal_request(handler, request, request_id)
         return await process_text_request(handler, request, request_id)
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Error processing chat completion request: {e!s}", exc_info=True)
         return JSONResponse(
@@ -192,6 +194,8 @@ async def embeddings(request: EmbeddingRequest, raw_request: Request):
     try:
         embeddings = await handler.generate_embeddings_response(request)
         return create_response_embeddings(embeddings, request.model, request.encoding_format)
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Error processing embedding request: {e!s}", exc_info=True)
         return JSONResponse(
@@ -224,6 +228,8 @@ async def image_generations(request: ImageGenerationRequest, raw_request: Reques
 
     try:
         image_response = await handler.generate_image(request)
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Error processing image generation request: {e!s}", exc_info=True)
         return JSONResponse(
@@ -257,6 +263,8 @@ async def create_image_edit(request: Annotated[ImageEditRequest, Form()], raw_re
         )
     try:
         image_response = await handler.edit_image(request)
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Error processing image edit request: {e!s}", exc_info=True)
         return JSONResponse(
@@ -285,9 +293,7 @@ async def create_audio_transcriptions(
             # procoess the request before sending to the handler
             request_data = await handler.prepare_transcription_request(request)
             return StreamingResponse(
-                handler.generate_transcription_stream_from_data(
-                    request_data, request.response_format
-                ),
+                handler.generate_transcription_stream_from_data(request_data),
                 media_type="text/event-stream",
                 headers={
                     "Cache-Control": "no-cache",
@@ -296,6 +302,8 @@ async def create_audio_transcriptions(
                 },
             )
         transcription_response = await handler.generate_transcription_response(request)
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Error processing transcription request: {e!s}", exc_info=True)
         return JSONResponse(
@@ -306,7 +314,7 @@ async def create_audio_transcriptions(
 
 
 def create_response_embeddings(
-    embeddings: list[list[float]], model: str, encoding_format: str = "float"
+    embeddings: list[list[float]], model: str, encoding_format: Literal["float", "base64"] = "float"
 ) -> EmbeddingResponse:
     """Create embedding response data from embeddings list.
 
@@ -316,7 +324,7 @@ def create_response_embeddings(
         List of embedding vectors.
     model : str
         Model name used for embeddings.
-    encoding_format : str, optional
+    encoding_format : Literal["float", "base64"], optional
         Encoding format for embeddings, by default "float".
 
     Returns
@@ -499,6 +507,10 @@ async def handle_stream_response(
                 )
                 yield _yield_sse_chunk(error_response)
 
+    except HTTPException as e:
+        logger.error(f"HTTPException in stream wrapper: {e!s}", exc_info=True)
+        detail = e.detail if isinstance(e.detail, dict) else {"message": str(e)}
+        error_response = detail
     except Exception as e:
         logger.error(f"Error in stream wrapper: {e!s}", exc_info=True)
         error_response = create_error_response(

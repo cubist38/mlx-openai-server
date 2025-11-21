@@ -37,6 +37,7 @@ class MLXVLMHandler:
     def __init__(
         self,
         model_path: str,
+        *,
         context_length: int = 32768,
         max_workers: int = 4,
         max_concurrency: int = 1,
@@ -45,7 +46,7 @@ class MLXVLMHandler:
         tool_call_parser: str | None = None,
         reasoning_parser: str | None = None,
         trust_remote_code: bool = False,
-    ):
+    ) -> None:
         """
         Initialize the handler with the specified model path.
 
@@ -120,7 +121,7 @@ class MLXVLMHandler:
             manual_tool_parser=self.tool_call_parser,
         )
 
-    async def initialize(self, queue_config: dict[str, Any] | None = None):
+    async def initialize(self, queue_config: dict[str, Any] | None = None) -> None:
         """Initialize the handler and start the request queue."""
         if not queue_config:
             queue_config = {"max_concurrency": 1, "timeout": 300, "queue_size": 100}
@@ -158,12 +159,14 @@ class MLXVLMHandler:
             logger.warning("Could not find tokenizer in processor to count tokens")
         except Exception as e:
             logger.warning(f"Failed to count tokens: {e!s}")
-        else:
-            return 0
+        return 0
 
     def _count_message_tokens(self, messages: list[dict[str, Any]], **kwargs) -> int:
         """
         Count the number of tokens in a list of messages after applying chat template.
+
+        Note: For VLMs, this provides an approximation that may not include image/audio/video
+        tokens accurately, as token counting depends on the full model pipeline and media processing.
 
         Args:
             messages: List of messages to count tokens for.
@@ -171,7 +174,7 @@ class MLXVLMHandler:
 
         Returns
         -------
-            int: The number of prompt tokens.
+            int: The approximate number of prompt tokens (text-only for VLMs).
         """
         try:
             # We need to handle the fact that messages might contain images/audio which apply_chat_template might not handle directly
@@ -251,10 +254,15 @@ class MLXVLMHandler:
 
             # Process and yield each chunk asynchronously
             for chunk in response_generator:
-                if not chunk or not chunk.text:
+                # Handle both string chunks and object chunks with .text attribute
+                if isinstance(chunk, str):
+                    text = chunk
+                elif hasattr(chunk, "text") and chunk.text:
+                    text = chunk.text
+                else:
+                    # Skip invalid/empty chunks
                     continue
 
-                text = chunk.text
                 completion_chunks.append(text)
                 if is_first_chunk:
                     if thinking_parser and ParserFactory.needs_redacted_reasoning_prefix(
@@ -354,7 +362,7 @@ class MLXVLMHandler:
             raise HTTPException(status_code=500, detail=content) from e
         else:
             # Count completion tokens
-            completion_tokens = self._count_tokens(response.text)
+            completion_tokens = self._count_tokens(response)
             total_tokens = prompt_tokens + completion_tokens
 
             # Create usage info
@@ -368,10 +376,10 @@ class MLXVLMHandler:
             thinking_parser, tool_parser = self._create_parsers()
 
             if not thinking_parser and not tool_parser:
-                return {"response": response.text, "usage": usage}
+                return {"response": response, "usage": usage}
 
             parsed_response = {"reasoning_content": None, "tool_calls": None, "content": None}
-            response_text = response.text
+            response_text = response
 
             if thinking_parser and ParserFactory.needs_redacted_reasoning_prefix(
                 self.reasoning_parser
@@ -405,10 +413,10 @@ class MLXVLMHandler:
             # Process the image URL to get a local file path
             images = []
             if request.image_url:
-                image_result = await self.image_processor.process_image_url(
+                image_path = await self.image_processor.process_image_url(
                     image_url, resize=not self.disable_auto_resize
                 )
-                images.append(image_result["path"])
+                images.append(image_path)
             request_id = f"embeddings-{uuid.uuid4()}"
             if isinstance(request.input, str):
                 request.input = [request.input]
@@ -433,11 +441,11 @@ class MLXVLMHandler:
         else:
             return response
 
-    def __del__(self):
+    def __del__(self) -> None:
         """Cleanup resources on deletion."""
         # Removed async cleanup from __del__; use close() instead
 
-    async def close(self):
+    async def close(self) -> None:
         """Explicitly cleanup resources asynchronously."""
         if hasattr(self, "image_processor"):
             await self.image_processor.cleanup()
@@ -446,7 +454,7 @@ class MLXVLMHandler:
         if hasattr(self, "video_processor"):
             await self.video_processor.cleanup()
 
-    async def cleanup(self):
+    async def cleanup(self) -> None:
         """
         Cleanup resources and stop the request queue before shutdown.
 
@@ -534,10 +542,12 @@ class MLXVLMHandler:
 
     async def _reformat_multimodal_content_part(
         self, content_part: ChatCompletionContentPart
-    ) -> tuple[dict[str, Any], bool]:
+    ) -> dict[str, Any]:
         """Reformat a multimodal message content part into a dictionary."""
         if isinstance(content_part, ChatCompletionContentPartImage):
             image_url = content_part.image_url.url
+            # Validate base64 data URLs before processing
+            self._validate_image_url(image_url)
             image_path = await self.image_processor.process_image_url(
                 image_url, resize=not self.disable_auto_resize
             )
@@ -545,11 +555,14 @@ class MLXVLMHandler:
 
         if isinstance(content_part, ChatCompletionContentPartInputAudio):
             audio_url = content_part.input_audio.data
+            # Validate base64 data URLs before processing
+            self._validate_audio_data(audio_url)
             audio_path = await self.audio_processor.process_audio_url(audio_url)
             return {"content_part": {"type": "audio", "audio": audio_path}, "path": audio_path}
 
         if isinstance(content_part, ChatCompletionContentPartVideo):
             video_url = content_part.video_url.url
+            # Note: Video validation could be added here if needed
             video_path = await self.video_processor.process_video_url(video_url)
             return {
                 "content_part": {
@@ -561,9 +574,7 @@ class MLXVLMHandler:
 
         return {"content_part": {"type": "text", "text": content_part.text}}
 
-    async def _prepare_multimodal_request(
-        self, request: ChatCompletionRequest
-    ) -> tuple[list[dict[str, Any]], list[str], list[str], dict[str, Any]]:
+    async def _prepare_multimodal_request(self, request: ChatCompletionRequest) -> dict[str, Any]:
         """
         Prepare the multimodal request by processing messages with text, images, and audio.
 
@@ -578,12 +589,12 @@ class MLXVLMHandler:
 
         Returns
         -------
-            Tuple[list[dict[str, Any]], list[str], list[str], dict[str, Any]]: A tuple containing:
-                - List of processed chat messages
-                - List of processed image paths
-                - List of processed audio paths
-                - List of processed video paths
-                - Dictionary of model parameters
+            dict[str, Any]: A dictionary containing processed request data with keys:
+                - messages: List of processed chat messages
+                - images: List of processed image paths
+                - audios: List of processed audio paths
+                - videos: List of processed video paths
+                - temperature, top_p, etc.: Model parameters
         """
         chat_messages = []
         images = []

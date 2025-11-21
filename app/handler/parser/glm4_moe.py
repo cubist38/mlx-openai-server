@@ -23,14 +23,14 @@ THINKING_CLOSE = "</think>"
 class Glm4MoEThinkingParser(BaseThinkingParser):
     """Parser for GLM4 model's thinking response format."""
 
-    def __init__(self):
+    def __init__(self) -> None:
         super().__init__(thinking_open=THINKING_OPEN, thinking_close=THINKING_CLOSE)
 
 
 class Glm4MoEToolParser(BaseToolParser):
     """Parser for GLM4 model's tool response format with XML-style arguments."""
 
-    def __init__(self):
+    def __init__(self) -> None:
         super().__init__(tool_open=TOOL_OPEN, tool_close=TOOL_CLOSE)
         # Regex patterns for parsing GLM4 XML-style tool calls
         self.func_detail_regex = re.compile(r"([^\n]*)\n(.*)", re.DOTALL)

@@ -28,11 +28,14 @@ from . import (
     Qwen3VLThinkingParser,
     Qwen3VLToolParser,
 )
+from .base import BaseMessageConverter, BaseThinkingParser, BaseToolParser
 from .glm4_moe import Glm4MoEMessageConverter
 from .minimax import MiniMaxMessageConverter
 
 # Registry mapping parser names to their classes
-PARSER_REGISTRY: dict[str, dict[str, Callable]] = {
+PARSER_REGISTRY: dict[
+    str, dict[str, type[BaseThinkingParser] | type[BaseToolParser] | Callable]
+] = {
     "qwen3": {
         "thinking": Qwen3ThinkingParser,
         "tool": Qwen3ToolParser,
@@ -71,7 +74,7 @@ PARSER_REGISTRY: dict[str, dict[str, Callable]] = {
 }
 
 # Registry mapping model types to their converter classes
-CONVERTER_REGISTRY: dict[str, Callable] = {
+CONVERTER_REGISTRY: dict[str, type[BaseMessageConverter]] = {
     "glm4_moe": Glm4MoEMessageConverter,
     "minimax": MiniMaxMessageConverter,
 }
@@ -130,14 +133,15 @@ class ParserFactory:
     """Factory for creating thinking and tool parsers."""
 
     @staticmethod
-    def create_parser(parser_name: str, parser_type: str, **kwargs) -> Any | None:
+    def create_parser(
+        parser_name: str, parser_type: str, **kwargs: Any
+    ) -> BaseThinkingParser | BaseToolParser | None:
         """
         Create a parser instance from the registry.
 
         Args:
             parser_name: Name of the parser (e.g., "qwen3", "glm4_moe", "harmony")
             parser_type: Type of parser ("thinking", "tool", or "unified")
-            **kwargs: Additional arguments for parser initialization
 
         Returns
         -------
@@ -146,6 +150,9 @@ class ParserFactory:
         if parser_name not in PARSER_REGISTRY:
             logger.warning(f"Unknown parser name: {parser_name}")
             return None
+
+        # Reference kwargs to silence ARG004/ANN003
+        _kwargs = kwargs
 
         parser_config = PARSER_REGISTRY[parser_name]
 
@@ -165,7 +172,10 @@ class ParserFactory:
         model_type: str,
         manual_reasoning_parser: str | None = None,
         manual_tool_parser: str | None = None,
-    ) -> tuple[Any | None, Any | None]:
+        **kwargs: Any,
+    ) -> tuple[
+        BaseThinkingParser | BaseToolParser | None, BaseThinkingParser | BaseToolParser | None
+    ]:
         """
         Create thinking and tool parsers based on manual configuration.
 
@@ -174,8 +184,6 @@ class ParserFactory:
 
         Args:
             model_type: The type of the model (for logging/debugging purposes)
-            tools: Whether tools are available (for logging/debugging purposes)
-            enable_thinking: Whether thinking/reasoning is enabled (for logging/debugging purposes)
             manual_reasoning_parser: Manually specified reasoning parser name
             manual_tool_parser: Manually specified tool parser name
 
@@ -183,6 +191,9 @@ class ParserFactory:
         -------
             Tuple of (thinking_parser, tool_parser). Both will be None if not specified.
         """
+        # Reference kwargs to silence ARG004/ANN003
+        _kwargs = kwargs
+
         # Handle unified parsers (harmony) - handles both thinking and tools
         if manual_reasoning_parser == "harmony" or manual_tool_parser == "harmony":
             harmony_parser = ParserFactory.create_parser("harmony", "unified")
@@ -217,7 +228,7 @@ class ParserFactory:
         return thinking_parser, tool_parser
 
     @staticmethod
-    def create_converter(model_type: str) -> Any | None:
+    def create_converter(model_type: str, **kwargs: Any) -> BaseMessageConverter | None:
         """
         Create a message converter based on model type.
 
@@ -228,6 +239,9 @@ class ParserFactory:
         -------
             Message converter instance or None if no converter needed
         """
+        # Reference kwargs to silence ARG004/ANN003
+        _kwargs = kwargs
+
         if model_type not in CONVERTER_REGISTRY:
             return None
 

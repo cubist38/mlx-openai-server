@@ -23,14 +23,14 @@ THINKING_CLOSE = "</think>"
 class MinimaxThinkingParser(BaseThinkingParser):
     """Parser for MiniMax model's thinking response format."""
 
-    def __init__(self):
+    def __init__(self) -> None:
         super().__init__(thinking_open=THINKING_OPEN, thinking_close=THINKING_CLOSE)
 
 
 class MinimaxToolParser(BaseToolParser):
     """Parser for MiniMax model's tool response format with XML-style arguments."""
 
-    def __init__(self):
+    def __init__(self) -> None:
         super().__init__(tool_open=TOOL_OPEN, tool_close=TOOL_CLOSE)
         # Regex patterns for parsing MiniMax tool calls
         self.func_detail_regex = re.compile(r'<invoke name="([^"]+)"\s*>(.*)', re.DOTALL)

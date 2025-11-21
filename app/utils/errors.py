@@ -9,7 +9,7 @@ def create_error_response(
     status_code: int | HTTPStatus = HTTPStatus.INTERNAL_SERVER_ERROR,
     param: str | None = None,
     code: str | None = None,
-):
+) -> dict[str, object]:
     """Create a standardized error response dictionary."""
     return {
         "error": {
