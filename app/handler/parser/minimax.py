@@ -1,6 +1,15 @@
+"""
+Parsers for MiniMax model response formats.
+
+This module provides specialized parsers for MiniMax model's tool calls and
+thinking traces, handling MiniMax-specific JSON parsing and message conversion.
+"""
+
 import json
 import re
 from typing import Any
+
+from loguru import logger
 
 from .base import BaseMessageConverter, BaseThinkingParser, BaseToolParser
 
@@ -50,7 +59,7 @@ class MinimaxToolParser(BaseToolParser):
         return value
 
     def _parse_tool_content(self, tool_content: str) -> dict[str, Any] | None:
-        """Overrides the base method to parse MiniMax's specific tool call format."""
+        """Override the base method to parse MiniMax's specific tool call format."""
         try:
             # Extract function name and arguments section
             detail_match = self.func_detail_regex.search(tool_content)
@@ -70,10 +79,14 @@ class MinimaxToolParser(BaseToolParser):
                 arguments[arg_key] = arg_value
 
             # Build tool call object
-            return {"name": func_name, "arguments": arguments}
+
         except Exception as e:
-            print(f"Error parsing MiniMax tool call content: {tool_content}, Error: {e}")
+            logger.warning(
+                "Error parsing MiniMax tool call content: {}, Error: {}", tool_content, e
+            )
             return None
+        else:
+            return {"name": func_name, "arguments": arguments}
 
 
 class MiniMaxMessageConverter(BaseMessageConverter):

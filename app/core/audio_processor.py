@@ -15,7 +15,7 @@ class AudioProcessor(BaseProcessor):
         # Supported audio formats
         self._supported_formats = {".mp3", ".wav"}
 
-    def _get_media_format(self, media_url: str, data: bytes = None) -> str:
+    def _get_media_format(self, media_url: str, data: bytes | None = None) -> str:
         """Determine audio format from URL or data."""
         if media_url.startswith("data:"):
             # Extract format from data URL

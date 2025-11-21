@@ -1,6 +1,14 @@
+"""
+MLX vision-language model wrapper.
+
+This module provides a wrapper class for MLX vision-language models with text
+generation, streaming, and multimodal capabilities.
+"""
+
 from collections.abc import Generator
 import os
 
+from loguru import logger
 import mlx.core as mx
 from mlx_vlm import generate, load, stream_generate
 from mlx_vlm.models.cache import make_prompt_cache
@@ -43,12 +51,20 @@ class MLX_VLM:
             self.max_kv_size = context_length
             self.config = self.model.config
         except Exception as e:
-            raise ValueError(f"Error loading model: {e!s}")
+            raise ValueError(f"Error loading model: {e!s}") from e
 
     def _is_video_model(self):
         return hasattr(self.config, "video_token_id") or hasattr(self.config, "video_token_index")
 
     def get_model_type(self):
+        """
+        Get the model type identifier.
+
+        Returns
+        -------
+        str
+            The model type string.
+        """
         return self.config.model_type
 
     def __call__(
@@ -71,7 +87,7 @@ class MLX_VLM:
 
         Returns
         -------
-            Union[str, Generator[str, None, None]]:
+            str | Generator[str, None, None]:
                 - If stream=False: Complete response as string
                 - If stream=True: Generator yielding response chunks
         """
@@ -127,7 +143,7 @@ if __name__ == "__main__":
     model_path = "mlx-community/GLM-4.5V-4bit"
 
     model = MLX_VLM(model_path)
-    print("MODEL TYPE: ", model.get_model_type())
+    logger.info("MODEL TYPE: {}", model.get_model_type())
 
     tools = [
         {
@@ -167,4 +183,4 @@ if __name__ == "__main__":
         }
     ]
     response = model(messages, stream=False, **kwargs)
-    print(response)
+    logger.info("{}", response)

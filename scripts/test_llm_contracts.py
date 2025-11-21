@@ -6,20 +6,25 @@ from __future__ import annotations
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 import json
+import logging
 import os
 import sys
 from typing import Literal
 
+# Set up logging
+logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
+logger = logging.getLogger(__name__)
+
 try:  # Dependency guard keeps script self-explanatory when deps are missing.
     import httpx
 except ImportError as exc:  # pragma: no cover - runtime dependency defense
-    print("✗ Missing required dependency: httpx", file=sys.stderr)
+    logger.error("✗ Missing required dependency: httpx")
     raise SystemExit(1) from exc
 
 try:
     from pydantic import BaseModel, ConfigDict, Field, ValidationError
 except ImportError as exc:  # pragma: no cover
-    print("✗ Missing required dependency: pydantic", file=sys.stderr)
+    logger.error("✗ Missing required dependency: pydantic")
     raise SystemExit(1) from exc
 
 
@@ -132,11 +137,29 @@ class ChatCompletionChunk(BaseModel):
 
 
 def env_base_url() -> str:
+    """
+    Get the base URL for the MLX server from environment variables.
+
+    Returns
+    -------
+    str
+        The base URL with trailing slash removed.
+    """
     raw = os.getenv("MLX_URL", "http://127.0.0.1:8000")
     return raw.rstrip("/")
 
 
 def build_headers() -> dict[str, str]:
+    """
+    Build HTTP headers for API requests.
+
+    Uses API key from OPENAI_API_KEY or MLX_API_KEY environment variables.
+
+    Returns
+    -------
+    dict[str, str]
+        Dictionary containing Authorization header if API key is available.
+    """
     api_key = os.getenv("OPENAI_API_KEY") or os.getenv("MLX_API_KEY")
     if api_key:
         return {"Authorization": f"Bearer {api_key}"}
@@ -194,7 +217,6 @@ class LLMContractTester:
             self.model_id = model_list.data[0].id
 
         # Verify metadata presence and required fields (Phase 02)
-        first_model = model_list.data[0]
         raw_model = payload["data"][0]  # Get raw dict for metadata check
         if "metadata" in raw_model:
             metadata = raw_model["metadata"]
@@ -297,7 +319,7 @@ class LLMContractTester:
             ok, message = self.run_single(test)
             indicator = "✓" if ok else "✗"
             detail = f" - {message}" if message else ""
-            print(f"{indicator} {test.name}{detail}")
+            logger.info("%s %s%s", indicator, test.name, detail)
             all_passed &= ok
         return all_passed
 
@@ -305,20 +327,21 @@ class LLMContractTester:
         """Run a single test."""
         try:
             detail = test.handler(self)
-            return True, detail
         except ValidationError as exc:
             return False, f"schema validation failed: {exc.errors()[:2]}"
         except (httpx.HTTPError, AssertionError, ValueError) as exc:
             return False, str(exc)
         except Exception as exc:  # pragma: no cover - safety net
             return False, f"unexpected error: {exc}"
+        else:
+            return True, detail
 
 
 # --------------------------------------------------------------------------------------
 
 
 def main() -> None:
-    """Main entry point."""
+    """Run the LLM contract tests."""
     base_url = env_base_url()
     tester = LLMContractTester(base_url)
     try:

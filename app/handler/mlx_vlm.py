@@ -1,3 +1,5 @@
+"""MLX vision-language model handler for multimodal chat completions."""
+
 import asyncio
 import base64
 import gc
@@ -28,6 +30,7 @@ from .parser import ParserFactory
 class MLXVLMHandler:
     """
     Handler class for making requests to the underlying MLX multimodal model service.
+
     Provides caching, concurrent image processing, audio processing, and robust error handling.
     """
 
@@ -39,8 +42,8 @@ class MLXVLMHandler:
         max_concurrency: int = 1,
         disable_auto_resize: bool = False,
         enable_auto_tool_choice: bool = False,
-        tool_call_parser: str = None,
-        reasoning_parser: str = None,
+        tool_call_parser: str | None = None,
+        reasoning_parser: str | None = None,
         trust_remote_code: bool = False,
     ):
         """
@@ -100,6 +103,7 @@ class MLXVLMHandler:
     def _create_parsers(self) -> tuple[Any | None, Any | None]:
         """
         Create appropriate parsers based on model type and available tools.
+
         Uses ParserFactory for centralized parser creation logic.
 
         Returns
@@ -148,9 +152,9 @@ class MLXVLMHandler:
                 tokens = self.model.processor.encode(text, add_special_tokens=False)
                 return len(tokens)
             logger.warning("Could not find tokenizer in processor to count tokens")
-            return 0
         except Exception as e:
             logger.warning(f"Failed to count tokens: {e!s}")
+        else:
             return 0
 
     def _count_message_tokens(self, messages: list[dict[str, Any]], **kwargs) -> int:
@@ -297,7 +301,7 @@ class MLXVLMHandler:
                 "rate_limit_exceeded",
                 HTTPStatus.TOO_MANY_REQUESTS,
             )
-            raise HTTPException(status_code=429, detail=content)
+            raise HTTPException(status_code=429, detail=content) from None
 
         except Exception as e:
             logger.error(f"Error in multimodal stream generation for request {request_id}: {e!s}")
@@ -306,11 +310,12 @@ class MLXVLMHandler:
                 "server_error",
                 HTTPStatus.INTERNAL_SERVER_ERROR,
             )
-            raise HTTPException(status_code=500, detail=content)
+            raise HTTPException(status_code=500, detail=content) from e
 
     async def generate_multimodal_response(self, request: ChatCompletionRequest):
         """
         Generate a complete response for multimodal chat completion requests.
+
         Uses the request queue for handling concurrent requests.
 
         Args:
@@ -327,7 +332,23 @@ class MLXVLMHandler:
             request_dict = await self._prepare_multimodal_request(request)
 
             response, prompt_tokens = await self.request_queue.submit(request_id, request_dict)
-
+        except asyncio.QueueFull:
+            logger.error("Too many requests. Service is at capacity.")
+            content = create_error_response(
+                "Too many requests. Service is at capacity.",
+                "rate_limit_exceeded",
+                HTTPStatus.TOO_MANY_REQUESTS,
+            )
+            raise HTTPException(status_code=429, detail=content) from None
+        except Exception as e:
+            logger.error(f"Error in multimodal response generation: {e!s}")
+            content = create_error_response(
+                f"Failed to generate multimodal response: {e!s}",
+                "server_error",
+                HTTPStatus.INTERNAL_SERVER_ERROR,
+            )
+            raise HTTPException(status_code=500, detail=content) from e
+        else:
             # Count completion tokens
             completion_tokens = self._count_tokens(response.text)
             total_tokens = prompt_tokens + completion_tokens
@@ -363,23 +384,6 @@ class MLXVLMHandler:
 
             return {"response": parsed_response, "usage": usage}
 
-        except asyncio.QueueFull:
-            logger.error("Too many requests. Service is at capacity.")
-            content = create_error_response(
-                "Too many requests. Service is at capacity.",
-                "rate_limit_exceeded",
-                HTTPStatus.TOO_MANY_REQUESTS,
-            )
-            raise HTTPException(status_code=429, detail=content)
-        except Exception as e:
-            logger.error(f"Error in multimodal response generation: {e!s}")
-            content = create_error_response(
-                f"Failed to generate multimodal response: {e!s}",
-                "server_error",
-                HTTPStatus.INTERNAL_SERVER_ERROR,
-            )
-            raise HTTPException(status_code=500, detail=content)
-
     async def generate_embeddings_response(self, request: EmbeddingRequest):
         """
         Generate embeddings for a given text input.
@@ -414,8 +418,6 @@ class MLXVLMHandler:
             # Submit to the request queue
             response = await self.request_queue.submit(request_id, request_data)
 
-            return response
-
         except Exception as e:
             logger.error(f"Error in embeddings generation: {e!s}")
             content = create_error_response(
@@ -423,7 +425,9 @@ class MLXVLMHandler:
                 "server_error",
                 HTTPStatus.INTERNAL_SERVER_ERROR,
             )
-            raise HTTPException(status_code=500, detail=content)
+            raise HTTPException(status_code=500, detail=content) from e
+        else:
+            return response
 
     def __del__(self):
         """Cleanup resources on deletion."""
@@ -501,13 +505,14 @@ class MLXVLMHandler:
             )
             # Force garbage collection after model inference
             gc.collect()
-            return response
 
         except Exception as e:
             logger.error(f"Error processing multimodal request: {e!s}")
             # Clean up on error
             gc.collect()
             raise
+        else:
+            return response
 
     async def get_queue_stats(self) -> dict[str, Any]:
         """
@@ -645,7 +650,6 @@ class MLXVLMHandler:
                 elif tool_choice:
                     logger.warning("Tool choice has not supported yet, will be ignored.")
                 request_dict["chat_template_kwargs"]["tools"] = tools
-            return request_dict
 
         except HTTPException:
             raise
@@ -654,7 +658,9 @@ class MLXVLMHandler:
             content = create_error_response(
                 f"Failed to process request: {e!s}", "bad_request", HTTPStatus.BAD_REQUEST
             )
-            raise HTTPException(status_code=400, detail=content)
+            raise HTTPException(status_code=400, detail=content) from e
+        else:
+            return request_dict
 
     def _validate_image_url(self, url: str) -> None:
         """
@@ -684,7 +690,7 @@ class MLXVLMHandler:
                 content = create_error_response(
                     f"Invalid base64 image: {e!s}", "invalid_request_error", HTTPStatus.BAD_REQUEST
                 )
-                raise HTTPException(status_code=400, detail=content)
+                raise HTTPException(status_code=400, detail=content) from e
 
     def _validate_audio_data(self, url: str) -> None:
         """
@@ -714,4 +720,4 @@ class MLXVLMHandler:
                 content = create_error_response(
                     f"Invalid base64 audio: {e!s}", "invalid_request_error", HTTPStatus.BAD_REQUEST
                 )
-                raise HTTPException(status_code=400, detail=content)
+                raise HTTPException(status_code=400, detail=content) from e

@@ -1,10 +1,15 @@
+"""
+Parsers for Harmony model response formats.
+
+This module provides specialized parsers for Harmony model's structured outputs,
+using the openai-harmony library for encoding and parsing.
+"""
+
 from enum import Enum
-import logging
 from typing import Any
 
+from loguru import logger
 from openai_harmony import HarmonyEncodingName, Role, StreamableParser, load_harmony_encoding
-
-logger = logging.getLogger(__name__)
 
 
 class ChannelType(Enum):
@@ -39,7 +44,7 @@ class HarmonyParser:
             self.enc = load_harmony_encoding(HarmonyEncodingName.HARMONY_GPT_OSS)
             self.parser = StreamableParser(self.enc, role=Role.ASSISTANT)
         except Exception as e:
-            logger.error(f"Failed to initialize harmony encoding: {e}")
+            logger.error("Failed to initialize harmony encoding: {}", e)
             raise
 
         # Configuration
@@ -141,7 +146,7 @@ class HarmonyParser:
                         self._accumulated_content[ChannelType.FINAL.value].append(content)
 
                 except Exception as token_error:
-                    logger.warning(f"Error processing token {text_token}: {token_error}")
+                    logger.warning("Error processing token {}: {}", text_token, token_error)
                     continue
 
             # Return appropriate response based on current channel
@@ -156,7 +161,7 @@ class HarmonyParser:
             )
 
         except Exception as e:
-            logger.error(f"Error in parse_stream: {e}")
+            logger.error("Error in parse_stream: {}", e)
             return None, self.end_stream
 
     def _build_response(
@@ -202,7 +207,7 @@ class HarmonyParser:
                 if contents:
                     return "".join(contents), self.end_stream
         except Exception as e:
-            logger.error(f"Error building response for channel {current_channel}: {e}")
+            logger.error("Error building response for channel {}: {}", current_channel, e)
 
         return None, self.end_stream
 
@@ -262,7 +267,7 @@ class HarmonyParser:
             clean_text = text
             if self.end_tool_chunk in text:
                 clean_text = text.split(self.end_tool_chunk)[0]
-                logger.debug(f"Removed end tool chunk, processing {len(clean_text)} characters")
+                logger.debug("Removed end tool chunk, processing {} characters", len(clean_text))
 
             # Encode and parse messages
             tokens = self.enc.encode(clean_text, allowed_special="all")
@@ -274,7 +279,7 @@ class HarmonyParser:
             for message in parsed_messages:
                 try:
                     if not hasattr(message, "channel") or not hasattr(message, "content"):
-                        logger.warning(f"Invalid message structure: {message}")
+                        logger.warning("Invalid message structure: {}", message)
                         continue
 
                     if message.channel == ChannelType.ANALYSIS.value:
@@ -294,7 +299,7 @@ class HarmonyParser:
                                 "arguments": message.content[0].text,
                             }
                             result["tool_calls"] = [tool_call]
-                            logger.debug(f"Extracted tool call: {tool_call['name']}")
+                            logger.debug("Extracted tool call: {}", tool_call["name"])
 
                     elif message.channel == ChannelType.FINAL.value:
                         if message.content and len(message.content) > 0:
@@ -302,11 +307,11 @@ class HarmonyParser:
                             logger.debug("Extracted final content")
 
                 except Exception as msg_error:
-                    logger.warning(f"Error processing message: {msg_error}")
+                    logger.warning("Error processing message: {}", msg_error)
                     continue
 
         except Exception as e:
-            logger.error(f"Error in parse method: {e}")
+            logger.error("Error in parse method: {}", e)
             # Return partial results if available, don't raise
 
         return result
@@ -337,7 +342,7 @@ class HarmonyParser:
         }
 
     def __repr__(self) -> str:
-        """String representation of the parser state."""
+        """Return a string representation of the parser state."""
         return (
             f"HarmonyParser(state={self.parsing_state.value}, "
             f"tool_state={self.tool_state}, "

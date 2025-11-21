@@ -1,3 +1,10 @@
+"""
+Parsers for Qwen3 model response formats.
+
+This module provides specialized parsers for Qwen3 model's tool calls and
+thinking traces, using XML-like tags for structured output parsing.
+"""
+
 from .base import BaseThinkingParser, BaseToolParser
 
 TOOL_OPEN = "<tool_call>"

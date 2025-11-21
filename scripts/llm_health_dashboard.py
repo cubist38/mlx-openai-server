@@ -6,20 +6,21 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 import json
 import os
-import sys
 import time
 from typing import Literal
+
+from loguru import logger
 
 try:  # Dependency guards preserve useful error messages for local runs.
     import httpx
 except ImportError as exc:  # pragma: no cover - defensive
-    print("This dashboard requires httpx. Install via `pip install httpx`.", file=sys.stderr)
+    logger.error("This dashboard requires httpx. Install via `pip install httpx`.")
     raise SystemExit(1) from exc
 
 try:
     from pydantic import BaseModel, ConfigDict
 except ImportError as exc:  # pragma: no cover
-    print("This dashboard requires pydantic. Install via `pip install pydantic`.", file=sys.stderr)
+    logger.error("This dashboard requires pydantic. Install via `pip install pydantic`.")
     raise SystemExit(1) from exc
 
 try:
@@ -30,7 +31,7 @@ try:
     from rich.panel import Panel
     from rich.table import Table
 except ImportError as exc:  # pragma: no cover
-    print("This dashboard requires rich. Install via `pip install rich`.", file=sys.stderr)
+    logger.error("This dashboard requires rich. Install via `pip install rich`.")
     raise SystemExit(1) from exc
 
 
@@ -130,6 +131,22 @@ def gather_snapshot(client: httpx.Client) -> DashboardSnapshot:
 
 
 def select_active_model(models: list[ModelData]) -> ModelData | None:
+    """
+    Select the active model from a list of available models.
+
+    Uses environment variables MLX_ACTIVE_MODEL or MLX_MODEL_ID as preference,
+    otherwise returns the first model in the list.
+
+    Parameters
+    ----------
+    models : list[ModelData]
+        List of available models.
+
+    Returns
+    -------
+    ModelData | None
+        The selected active model, or None if no models are available.
+    """
     if not models:
         return None
     preferred = os.getenv("MLX_ACTIVE_MODEL") or os.getenv("MLX_MODEL_ID")
@@ -141,6 +158,24 @@ def select_active_model(models: list[ModelData]) -> ModelData | None:
 
 
 def streaming_sanity_check(client: httpx.Client, model_id: str) -> tuple[bool, str]:
+    """
+    Perform a streaming sanity check on a model.
+
+    Tests streaming chat completion functionality by sending a simple request
+    and validating the response stream.
+
+    Parameters
+    ----------
+    client : httpx.Client
+        HTTP client for making requests.
+    model_id : str
+        The model ID to test.
+
+    Returns
+    -------
+    tuple[bool, str]
+        A tuple of (success, message) indicating test result and details.
+    """
     payload = {
         "model": model_id,
         "messages": [{"role": "user", "content": "Stream 'hello dashboard'."}],
@@ -174,6 +209,26 @@ def streaming_sanity_check(client: httpx.Client, model_id: str) -> tuple[bool, s
 
 
 def parse_chunk(data: dict) -> dict:
+    """
+    Parse and validate a streaming response chunk.
+
+    Ensures the chunk contains required OpenAI-compatible fields.
+
+    Parameters
+    ----------
+    data : dict
+        The parsed JSON data from a streaming chunk.
+
+    Returns
+    -------
+    dict
+        The validated chunk data.
+
+    Raises
+    ------
+    ValueError
+        If the chunk is missing required fields or has invalid structure.
+    """
     # We only need to ensure essential OpenAI chunk keys exist.
     if not isinstance(data, dict):
         raise ValueError("Chunk payload must be a JSON object")
@@ -187,6 +242,21 @@ def parse_chunk(data: dict) -> dict:
 
 
 def iter_sse_payloads(response: httpx.Response):
+    """
+    Iterate over Server-Sent Events payloads from a streaming response.
+
+    Parses SSE-formatted lines and yields the data payloads.
+
+    Parameters
+    ----------
+    response : httpx.Response
+        The streaming HTTP response containing SSE data.
+
+    Yields
+    ------
+    str
+        The data payload from each SSE event.
+    """
     for raw_line in response.iter_lines():
         if not raw_line:
             continue
@@ -199,6 +269,23 @@ def iter_sse_payloads(response: httpx.Response):
 
 
 def render_dashboard(snapshot: DashboardSnapshot, base_url: str) -> Layout:
+    """
+    Render the complete dashboard layout.
+
+    Creates a rich terminal UI layout with status, models, and footer panels.
+
+    Parameters
+    ----------
+    snapshot : DashboardSnapshot
+        The current dashboard data snapshot.
+    base_url : str
+        The base URL of the MLX server.
+
+    Returns
+    -------
+    Layout
+        The rendered dashboard layout.
+    """
     layout = Layout(name="root")
     layout.split_column(
         Layout(name="header", size=3),
@@ -221,6 +308,19 @@ def render_dashboard(snapshot: DashboardSnapshot, base_url: str) -> Layout:
 
 
 def render_status_panel(snapshot: DashboardSnapshot) -> Panel:
+    """
+    Render the status panel showing server health and active model info.
+
+    Parameters
+    ----------
+    snapshot : DashboardSnapshot
+        The current dashboard data snapshot.
+
+    Returns
+    -------
+    Panel
+        The rendered status panel.
+    """
     table = Table.grid(padding=(0, 1))
     table.add_row("Reachable", "Yes" if snapshot.reachable else "No")
     latency = f"{snapshot.latency_ms:.1f} ms" if snapshot.latency_ms is not None else "--"
@@ -240,6 +340,19 @@ def render_status_panel(snapshot: DashboardSnapshot) -> Panel:
 
 
 def render_models_panel(snapshot: DashboardSnapshot) -> Panel:
+    """
+    Render the models panel showing available models.
+
+    Parameters
+    ----------
+    snapshot : DashboardSnapshot
+        The current dashboard data snapshot.
+
+    Returns
+    -------
+    Panel
+        The rendered models panel.
+    """
     table = Table(title="Model Registry", box=box.MINIMAL_DOUBLE_HEAD)
     table.add_column("ID", ratio=2)
     table.add_column("Owner", ratio=1)
@@ -256,6 +369,19 @@ def render_models_panel(snapshot: DashboardSnapshot) -> Panel:
 
 
 def render_footer(snapshot: DashboardSnapshot) -> Panel:
+    """
+    Render the footer panel showing errors or status notes.
+
+    Parameters
+    ----------
+    snapshot : DashboardSnapshot
+        The current dashboard data snapshot.
+
+    Returns
+    -------
+    Panel
+        The rendered footer panel.
+    """
     if snapshot.errors:
         content = "\n".join(snapshot.errors)
     else:
@@ -264,6 +390,11 @@ def render_footer(snapshot: DashboardSnapshot) -> Panel:
 
 
 def main() -> None:
+    """
+    Run the LLM health dashboard.
+
+    Runs a live terminal dashboard displaying server health, models, and status.
+    """
     base_url = env_base_url()
     console = Console()
     headers = build_headers()

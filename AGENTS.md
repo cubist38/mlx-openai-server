@@ -175,7 +175,9 @@ except json.JSONDecodeError as e:
 
 ### Logging Practices
 
-- **Use loguru**: The project uses `loguru` for logging. Import it as `from loguru import logger`.
+- **Use loguru**: 
+  - The project uses `loguru` for logging. Import it as `from loguru import logger`.
+  - Use f-string format for logging strings.
 - **Appropriate log levels**:
   - `logger.debug()`: Detailed diagnostic information
   - `logger.info()`: General informational messages (startup, shutdown, major operations)

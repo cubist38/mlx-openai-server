@@ -1,3 +1,10 @@
+"""
+MLX language model wrapper.
+
+This module provides a wrapper class for MLX language models with text generation,
+streaming, and caching capabilities.
+"""
+
 from collections.abc import Generator
 import gc
 import os
@@ -41,16 +48,14 @@ class MLX_LM:
             self.max_kv_size = context_length
             self.outlines_tokenizer = OutlinesTransformerTokenizer(self.tokenizer)
         except Exception as e:
-            raise ValueError(f"Error loading model: {e!s}")
+            raise ValueError(f"Error loading model: {e!s}") from e
 
     def _apply_pooling_strategy(self, embeddings: mx.array) -> mx.array:
-        embeddings = mx.mean(embeddings, axis=1)
-        return embeddings
+        return mx.mean(embeddings, axis=1)
 
     def _apply_l2_normalization(self, embeddings: mx.array) -> mx.array:
         l2_norms = mx.linalg.norm(embeddings, axis=1, keepdims=True)
-        embeddings = embeddings / (l2_norms + 1e-8)
-        return embeddings
+        return embeddings / (l2_norms + 1e-8)
 
     def _batch_process(
         self, prompts: list[str], batch_size: int = DEFAULT_BATCH_SIZE
@@ -86,6 +91,14 @@ class MLX_LM:
         return mx.array(tokens)
 
     def get_model_type(self) -> str:
+        """
+        Get the model type identifier.
+
+        Returns
+        -------
+        str
+            The model type string.
+        """
         return self.model_type
 
     def get_embeddings(

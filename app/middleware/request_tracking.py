@@ -64,8 +64,6 @@ class RequestTrackingMiddleware(BaseHTTPMiddleware):
                 f"[request_id={request_id}]"
             )
 
-            return response
-
         except Exception as e:
             # Log error with request ID
             duration = time.time() - start_time
@@ -76,3 +74,5 @@ class RequestTrackingMiddleware(BaseHTTPMiddleware):
                 exc_info=True,
             )
             raise
+        else:
+            return response

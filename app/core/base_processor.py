@@ -70,7 +70,7 @@ class BaseProcessor(ABC):
         gc.collect()
 
     @abstractmethod
-    def _get_media_format(self, media_url: str, data: bytes = None) -> str:
+    def _get_media_format(self, media_url: str, data: bytes | None = None) -> str:
         """Determine media format from URL or data. Must be implemented by subclasses."""
 
     @abstractmethod
@@ -162,7 +162,7 @@ class BaseProcessor(ABC):
 
         except Exception as e:
             logger.error(f"Failed to process {self._get_media_type_name()}: {e!s}")
-            raise ValueError(f"Failed to process {self._get_media_type_name()}: {e!s}")
+            raise ValueError(f"Failed to process {self._get_media_type_name()}: {e!s}") from e
         finally:
             gc.collect()
 
