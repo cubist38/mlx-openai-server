@@ -67,13 +67,12 @@ class RequestTrackingMiddleware(BaseHTTPMiddleware):
                 f"[request_id={request_id}]"
             )
 
-        except Exception as e:
+        except Exception:
             # Log error with request ID
             duration = time.time() - start_time
             logger.exception(
-                f"Request failed: {request.method} {request.url.path}. "
-                f"{type(e).__name__}: {e}, duration={duration:.3f}s "
-                f"[request_id={request_id}]"
+                f"Request failed: {request.method} {request.url.path} "
+                f"duration={duration:.3f}s [request_id={request_id}]"
             )
             raise
         return response
