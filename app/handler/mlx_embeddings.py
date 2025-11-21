@@ -57,13 +57,14 @@ class MLXEmbeddingsHandler:
             logger.error(f"Error getting models: {e!s}")
             return []
 
-    async def initialize(self, config: dict[str, Any]) -> None:
+    async def initialize(self, _config: dict[str, Any]) -> None:
         """
         Initialize the request queue with configuration.
 
         Args:
-            config: Dictionary containing queue configuration.
+            _config: Dictionary containing queue configuration (Not currently used).
         """
+        # TODO: Wire relevant keys from config through to RequestQueue (or rebuild the queue with the configured values)
         await self.request_queue.start(self._process_request)
 
     async def generate_embeddings_response(self, request: EmbeddingRequest) -> list[list[float]]:
@@ -166,15 +167,3 @@ class MLXEmbeddingsHandler:
         except Exception as e:
             logger.error(f"Error during MLXEmbeddingsHandler cleanup: {e!s}")
             raise
-
-    def __del__(self) -> None:
-        """
-        Destructor to ensure cleanup on object deletion.
-
-        Note: Async cleanup cannot be reliably performed in __del__.
-        Please use 'await cleanup()' explicitly.
-        """
-        if hasattr(self, "_cleaned") and self._cleaned:
-            return
-        # Set flag to prevent multiple cleanup attempts
-        self._cleaned = True

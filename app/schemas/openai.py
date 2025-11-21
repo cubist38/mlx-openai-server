@@ -238,7 +238,7 @@ class ChatCompletionRequestBase(OpenAIBaseModel):
 
     @field_validator("messages")
     @classmethod
-    def check_messages_not_empty(cls, v: Any) -> Any:
+    def check_messages_not_empty(cls, v: list[Message]) -> list[Message]:
         """Ensure that the messages list is not empty and validate message structure."""
         if not v:
             raise ValueError("messages cannot be empty")
@@ -257,7 +257,7 @@ class ChatCompletionRequestBase(OpenAIBaseModel):
 
     @field_validator("temperature")
     @classmethod
-    def check_temperature(cls, v: Any) -> Any:
+    def check_temperature(cls, v: float | None) -> float | None:
         """Validate temperature is between 0 and 2."""
         if v is not None and (v < 0 or v > 2):
             raise ValueError("temperature must be between 0 and 2")
@@ -265,7 +265,7 @@ class ChatCompletionRequestBase(OpenAIBaseModel):
 
     @field_validator("max_tokens")
     @classmethod
-    def check_max_tokens(cls, v: Any) -> Any:
+    def check_max_tokens(cls, v: int | None) -> int | None:
         """Validate max_tokens is positive and within reasonable limits."""
         if v is not None:
             if v <= 0:
@@ -276,9 +276,9 @@ class ChatCompletionRequestBase(OpenAIBaseModel):
 class ChatTemplateKwargs(OpenAIBaseModel):
     """Represents the arguments for a chat template."""
 
-    enable_thinking: bool = Field(True, description="Whether to enable thinking.")
+    enable_thinking: bool = Field(default=True, description="Whether to enable thinking.")
     reasoning_effort: Literal["low", "medium", "high"] = Field(
-        "medium", description="The reasoning effort level."
+        default="medium", description="The reasoning effort level."
     )
 
 

@@ -239,6 +239,3 @@ class BaseProcessor(ABC):
     ) -> None:
         """Exit async context manager and cleanup."""
         await self.cleanup()
-
-    def __del__(self) -> None:
-        """Destructor - async cleanup cannot be performed here."""

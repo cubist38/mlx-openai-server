@@ -63,7 +63,7 @@ async def health(raw_request: Request) -> Any:
         # Handler not initialized - return 503 with degraded status
         return JSONResponse(
             status_code=503,
-            content={"status": "ok", "model_id": None, "model_status": "uninitialized"},
+            content={"status": "unhealthy", "model_id": None, "model_status": "uninitialized"},
         )
 
     # Handler initialized - extract model_id
@@ -114,8 +114,12 @@ async def models(raw_request: Request) -> ModelsResponse:
     except Exception as e:
         logger.error(f"Error retrieving models: {e!s}")
         return JSONResponse(
-            content=create_error_response(f"Failed to retrieve models: {e!s}", "server_error", 500),
-            status_code=500,
+            content=create_error_response(
+                f"Failed to retrieve models: {e!s}",
+                "server_error",
+                HTTPStatus.INTERNAL_SERVER_ERROR,
+            ),
+            status_code=HTTPStatus.INTERNAL_SERVER_ERROR,
         )
 
 
@@ -127,7 +131,7 @@ async def queue_stats(raw_request: Request) -> dict[str, Any] | JSONResponse:
     Note: queue_stats shape is handler-dependent (Flux vs LM/VLM/Whisper)
     so callers know keys may vary.
     """
-    handler = raw_request.app.state.handler
+    handler = getattr(raw_request.app.state, "handler", None)
     if handler is None:
         return JSONResponse(
             content=create_error_response(
@@ -156,7 +160,7 @@ async def queue_stats(raw_request: Request) -> dict[str, Any] | JSONResponse:
 @router.post("/v1/chat/completions")
 async def chat_completions(request: ChatCompletionRequest, raw_request: Request) -> Any:
     """Handle chat completion requests."""
-    handler = raw_request.app.state.handler
+    handler = getattr(raw_request.app.state, "handler", None)
     if handler is None:
         return JSONResponse(
             content=create_error_response(
@@ -190,7 +194,7 @@ async def chat_completions(request: ChatCompletionRequest, raw_request: Request)
 @router.post("/v1/embeddings")
 async def embeddings(request: EmbeddingRequest, raw_request: Request) -> EmbeddingResponse:
     """Handle embedding requests."""
-    handler = raw_request.app.state.handler
+    handler = getattr(raw_request.app.state, "handler", None)
     if handler is None:
         return JSONResponse(
             content=create_error_response(
@@ -214,7 +218,7 @@ async def embeddings(request: EmbeddingRequest, raw_request: Request) -> Embeddi
 @router.post("/v1/images/generations")
 async def image_generations(request: ImageGenerationRequest, raw_request: Request) -> Any:
     """Handle image generation requests."""
-    handler = raw_request.app.state.handler
+    handler = getattr(raw_request.app.state, "handler", None)
     if handler is None:
         return JSONResponse(
             content=create_error_response(
@@ -252,7 +256,7 @@ async def create_image_edit(
     request: Annotated[ImageEditRequest, Form()], raw_request: Request
 ) -> Any:
     """Handle image editing requests with dynamic provider routing."""
-    handler = raw_request.app.state.handler
+    handler = getattr(raw_request.app.state, "handler", None)
     if handler is None:
         return JSONResponse(
             content=create_error_response(
@@ -290,7 +294,7 @@ async def create_audio_transcriptions(
 ) -> Any:
     """Handle audio transcription requests."""
     try:
-        handler = raw_request.app.state.handler
+        handler = getattr(raw_request.app.state, "handler", None)
         if handler is None:
             return JSONResponse(
                 content=create_error_response(

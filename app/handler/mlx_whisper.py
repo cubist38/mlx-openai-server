@@ -344,4 +344,3 @@ class MLXWhisperHandler:
             logger.info("MLXWhisperHandler cleanup completed successfully")
         except Exception as e:
             logger.error(f"Error during MLXWhisperHandler cleanup: {e!s}")
-            raise

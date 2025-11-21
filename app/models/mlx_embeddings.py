@@ -125,10 +125,6 @@ class MLX_Embeddings:
         except Exception as e:
             logger.warning(f"Error during cleanup: {e!s}")
 
-    def __del__(self) -> None:
-        """Destructor to ensure cleanup on object deletion."""
-        self.cleanup()
-
 
 if __name__ == "__main__":
     model_path = "mlx-community/all-MiniLM-L6-v2-4bit"
