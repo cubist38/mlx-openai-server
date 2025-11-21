@@ -28,14 +28,14 @@ class UpperChoice(click.Choice[str]):
     where the internal representation is uppercased.
     """
 
-    def normalize_choice(self, choice: str | None, _ctx: click.Context | None) -> str | None:  # type: ignore[override]
+    def normalize_choice(self, choice: str | None, ctx: click.Context | None) -> str | None:  # type: ignore[override]
         """Return the canonical uppercase choice or raise BadParameter.
 
         Parameters
         ----------
         choice:
             Raw value supplied by the user (may be ``None``).
-        _ctx:
+        ctx:
             Click context object (unused here but part of the API).
 
         Returns
@@ -85,7 +85,7 @@ def cli() -> None:
     """
 
 
-@cli.command()
+@cli.command(help="Start the MLX OpenAI Server with the supplied flags")
 @click.option(
     "--model-path",
     required=True,

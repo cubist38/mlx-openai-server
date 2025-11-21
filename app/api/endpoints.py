@@ -53,7 +53,7 @@ router = APIRouter()
 # =============================================================================
 
 
-@router.get("/health")
+@router.get("/health", response_model=None)
 async def health(raw_request: Request) -> HealthCheckResponse | JSONResponse:
     """
     Health check endpoint - verifies handler initialization status.
@@ -77,7 +77,7 @@ async def health(raw_request: Request) -> HealthCheckResponse | JSONResponse:
     )
 
 
-@router.get("/v1/models")
+@router.get("/v1/models", response_model=None)
 async def models(raw_request: Request) -> ModelsResponse | JSONResponse:
     """
     Get list of available models with cached response for instant delivery.
@@ -130,7 +130,7 @@ async def models(raw_request: Request) -> ModelsResponse | JSONResponse:
         )
 
 
-@router.get("/v1/queue/stats")
+@router.get("/v1/queue/stats", response_model=None)
 async def queue_stats(raw_request: Request) -> dict[str, Any] | JSONResponse:
     """
     Get queue statistics.
@@ -168,7 +168,7 @@ async def queue_stats(raw_request: Request) -> dict[str, Any] | JSONResponse:
 # =============================================================================
 
 
-@router.post("/v1/chat/completions")
+@router.post("/v1/chat/completions", response_model=None)
 async def chat_completions(
     request: ChatCompletionRequest, raw_request: Request
 ) -> ChatCompletionResponse | StreamingResponse | JSONResponse:
@@ -208,7 +208,7 @@ async def chat_completions(
         )
 
 
-@router.post("/v1/embeddings")
+@router.post("/v1/embeddings", response_model=None)
 async def embeddings(
     request: EmbeddingRequest, raw_request: Request
 ) -> EmbeddingResponse | JSONResponse:
@@ -236,7 +236,7 @@ async def embeddings(
         )
 
 
-@router.post("/v1/images/generations")
+@router.post("/v1/images/generations", response_model=None)
 async def image_generations(
     request: ImageGenerationRequest, raw_request: Request
 ) -> ImageGenerationResponse | JSONResponse:
@@ -276,7 +276,7 @@ async def image_generations(
         return image_response
 
 
-@router.post("/v1/images/edits")
+@router.post("/v1/images/edits", response_model=None)
 async def create_image_edit(
     request: Annotated[ImageEditRequest, Form()], raw_request: Request
 ) -> ImageEditResponse | JSONResponse:
@@ -315,7 +315,7 @@ async def create_image_edit(
         return image_response
 
 
-@router.post("/v1/audio/transcriptions")
+@router.post("/v1/audio/transcriptions", response_model=None)
 async def create_audio_transcriptions(
     request: Annotated[TranscriptionRequest, Form()], raw_request: Request
 ) -> StreamingResponse | TranscriptionResponse | JSONResponse | str:

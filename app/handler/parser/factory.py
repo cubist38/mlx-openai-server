@@ -149,9 +149,6 @@ class ParserFactory:
             logger.warning(f"Unknown parser name: {parser_name}")
             return None
 
-        # Reference kwargs to silence ARG004/ANN003
-        _kwargs = kwargs
-
         parser_config = PARSER_REGISTRY[parser_name]
 
         # Handle unified parsers (like Harmony)
@@ -190,8 +187,6 @@ class ParserFactory:
         -------
             Tuple of (thinking_parser, tool_parser). Both will be None if not specified.
         """
-        # Reference kwargs to silence ARG004/ANN003
-        _kwargs = kwargs
 
         # Handle unified parsers (harmony) - handles both thinking and tools
         if manual_reasoning_parser == "harmony" or manual_tool_parser == "harmony":
@@ -238,8 +233,6 @@ class ParserFactory:
         -------
             Message converter instance or None if no converter needed
         """
-        # Reference kwargs to silence ARG004/ANN003
-        _kwargs = kwargs
 
         if model_type not in CONVERTER_REGISTRY:
             return None
