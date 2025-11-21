@@ -94,7 +94,7 @@ class VideoProcessor(BaseProcessor):
         """Get maximum file size in bytes."""
         return 1024 * 1024 * 1024  # 1 GB limit for videos
 
-    def _process_media_data(self, data: bytes, cached_path: str, **kwargs: Any) -> str:
+    def _process_media_data(self, data: bytes, cached_path: str, **_kwargs: Any) -> str:
         """Process video data and save to cached path."""
         try:
             with Path(cached_path).open("wb") as f:

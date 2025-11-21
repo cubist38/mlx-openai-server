@@ -132,9 +132,21 @@ class BaseProcessor(ABC):
                 return cached_path
 
             if Path(media_url).exists():
+                # Check file size before opening
+                file_size = Path(media_url).stat().st_size
+                if file_size > self._get_max_file_size():
+                    raise ValueError(
+                        f"Local {self._get_media_type_name()} file exceeds size limit: {file_size} > {self._get_max_file_size()}"
+                    )
                 # Copy local file to cache
                 async with aiofiles.open(media_url, "rb") as f:
                     data = await f.read()
+
+                # Validate size after reading (in case file changed)
+                if len(data) > self._get_max_file_size():
+                    raise ValueError(
+                        f"Read {self._get_media_type_name()} data exceeds size limit: {len(data)} > {self._get_max_file_size()}"
+                    )
 
                 if not self._validate_media_data(data):
                     raise ValueError(f"Invalid {self._get_media_type_name()} file format")
@@ -157,7 +169,24 @@ class BaseProcessor(ABC):
             session = await self._get_session()
             async with session.get(media_url) as response:
                 response.raise_for_status()
+                # Check Content-Length if available
+                content_length = response.headers.get("Content-Length")
+                if content_length:
+                    try:
+                        size = int(content_length)
+                        if size > self._get_max_file_size():
+                            raise ValueError(
+                                f"HTTP {self._get_media_type_name()} Content-Length exceeds size limit: {size} > {self._get_max_file_size()}"
+                            )
+                    except ValueError:
+                        logger.warning(f"Invalid Content-Length header: {content_length}")
                 data = await response.read()
+
+                # Validate size after reading
+                if len(data) > self._get_max_file_size():
+                    raise ValueError(
+                        f"Downloaded {self._get_media_type_name()} data exceeds size limit: {len(data)} > {self._get_max_file_size()}"
+                    )
 
                 if not self._validate_media_data(data):
                     raise ValueError(f"Invalid {self._get_media_type_name()} file format")

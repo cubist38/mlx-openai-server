@@ -485,7 +485,7 @@ class MLXLMHandler:
                     refined_messages.append(cleaned_message)
 
             # Call the model
-            response = self.model(messages=refined_messages, stream=stream, **model_params)
+            response, _ = self.model(messages=refined_messages, stream=stream, **model_params)
             # Force garbage collection after model inference
             gc.collect()
 

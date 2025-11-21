@@ -94,12 +94,6 @@ class MLX_VLM:
                 - First element: Complete response as string (if stream=False) or Generator yielding response chunks (if stream=True)
                 - Second element: Number of prompt tokens used
         """
-        if images and videos:
-            raise ValueError("Cannot process both images and videos in the same request")
-
-        if videos and not self._is_video_model():
-            raise ValueError("Model is not a video model")
-
         text = self.processor.apply_chat_template(
             messages,
             tokenize=False,
@@ -108,6 +102,12 @@ class MLX_VLM:
         )
 
         image_inputs, video_inputs = process_vision_info(messages)
+
+        if image_inputs and video_inputs:
+            raise ValueError("Cannot process both images and videos in the same request")
+
+        if video_inputs and not self._is_video_model():
+            raise ValueError("Model is not a video model")
 
         inputs = self.processor(
             text=[text], images=image_inputs, videos=video_inputs, padding=True, return_tensors="pt"
@@ -119,11 +119,11 @@ class MLX_VLM:
             **kwargs,
         }
 
-        if images:
+        if image_inputs:
             model_params["pixel_values"] = mx.array(inputs["pixel_values"])
             model_params["image_grid_thw"] = mx.array(inputs["image_grid_thw"])
 
-        if videos:
+        if video_inputs:
             model_params["pixel_values"] = mx.array(inputs["pixel_values_videos"])
             model_params["video_grid_thw"] = mx.array(inputs["video_grid_thw"])
 
