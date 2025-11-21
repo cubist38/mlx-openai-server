@@ -445,15 +445,3 @@ class MLXFluxHandler:
         # Force garbage collection
         gc.collect()
         logger.info("MLXFluxHandler cleanup completed")
-
-    def __del__(self) -> None:
-        """
-        Destructor to ensure cleanup on object deletion.
-
-        Note: Async cleanup cannot be reliably performed in __del__.
-        Please use 'await cleanup()' explicitly.
-        """
-        if hasattr(self, "_cleaned") and self._cleaned:
-            return
-        # Set flag to prevent multiple cleanup attempts
-        self._cleaned = True

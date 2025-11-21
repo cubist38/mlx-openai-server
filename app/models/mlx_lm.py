@@ -128,7 +128,7 @@ class MLX_LM:
         return self.model_type
 
     def get_embeddings(
-        self, prompts: list[str], batch_size: int = DEFAULT_BATCH_SIZE, normalize: bool = True
+        self, prompts: list[str], batch_size: int = DEFAULT_BATCH_SIZE, *, normalize: bool = True
     ) -> list[list[float]]:
         """
         Get embeddings for a list of prompts efficiently.
@@ -177,7 +177,7 @@ class MLX_LM:
         return all_embeddings
 
     def __call__(
-        self, messages: list[dict[str, str]], stream: bool = False, **kwargs: Any
+        self, messages: list[dict[str, str]], *, stream: bool = False, **kwargs: Any
     ) -> tuple[str | Generator[str, None, None], int]:
         """
         Generate text response from the model.

@@ -8,7 +8,7 @@ from collections.abc import AsyncGenerator
 import gc
 from http import HTTPStatus
 import time
-from typing import Any
+from typing import Any, NoReturn
 import uuid
 
 from fastapi import HTTPException
@@ -127,11 +127,11 @@ class MLXVLMHandler:
     async def initialize(self, queue_config: dict[str, Any] | None = None) -> None:
         """Initialize the handler and start the request queue."""
         if not queue_config:
-            queue_config = {"max_concurrency": 1, "timeout": 300, "queue_size": 100}
+            queue_config = {"max_concurrency": self.request_queue.max_concurrency}
         self.request_queue = RequestQueue(
-            max_concurrency=queue_config.get("max_concurrency", 1),
-            timeout=queue_config.get("timeout", 300),
-            queue_size=queue_config.get("queue_size", 100),
+            max_concurrency=queue_config.get("max_concurrency", self.request_queue.max_concurrency),
+            timeout=queue_config.get("timeout", self.request_queue.timeout),
+            queue_size=queue_config.get("queue_size", self.request_queue.queue_size),
         )
         await self.request_queue.start(self._process_request)
         logger.info("Initialized MLXHandler and started request queue")
@@ -401,16 +401,14 @@ class MLXVLMHandler:
 
             return {"response": parsed_response, "usage": usage}
 
-    async def generate_embeddings_response(self, request: EmbeddingRequest) -> list[list[float]]:
+    async def generate_embeddings_response(self, request: EmbeddingRequest) -> NoReturn:
         """
         Generate embeddings for a given text input.
 
+        This function always raises an HTTPException(400) as embeddings are not supported for VLM models.
+
         Args:
             request: EmbeddingRequest object containing the text input.
-
-        Returns
-        -------
-            list[list[float]]: Embeddings for the input text or images
 
         Raises
         ------
@@ -423,10 +421,6 @@ class MLXVLMHandler:
             HTTPStatus.BAD_REQUEST,
         )
         raise HTTPException(status_code=400, detail=content)
-
-    def __del__(self) -> None:
-        """Cleanup resources on deletion."""
-        # Removed async cleanup from __del__; use close() instead
 
     async def close(self) -> None:
         """Explicitly cleanup resources asynchronously."""
@@ -444,27 +438,35 @@ class MLXVLMHandler:
         This method ensures all pending requests are properly cancelled
         and resources are released, including the image processor.
         """
-        try:
-            logger.info("Cleaning up MLXVLMHandler resources")
-            if hasattr(self, "request_queue"):
+        logger.info("Cleaning up MLXVLMHandler resources")
+        if hasattr(self, "request_queue"):
+            try:
                 await self.request_queue.stop()
-            if hasattr(self, "image_processor"):
+            except Exception as e:
+                logger.error(f"Error stopping request queue: {e!s}")
+        if hasattr(self, "image_processor"):
+            try:
                 await self.image_processor.cleanup()
-            if hasattr(self, "audio_processor"):
+            except Exception as e:
+                logger.error(f"Error cleaning up image processor: {e!s}")
+        if hasattr(self, "audio_processor"):
+            try:
                 await self.audio_processor.cleanup()
-            if hasattr(self, "video_processor"):
+            except Exception as e:
+                logger.error(f"Error cleaning up audio processor: {e!s}")
+        if hasattr(self, "video_processor"):
+            try:
                 await self.video_processor.cleanup()
+            except Exception as e:
+                logger.error(f"Error cleaning up video processor: {e!s}")
 
-            # Force garbage collection after cleanup
-            gc.collect()
-            logger.info("MLXVLMHandler cleanup completed successfully")
-        except Exception as e:
-            logger.error(f"Error during MLXVLMHandler cleanup: {e!s}")
-            raise
+        # Force garbage collection after cleanup
+        gc.collect()
+        logger.info("MLXVLMHandler cleanup completed successfully")
 
     async def _process_request(
         self, request_data: dict[str, Any]
-    ) -> str | AsyncGenerator[str, None]:
+    ) -> tuple[str | AsyncGenerator[str, None], int]:
         """
         Process a multimodal request. This is the worker function for the request queue.
 
@@ -473,7 +475,8 @@ class MLXVLMHandler:
 
         Returns
         -------
-            str | AsyncGenerator[str, None]: The model's response, either as a complete string or a streaming generator.
+            tuple[str | AsyncGenerator[str, None], int]: A tuple containing the model's response
+            (either as a complete string or a streaming generator) and the number of prompt tokens.
         """
         try:
             # Handle embeddings requests separately if MLX_VLM supports them
@@ -483,14 +486,9 @@ class MLXVLMHandler:
 
             # Extract request parameters
             images = request_data.get("images", [])
-            audios = request_data.get("audios", [])
             videos = request_data.get("videos", [])
             messages = request_data.get("messages", [])
             stream = request_data.get("stream", False)
-
-            # Audio is not supported for VLM models
-            if audios:
-                raise ValueError("Audio input is not supported for VLM models")
 
             # Remove these keys from model_params
             model_params = request_data.copy()
@@ -629,6 +627,14 @@ class MLXVLMHandler:
                             HTTPStatus.BAD_REQUEST,
                         )
                         raise HTTPException(status_code=400, detail=content)
+
+            if audios:
+                content = create_error_response(
+                    "Audio input is not supported for VLM models",
+                    "bad_request",
+                    HTTPStatus.BAD_REQUEST,
+                )
+                raise HTTPException(status_code=400, detail=content)
 
             request_dict = {
                 "messages": chat_messages,

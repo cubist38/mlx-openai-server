@@ -18,7 +18,7 @@ class VideoProcessor(BaseProcessor):
     def __init__(self, max_workers: int = 4, cache_size: int = 1000) -> None:
         super().__init__(max_workers, cache_size)
         # Supported video formats
-        self._supported_formats = {".mp4", ".avi", ".mov"}
+        self._supported_formats = {".mp4", ".avi", ".mov", ".webm", ".mkv", ".flv"}
 
     def _get_media_format(self, media_url: str, _data: bytes | None = None) -> str:
         """Determine video format from URL or data."""
@@ -31,6 +31,12 @@ class VideoProcessor(BaseProcessor):
                 return "mov"
             if "x-msvideo" in mime_type or "avi" in mime_type:
                 return "avi"
+            if "webm" in mime_type:
+                return "webm"
+            if "x-matroska" in mime_type or "matroska" in mime_type:
+                return "mkv"
+            if "x-flv" in mime_type or "flv" in mime_type:
+                return "flv"
         else:
             # Extract format from file extension
             ext = Path(media_url.lower()).suffix
@@ -138,7 +144,7 @@ class VideoProcessor(BaseProcessor):
 
         Returns
         -------
-            List of paths to cached video files
+            List of cached file paths or Exception instances for failed items
         """
         tasks = [self.process_video_url(url) for url in video_urls]
         results = await asyncio.gather(*tasks, return_exceptions=True)

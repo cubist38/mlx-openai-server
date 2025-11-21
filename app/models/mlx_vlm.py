@@ -35,9 +35,10 @@ class MLX_VLM:
     def __init__(
         self,
         model_path: str,
+        *,
         context_length: int = 32768,
         trust_remote_code: bool = False,
-        chat_template_file: str = None,
+        chat_template_file: str | None = None,
     ) -> None:
         """
         Initialize the MLX_VLM model.
@@ -82,8 +83,7 @@ class MLX_VLM:
     def __call__(
         self,
         messages: list[dict[str, Any]],
-        images: list[str] | None = None,
-        videos: list[str] | None = None,
+        *,
         stream: bool = False,
         **kwargs: Any,
     ) -> tuple[str | Generator[str, None, None], int]:
@@ -91,7 +91,6 @@ class MLX_VLM:
         Generate text response from images and messages.
 
         Args:
-            images (list[str]): List of image paths to process.
             messages (list[dict[str, str]]): List of message dictionaries with 'role' and 'content' keys.
             stream (bool, optional): Whether to stream the response. Defaults to False.
             **kwargs: Additional model parameters (chat_template_kwargs, temperature, max_tokens, etc.)
@@ -103,11 +102,12 @@ class MLX_VLM:
                 - First element: Complete response as string (if stream=False) or Generator yielding response chunks (if stream=True)
                 - Second element: Number of prompt tokens used
         """
+        chat_template_kwargs = kwargs.pop("chat_template_kwargs", {})
         text = self.processor.apply_chat_template(
             messages,
             tokenize=False,
             add_generation_prompt=True,
-            **kwargs.get("chat_template_kwargs", {}),
+            **chat_template_kwargs,
         )
 
         image_inputs, video_inputs = process_vision_info(messages)

@@ -185,11 +185,11 @@ class MLXLMHandler:
     async def initialize(self, queue_config: dict[str, Any] | None = None) -> None:
         """Initialize the handler and start the request queue."""
         if not queue_config:
-            queue_config = {"max_concurrency": 1, "timeout": 300, "queue_size": 100}
+            queue_config = {"max_concurrency": self.request_queue.max_concurrency}
         self.request_queue = RequestQueue(
-            max_concurrency=queue_config.get("max_concurrency", 1),
-            timeout=queue_config.get("timeout", 300),
-            queue_size=queue_config.get("queue_size", 100),
+            max_concurrency=queue_config.get("max_concurrency", self.request_queue.max_concurrency),
+            timeout=queue_config.get("timeout", self.request_queue.timeout),
+            queue_size=queue_config.get("queue_size", self.request_queue.queue_size),
         )
         await self.request_queue.start(self._process_request)
         logger.info("Initialized MLXHandler and started request queue")
@@ -439,6 +439,14 @@ class MLXLMHandler:
             # Submit to the request queue
             response, _ = await self.request_queue.submit(request_id, request_data)
 
+        except asyncio.QueueFull:
+            logger.error("Too many requests. Service is at capacity.")
+            content = create_error_response(
+                "Too many requests. Service is at capacity.",
+                "rate_limit_exceeded",
+                HTTPStatus.TOO_MANY_REQUESTS,
+            )
+            raise HTTPException(status_code=429, detail=content) from None
         except Exception as e:
             logger.error(f"Error in embeddings generation: {e!s}")
             content = create_error_response(
@@ -528,7 +536,6 @@ class MLXLMHandler:
             logger.info("MLXLMHandler cleanup completed successfully")
         except Exception as e:
             logger.error(f"Error during MLXLMHandler cleanup: {e!s}")
-            raise
 
     async def _prepare_text_request(
         self, request: ChatCompletionRequest
