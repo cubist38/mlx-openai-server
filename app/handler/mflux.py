@@ -104,13 +104,15 @@ class MLXFluxHandler:
     async def initialize(self, queue_config: dict[str, Any] | None = None) -> None:
         """Initialize the handler and start the request queue."""
         if not queue_config:
-            queue_config = {"max_concurrency": 1, "timeout": 300, "queue_size": 100}
+            queue_config = {
+                "max_concurrency": self.request_queue.max_concurrency,
+                "timeout": self.request_queue.timeout,
+                "queue_size": self.request_queue.queue_size,
+            }
         self.request_queue = RequestQueue(
-            max_concurrency=queue_config.get(
-                "max_concurrency", self.request_queue.max_concurrency if self.request_queue else 1
-            ),
-            timeout=queue_config.get("timeout", 300),
-            queue_size=queue_config.get("queue_size", 100),
+            max_concurrency=queue_config.get("max_concurrency", self.request_queue.max_concurrency),
+            timeout=queue_config.get("timeout", self.request_queue.timeout),
+            queue_size=queue_config.get("queue_size", self.request_queue.queue_size),
         )
         await self.request_queue.start(self._process_request)
         logger.info("Initialized MLXFluxHandler and started request queue")
@@ -170,13 +172,13 @@ class MLXFluxHandler:
                 "rate_limit_exceeded",
                 HTTPStatus.TOO_MANY_REQUESTS,
             )
-            raise HTTPException(status_code=429, detail=content) from None
+            raise HTTPException(status_code=HTTPStatus.TOO_MANY_REQUESTS, detail=content) from None
         except Exception as e:
             logger.error(f"Error in image generation for request {request_id}: {e!s}")
             content = create_error_response(
                 f"Failed to generate image: {e!s}", "server_error", HTTPStatus.INTERNAL_SERVER_ERROR
             )
-            raise HTTPException(status_code=500, detail=content) from e
+            raise HTTPException(status_code=HTTPStatus.INTERNAL_SERVER_ERROR, detail=content) from e
         else:
             return response
 
@@ -202,15 +204,25 @@ class MLXFluxHandler:
             "image/jpeg",
             "image/jpg",
         ]:
-            raise HTTPException(status_code=400, detail="Image must be a PNG, JPEG, or JPG file")
+            raise HTTPException(
+                status_code=HTTPStatus.BAD_REQUEST, detail="Image must be a PNG, JPEG, or JPG file"
+            )
 
         # Check file size (limit to 10MB)
-        if hasattr(image, "size") and image.size and image.size > 10 * 1024 * 1024:
-            raise HTTPException(status_code=400, detail="Image file size must be less than 10MB")
+        image_data = await image.read()
+        if not image_data:
+            raise HTTPException(
+                status_code=HTTPStatus.BAD_REQUEST, detail="Empty image file received"
+            )
+        if len(image_data) > 10 * 1024 * 1024:
+            raise HTTPException(
+                status_code=HTTPStatus.BAD_REQUEST,
+                detail="Image file size must be less than 10MB",
+            )
 
         # Validate request parameters
         if not image_edit_request.prompt or not image_edit_request.prompt.strip():
-            raise HTTPException(status_code=400, detail="Prompt cannot be empty")
+            raise HTTPException(status_code=HTTPStatus.BAD_REQUEST, detail="Prompt cannot be empty")
 
         request_id = f"image-edit-{uuid.uuid4()}"
         temp_file_path = None
@@ -219,7 +231,9 @@ class MLXFluxHandler:
             # Read and validate image data
             image_data = await image.read()
             if not image_data:
-                raise HTTPException(status_code=400, detail="Empty image file received")
+                raise HTTPException(
+                    status_code=HTTPStatus.BAD_REQUEST, detail="Empty image file received"
+                )
 
             # Load and process image using proper utility function
             try:
@@ -227,7 +241,7 @@ class MLXFluxHandler:
             except Exception as img_error:
                 logger.error(f"Failed to process image: {img_error!s}")
                 raise HTTPException(
-                    status_code=400, detail="Invalid or corrupted image file"
+                    status_code=HTTPStatus.BAD_REQUEST, detail="Invalid or corrupted image file"
                 ) from img_error
 
             width, height = input_image.size
@@ -245,7 +259,8 @@ class MLXFluxHandler:
             except Exception as temp_error:
                 logger.error(f"Failed to create temporary file: {temp_error!s}")
                 raise HTTPException(
-                    status_code=500, detail="Failed to process image for editing"
+                    status_code=HTTPStatus.INTERNAL_SERVER_ERROR,
+                    detail="Failed to process image for editing",
                 ) from temp_error
 
             # Prepare request data with all necessary parameters
@@ -282,7 +297,7 @@ class MLXFluxHandler:
                 "rate_limit_exceeded",
                 HTTPStatus.TOO_MANY_REQUESTS,
             )
-            raise HTTPException(status_code=429, detail=content) from None
+            raise HTTPException(status_code=HTTPStatus.TOO_MANY_REQUESTS, detail=content) from None
 
         except HTTPException:
             # Re-raise HTTP exceptions as-is
@@ -293,7 +308,7 @@ class MLXFluxHandler:
             content = create_error_response(
                 f"Failed to edit image: {e!s}", "server_error", HTTPStatus.INTERNAL_SERVER_ERROR
             )
-            raise HTTPException(status_code=500, detail=content) from e
+            raise HTTPException(status_code=HTTPStatus.INTERNAL_SERVER_ERROR, detail=content) from e
         else:
             logger.info(f"Successfully processed image edit request {request_id}")
             return response

@@ -34,7 +34,7 @@ class MLXEmbeddingsHandler:
             max_concurrency (int): Maximum number of concurrent model inference tasks.
         """
         self.model_path = model_path
-        self.model = MLX_Embeddings(model_path)
+        self.model: MLX_Embeddings = MLX_Embeddings(model_path)
         self.model_created = int(time.time())  # Store creation time when model is loaded
 
         # Initialize request queue for embedding tasks
@@ -90,7 +90,7 @@ class MLXEmbeddingsHandler:
             }
 
             # Submit to the request queue
-            response = await self.request_queue.submit(request_id, request_data)
+            response: list[list[float]] = await self.request_queue.submit(request_id, request_data)
 
         except asyncio.QueueFull:
             logger.error("Too many requests. Service is at capacity.")
@@ -99,7 +99,7 @@ class MLXEmbeddingsHandler:
                 "rate_limit_exceeded",
                 HTTPStatus.TOO_MANY_REQUESTS,
             )
-            raise HTTPException(status_code=429, detail=content) from None
+            raise HTTPException(status_code=HTTPStatus.TOO_MANY_REQUESTS, detail=content) from None
         except Exception as e:
             logger.error(f"Error in embeddings generation: {e!s}")
             content = create_error_response(
@@ -107,7 +107,7 @@ class MLXEmbeddingsHandler:
                 "server_error",
                 HTTPStatus.INTERNAL_SERVER_ERROR,
             )
-            raise HTTPException(status_code=500, detail=content) from e
+            raise HTTPException(status_code=HTTPStatus.INTERNAL_SERVER_ERROR, detail=content) from e
         else:
             return response
 

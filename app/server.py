@@ -17,6 +17,7 @@ from __future__ import annotations
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import AbstractAsyncContextManager, asynccontextmanager
 import gc
+from http import HTTPStatus
 import sys
 import time
 
@@ -107,7 +108,7 @@ def get_model_identifier(config_args: MLXServerConfig) -> str:
 
 def create_lifespan(
     config_args: MLXServerConfig,
-) -> Callable[[FastAPI], AbstractAsyncContextManager[None, bool | None]]:
+) -> Callable[[FastAPI], AbstractAsyncContextManager[None]]:
     """Create an async FastAPI lifespan context manager bound to configuration.
 
     The returned context manager performs the following actions during
@@ -237,7 +238,7 @@ def create_lifespan(
             app.state.handler = handler
 
         except Exception as e:
-            logger.error(f"Failed to initialize MLX handler: {e!s}")
+            logger.exception(f"Failed to initialize MLX handler: {e!s}")
             raise
 
         # Initial memory cleanup
@@ -255,7 +256,7 @@ def create_lifespan(
                 await app.state.handler.cleanup()
                 logger.info("Resources cleaned up successfully")
             except Exception as e:
-                logger.error(f"Error during shutdown: {e!s}")
+                logger.exception(f"Error during shutdown: {e!s}")
 
         # Final memory cleanup
         mx.clear_cache()
@@ -349,9 +350,9 @@ def setup_server(config_args: MLXServerConfig) -> uvicorn.Config:
         response with a 500 status code so internal errors do not leak
         implementation details to clients.
         """
-        logger.error(f"Global exception handler caught: {exc!s}", exc_info=True)
+        logger.exception(f"Global exception handler caught: {exc!s}")
         return JSONResponse(
-            status_code=500,
+            status_code=HTTPStatus.INTERNAL_SERVER_ERROR,
             content={"error": {"message": "Internal server error", "type": "internal_error"}},
         )
 

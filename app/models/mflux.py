@@ -284,6 +284,8 @@ class FluxStandardModel(BaseFluxModel):
 
     def _generate_image(self, prompt: str, seed: int, config: Config) -> Image.Image:
         """Generate image using standard Flux model."""
+        if self._model is None:
+            raise ModelLoadError("Model not loaded")
         try:
             result = self._model.generate_image(
                 config=config,
@@ -313,6 +315,8 @@ class FluxKontextModel(BaseFluxModel):
 
     def _generate_image(self, prompt: str, seed: int, config: Config) -> Image.Image:
         """Generate image using Flux Kontext model."""
+        if self._model is None:
+            raise ModelLoadError("Model not loaded")
         try:
             result = self._model.generate_image(
                 config=config,

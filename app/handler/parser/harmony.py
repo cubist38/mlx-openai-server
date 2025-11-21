@@ -38,6 +38,13 @@ class HarmonyParser:
     error handling, and support for different harmony channels (analysis, commentary, final).
     """
 
+    tool_state: bool
+    end_stream: bool
+    parsing_state: ParsingState
+    _accumulated_content: dict[str, list[str]]
+    _current_function_name: str | None
+    _function_arguments: list[str]
+
     def __init__(self) -> None:
         """Initialize the harmony parser with encoding and state management."""
         try:
@@ -255,7 +262,7 @@ class HarmonyParser:
             - content: Final response content
         """
         # Initialize result structure
-        result = {"reasoning_content": None, "tool_calls": None, "content": None}
+        result: dict[str, Any] = {"reasoning_content": None, "tool_calls": None, "content": None}
 
         if not text:
             logger.warning("Empty text provided to parse method")

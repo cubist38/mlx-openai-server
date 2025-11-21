@@ -6,7 +6,7 @@ manual specification. Parsers are only created when explicitly requested.
 """
 
 from collections.abc import Callable
-from typing import Any
+from typing import Any, TypedDict
 
 from loguru import logger
 
@@ -20,10 +20,28 @@ from .qwen3_moe import Qwen3MoEThinkingParser, Qwen3MoEToolParser
 from .qwen3_next import Qwen3NextThinkingParser, Qwen3NextToolParser
 from .qwen3_vl import Qwen3VLThinkingParser, Qwen3VLToolParser
 
+# Type alias for parser constructor functions
+ParserConstructor = Callable[[], BaseThinkingParser | BaseToolParser | HarmonyParser]
+
+
+class ParserMetadata(TypedDict):
+    """Metadata for parser configuration."""
+
+    respects_enable_thinking: bool
+    needs_redacted_reasoning_prefix: bool
+    has_special_parsing: bool
+
+
+class ParserRegistryEntry(TypedDict, total=False):
+    """Registry entry for a parser with its available types."""
+
+    thinking: ParserConstructor
+    tool: ParserConstructor
+    unified: ParserConstructor
+
+
 # Registry mapping parser names to their classes
-PARSER_REGISTRY: dict[
-    str, dict[str, type[BaseThinkingParser] | type[BaseToolParser] | type[HarmonyParser] | Callable]
-] = {
+PARSER_REGISTRY: dict[str, ParserRegistryEntry] = {
     "qwen3": {
         "thinking": Qwen3ThinkingParser,
         "tool": Qwen3ToolParser,
@@ -65,7 +83,7 @@ CONVERTER_REGISTRY: dict[str, type[BaseMessageConverter]] = {
 }
 
 # Registry mapping parser names to their metadata/properties
-PARSER_METADATA: dict[str, dict[str, Any]] = {
+PARSER_METADATA: dict[str, ParserMetadata] = {
     "qwen3": {
         "respects_enable_thinking": True,  # Parser respects enable_thinking flag
         "needs_redacted_reasoning_prefix": False,  # Needs <think> prefix
@@ -141,9 +159,9 @@ class ParserFactory:
             return parser_config["unified"]()
 
         # Handle specific parser types
-        if parser_type in parser_config:
-            parser_class = parser_config[parser_type]
-            return parser_class()
+        parser_constructor: ParserConstructor | None = parser_config.get(parser_type)  # type: ignore[assignment]
+        if parser_constructor:
+            return parser_constructor()
 
         return None
 
@@ -243,7 +261,8 @@ class ParserFactory:
         """
         if not parser_name:
             return False
-        return PARSER_METADATA.get(parser_name, {}).get("respects_enable_thinking", False)
+        metadata = PARSER_METADATA.get(parser_name)
+        return metadata["respects_enable_thinking"] if metadata else False
 
     @staticmethod
     def needs_redacted_reasoning_prefix(parser_name: str | None) -> bool:
@@ -259,7 +278,8 @@ class ParserFactory:
         """
         if not parser_name:
             return False
-        return PARSER_METADATA.get(parser_name, {}).get("needs_redacted_reasoning_prefix", False)
+        metadata = PARSER_METADATA.get(parser_name)
+        return metadata["needs_redacted_reasoning_prefix"] if metadata else False
 
     @staticmethod
     def has_special_parsing(parser_name: str | None) -> bool:
@@ -275,4 +295,5 @@ class ParserFactory:
         """
         if not parser_name:
             return False
-        return PARSER_METADATA.get(parser_name, {}).get("has_special_parsing", False)
+        metadata = PARSER_METADATA.get(parser_name)
+        return metadata["has_special_parsing"] if metadata else False

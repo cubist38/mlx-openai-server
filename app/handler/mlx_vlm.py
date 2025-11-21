@@ -21,6 +21,7 @@ from ..schemas.openai import (
     ChatCompletionContentPart,
     ChatCompletionContentPartImage,
     ChatCompletionContentPartInputAudio,
+    ChatCompletionContentPartText,
     ChatCompletionContentPartVideo,
     ChatCompletionRequest,
     EmbeddingRequest,
@@ -314,8 +315,10 @@ class MLXVLMHandler:
                 "rate_limit_exceeded",
                 HTTPStatus.TOO_MANY_REQUESTS,
             )
-            raise HTTPException(status_code=429, detail=content) from None
-
+            raise HTTPException(status_code=HTTPStatus.TOO_MANY_REQUESTS, detail=content) from None
+        except HTTPException:
+            # Preserve existing HTTP error semantics from request prep
+            raise
         except Exception as e:
             logger.error(f"Error in multimodal stream generation for request {request_id}: {e!s}")
             content = create_error_response(
@@ -323,7 +326,7 @@ class MLXVLMHandler:
                 "server_error",
                 HTTPStatus.INTERNAL_SERVER_ERROR,
             )
-            raise HTTPException(status_code=500, detail=content) from e
+            raise HTTPException(status_code=HTTPStatus.INTERNAL_SERVER_ERROR, detail=content) from e
 
     async def generate_multimodal_response(self, request: ChatCompletionRequest) -> dict[str, Any]:
         """
@@ -352,7 +355,10 @@ class MLXVLMHandler:
                 "rate_limit_exceeded",
                 HTTPStatus.TOO_MANY_REQUESTS,
             )
-            raise HTTPException(status_code=429, detail=content) from None
+            raise HTTPException(status_code=HTTPStatus.TOO_MANY_REQUESTS, detail=content) from None
+        except HTTPException:
+            # Preserve existing HTTP error semantics from request prep
+            raise
         except Exception as e:
             logger.error(f"Error in multimodal response generation: {e!s}")
             content = create_error_response(
@@ -360,7 +366,7 @@ class MLXVLMHandler:
                 "server_error",
                 HTTPStatus.INTERNAL_SERVER_ERROR,
             )
-            raise HTTPException(status_code=500, detail=content) from e
+            raise HTTPException(status_code=HTTPStatus.INTERNAL_SERVER_ERROR, detail=content) from e
         else:
             # Count completion tokens
             completion_tokens = self._count_tokens(response)
@@ -397,14 +403,14 @@ class MLXVLMHandler:
 
             return {"response": parsed_response, "usage": usage}
 
-    async def generate_embeddings_response(self, request: EmbeddingRequest) -> NoReturn:
+    async def generate_embeddings_response(self, _request: EmbeddingRequest) -> NoReturn:
         """
         Generate embeddings for a given text input.
 
         This function always raises an HTTPException(400) as embeddings are not supported for VLM models.
 
         Args:
-            request: EmbeddingRequest object containing the text input.
+            _request: EmbeddingRequest object containing the text input.
 
         Raises
         ------
@@ -416,7 +422,7 @@ class MLXVLMHandler:
             "bad_request",
             HTTPStatus.BAD_REQUEST,
         )
-        raise HTTPException(status_code=400, detail=content)
+        raise HTTPException(status_code=HTTPStatus.BAD_REQUEST, detail=content)
 
     async def close(self) -> None:
         """Explicitly cleanup resources asynchronously."""
@@ -543,11 +549,12 @@ class MLXVLMHandler:
             isinstance(content_part, ChatCompletionContentPartInputAudio)
             and content_part.input_audio is not None
         ):
-            audio_url = content_part.input_audio.data
-            # Validate base64 data URLs before processing
-            self._validate_audio_data(audio_url)
-            audio_path = await self.audio_processor.process_audio_url(audio_url)
-            return {"content_part": {"type": "audio", "audio": audio_path}, "path": audio_path}
+            content = create_error_response(
+                "Audio input is not supported for VLM models",
+                "bad_request",
+                HTTPStatus.BAD_REQUEST,
+            )
+            raise HTTPException(status_code=HTTPStatus.BAD_REQUEST, detail=content)
 
         if (
             isinstance(content_part, ChatCompletionContentPartVideo)
@@ -564,7 +571,11 @@ class MLXVLMHandler:
                 "path": video_path,
             }
 
-        return {"content_part": {"type": "text", "text": content_part.text}}
+        if isinstance(content_part, ChatCompletionContentPartText):
+            return {"content_part": {"type": "text", "text": content_part.text}}
+
+        # Fallback for unknown types
+        return {"content_part": {"type": "text", "text": str(content_part)}}
 
     async def _prepare_multimodal_request(self, request: ChatCompletionRequest) -> dict[str, Any]:
         """
@@ -631,16 +642,9 @@ class MLXVLMHandler:
                             "invalid_request_error",
                             HTTPStatus.BAD_REQUEST,
                         )
-                        raise HTTPException(status_code=400, detail=content)
+                        raise HTTPException(status_code=HTTPStatus.BAD_REQUEST, detail=content)
 
-            if audios:
-                content = create_error_response(
-                    "Audio input is not supported for VLM models",
-                    "bad_request",
-                    HTTPStatus.BAD_REQUEST,
-                )
-                raise HTTPException(status_code=400, detail=content)
-
+            chat_template_kwargs = request.chat_template_kwargs.model_dump()
             request_dict = {
                 "messages": chat_messages,
                 "images": images,
@@ -651,7 +655,7 @@ class MLXVLMHandler:
                 "frequency_penalty": request.frequency_penalty,
                 "presence_penalty": request.presence_penalty,
                 "max_tokens": request.max_tokens,
-                "chat_template_kwargs": request.chat_template_kwargs.model_dump(),
+                "chat_template_kwargs": chat_template_kwargs,
                 "stream": request.stream,
             }
 
@@ -661,10 +665,10 @@ class MLXVLMHandler:
             if tools:
                 # Enable auto tool choice if requested via CLI flag
                 if self.enable_auto_tool_choice and tool_choice == "auto":
-                    request_dict["chat_template_kwargs"]["tool_choice"] = "auto"
+                    chat_template_kwargs["tool_choice"] = "auto"
                 elif tool_choice:
                     logger.warning("Tool choice has not supported yet, will be ignored.")
-                request_dict["chat_template_kwargs"]["tools"] = tools
+                chat_template_kwargs["tools"] = tools
 
         except HTTPException:
             raise
@@ -673,7 +677,7 @@ class MLXVLMHandler:
             content = create_error_response(
                 f"Failed to process request: {e!s}", "bad_request", HTTPStatus.BAD_REQUEST
             )
-            raise HTTPException(status_code=400, detail=content) from e
+            raise HTTPException(status_code=HTTPStatus.BAD_REQUEST, detail=content) from e
         else:
             return request_dict
 
@@ -692,7 +696,7 @@ class MLXVLMHandler:
             content = create_error_response(
                 "Empty image URL provided", "invalid_request_error", HTTPStatus.BAD_REQUEST
             )
-            raise HTTPException(status_code=400, detail=content)
+            raise HTTPException(status_code=HTTPStatus.BAD_REQUEST, detail=content)
 
         # Validate base64 images
         if url.startswith("data:"):
@@ -705,7 +709,7 @@ class MLXVLMHandler:
                 content = create_error_response(
                     f"Invalid base64 image: {e!s}", "invalid_request_error", HTTPStatus.BAD_REQUEST
                 )
-                raise HTTPException(status_code=400, detail=content) from e
+                raise HTTPException(status_code=HTTPStatus.BAD_REQUEST, detail=content) from e
 
     def _validate_audio_data(self, url: str) -> None:
         """
@@ -722,7 +726,7 @@ class MLXVLMHandler:
             content = create_error_response(
                 "Empty audio data provided", "invalid_request_error", HTTPStatus.BAD_REQUEST
             )
-            raise HTTPException(status_code=400, detail=content)
+            raise HTTPException(status_code=HTTPStatus.BAD_REQUEST, detail=content)
 
         # Validate base64 audio
         if url.startswith("data:"):
@@ -735,4 +739,4 @@ class MLXVLMHandler:
                 content = create_error_response(
                     f"Invalid base64 audio: {e!s}", "invalid_request_error", HTTPStatus.BAD_REQUEST
                 )
-                raise HTTPException(status_code=400, detail=content) from e
+                raise HTTPException(status_code=HTTPStatus.BAD_REQUEST, detail=content) from e
