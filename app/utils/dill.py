@@ -18,7 +18,7 @@
 from io import BytesIO
 import sys
 from types import FunctionType
-from typing import Any
+from typing import Any, ClassVar
 
 import dill
 import xxhash
@@ -27,9 +27,9 @@ import xxhash
 class Hasher:
     """Hasher that accepts python objects as inputs."""
 
-    dispatch: dict = {}
+    dispatch: ClassVar[dict] = {}
 
-    def __init__(self):
+    def __init__(self) -> None:
         self.m = xxhash.xxh64()
 
     @classmethod
@@ -42,11 +42,11 @@ class Hasher:
         return m.hexdigest()
 
     @classmethod
-    def hash(cls, value: Any) -> str:
+    def hash(cls, value: object) -> str:
         """Hash a Python object by pickling it first."""
         return cls.hash_bytes(dumps(value))
 
-    def update(self, value: Any) -> None:
+    def update(self, value: object) -> None:
         """Update the hasher with a Python object."""
         header_for_update = f"=={type(value)}=="
         value_for_update = self.hash(value)
@@ -64,7 +64,7 @@ class Pickler(dill.Pickler):
     dispatch = dill._dill.MetaCatchingDict(dill.Pickler.dispatch.copy())  # noqa: SLF001
     _legacy_no_dict_keys_sorting = False
 
-    def save(self, obj, save_persistent_id=True):
+    def save(self, obj: Any, save_persistent_id: bool = True) -> None:
         """Save an object to the pickle stream with custom handling."""
         obj_type = type(obj)
         if obj_type not in self.dispatch:
@@ -106,7 +106,7 @@ class Pickler(dill.Pickler):
             obj = getattr(obj, "_torchdynamo_orig_callable", obj)
         dill.Pickler.save(self, obj, save_persistent_id=save_persistent_id)
 
-    def _batch_setitems(self, items) -> None:
+    def _batch_setitems(self, items: Any) -> None:
         if self._legacy_no_dict_keys_sorting:
             return super()._batch_setitems(items)
         # Ignore the order of keys in a dict
@@ -117,40 +117,40 @@ class Pickler(dill.Pickler):
             items = sorted(items, key=lambda x: Hasher.hash(x[0]))
         return super()._batch_setitems(items)
 
-    def memoize(self, obj) -> None:
+    def memoize(self, obj: Any) -> None:
         """Memoize an object, skipping strings to avoid id issues."""
         # Don't memoize strings since two identical strings can have different Python ids
         if type(obj) is not str:  # noqa: E721
             dill.Pickler.memoize(self, obj)
 
 
-def pklregister(t):
+def pklregister(t: Any) -> None:
     """Register a custom reducer for the type."""
 
-    def proxy(func):
+    def proxy(func: Any) -> Any:
         Pickler.dispatch[t] = func
         return func
 
     return proxy
 
 
-def dump(obj, file):
+def dump(obj: Any, file: Any) -> None:
     """Pickle an object to a file."""
     Pickler(file, recurse=True).dump(obj)
 
 
-def dumps(obj):
+def dumps(obj: Any) -> Any:
     """Pickle an object to a string."""
     file = BytesIO()
     dump(obj, file)
     return file.getvalue()
 
 
-def log(pickler, msg):
+def log(pickler: Any, msg: Any) -> None:
     """Log a message from the pickler (no-op)."""
 
 
-def _save_regexPattern(pickler, obj):
+def _save_regexPattern(pickler: Any, obj: Any) -> None:
     import regex  # noqa: PLC0415
 
     log(pickler, f"Re: {obj}")
@@ -159,7 +159,7 @@ def _save_regexPattern(pickler, obj):
     log(pickler, "# Re")
 
 
-def _save_tiktokenEncoding(pickler, obj):
+def _save_tiktokenEncoding(pickler: Any, obj: Any) -> None:
     import tiktoken  # noqa: PLC0415
 
     log(pickler, f"Enc: {obj}")
@@ -168,11 +168,11 @@ def _save_tiktokenEncoding(pickler, obj):
     log(pickler, "# Enc")
 
 
-def _save_torchTensor(pickler, obj):
+def _save_torchTensor(pickler: Any, obj: Any) -> None:
     import torch  # noqa: PLC0415
 
     # `torch.from_numpy` is not picklable in `torch>=1.11.0`
-    def create_torchTensor(np_array, dtype=None):
+    def create_torchTensor(np_array: Any, dtype: Any = None) -> Any:
         tensor = torch.from_numpy(np_array)
         if dtype:
             tensor = tensor.type(dtype)
@@ -187,7 +187,7 @@ def _save_torchTensor(pickler, obj):
     log(pickler, "# To")
 
 
-def _save_torchGenerator(pickler, obj):
+def _save_torchGenerator(pickler: Any, obj: Any) -> None:
     import torch  # noqa: PLC0415
 
     def create_torchGenerator(state):
@@ -201,7 +201,7 @@ def _save_torchGenerator(pickler, obj):
     log(pickler, "# Ge")
 
 
-def _save_spacyLanguage(pickler, obj):
+def _save_spacyLanguage(pickler, obj) -> None:
     import spacy  # noqa: PLC0415
 
     def create_spacyLanguage(config, bytes):
@@ -215,7 +215,7 @@ def _save_spacyLanguage(pickler, obj):
     log(pickler, "# Sp")
 
 
-def _save_transformersPreTrainedTokenizerBase(pickler, obj):
+def _save_transformersPreTrainedTokenizerBase(pickler, obj) -> None:
     log(pickler, f"Tok: {obj}")
     # Ignore the `cache` attribute
     state = obj.__dict__

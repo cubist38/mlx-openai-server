@@ -173,7 +173,7 @@ class MLXLMHandler:
             logger.error(f"Error getting models: {e!s}")
             return []
 
-    async def initialize(self, queue_config: dict[str, Any] | None = None):
+    async def initialize(self, queue_config: dict[str, Any] | None = None) -> None:
         """Initialize the handler and start the request queue."""
         if not queue_config:
             queue_config = {"max_concurrency": 1, "timeout": 300, "queue_size": 100}
@@ -209,8 +209,13 @@ class MLXLMHandler:
             chat_template_kwargs = model_params.get("chat_template_kwargs", {})
             prompt_tokens = self._count_message_tokens(chat_messages, **chat_template_kwargs)
 
-            request_data = {"messages": chat_messages, "stream": True, **model_params}
-            response_generator, prompt_tokens = await self.request_queue.submit(
+            request_data = {
+                **model_params,
+                "messages": chat_messages,
+                "stream": True,
+                "prompt_tokens": prompt_tokens,
+            }
+            response_generator, prompt_tokens_returned = await self.request_queue.submit(
                 request_id, request_data
             )
             # Create appropriate parsers for this model type
@@ -327,8 +332,15 @@ class MLXLMHandler:
             chat_template_kwargs = model_params.get("chat_template_kwargs", {})
             prompt_tokens = self._count_message_tokens(chat_messages, **chat_template_kwargs)
 
-            request_data = {"messages": chat_messages, "stream": False, **model_params}
-            response, prompt_tokens = await self.request_queue.submit(request_id, request_data)
+            request_data = {
+                **model_params,
+                "messages": chat_messages,
+                "stream": False,
+                "prompt_tokens": prompt_tokens,
+            }
+            response, prompt_tokens_returned = await self.request_queue.submit(
+                request_id, request_data
+            )
         except asyncio.QueueFull:
             logger.error("Too many requests. Service is at capacity.")
             content = create_error_response(
@@ -397,7 +409,7 @@ class MLXLMHandler:
 
             return {"response": parsed_response, "usage": usage}
 
-    async def generate_embeddings_response(self, request: EmbeddingRequest):
+    async def generate_embeddings_response(self, request: EmbeddingRequest) -> list[list[float]]:
         """
         Generate embeddings for a given text input.
 
@@ -416,7 +428,7 @@ class MLXLMHandler:
             request_data = {"type": "embeddings", "input": request.input, "model": request.model}
 
             # Submit to the request queue
-            response = await self.request_queue.submit(request_id, request_data)
+            response, _ = await self.request_queue.submit(request_id, request_data)
 
         except Exception as e:
             logger.error(f"Error in embeddings generation: {e!s}")
@@ -429,7 +441,7 @@ class MLXLMHandler:
         else:
             return response
 
-    async def _process_request(self, request_data: dict[str, Any]) -> str:
+    async def _process_request(self, request_data: dict[str, Any]) -> tuple[Any, int]:
         """
         Process a text request. This is the worker function for the request queue.
 
@@ -438,7 +450,7 @@ class MLXLMHandler:
 
         Returns
         -------
-            str: The model's response.
+            tuple[Any, int]: The model's response and prompt token count.
         """
         try:
             # Check if the request is for embeddings
@@ -446,16 +458,18 @@ class MLXLMHandler:
                 result = self.model.get_embeddings(request_data["input"])
                 # Force garbage collection after embeddings
                 gc.collect()
-                return result
+                return result, 0
 
             # Extract request parameters
             messages = request_data.get("messages", [])
             stream = request_data.get("stream", False)
+            prompt_tokens = request_data.get("prompt_tokens", 0)
 
             # Remove these keys from model_params
             model_params = request_data.copy()
             model_params.pop("messages", None)
             model_params.pop("stream", None)
+            model_params.pop("prompt_tokens", None)
 
             # Apply message conversion if needed
             if self.converter:
@@ -479,7 +493,7 @@ class MLXLMHandler:
             gc.collect()
             raise
         else:
-            return response
+            return response, prompt_tokens
 
     async def get_queue_stats(self) -> dict[str, Any]:
         """
@@ -495,7 +509,7 @@ class MLXLMHandler:
             "queue_stats": queue_stats,
         }
 
-    async def cleanup(self):
+    async def cleanup(self) -> None:
         """
         Cleanup resources and stop the request queue before shutdown.
 
@@ -588,7 +602,7 @@ class MLXLMHandler:
 
             # Add all non-system messages after the merged system message
             chat_messages.extend(non_system_messages)
-
+            request_dict.pop("messages", None)
         except Exception as e:
             logger.error(f"Failed to prepare text request: {e!s}")
             content = create_error_response(

@@ -7,6 +7,7 @@ generation, streaming, and multimodal capabilities.
 
 from collections.abc import Generator
 import os
+from typing import Any
 
 from loguru import logger
 import mlx.core as mx
@@ -31,7 +32,7 @@ class MLX_VLM:
 
     def __init__(
         self, model_path: str, context_length: int = 32768, trust_remote_code: bool = False
-    ):
+    ) -> None:
         """
         Initialize the MLX_VLM model.
 
@@ -53,10 +54,10 @@ class MLX_VLM:
         except Exception as e:
             raise ValueError(f"Error loading model: {e!s}") from e
 
-    def _is_video_model(self):
+    def _is_video_model(self) -> bool:
         return hasattr(self.config, "video_token_id") or hasattr(self.config, "video_token_index")
 
-    def get_model_type(self):
+    def get_model_type(self) -> str:
         """
         Get the model type identifier.
 
@@ -69,12 +70,11 @@ class MLX_VLM:
 
     def __call__(
         self,
-        messages: list[dict[str, object]],
+        messages: list[dict[str, Any]],
         images: list[str] | None = None,
-        audios: list[str] | None = None,
         videos: list[str] | None = None,
         stream: bool = False,
-        **kwargs,
+        **kwargs: Any,
     ) -> tuple[str | Generator[str, None, None], int]:
         """
         Generate text response from images and messages.

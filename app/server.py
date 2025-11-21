@@ -16,12 +16,14 @@ from contextlib import asynccontextmanager
 import gc
 import sys
 import time
+from typing import Any
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from loguru import logger
 import mlx.core as mx
+from starlette.responses import Response
 import uvicorn
 
 from .api.endpoints import router
@@ -101,7 +103,7 @@ def get_model_identifier(config_args: MLXServerConfig) -> str:
     return config_args.model_path
 
 
-def create_lifespan(config_args: MLXServerConfig):
+def create_lifespan(config_args: MLXServerConfig) -> Any:
     """Create an async FastAPI lifespan context manager bound to configuration.
 
     The returned context manager performs the following actions during
@@ -298,7 +300,7 @@ def setup_server(config_args: MLXServerConfig) -> uvicorn.Config:
     )
 
     @app.middleware("http")
-    async def add_process_time_header(request: Request, call_next):
+    async def add_process_time_header(request: Request, call_next) -> Response:
         """Middleware to add processing time header and run cleanup.
 
         Measures request processing time, appends an ``X-Process-Time``
@@ -327,7 +329,7 @@ def setup_server(config_args: MLXServerConfig) -> uvicorn.Config:
         return response
 
     @app.exception_handler(Exception)
-    async def global_exception_handler(request: Request, exc: Exception):
+    async def global_exception_handler(request: Request, exc: Exception) -> JSONResponse:
         """Global exception handler that logs and returns a 500 payload.
 
         Logs the exception (with traceback) and returns a generic JSON

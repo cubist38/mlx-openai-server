@@ -44,7 +44,7 @@ class MLXFluxHandler:
         config_name: str = "flux-schnell",
         lora_paths: list[str] | None = None,
         lora_scales: list[float] | None = None,
-    ):
+    ) -> None:
         """
         Initialize the handler with the specified model path.
 
@@ -95,7 +95,7 @@ class MLXFluxHandler:
             logger.error(f"Error getting models: {e!s}")
             return []
 
-    async def initialize(self, queue_config: dict[str, Any] | None = None):
+    async def initialize(self, queue_config: dict[str, Any] | None = None) -> None:
         """Initialize the handler and start the request queue."""
         if not queue_config:
             queue_config = {"max_concurrency": 1, "timeout": 300, "queue_size": 100}
@@ -138,7 +138,7 @@ class MLXFluxHandler:
                 "negative_prompt": request.negative_prompt,
                 "steps": request.steps,
                 "seed": request.seed,
-                "guidance": request.guidance_scale,
+                "guidance_scale": request.guidance_scale,
                 "width": width,
                 "height": height,
             }
@@ -248,7 +248,7 @@ class MLXFluxHandler:
                 "negative_prompt": image_edit_request.negative_prompt,
                 "width": width,
                 "height": height,
-                "guidance": image_edit_request.guidance_scale,
+                "guidance_scale": image_edit_request.guidance_scale,
             }
 
             # Submit to the request queue
@@ -407,7 +407,7 @@ class MLXFluxHandler:
             "average_processing_time": stats.get("average_processing_time", 0),
         }
 
-    async def cleanup(self):
+    async def cleanup(self) -> None:
         """Clean up resources and shut down the request queue."""
         if hasattr(self, "_cleaned") and self._cleaned:
             return
@@ -425,7 +425,7 @@ class MLXFluxHandler:
         gc.collect()
         logger.info("MLXFluxHandler cleanup completed")
 
-    def __del__(self):
+    def __del__(self) -> None:
         """
         Destructor to ensure cleanup on object deletion.
 

@@ -38,8 +38,7 @@ class OpenAIBaseModel(BaseModel):
         # Compare against both field names and aliases
         if any(k not in field_names for k in data):
             logger.warning(
-                "The following fields were present in the request but ignored: %s",
-                data.keys() - field_names,
+                f"The following fields were present in the request but ignored: {data.keys() - field_names}"
             )
         return result
 
@@ -140,7 +139,7 @@ class ChatCompletionContentPartText(OpenAIBaseModel):
     type: Literal["text"] = Field(..., description="The type of content, e.g., 'text'.")
 
 
-type ChatCompletionContentPart = (
+ChatCompletionContentPart = (
     ChatCompletionContentPartImage
     | ChatCompletionContentPartVideo
     | ChatCompletionContentPartInputAudio
@@ -224,7 +223,8 @@ class ChatCompletionRequestBase(OpenAIBaseModel):
     n: int | None = Field(1, description="Number of completions to generate.")
     response_format: dict[str, Any] | None = Field(None, description="Format for the response.")
     seed: int | None = Field(
-        random.randint(0, 1000000), description="Random seed for reproducibility."
+        default_factory=lambda: random.randint(0, 1_000_000),
+        description="Random seed for reproducibility.",
     )
     user: str | None = Field(None, description="User identifier.")
     repetition_penalty: float | None = Field(
@@ -275,7 +275,7 @@ class ChatTemplateKwargs(OpenAIBaseModel):
     """Represents the arguments for a chat template."""
 
     enable_thinking: bool = Field(True, description="Whether to enable thinking.")
-    reasoning_effot: Literal["low", "medium", "high"] = Field(
+    reasoning_effort: Literal["low", "medium", "high"] = Field(
         "medium", description="The reasoning effort level."
     )
 
@@ -587,8 +587,8 @@ class TranscriptionRequest(OpenAIBaseModel):
     repetition_penalty: float | None = Field(
         default=None, description="The repetition penalty for the transcription"
     )
-    presence_penalty: int | None = Field(
-        default=None, description="The repetition context size for the transcription"
+    presence_penalty: float | None = Field(
+        default=None, description="Presence penalty for token generation"
     )
 
 
@@ -627,4 +627,6 @@ class TranscriptionResponseStream(OpenAIBaseModel):
     choices: list[TranscriptionResponseStreamChoice] = Field(
         ..., description="The choices for this streaming response."
     )
-    usage: UsageInfo | None = Field(default=None, description="The usage of the transcription.")
+    usage: TranscriptionUsageAudio | None = Field(
+        default=None, description="The usage of the transcription."
+    )

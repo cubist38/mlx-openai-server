@@ -20,7 +20,7 @@ class MLX_Embeddings:
     with proper cleanup of MLX arrays and memory management.
     """
 
-    def __init__(self, model_path: str):
+    def __init__(self, model_path: str) -> None:
         """
         Initialize the MLX_Embeddings model.
 
@@ -72,19 +72,20 @@ class MLX_Embeddings:
             # Always clean up intermediate arrays
             self._cleanup_arrays(inputs, outputs)
 
-    def _cleanup_arrays(self, *arrays):
+    def _cleanup_arrays(self, *arrays) -> None:
         """Clean up MLX arrays to free memory."""
         for array in arrays:
             if array is not None:
                 try:
                     if isinstance(array, dict):
-                        for value in array.values():
+                        for key, value in list(array.items()):
                             if hasattr(value, "nbytes"):
-                                del value
+                                del array[key]
                     elif hasattr(array, "nbytes"):
-                        del array
-                except Exception:
-                    pass
+                        # Let the caller drop its reference; nothing to mutate here.
+                        pass
+                except Exception as e:
+                    logger.debug(f"Error during embeddings array cleanup: {e!s}")
 
         # Clear MLX cache and force garbage collection
         mx.clear_cache()
@@ -118,7 +119,7 @@ class MLX_Embeddings:
         else:
             return result
 
-    def cleanup(self):
+    def cleanup(self) -> None:
         """Explicitly cleanup resources."""
         try:
             # Clear any cached model outputs
@@ -134,7 +135,7 @@ class MLX_Embeddings:
             # Log cleanup errors but don't raise
             pass
 
-    def __del__(self):
+    def __del__(self) -> None:
         """Destructor to ensure cleanup on object deletion."""
         self.cleanup()
 

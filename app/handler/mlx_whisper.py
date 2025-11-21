@@ -6,10 +6,10 @@ requests using MLX Whisper models, with support for streaming responses and
 request queuing.
 """
 
+import asyncio
 from collections.abc import AsyncGenerator
 import gc
 from http import HTTPStatus
-import json
 from pathlib import Path
 import tempfile
 import time
@@ -40,7 +40,7 @@ class MLXWhisperHandler:
     Provides request queuing, metrics tracking, and robust error handling for audio transcription.
     """
 
-    def __init__(self, model_path: str, max_concurrency: int = 1):
+    def __init__(self, model_path: str, max_concurrency: int = 1) -> None:
         """
         Initialize the handler with the specified model path.
 
@@ -72,7 +72,7 @@ class MLXWhisperHandler:
             logger.error(f"Error getting models: {e!s}")
             return []
 
-    async def initialize(self, queue_config: dict[str, Any] | None = None):
+    async def initialize(self, queue_config: dict[str, Any] | None = None) -> None:
         """Initialize the handler and start the request queue."""
         if not queue_config:
             queue_config = {
@@ -90,7 +90,7 @@ class MLXWhisperHandler:
 
     async def generate_transcription_response(
         self, request: TranscriptionRequest
-    ) -> TranscriptionResponse:
+    ) -> TranscriptionResponse | str:
         """Generate a transcription response for the given request."""
         request_id = f"transcription-{uuid.uuid4()}"
         temp_file_path = None
@@ -107,8 +107,8 @@ class MLXWhisperHandler:
             )
             if request.response_format == TranscriptionResponseFormat.JSON:
                 return response_data
-            # dump to string for text response
-            return json.dumps(response_data.model_dump())
+            # Return plain text for text response format
+            return response_data.text
         finally:
             # Clean up temporary file
             if temp_file_path and Path(temp_file_path).exists():
@@ -121,7 +121,7 @@ class MLXWhisperHandler:
             gc.collect()
 
     async def generate_transcription_stream_from_data(
-        self, request_data: dict[str, Any], response_format: TranscriptionResponseFormat
+        self, request_data: dict[str, Any]
     ) -> AsyncGenerator[str, None]:
         """
         Generate a transcription stream from prepared request data.
@@ -130,7 +130,6 @@ class MLXWhisperHandler:
 
         Args:
             request_data: Prepared request data with audio_path already saved
-            response_format: The response format (json or text)
         """
         request_id = f"transcription-{uuid.uuid4()}"
         created_time = int(time.time())
@@ -140,11 +139,20 @@ class MLXWhisperHandler:
             # Set stream mode
             request_data["stream"] = True
 
-            # Get the generator directly from the model (bypass queue for streaming)
-            generator = self.model(audio_path=request_data.pop("audio_path"), **request_data)
+            # Offload synchronous generator to thread pool to avoid blocking event loop
+            loop = asyncio.get_event_loop()
+            audio_path = request_data.pop("audio_path")
 
-            # Stream each chunk
-            for chunk in generator:
+            def collect_chunks():
+                """Collect all chunks from the synchronous generator."""
+                generator = self.model(audio_path=audio_path, **request_data)
+                return list(generator)
+
+            # Run the synchronous generator collection in a thread
+            chunks = await loop.run_in_executor(None, collect_chunks)
+
+            # Stream each chunk asynchronously
+            for chunk in chunks:
                 # Create streaming response
                 stream_response = TranscriptionResponseStream(
                     id=request_id,
@@ -315,7 +323,7 @@ class MLXWhisperHandler:
             "queue_stats": queue_stats,
         }
 
-    async def cleanup(self):
+    async def cleanup(self) -> None:
         """
         Cleanup resources and stop the request queue before shutdown.
 

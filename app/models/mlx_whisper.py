@@ -5,7 +5,11 @@ This module provides a wrapper class for MLX Whisper models with audio
 transcription and processing capabilities.
 """
 
+from __future__ import annotations
+
+from collections.abc import Generator
 from functools import lru_cache
+from typing import Any
 
 import librosa
 from loguru import logger
@@ -17,7 +21,7 @@ CHUNK_SIZE = 30
 
 
 @lru_cache(maxsize=32)
-def load_audio(fname):
+def load_audio(fname: str) -> Any:
     """Load and cache audio file. Cache size limited to 32 recent files."""
     a, _ = librosa.load(fname, sr=SAMPLING_RATE, dtype=np.float32)
     return a
@@ -38,10 +42,12 @@ class MLX_Whisper:
     using MLX Whisper implementations.
     """
 
-    def __init__(self, model_path: str):
+    def __init__(self, model_path: str) -> None:
         self.model_path = model_path
 
-    def _transcribe_generator(self, audio_path: str, **kwargs):
+    def _transcribe_generator(
+        self, audio_path: str, **kwargs: Any
+    ) -> Generator[dict[str, Any], None, None]:
         """Stream transcription by processing audio in larger chunks."""
         # Load the audio file
         audio = load_audio(audio_path)
@@ -68,7 +74,9 @@ class MLX_Whisper:
 
             beg += CHUNK_SIZE
 
-    def __call__(self, audio_path: str, stream: bool = False, **kwargs):
+    def __call__(
+        self, audio_path: str, stream: bool = False, **kwargs: Any
+    ) -> Generator[dict[str, Any], None, None] | dict[str, Any]:
         """
         Transcribe audio file.
 

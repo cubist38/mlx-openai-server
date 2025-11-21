@@ -8,7 +8,7 @@ from mlx_openai_server.handler.parser.base import BaseToolParser
 class TestBaseToolParser(unittest.TestCase):
     """Test cases for BaseToolParser."""
 
-    def setUp(self):
+    def setUp(self) -> None:
         """Set up test cases."""
         self.test_cases = [
             {
@@ -126,7 +126,7 @@ class TestBaseToolParser(unittest.TestCase):
             },
         ]
 
-    def test_parse_stream(self):
+    def test_parse_stream(self) -> None:
         """Test parsing stream."""
         for test_case in self.test_cases:
             with self.subTest(msg=test_case["name"]):
@@ -134,9 +134,9 @@ class TestBaseToolParser(unittest.TestCase):
                 outputs = []
 
                 for chunk in test_case["chunks"]:
-                    result = parser.parse_stream(chunk)
-                    if result:
-                        outputs.append(result)
+                    parsed, _complete = parser.parse_stream(chunk)
+                    if parsed is not None:
+                        outputs.append(parsed)
 
                 assert len(outputs) == len(test_case["expected_outputs"]), (
                     f"Expected {len(test_case['expected_outputs'])} outputs, got {len(outputs)}"

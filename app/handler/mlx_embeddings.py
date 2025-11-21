@@ -22,7 +22,7 @@ class MLXEmbeddingsHandler:
     Provides request queuing, metrics tracking, and robust error handling with memory management.
     """
 
-    def __init__(self, model_path: str, max_concurrency: int = 1):
+    def __init__(self, model_path: str, max_concurrency: int = 1) -> None:
         """
         Initialize the handler with the specified model path.
 
@@ -54,7 +54,7 @@ class MLXEmbeddingsHandler:
             logger.error(f"Error getting models: {e!s}")
             return []
 
-    async def initialize(self, config: dict[str, Any]):
+    async def initialize(self, config: dict[str, Any]) -> None:
         """
         Initialize the request queue with configuration.
 
@@ -142,7 +142,7 @@ class MLXEmbeddingsHandler:
             "queue_stats": queue_stats,
         }
 
-    async def cleanup(self):
+    async def cleanup(self) -> None:
         """
         Cleanup resources and stop the request queue before shutdown.
 
@@ -160,7 +160,7 @@ class MLXEmbeddingsHandler:
             logger.error(f"Error during MLXEmbeddingsHandler cleanup: {e!s}")
             raise
 
-    def __del__(self):
+    def __del__(self) -> None:
         """
         Destructor to ensure cleanup on object deletion.
 

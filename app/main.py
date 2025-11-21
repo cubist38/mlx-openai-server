@@ -27,7 +27,7 @@ from .server import setup_server
 from .version import __version__
 
 
-def print_startup_banner(config_args):
+def print_startup_banner(config_args: MLXServerConfig) -> None:
     """Log a compact startup banner describing the selected config.
 
     The function emits human-friendly log messages that summarize the
@@ -102,7 +102,7 @@ async def start(config: MLXServerConfig) -> None:
         sys.exit(1)
 
 
-def main():
+def main() -> None:
     """Normalize process args and dispatch to the Click CLI.
 
     This helper gathers command-line arguments, inserts the "launch"

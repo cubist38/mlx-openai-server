@@ -48,7 +48,7 @@ class ModelConfiguration:
         default_guidance: float = 2.5,
         lora_paths: list[str] | None = None,
         lora_scales: list[float] | None = None,
-    ):
+    ) -> None:
         # Validate quantization level
         if quantize not in [4, 8, 16]:
             raise InvalidConfigurationError(
@@ -144,7 +144,7 @@ class ModelConfiguration:
 class BaseFluxModel(ABC):
     """Abstract base class for Flux models with common functionality."""
 
-    def __init__(self, model_path: str, config: ModelConfiguration):
+    def __init__(self, model_path: str, config: ModelConfiguration) -> None:
         self.model_path = model_path
         self.config = config
         self._model = None
@@ -167,7 +167,7 @@ class BaseFluxModel(ABC):
         return self.model_path in valid_model_names
 
     @abstractmethod
-    def _load_model(self):
+    def _load_model(self) -> None:
         """Load the specific model implementation."""
 
     @abstractmethod
@@ -253,7 +253,7 @@ class BaseFluxModel(ABC):
 class FluxStandardModel(BaseFluxModel):
     """Standard Flux model implementation for Dev and Schnell variants."""
 
-    def _load_model(self):
+    def _load_model(self) -> None:
         """Load the standard Flux model."""
         try:
             logger.info("Loading {} model from {}", self.config.model_type, self.model_path)
@@ -299,7 +299,7 @@ class FluxStandardModel(BaseFluxModel):
 class FluxKontextModel(BaseFluxModel):
     """Flux Kontext model implementation."""
 
-    def _load_model(self):
+    def _load_model(self) -> None:
         """Load the Flux Kontext model."""
         try:
             logger.info("Loading Kontext model from {}", self.model_path)
@@ -349,7 +349,7 @@ class FluxModel:
         quantize: int = 8,
         lora_paths: list[str] | None = None,
         lora_scales: list[float] | None = None,
-    ):
+    ) -> None:
         self.config_name = config_name
         self.model_path = model_path
         self.quantize = quantize

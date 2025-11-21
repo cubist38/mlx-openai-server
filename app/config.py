@@ -46,7 +46,7 @@ class MLXServerConfig:
     lora_paths_str: str | None = None
     lora_scales_str: str | None = None
 
-    def __post_init__(self):
+    def __post_init__(self) -> None:
         """Normalize certain CLI fields after instantiation.
 
         - Convert comma-separated ``lora_paths`` and ``lora_scales`` into

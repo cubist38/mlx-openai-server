@@ -26,7 +26,7 @@ class UpperChoice(click.Choice):
     where the internal representation is uppercased.
     """
 
-    def normalize_choice(self, choice, ctx):
+    def normalize_choice(self, choice, ctx) -> str | None:
         """Return the canonical uppercase choice or raise BadParameter.
 
         Parameters
@@ -75,7 +75,7 @@ logger.add(
 🚀 Version: %(version)s
 """,
 )
-def cli():
+def cli() -> None:
     """Top-level Click command group for the MLX server CLI.
 
     Subcommands (such as ``launch``) are registered on this group and
