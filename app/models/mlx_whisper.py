@@ -87,7 +87,14 @@ class MLX_Whisper:
         """
         if stream:
             return self._transcribe_generator(audio_path, **kwargs)
-        tc: dict[str, Any] = transcribe(audio_path, path_or_hf_repo=self.model_path, **kwargs)
+
+        tc: dict[str, Any] = transcribe(
+            audio_path,
+            path_or_hf_repo=self.model_path,
+            **kwargs,
+        )
+        # Attach duration so callers do not need to reload audio
+        tc.setdefault("duration", calculate_audio_duration(audio_path))
         return tc
 
 

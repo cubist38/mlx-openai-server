@@ -135,7 +135,7 @@ class MLXVLMHandler:
             queue_size=queue_config.get("queue_size", self.request_queue.queue_size),
         )
         await self.request_queue.start(self._process_request)
-        logger.info("Initialized MLXHandler and started request queue")
+        logger.info("Initialized MLXVLMHandler and started request queue")
 
     def _count_tokens(self, text: str) -> int:
         """
@@ -345,7 +345,17 @@ class MLXVLMHandler:
 
         Returns
         -------
-            str: Complete response.
+            dict[str, Any]
+                    Dictionary containing the parsed response content and usage information.
+                    The top-level dictionary has the following keys:
+
+                    - ``response``: A nested dictionary with parsed response content, including
+                        optional ``reasoning_content`` (redacted reasoning), optional
+                        ``tool_calls`` (parsed tool invocations), and ``content`` for the final
+                        assistant message text.
+                    - ``usage``: A ``UsageInfo`` instance with ``prompt_tokens``,
+                        ``completion_tokens``, and ``total_tokens`` describing token
+                        consumption for this request.
         """
         try:
             # Create a unique request ID
@@ -474,7 +484,7 @@ class MLXVLMHandler:
 
     async def _process_request(
         self, request_data: dict[str, Any]
-    ) -> tuple[str | AsyncGenerator[str, None] | Generator[str, None, None], int]:
+    ) -> tuple[str | Generator[str, None, None], int]:
         """
         Process a multimodal request. This is the worker function for the request queue.
 
@@ -483,33 +493,24 @@ class MLXVLMHandler:
 
         Returns
         -------
-            tuple[str | AsyncGenerator[str, None], int]: A tuple containing the model's response
-            (either as a complete string or a streaming generator) and the number of prompt tokens.
+            tuple[str | Generator[str, None, None], int]
+                A tuple where:
+                - First element: Complete response as string (if stream=False) or a synchronous
+                  Generator yielding response chunks (if stream=True).
+                - Second element: Number of prompt tokens used.
         """
         try:
-            # Handle embeddings requests separately if MLX_VLM supports them
-            if request_data.get("type") == "embeddings":
-                # TODO: Implement embeddings logic or raise NotImplementedError
-                raise NotImplementedError("Embeddings not yet supported for VLM models")
-
             # Extract request parameters
-            images = request_data.get("images", [])
-            videos = request_data.get("videos", [])
             messages = request_data.get("messages", [])
             stream = request_data.get("stream", False)
 
             # Remove these keys from model_params
             model_params = request_data.copy()
-            model_params.pop("images", None)
-            model_params.pop("audios", None)
-            model_params.pop("videos", None)
             model_params.pop("messages", None)
             model_params.pop("stream", None)
 
             # Call the model
             response = self.model(
-                images=images,
-                videos=videos,
                 messages=messages,
                 stream=stream,
                 **model_params,
