@@ -9,7 +9,7 @@ request queuing.
 from __future__ import annotations
 
 import asyncio
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator, Generator
 import gc
 from http import HTTPStatus
 from pathlib import Path
@@ -61,18 +61,14 @@ class MLXWhisperHandler:
 
     async def get_models(self) -> list[dict[str, Any]]:
         """Get list of available models with their metadata."""
-        try:
-            return [
-                {
-                    "id": self.model_path,
-                    "object": "model",
-                    "created": self.model_created,
-                    "owned_by": "local",
-                }
-            ]
-        except Exception as e:
-            logger.error(f"Error getting models. {type(e).__name__}: {e}")
-            return []
+        return [
+            {
+                "id": self.model_path,
+                "object": "model",
+                "created": self.model_created,
+                "owned_by": "local",
+            }
+        ]
 
     async def initialize(self, queue_config: dict[str, Any] | None = None) -> None:
         """Initialize the handler and start the request queue."""
@@ -145,32 +141,32 @@ class MLXWhisperHandler:
             loop = asyncio.get_running_loop()
             audio_path = request_data.pop("audio_path")
 
-            def collect_chunks() -> list[dict[str, Any]]:
-                """Collect all chunks from the synchronous generator."""
-                generator = self.model(audio_path=audio_path, **request_data)
-                return list(generator)  # type: ignore[arg-type]
+            def create_generator() -> Generator[dict[str, Any], None, None]:
+                return self.model(audio_path=audio_path, **request_data)
 
-            # Run the synchronous generator collection in a thread
-            chunks = await loop.run_in_executor(None, collect_chunks)
+            generator = await loop.run_in_executor(None, create_generator)
 
-            # Stream each chunk asynchronously
-            for chunk in chunks:
-                # Create streaming response
-                stream_response = TranscriptionResponseStream(
-                    id=request_id,
-                    object="transcription.chunk",
-                    created=created_time,
-                    model=self.model_path,
-                    choices=[
-                        TranscriptionResponseStreamChoice(
-                            delta=Delta(content=chunk.get("text", "")),  # type: ignore[call-arg]
-                            finish_reason=None,
-                        )
-                    ],
-                )
+            try:
+                while True:
+                    chunk = await loop.run_in_executor(None, next, generator)
+                    # Create streaming response
+                    stream_response = TranscriptionResponseStream(
+                        id=request_id,
+                        object="transcription.chunk",
+                        created=created_time,
+                        model=self.model_path,
+                        choices=[
+                            TranscriptionResponseStreamChoice(
+                                delta=Delta(content=chunk.get("text", "")),  # type: ignore[call-arg]
+                                finish_reason=None,
+                            )
+                        ],
+                    )
 
-                # Yield as SSE format
-                yield f"data: {stream_response.model_dump_json()}\n\n"
+                    # Yield as SSE format
+                    yield f"data: {stream_response.model_dump_json()}\n\n"
+            except StopIteration:
+                pass
 
             # Send final chunk with finish_reason
             final_response = TranscriptionResponseStream(

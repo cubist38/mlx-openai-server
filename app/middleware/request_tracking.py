@@ -27,7 +27,8 @@ class RequestTrackingMiddleware(BaseHTTPMiddleware):
         """
         Process each request with correlation ID tracking.
 
-        Args:
+        Args
+        ----
             request: Incoming FastAPI request
             call_next: Next middleware/handler in chain
 

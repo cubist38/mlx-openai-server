@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import functools
 import gc
 from http import HTTPStatus
 import io
@@ -396,11 +397,19 @@ class MLXFluxHandler:
             logger.info(f"  - Image path: {image_path}")
             logger.info(f"  - Model params: {model_params}")
 
-            # Generate image
-            image = self.model(prompt=prompt, seed=seed, **model_params)
+            # Generate image. Run the (potentially heavy) synchronous model call
+            # in a thread executor so we don't block the event loop.
+            loop = asyncio.get_running_loop()
+            try:
+                image = await loop.run_in_executor(
+                    None, functools.partial(self.model, prompt=prompt, seed=seed, **model_params)
+                )
+            except Exception as e:
+                logger.error(f"Model inference raised exception. {type(e).__name__}: {e}")
+                raise
 
         except Exception as e:
-            logger.error(f"Error processing image generation request: {e}")
+            logger.error(f"Error processing image generation request. {type(e).__name__}: {e}")
             # Clean up on error
             gc.collect()
             raise
