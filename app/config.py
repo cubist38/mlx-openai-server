@@ -46,7 +46,7 @@ class MLXServerConfig:
     lora_paths_str: str | None = None
     lora_scales_str: str | None = None
 
-    def __post_init__(self):
+    def __post_init__(self) -> None:
         """Normalize certain CLI fields after instantiation.
 
         - Convert comma-separated ``lora_paths`` and ``lora_scales`` into
@@ -54,7 +54,6 @@ class MLXServerConfig:
         - Apply small model-type-specific defaults for ``config_name``
           and emit warnings when values appear inconsistent.
         """
-
         # Process comma-separated LoRA paths and scales into lists (or None)
         if self.lora_paths_str:
             self.lora_paths = [p.strip() for p in self.lora_paths_str.split(",") if p.strip()]
@@ -73,11 +72,9 @@ class MLXServerConfig:
         # image-edit model types. If missing for those types, set defaults.
         if self.config_name and self.model_type not in ["image-generation", "image-edit"]:
             logger.warning(
-                "Config name parameter '%s' provided but model type is '%s'. "
+                f"Config name parameter '{self.config_name}' provided but model type is '{self.model_type}'. "
                 "Config name is only used with image-generation "
-                "and image-edit models.",
-                self.config_name,
-                self.model_type,
+                "and image-edit models."
             )
         elif self.model_type == "image-generation" and not self.config_name:
             logger.warning(
