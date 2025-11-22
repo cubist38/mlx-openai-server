@@ -185,22 +185,36 @@ This document tracks session-to-session handoffs for the `mlx-openai-server-lab`
 
 ---
 
-## Session 2: TBD
-**Date**: TBD
-**Branch**: TBD
-**Goal**: TBD
+## Session 2: Phase 0 – JIT + Auto-Unload Wiring
+**Date**: 2025-11-21
+**Branch**: `Implement-JIT-and-Auto-Unload`
+**Goal**: Finish the Phase 0 work required to expose LazyHandlerManager + idle auto-unload through the API surface, health endpoint, and docs.
 
 ### Discoveries
-(Append here)
+- Handler lifecycle plumbing (LazyHandlerManager + IdleAutoUnloadController) was already present in `app/server.py`, but API routes still referenced `app.state.handler` directly, preventing JIT loading.
+- `/health` returned `503` whenever the handler was unloaded, which made JIT unusable for liveness probes.
+- Model metadata cache in `app.state.model_metadata` only tracked a timestamp, so `/v1/models` had to hit the handler each time.
 
 ### Actions Taken
-(Append here)
+- Added helper utilities inside `app/api/endpoints.py` that request handlers through the LazyHandlerManager (`ensure_loaded`) and surface consistent JSON errors when loading fails.
+- Updated `/health`, `/v1/models`, `/v1/queue/stats`, chat, embeddings, image, and audio routes to rely on the new helpers so the model loads on demand.
+- Changed the health endpoint to return `status="ok"` with `model_status="unloaded"` whenever JIT is enabled and the handler is idle.
+- Cached canonical model metadata at startup and refresh it whenever the handler loads/unloads so `/v1/models` can respond instantly even if the handler is unloaded.
+- Registered `RequestTrackingMiddleware` by default to ensure request IDs are always populated.
+- Added regression tests (`tests/test_health_endpoint.py`) covering the new health responses.
+- Documented the `--jit` and `--auto-unload-minutes` flags plus the updated health semantics in the README.
 
 ### Next Actions
-(Append here)
+- Extend the cached metadata structure to support multiple models once the registry work begins.
+- Consider lightweight status objects for `/v1/queue/stats` so we don’t need to load the handler for purely informational queries.
+- Monitor startup latency when JIT auto-loads on the first request and add user-facing logs/metrics if necessary.
 
 ### Risks & Open Questions
-(Append here)
+- If a handler fails to load (e.g., VRAM exhaustion), repeated requests will retry instantiation; we should add backoff or clearer error surfacing if this becomes noisy.
+- Streaming endpoints now call `ensure_loaded` per request; if future multi-model support appears, we’ll need to route by `model` parameter before touching the manager.
 
 ### Files Changed
-(Append here)
+- `app/api/endpoints.py`
+- `app/server.py`
+- `tests/test_health_endpoint.py`
+- `README.md`

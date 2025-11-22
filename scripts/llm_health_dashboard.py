@@ -14,15 +14,15 @@ from loguru import logger
 
 try:  # Dependency guards preserve useful error messages for local runs.
     import httpx
-except ImportError as exc:  # pragma: no cover - defensive
+except ImportError as e:  # pragma: no cover - defensive
     logger.error("This dashboard requires httpx. Install via `pip install httpx`.")
-    raise SystemExit(1) from exc
+    raise SystemExit(1) from e
 
 try:
     from pydantic import BaseModel, ConfigDict
-except ImportError as exc:  # pragma: no cover
+except ImportError as e:  # pragma: no cover
     logger.error("This dashboard requires pydantic. Install via `pip install pydantic`.")
-    raise SystemExit(1) from exc
+    raise SystemExit(1) from e
 
 try:
     from rich import box
@@ -31,9 +31,9 @@ try:
     from rich.live import Live
     from rich.panel import Panel
     from rich.table import Table
-except ImportError as exc:  # pragma: no cover
+except ImportError as e:  # pragma: no cover
     logger.error("This dashboard requires rich. Install via `pip install rich`.")
-    raise SystemExit(1) from exc
+    raise SystemExit(1) from e
 
 
 class ModelData(BaseModel):
@@ -98,16 +98,16 @@ def gather_snapshot(client: httpx.Client) -> DashboardSnapshot:
         status_text = str(payload.get("status", "unknown"))
         latency_ms = (time.perf_counter() - start) * 1000.0
         reachable = True
-    except Exception as exc:  # pragma: no cover - network dependent
-        errors.append(f"health: {exc}")
+    except Exception as e:  # pragma: no cover - network dependent
+        errors.append(f"health: {e}")
 
     models: list[ModelData] = []
     try:
         response = client.get("/v1/models")
         response.raise_for_status()
         models = ModelList.model_validate(response.json()).data
-    except Exception as exc:  # pragma: no cover
-        errors.append(f"models: {exc}")
+    except Exception as e:  # pragma: no cover
+        errors.append(f"models: {e}")
 
     active_model = select_active_model(models)
 
@@ -199,8 +199,8 @@ def streaming_sanity_check(client: httpx.Client, model_id: str) -> tuple[bool, s
                     text = delta.get("content")
                     if text:
                         content_chars += len(text)
-    except Exception as exc:  # pragma: no cover
-        return False, f"stream error: {exc}"
+    except Exception as e:  # pragma: no cover
+        return False, f"stream error: {e}"
 
     if chunk_count == 0:
         return False, "stream incomplete (no chunks)"

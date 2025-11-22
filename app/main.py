@@ -53,6 +53,16 @@ def print_startup_banner(config_args: MLXServerConfig) -> None:
     logger.info(f"⚡ Max Concurrency: {config_args.max_concurrency}")
     logger.info(f"⏱️ Queue Timeout: {config_args.queue_timeout} seconds")
     logger.info(f"📊 Queue Size: {config_args.queue_size}")
+    if config_args.jit_enabled:
+        logger.info("🧠 JIT Loading: Enabled")
+        if config_args.auto_unload_minutes:
+            logger.info(
+                f"🧼 Auto-Unload: Unload after idle for {config_args.auto_unload_minutes} minutes"
+            )
+        else:
+            logger.info("🧼 Auto-Unload: Disabled")
+    else:
+        logger.info("🧠 JIT Loading: Disabled")
     if config_args.model_type in ["image-generation", "image-edit"]:
         logger.info(f"🔮 Quantize: {config_args.quantize}")
         logger.info(f"🔮 Config Name: {config_args.config_name}")
@@ -109,8 +119,8 @@ async def start(config: MLXServerConfig) -> None:
         await server.serve()
     except KeyboardInterrupt:
         logger.info("Server shutdown requested by user. Exiting...")
-    except Exception as e:
-        logger.error(f"Server startup failed: {e}")
+    except Exception:
+        logger.exception("Server startup failed")
         sys.exit(1)
 
 

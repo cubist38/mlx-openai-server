@@ -6,7 +6,7 @@ from http import HTTPStatus
 import json
 import random
 import time
-from typing import Annotated, Any, Literal
+from typing import Annotated, Any, Literal, TypeAlias
 
 from fastapi import APIRouter, Form, HTTPException, Request
 from fastapi.responses import JSONResponse, StreamingResponse
@@ -14,8 +14,10 @@ from loguru import logger
 import numpy as np
 
 from ..handler import MFLUX_AVAILABLE, MLXFluxHandler
+from ..handler.mlx_embeddings import MLXEmbeddingsHandler
 from ..handler.mlx_lm import MLXLMHandler
 from ..handler.mlx_vlm import MLXVLMHandler
+from ..handler.mlx_whisper import MLXWhisperHandler
 from ..schemas.openai import (
     ChatCompletionChunk,
     ChatCompletionMessageToolCall,
@@ -48,6 +50,81 @@ from ..utils.errors import create_error_response
 router = APIRouter()
 
 
+MLXHandlerType: TypeAlias = (
+    MLXVLMHandler | MLXLMHandler | MLXFluxHandler | MLXEmbeddingsHandler | MLXWhisperHandler
+)
+
+
+async def _get_handler_or_error(
+    raw_request: Request, reason: str
+) -> tuple[MLXHandlerType | None, JSONResponse | None]:
+    """Return a loaded handler or an error response if unavailable."""
+
+    handler_manager = getattr(raw_request.app.state, "handler_manager", None)
+    if handler_manager is not None:
+        try:
+            handler = await handler_manager.ensure_loaded(reason)
+        except HTTPException:
+            raise
+        except Exception as e:  # pragma: no cover - defensive logging
+            logger.exception(
+                f"Unable to load handler via JIT for {reason}. {type(e).__name__}: {e}"
+            )
+            return (
+                None,
+                JSONResponse(
+                    content=create_error_response(
+                        "Failed to load model handler",
+                        "server_error",
+                        HTTPStatus.INTERNAL_SERVER_ERROR,
+                    ),
+                    status_code=HTTPStatus.INTERNAL_SERVER_ERROR,
+                ),
+            )
+
+        if handler is not None:
+            return handler, None
+
+    handler = getattr(raw_request.app.state, "handler", None)
+    if handler is None:
+        return (
+            None,
+            JSONResponse(
+                content=create_error_response(
+                    "Model handler not initialized",
+                    "service_unavailable",
+                    HTTPStatus.SERVICE_UNAVAILABLE,
+                ),
+                status_code=HTTPStatus.SERVICE_UNAVAILABLE,
+            ),
+        )
+    return handler, None
+
+
+def _get_cached_model_metadata(raw_request: Request) -> dict[str, Any] | None:
+    """Fetch cached model metadata from application state, if available."""
+
+    metadata_cache = getattr(raw_request.app.state, "model_metadata", None)
+    if isinstance(metadata_cache, list) and metadata_cache:
+        entry = metadata_cache[0]
+        if isinstance(entry, dict):
+            return entry
+    return None
+
+
+def _get_configured_model_id(raw_request: Request) -> str | None:
+    """Return the configured model identifier from config or cache."""
+
+    config = getattr(raw_request.app.state, "server_config", None)
+    if config is not None:
+        return getattr(config, "model_identifier", getattr(config, "model_path", None))
+
+    cached = _get_cached_model_metadata(raw_request)
+    if cached is not None:
+        return cached.get("id")
+    return None
+
+
 # =============================================================================
 # Critical/Monitoring Endpoints - Defined first to ensure priority matching
 # =============================================================================
@@ -55,13 +132,24 @@ router = APIRouter()
 
 @router.get("/health", response_model=None)
 async def health(raw_request: Request) -> HealthCheckResponse | JSONResponse:
-    """
-    Health check endpoint - verifies handler initialization status.
+    """Health check endpoint aware of JIT/auto-unload state."""
+    handler_manager = getattr(raw_request.app.state, "handler_manager", None)
+    configured_model_id = _get_configured_model_id(raw_request)
 
-    Returns 503 if handler is not initialized, 200 otherwise.
-    """
+    if handler_manager is not None:
+        handler = getattr(handler_manager, "current_handler", None)
+        if handler is not None:
+            model_id = getattr(handler, "model_path", configured_model_id or "unknown")
+            return HealthCheckResponse(
+                status=HealthCheckStatus.OK, model_id=model_id, model_status="initialized"
+            )
+        return HealthCheckResponse(
+            status=HealthCheckStatus.OK,
+            model_id=configured_model_id,
+            model_status="unloaded",
+        )
+
     handler = getattr(raw_request.app.state, "handler", None)
-
     if handler is None:
         # Handler not initialized - return 503 with degraded status
         return JSONResponse(
@@ -69,9 +157,7 @@ async def health(raw_request: Request) -> HealthCheckResponse | JSONResponse:
             content={"status": "unhealthy", "model_id": None, "model_status": "uninitialized"},
         )
 
-    # Handler initialized - extract model_id
-    model_id = getattr(handler, "model_path", "unknown")
-
+    model_id = getattr(handler, "model_path", configured_model_id or "unknown")
     return HealthCheckResponse(
         status=HealthCheckStatus.OK, model_id=model_id, model_status="initialized"
     )
@@ -101,8 +187,14 @@ async def models(raw_request: Request) -> ModelsResponse | JSONResponse:
                 status_code=HTTPStatus.INTERNAL_SERVER_ERROR,
             )
 
+    cached_metadata = _get_cached_model_metadata(raw_request)
+    if cached_metadata is not None:
+        return ModelsResponse(object="list", data=[Model(**cached_metadata)])
+
     # Fallback to handler (Phase 0 compatibility)
-    handler = getattr(raw_request.app.state, "handler", None)
+    handler, error = await _get_handler_or_error(raw_request, "models")
+    if error is not None:
+        return error
     if handler is None:
         return JSONResponse(
             content=create_error_response(
@@ -138,7 +230,9 @@ async def queue_stats(raw_request: Request) -> dict[str, Any] | JSONResponse:
     Note: queue_stats shape is handler-dependent (Flux vs LM/VLM/Whisper)
     so callers know keys may vary.
     """
-    handler = getattr(raw_request.app.state, "handler", None)
+    handler, error = await _get_handler_or_error(raw_request, "queue_stats")
+    if error is not None:
+        return error
     if handler is None:
         return JSONResponse(
             content=create_error_response(
@@ -173,7 +267,9 @@ async def chat_completions(
     request: ChatCompletionRequest, raw_request: Request
 ) -> ChatCompletionResponse | StreamingResponse | JSONResponse:
     """Handle chat completion requests."""
-    handler = getattr(raw_request.app.state, "handler", None)
+    handler, error = await _get_handler_or_error(raw_request, "chat_completions")
+    if error is not None:
+        return error
     if handler is None:
         return JSONResponse(
             content=create_error_response(
@@ -213,7 +309,9 @@ async def embeddings(
     request: EmbeddingRequest, raw_request: Request
 ) -> EmbeddingResponse | JSONResponse:
     """Handle embedding requests."""
-    handler = getattr(raw_request.app.state, "handler", None)
+    handler, error = await _get_handler_or_error(raw_request, "embeddings")
+    if error is not None:
+        return error
     if handler is None:
         return JSONResponse(
             content=create_error_response(
@@ -222,6 +320,16 @@ async def embeddings(
                 HTTPStatus.SERVICE_UNAVAILABLE,
             ),
             status_code=HTTPStatus.SERVICE_UNAVAILABLE,
+        )
+
+    if not isinstance(handler, MLXEmbeddingsHandler):
+        return JSONResponse(
+            content=create_error_response(
+                "Embedding requests require an embeddings model. Use --model-type embeddings.",
+                "unsupported_request",
+                HTTPStatus.BAD_REQUEST,
+            ),
+            status_code=HTTPStatus.BAD_REQUEST,
         )
 
     try:
@@ -241,7 +349,9 @@ async def image_generations(
     request: ImageGenerationRequest, raw_request: Request
 ) -> ImageGenerationResponse | JSONResponse:
     """Handle image generation requests."""
-    handler = getattr(raw_request.app.state, "handler", None)
+    handler, error = await _get_handler_or_error(raw_request, "image_generation")
+    if error is not None:
+        return error
     if handler is None:
         return JSONResponse(
             content=create_error_response(
@@ -281,7 +391,9 @@ async def create_image_edit(
     request: Annotated[ImageEditRequest, Form()], raw_request: Request
 ) -> ImageEditResponse | JSONResponse:
     """Handle image editing requests with dynamic provider routing."""
-    handler = getattr(raw_request.app.state, "handler", None)
+    handler, error = await _get_handler_or_error(raw_request, "image_edit")
+    if error is not None:
+        return error
     if handler is None:
         return JSONResponse(
             content=create_error_response(
@@ -320,20 +432,32 @@ async def create_audio_transcriptions(
     request: Annotated[TranscriptionRequest, Form()], raw_request: Request
 ) -> StreamingResponse | TranscriptionResponse | JSONResponse | str:
     """Handle audio transcription requests."""
-    try:
-        handler = getattr(raw_request.app.state, "handler", None)
-        if handler is None:
-            return JSONResponse(
-                content=create_error_response(
-                    "Model handler not initialized",
-                    "service_unavailable",
-                    HTTPStatus.SERVICE_UNAVAILABLE,
-                ),
-                status_code=HTTPStatus.SERVICE_UNAVAILABLE,
-            )
+    handler, error = await _get_handler_or_error(raw_request, "audio_transcriptions")
+    if error is not None:
+        return error
+    if handler is None:
+        return JSONResponse(
+            content=create_error_response(
+                "Model handler not initialized",
+                "service_unavailable",
+                HTTPStatus.SERVICE_UNAVAILABLE,
+            ),
+            status_code=HTTPStatus.SERVICE_UNAVAILABLE,
+        )
 
+    if not isinstance(handler, MLXWhisperHandler):
+        return JSONResponse(
+            content=create_error_response(
+                "Audio transcription requests require a whisper model. Use --model-type whisper.",
+                "unsupported_request",
+                HTTPStatus.BAD_REQUEST,
+            ),
+            status_code=HTTPStatus.BAD_REQUEST,
+        )
+
+    try:
         if request.stream:
-            # procoess the request before sending to the handler
+            # process the request before sending to the handler
             request_data = await handler.prepare_transcription_request(request)
             return StreamingResponse(
                 handler.generate_transcription_stream_from_data(request_data),
@@ -401,6 +525,7 @@ def create_response_chunk(
     chat_id: str | None = None,
     created_time: int | None = None,
     request_id: str | None = None,
+    tool_call_id: str | None = None,
 ) -> ChatCompletionChunk:
     """Create a formatted response chunk for streaming."""
     chat_id = chat_id or get_id()
@@ -474,8 +599,12 @@ def create_response_chunk(
     if function_call:
         # Validate index exists before accessing
         tool_index = chunk.get("index", 0)
+        tool_identifier = tool_call_id or get_tool_call_id()
         tool_chunk = ChoiceDeltaToolCall(
-            index=tool_index, type="function", id=get_tool_call_id(), function=function_call
+            index=tool_index,
+            type="function",
+            id=tool_identifier,
+            function=function_call,
         )
 
         delta = Delta(content=None, role="assistant", tool_calls=[tool_chunk])  # type: ignore[call-arg]
@@ -509,7 +638,9 @@ async def handle_stream_response(
     chat_index = get_id()
     created_time = int(time.time())
     finish_reason = "stop"
-    tool_call_index = -1
+    next_tool_call_index = 0
+    current_implicit_tool_index: int | None = None
+    tool_call_ids: dict[int, str] = {}
     usage_info = None
 
     try:
@@ -546,12 +677,40 @@ async def handle_stream_response(
 
                 # Handle tool call chunks
                 payload = dict(chunk)  # Create a copy to avoid mutating the original
-                if payload.get("name"):
+                current_tool_id = None
+
+                has_name = bool(payload.get("name"))
+                has_arguments = "arguments" in payload
+                payload_index = payload.get("index")
+
+                if has_name:
                     finish_reason = "tool_calls"
-                    tool_call_index += 1
-                    payload["index"] = tool_call_index
-                elif payload.get("arguments") and "index" not in payload:
-                    payload["index"] = tool_call_index
+                    if payload_index is None:
+                        if current_implicit_tool_index is not None:
+                            payload_index = current_implicit_tool_index
+                        else:
+                            payload_index = next_tool_call_index
+                            next_tool_call_index += 1
+                        payload["index"] = payload_index
+                    current_implicit_tool_index = payload_index
+                    # Keep the implicit index available for additional argument chunks
+                elif has_arguments:
+                    if payload_index is None:
+                        if current_implicit_tool_index is not None:
+                            payload_index = current_implicit_tool_index
+                        else:
+                            payload_index = next_tool_call_index
+                            next_tool_call_index += 1
+                        payload["index"] = payload_index
+                    current_implicit_tool_index = payload_index
+                elif payload_index is not None:
+                    current_implicit_tool_index = payload_index
+
+                payload_index = payload.get("index")
+                if payload_index is not None:
+                    if payload_index not in tool_call_ids:
+                        tool_call_ids[payload_index] = get_tool_call_id()
+                    current_tool_id = tool_call_ids[payload_index]
 
                 response_chunk = create_response_chunk(
                     payload,
@@ -559,6 +718,7 @@ async def handle_stream_response(
                     chat_id=chat_index,
                     created_time=created_time,
                     request_id=request_id,
+                    tool_call_id=current_tool_id,
                 )
                 yield _yield_sse_chunk(response_chunk)
 
