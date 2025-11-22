@@ -20,16 +20,16 @@ from .version import __version__
 
 
 class UpperChoice(click.Choice[str]):
-    """Case-insensitive choice type that returns uppercase values.
+    """Case-insensitive choice type that returns canonical, uppercase values.
 
-    This small convenience subclass normalizes user input in a
-    case-insensitive way but returns the canonical uppercase option
-    value to callers. It is useful for flags like ``--log-level``
-    where the internal representation is uppercased.
+    This convenience subclass normalizes user input in a case-insensitive way
+    but returns the canonical, uppercase option value from ``self.choices``. It is useful
+    for flags like ``--log-level`` where callers expect the stored value to
+    exactly match one of the declared choices.
     """
 
     def normalize_choice(self, choice: str | None, ctx: click.Context | None) -> str | None:  # type: ignore[override]
-        """Return the canonical uppercase choice or raise BadParameter.
+        """Return the canonical, uppercase choice or raise BadParameter.
 
         Parameters
         ----------
@@ -41,18 +41,20 @@ class UpperChoice(click.Choice[str]):
         Returns
         -------
         str | None
-            Uppercased canonical choice, or ``None`` if ``choice`` is
-            ``None``.
+            Canonical matching choice, or ``None`` if ``choice`` is ``None``.
         """
         if choice is None:
             return None
         upperchoice = choice.upper()
         for opt in self.choices:
             if opt.upper() == upperchoice:
-                return upperchoice
-        raise click.BadParameter(
-            f"invalid choice: {choice!r}. (choose from {', '.join(map(repr, self.choices))})"
+                return opt  # return the canonical opt
+        self.fail(
+            f"Invalid choice: {choice}. (choose from {', '.join(self.choices)})",
+            param=None,
+            ctx=ctx,
         )
+        return None
 
 
 # Configure basic logging for CLI (will be overridden by main.py)
@@ -180,6 +182,18 @@ def cli() -> None:
     is_flag=True,
     help="Enable trust_remote_code when loading models. This allows loading custom code from model repositories.",
 )
+@click.option(
+    "--jit",
+    "jit_enabled",
+    is_flag=True,
+    help="Enable just-in-time model loading. Models load on first request instead of startup.",
+)
+@click.option(
+    "--auto-unload-minutes",
+    type=click.IntRange(1),
+    default=None,
+    help="When JIT is enabled, unload the model after idle for this many minutes.",
+)
 def launch(
     model_path: str,
     model_type: str,
@@ -201,6 +215,8 @@ def launch(
     tool_call_parser: str | None,
     reasoning_parser: str | None,
     trust_remote_code: bool,
+    jit_enabled: bool,
+    auto_unload_minutes: int | None,
 ) -> None:
     """Start the FastAPI/Uvicorn server with the supplied flags.
 
@@ -213,9 +229,9 @@ def launch(
     model_path : str
         Path to the model (required for lm, multimodal, embeddings, image-generation, image-edit, whisper model types).
     model_type : str
-        Type of model to run (lm, multimodal, image-generation, image-edit, embeddings, whisper).
+        Type of model to run (lm: text-only, multimodal: text+vision+audio, image-generation: flux image generation, image-edit: flux image edit, embeddings: text embeddings, whisper: audio transcription).
     context_length : int
-        Context length for language models.
+        Context length for language models. Only works with `lm` or `multimodal` model types.
     port : int
         Port to run the server on.
     host : str
@@ -227,30 +243,44 @@ def launch(
     queue_size : int
         Maximum queue size for pending requests.
     quantize : int
-        Quantization level for the model.
+        Quantization level for the model. Only used for image-generation and image-edit Flux models.
     config_name : str or None
-        Config name of the model.
+        Config name of the model. Only used for image-generation and image-edit Flux models.
     lora_paths : str or None
-        Path to the LoRA file(s).
+        Path to the LoRA file(s). Multiple paths should be separated by commas.
     lora_scales : str or None
-        Scale factor for the LoRA file(s).
+        Scale factor for the LoRA file(s). Multiple scales should be separated by commas.
     disable_auto_resize : bool
-        Disable automatic model resizing.
+        Disable automatic model resizing. Only work for Vision Language Models.
     log_file : str or None
-        Path to log file.
+        Path to log file. If not specified, logs will be written to 'logs/app.log' by default.
     no_log_file : bool
-        Disable file logging entirely.
+        Disable file logging entirely. Only console output will be shown.
     log_level : str
-        Set the logging level.
+        Set the logging level. Default is INFO.
     enable_auto_tool_choice : bool
-        Enable automatic tool choice.
+        Enable automatic tool choice. Only works with language models.
     tool_call_parser : str or None
-        Specify tool call parser to use.
+        Specify tool call parser to use instead of auto-detection. Only works with language models.
     reasoning_parser : str or None
-        Specify reasoning parser to use.
+        Specify reasoning parser to use instead of auto-detection. Only works with language models.
     trust_remote_code : bool
-        Enable trust_remote_code when loading models.
+        Enable trust_remote_code when loading models. This allows loading custom code from model repositories.
+    jit_enabled : bool
+        Enable just-in-time model loading. Models load on first request instead of startup.
+    auto_unload_minutes : int or None
+        When JIT is enabled, unload the model after idle for this many minutes.
+
+    Raises
+    ------
+    click.BadOptionUsage
+        If auto_unload_minutes is set without jit_enabled.
     """
+    if auto_unload_minutes is not None and not jit_enabled:
+        raise click.BadOptionUsage(
+            "--auto-unload-minutes", "--auto-unload-minutes requires --jit to be set."
+        )
+
     args = MLXServerConfig(
         model_path=model_path,
         model_type=model_type,
@@ -272,6 +302,8 @@ def launch(
         tool_call_parser=tool_call_parser,
         reasoning_parser=reasoning_parser,
         trust_remote_code=trust_remote_code,
+        jit_enabled=jit_enabled,
+        auto_unload_minutes=auto_unload_minutes,
     )
 
     asyncio.run(start(args))

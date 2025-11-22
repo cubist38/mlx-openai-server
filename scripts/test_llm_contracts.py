@@ -17,15 +17,15 @@ logger = logging.getLogger(__name__)
 
 try:  # Dependency guard keeps script self-explanatory when deps are missing.
     import httpx
-except ImportError as exc:  # pragma: no cover - runtime dependency defense
+except ImportError as e:  # pragma: no cover - runtime dependency defense
     logger.error("✗ Missing required dependency: httpx")
-    raise SystemExit(1) from exc
+    raise SystemExit(1) from e
 
 try:
     from pydantic import BaseModel, ConfigDict, Field, ValidationError
-except ImportError as exc:  # pragma: no cover
+except ImportError as e:  # pragma: no cover
     logger.error("✗ Missing required dependency: pydantic")
-    raise SystemExit(1) from exc
+    raise SystemExit(1) from e
 
 
 # --------------------------------------------------------------------------------------
@@ -327,12 +327,15 @@ class LLMContractTester:
         """Run a single test."""
         try:
             detail = test.handler(self)
-        except ValidationError as exc:
-            return False, f"schema validation failed: {exc.errors()[:2]}"
-        except (httpx.HTTPError, AssertionError, ValueError) as exc:
-            return False, str(exc)
-        except Exception as exc:  # pragma: no cover - safety net
-            return False, f"unexpected error: {exc}"
+        except ValidationError as e:
+            logger.exception("schema validation failed")
+            return False, f"schema validation failed: {e.errors()[:2]}"
+        except (httpx.HTTPError, AssertionError, ValueError) as e:
+            logger.exception("request failed")
+            return False, f"{type(e).__name__}: {e}"
+        except Exception as e:  # pragma: no cover - safety net
+            logger.exception("unexpected error")
+            return False, f"unexpected error: {type(e).__name__}: {e}"
         else:
             return True, detail
 

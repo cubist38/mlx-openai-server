@@ -43,6 +43,7 @@ This repository hosts a high-performance API server that provides OpenAI-compati
 - 🎛️ **LoRA adapter support** for fine-tuned image generation
 - ⚡ **Configurable quantization** (4-bit, 8-bit, 16-bit) for optimal performance
 - 🧠 **Customizable context length** for memory optimization and performance tuning
+- ♻️ **JIT loading with idle auto-unload** to reclaim VRAM when the server is idle
 
 ---
 
@@ -400,6 +401,23 @@ mlx-openai-server launch \
   --lora-scales "0.8,0.6" \
 
 ```
+
+#### Enabling JIT Loading & Auto-Unload
+
+Use the `--jit` flag to defer model initialization until the first request arrives. Pair it with
+`--auto-unload-minutes <minutes>` to automatically unload the model after a period of inactivity and
+reclaim VRAM. Example:
+
+```bash
+mlx-openai-server launch \
+  --model-path <path-to-mlx-model> \
+  --model-type lm \
+  --jit \
+  --auto-unload-minutes 30
+```
+
+When JIT mode is active, the `/health` endpoint reports `status="ok"` with
+`model_status="unloaded"` while the model is idle and loads it back on demand for the next request.
 
 #### Server Parameters
 - `--model-path`: Path to the MLX model directory (local path or Hugging Face model repository). Required for `lm`, `multimodal`, `embeddings`, `image-generation`, `image-edit`, and `whisper` model types.
