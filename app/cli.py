@@ -5,6 +5,8 @@ This module defines the Click command group used by the package and the
 the ASGI server.
 """
 
+from __future__ import annotations
+
 import asyncio
 import sys
 
@@ -17,17 +19,17 @@ from .main import start
 from .version import __version__
 
 
-class UpperChoice(click.Choice):
-    """Case-insensitive choice type that returns uppercase values.
+class UpperChoice(click.Choice[str]):
+    """Case-insensitive choice type that returns canonical, uppercase values.
 
-    This small convenience subclass normalizes user input in a
-    case-insensitive way but returns the canonical uppercase option
-    value to callers. It is useful for flags like ``--log-level``
-    where the internal representation is uppercased.
+    This convenience subclass normalizes user input in a case-insensitive way
+    but returns the canonical, uppercase option value from ``self.choices``. It is useful
+    for flags like ``--log-level`` where callers expect the stored value to
+    exactly match one of the declared choices.
     """
 
-    def normalize_choice(self, choice, ctx):
-        """Return the canonical uppercase choice or raise BadParameter.
+    def normalize_choice(self, choice: str | None, ctx: click.Context | None) -> str | None:  # type: ignore[override]
+        """Return the canonical, uppercase choice or raise BadParameter.
 
         Parameters
         ----------
@@ -39,18 +41,20 @@ class UpperChoice(click.Choice):
         Returns
         -------
         str | None
-            Uppercased canonical choice, or ``None`` if ``choice`` is
-            ``None``.
+            Canonical matching choice, or ``None`` if ``choice`` is ``None``.
         """
         if choice is None:
             return None
         upperchoice = choice.upper()
         for opt in self.choices:
             if opt.upper() == upperchoice:
-                return upperchoice
-        raise click.BadParameter(
-            f"invalid choice: {choice!r}. (choose from {', '.join(map(repr, self.choices))})"
+                return opt  # return the canonical opt
+        self.fail(
+            f"Invalid choice: {choice}. (choose from {', '.join(self.choices)})",
+            param=None,
+            ctx=ctx,
         )
+        return None
 
 
 # Configure basic logging for CLI (will be overridden by main.py)
@@ -75,20 +79,19 @@ logger.add(
 🚀 Version: %(version)s
 """,
 )
-def cli():
+def cli() -> None:
     """Top-level Click command group for the MLX server CLI.
 
     Subcommands (such as ``launch``) are registered on this group and
     invoked by the console entry point.
     """
-    pass
 
 
-@cli.command()
+@cli.command(help="Start the MLX OpenAI Server with the supplied flags")
 @click.option(
     "--model-path",
     required=True,
-    help="Path to the model (required for lm, multimodal, embeddings, image-generation, image-edit, whisper model types). With `image-generation` or `image-edit` model types, it should be the local path to the model.",
+    help="Path to the model (required for lm, multimodal, embeddings, image-generation, image-edit, whisper model types). Can be a local path or Hugging Face repository ID (e.g., 'blackforestlabs/FLUX.1-dev').",
 )
 @click.option(
     "--model-type",
@@ -179,34 +182,104 @@ def cli():
     is_flag=True,
     help="Enable trust_remote_code when loading models. This allows loading custom code from model repositories.",
 )
+@click.option(
+    "--jit",
+    "jit_enabled",
+    is_flag=True,
+    help="Enable just-in-time model loading. Models load on first request instead of startup.",
+)
+@click.option(
+    "--auto-unload-minutes",
+    type=click.IntRange(1),
+    default=None,
+    help="When JIT is enabled, unload the model after idle for this many minutes.",
+)
 def launch(
-    model_path,
-    model_type,
-    context_length,
-    port,
-    host,
-    max_concurrency,
-    queue_timeout,
-    queue_size,
-    quantize,
-    config_name,
-    lora_paths,
-    lora_scales,
-    disable_auto_resize,
-    log_file,
-    no_log_file,
-    log_level,
-    enable_auto_tool_choice,
-    tool_call_parser,
-    reasoning_parser,
-    trust_remote_code,
+    model_path: str,
+    model_type: str,
+    context_length: int,
+    port: int,
+    host: str,
+    max_concurrency: int,
+    queue_timeout: int,
+    queue_size: int,
+    quantize: int,
+    config_name: str | None,
+    lora_paths: str | None,
+    lora_scales: str | None,
+    disable_auto_resize: bool,
+    log_file: str | None,
+    no_log_file: bool,
+    log_level: str,
+    enable_auto_tool_choice: bool,
+    tool_call_parser: str | None,
+    reasoning_parser: str | None,
+    trust_remote_code: bool,
+    jit_enabled: bool,
+    auto_unload_minutes: int | None,
 ) -> None:
     """Start the FastAPI/Uvicorn server with the supplied flags.
 
     The command builds a server configuration object using
     ``MLXServerConfig`` and then calls the async ``start`` routine
     which handles the event loop and server lifecycle.
+
+    Parameters
+    ----------
+    model_path : str
+        Path to the model (required for lm, multimodal, embeddings, image-generation, image-edit, whisper model types).
+    model_type : str
+        Type of model to run (lm: text-only, multimodal: text+vision+audio, image-generation: flux image generation, image-edit: flux image edit, embeddings: text embeddings, whisper: audio transcription).
+    context_length : int
+        Context length for language models. Only works with `lm` or `multimodal` model types.
+    port : int
+        Port to run the server on.
+    host : str
+        Host to run the server on.
+    max_concurrency : int
+        Maximum number of concurrent requests.
+    queue_timeout : int
+        Request timeout in seconds.
+    queue_size : int
+        Maximum queue size for pending requests.
+    quantize : int
+        Quantization level for the model. Only used for image-generation and image-edit Flux models.
+    config_name : str or None
+        Config name of the model. Only used for image-generation and image-edit Flux models.
+    lora_paths : str or None
+        Path to the LoRA file(s). Multiple paths should be separated by commas.
+    lora_scales : str or None
+        Scale factor for the LoRA file(s). Multiple scales should be separated by commas.
+    disable_auto_resize : bool
+        Disable automatic model resizing. Only work for Vision Language Models.
+    log_file : str or None
+        Path to log file. If not specified, logs will be written to 'logs/app.log' by default.
+    no_log_file : bool
+        Disable file logging entirely. Only console output will be shown.
+    log_level : str
+        Set the logging level. Default is INFO.
+    enable_auto_tool_choice : bool
+        Enable automatic tool choice. Only works with language models.
+    tool_call_parser : str or None
+        Specify tool call parser to use instead of auto-detection. Only works with language models.
+    reasoning_parser : str or None
+        Specify reasoning parser to use instead of auto-detection. Only works with language models.
+    trust_remote_code : bool
+        Enable trust_remote_code when loading models. This allows loading custom code from model repositories.
+    jit_enabled : bool
+        Enable just-in-time model loading. Models load on first request instead of startup.
+    auto_unload_minutes : int or None
+        When JIT is enabled, unload the model after idle for this many minutes.
+
+    Raises
+    ------
+    click.BadOptionUsage
+        If auto_unload_minutes is set without jit_enabled.
     """
+    if auto_unload_minutes is not None and not jit_enabled:
+        raise click.BadOptionUsage(
+            "--auto-unload-minutes", "--auto-unload-minutes requires --jit to be set."
+        )
 
     args = MLXServerConfig(
         model_path=model_path,
@@ -229,6 +302,8 @@ def launch(
         tool_call_parser=tool_call_parser,
         reasoning_parser=reasoning_parser,
         trust_remote_code=trust_remote_code,
+        jit_enabled=jit_enabled,
+        auto_unload_minutes=auto_unload_minutes,
     )
 
     asyncio.run(start(args))

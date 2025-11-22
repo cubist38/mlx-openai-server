@@ -19,21 +19,27 @@ Forward explicit arguments to the CLI:
 
 import sys
 
-import uvicorn
 from loguru import logger
+import uvicorn
 
 from .config import MLXServerConfig
 from .server import setup_server
 from .version import __version__
 
 
-def print_startup_banner(config_args):
-    """Log a compact startup banner describing the selected config.
+def print_startup_banner(config_args: MLXServerConfig) -> None:
+    """
+    Log a compact startup banner describing the selected config.
 
     The function emits human-friendly log messages that summarize the
     runtime configuration (model path/type, host/port, concurrency,
     LoRA settings, and logging options). Intended for the user-facing
     startup output only.
+
+    Parameters
+    ----------
+    config_args : MLXServerConfig
+        Configuration object containing runtime settings to display.
     """
     logger.info("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
     logger.info(f"✨ MLX Server v{__version__} Starting ✨")
@@ -47,6 +53,16 @@ def print_startup_banner(config_args):
     logger.info(f"⚡ Max Concurrency: {config_args.max_concurrency}")
     logger.info(f"⏱️ Queue Timeout: {config_args.queue_timeout} seconds")
     logger.info(f"📊 Queue Size: {config_args.queue_size}")
+    if config_args.jit_enabled:
+        logger.info("🧠 JIT Loading: Enabled")
+        if config_args.auto_unload_minutes:
+            logger.info(
+                f"🧼 Auto-Unload: Unload after idle for {config_args.auto_unload_minutes} minutes"
+            )
+        else:
+            logger.info("🧼 Auto-Unload: Disabled")
+    else:
+        logger.info("🧠 JIT Loading: Disabled")
     if config_args.model_type in ["image-generation", "image-edit"]:
         logger.info(f"🔮 Quantize: {config_args.quantize}")
         logger.info(f"🔮 Config Name: {config_args.config_name}")
@@ -78,12 +94,18 @@ def print_startup_banner(config_args):
 
 
 async def start(config: MLXServerConfig) -> None:
-    """Run the ASGI server using the provided configuration.
+    """
+    Run the ASGI server using the provided configuration.
 
     This coroutine wires the configuration into the server setup
     routine, logs progress, and starts the Uvicorn server. It handles
     KeyboardInterrupt and logs any startup failures before exiting the
     process with a non-zero code.
+
+    Parameters
+    ----------
+    config : MLXServerConfig
+        Configuration object for server setup.
     """
     try:
         # Display startup information
@@ -97,20 +119,21 @@ async def start(config: MLXServerConfig) -> None:
         await server.serve()
     except KeyboardInterrupt:
         logger.info("Server shutdown requested by user. Exiting...")
-    except Exception as e:
-        logger.error(f"Server startup failed: {str(e)}")
+    except Exception:
+        logger.exception("Server startup failed")
         sys.exit(1)
 
 
-def main():
-    """Normalize process args and dispatch to the Click CLI.
+def main() -> None:
+    """
+    Normalize process args and dispatch to the Click CLI.
 
     This helper gathers command-line arguments, inserts the "launch"
     subcommand when a subcommand is omitted for backwards compatibility,
     and delegates execution to :func:`app.cli.cli` through
     ``cli.main``.
     """
-    from .cli import cli
+    from .cli import cli  # noqa: PLC0415
 
     args = [str(x) for x in sys.argv[1:]]
     # Keep backwards compatibility: Add 'launch' subcommand if none is provided

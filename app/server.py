@@ -1,27 +1,46 @@
-"""Application server helpers.
+"""Application server helpers with JIT-aware handler management.
 
-This module provides utilities to configure logging and to create the
-FastAPI application with the correct lifespan for MLX model handlers.
+This module provides the core server infrastructure for the MLX OpenAI-compatible
+API server, including FastAPI application setup, handler lifecycle management,
+and JIT (Just-In-Time) model loading with automatic unloading capabilities.
 
-Key exports:
-- ``configure_logging``: sets up loguru handlers based on CLI flags.
-- ``create_lifespan``: returns an asynccontextmanager that initializes
-    the appropriate MLX handler on startup and performs cleanup on
-    shutdown.
-- ``setup_server``: builds the FastAPI app and returns a Uvicorn config
-    ready to run.
+The server supports multiple MLX model types including language models, multimodal
+models, image generation, embeddings, and audio transcription. It features
+configurable concurrency limits, memory management, and optional automatic
+model unloading during idle periods to optimize resource usage.
+
+Key Components
+--------------
+LazyHandlerManager : Manages model handler lifecycle with optional JIT loading
+IdleAutoUnloadController : Background task for automatic model unloading
+FastAPI Integration : REST API endpoints with OpenAI-compatible interface
+Memory Management : Periodic cleanup and MLX cache management
+
+Notes
+-----
+The server uses loguru for structured logging and supports both console and
+rotating file output. All handlers implement async initialization and cleanup
+protocols for proper resource management.
 """
 
-import gc
-import time
-from contextlib import asynccontextmanager
+from __future__ import annotations
 
-import mlx.core as mx
-import uvicorn
+import asyncio
+from collections.abc import AsyncGenerator, Awaitable, Callable
+from contextlib import AbstractAsyncContextManager, asynccontextmanager, suppress
+import gc
+from http import HTTPStatus
+import sys
+import time
+from typing import TypeAlias
+
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from loguru import logger
+import mlx.core as mx
+from starlette.responses import Response
+import uvicorn
 
 from .api.endpoints import router
 from .config import MLXServerConfig
@@ -30,7 +49,19 @@ from .handler.mlx_embeddings import MLXEmbeddingsHandler
 from .handler.mlx_lm import MLXLMHandler
 from .handler.mlx_vlm import MLXVLMHandler
 from .handler.mlx_whisper import MLXWhisperHandler
+from .middleware import RequestTrackingMiddleware
 from .version import __version__
+
+# Type alias for MLX handlers
+MLXHandler: TypeAlias = (
+    MLXVLMHandler | MLXFluxHandler | MLXEmbeddingsHandler | MLXWhisperHandler | MLXLMHandler
+)
+
+# Supported mflux configuration names per feature for centralized validation
+ALLOWED_IMAGE_GENERATION_CONFIGS: frozenset[str] = frozenset(
+    {"flux-schnell", "flux-dev", "flux-krea-dev"}
+)
+ALLOWED_IMAGE_EDIT_CONFIGS: frozenset[str] = frozenset({"flux-kontext-dev"})
 
 
 def configure_logging(
@@ -45,21 +76,21 @@ def configure_logging(
 
     Parameters
     ----------
-    log_file:
+    log_file : str, optional
         Optional filesystem path where logs should be written. When
         ``None`` and file logging is enabled a sensible default
         (``logs/app.log``) is used.
-    no_log_file:
+    no_log_file : bool, default False
         When True, file logging is disabled and only console logs are
         emitted.
-    log_level:
+    log_level : str, default "INFO"
         Minimum log level to emit (e.g. "DEBUG", "INFO").
     """
     logger.remove()  # Remove default handler
 
     # Add console handler
     logger.add(
-        lambda msg: print(msg),
+        sys.stdout,
         level=log_level,
         format="<green>{time:YYYY-MM-DD HH:mm:ss}</green> | "
         "<level>{level: <8}</level> | "
@@ -88,7 +119,7 @@ def get_model_identifier(config_args: MLXServerConfig) -> str:
 
     Parameters
     ----------
-    config_args:
+    config_args : MLXServerConfig
         Configuration object produced by the CLI. The attribute
         ``model_path`` is read to produce the identifier.
 
@@ -101,130 +132,556 @@ def get_model_identifier(config_args: MLXServerConfig) -> str:
     return config_args.model_path
 
 
-def create_lifespan(config_args: MLXServerConfig):
-    """Create an async FastAPI lifespan context manager bound to configuration.
+def validate_mflux_config(
+    config_name: str, allowed_configs: frozenset[str], feature_name: str
+) -> None:
+    """Ensure mflux is available and the provided config name is supported.
 
-    The returned context manager performs the following actions during
-    application startup:
+    Parameters
+    ----------
+    config_name : str
+        The configuration name supplied via CLI/args.
+    allowed_configs : frozenset[str]
+        The allowed configuration names for the feature.
+    feature_name : str
+        Human-friendly name of the feature (e.g., "Image generation").
 
-    - Determine the model identifier from the provided ``config_args``
-    - Instantiate the appropriate MLX handler based on ``model_type``
-      (multimodal, image-generation, image-edit, embeddings, whisper, or
-      text LM)
-    - Initialize the handler (including queuing and concurrency setup)
-    - Perform an initial memory cleanup
-
-    During shutdown the lifespan will attempt to call the handler's
-    ``cleanup`` method and perform final memory cleanup.
-
-    Args:
-        config_args: Object containing CLI configuration attributes used
-            to initialize handlers (e.g., model_type, model_path,
-            max_concurrency, queue_timeout, etc.).
-
-    Returns:
-        Callable: An asynccontextmanager usable as FastAPI ``lifespan``.
+    Raises
+    ------
+    ValueError
+        Raised when mflux is missing or the configuration name is unsupported.
     """
 
-    @asynccontextmanager
-    async def lifespan(app: FastAPI) -> None:
-        """FastAPI lifespan callable that initializes MLX handlers.
+    if not MFLUX_AVAILABLE:
+        raise ValueError(
+            f"{feature_name} requires mflux. Install with: pip install git+https://github.com/cubist38/mflux.git"
+        )
 
-        On startup this function selects and initializes the correct
-        model handler based on ``config_args`` and attaches it to
-        ``app.state.handler``. It also performs an initial memory
-        cleanup. On shutdown it invokes the handler's ``cleanup``
-        method and runs a final memory cleanup.
+    if config_name not in allowed_configs:
+        allowed_values = ", ".join(sorted(allowed_configs))
+        raise ValueError(
+            f"Invalid config name: {config_name}. Supported configs for {feature_name.lower()} are: {allowed_values}."
+        )
+
+
+async def instantiate_handler(config_args: MLXServerConfig) -> MLXHandler:
+    """Instantiate and initialize the MLX handler for the given config.
+
+    Based on the model type in the configuration, this function creates
+    the appropriate handler instance (e.g., MLXLMHandler for language
+    models, MLXVLMHandler for multimodal, etc.) and initializes it with
+    the provided settings.
+
+    Parameters
+    ----------
+    config_args : MLXServerConfig
+        Configuration object containing model type, path, and other
+        handler initialization parameters.
+
+    Returns
+    -------
+    handler
+        An initialized MLX handler instance ready for use.
+
+    Raises
+    ------
+    ValueError
+        If the model type is unsupported or required dependencies are
+        missing (e.g., mflux for image generation).
+    Exception
+        If handler initialization fails for any reason.
+    """
+
+    model_identifier = get_model_identifier(config_args)
+    if config_args.model_type == "image-generation":
+        logger.info(f"Initializing MLX handler with model name: {model_identifier}")
+    else:
+        logger.info(f"Initializing MLX handler with model path: {model_identifier}")
+
+    try:
+        handler: MLXHandler
+        if config_args.model_type == "multimodal":
+            handler = MLXVLMHandler(
+                model_path=model_identifier,
+                context_length=config_args.context_length,
+                max_concurrency=config_args.max_concurrency,
+                disable_auto_resize=config_args.disable_auto_resize,
+                enable_auto_tool_choice=config_args.enable_auto_tool_choice,
+                tool_call_parser=config_args.tool_call_parser,
+                reasoning_parser=config_args.reasoning_parser,
+                trust_remote_code=config_args.trust_remote_code,
+            )
+        elif config_args.model_type == "image-generation":
+            if config_args.config_name is None:
+                raise ValueError("config_name is required for image-generation models")
+            validate_mflux_config(
+                config_args.config_name,
+                ALLOWED_IMAGE_GENERATION_CONFIGS,
+                "Image generation",
+            )
+            handler = MLXFluxHandler(
+                model_path=model_identifier,
+                max_concurrency=config_args.max_concurrency,
+                quantize=config_args.quantize,
+                config_name=config_args.config_name,
+                lora_paths=config_args.lora_paths,
+                lora_scales=config_args.lora_scales,
+            )
+        elif config_args.model_type == "embeddings":
+            handler = MLXEmbeddingsHandler(
+                model_path=model_identifier, max_concurrency=config_args.max_concurrency
+            )
+        elif config_args.model_type == "image-edit":
+            if config_args.config_name is None:
+                raise ValueError("config_name is required for image-edit models")
+            validate_mflux_config(
+                config_args.config_name,
+                ALLOWED_IMAGE_EDIT_CONFIGS,
+                "Image editing",
+            )
+            handler = MLXFluxHandler(
+                model_path=model_identifier,
+                max_concurrency=config_args.max_concurrency,
+                quantize=config_args.quantize,
+                config_name=config_args.config_name,
+                lora_paths=config_args.lora_paths,
+                lora_scales=config_args.lora_scales,
+            )
+        elif config_args.model_type == "whisper":
+            handler = MLXWhisperHandler(
+                model_path=model_identifier, max_concurrency=config_args.max_concurrency
+            )
+        elif config_args.model_type == "lm":
+            handler = MLXLMHandler(
+                model_path=model_identifier,
+                context_length=config_args.context_length,
+                max_concurrency=config_args.max_concurrency,
+                enable_auto_tool_choice=config_args.enable_auto_tool_choice,
+                tool_call_parser=config_args.tool_call_parser,
+                reasoning_parser=config_args.reasoning_parser,
+                trust_remote_code=config_args.trust_remote_code,
+            )
+        else:
+            raise ValueError(
+                f"Invalid model_type: {config_args.model_type!r}. "
+                f"Supported types are: lm, multimodal, image-generation, image-edit, embeddings, whisper"
+            )
+
+        await handler.initialize(
+            {
+                "max_concurrency": config_args.max_concurrency,
+                "timeout": config_args.queue_timeout,
+                "queue_size": config_args.queue_size,
+            }
+        )
+        logger.info("MLX handler initialized successfully")
+    except Exception as e:
+        logger.error(f"Failed to initialize MLX handler. {type(e).__name__}: {e}")
+        raise
+    else:
+        return handler
+
+
+class LazyHandlerManager:
+    """Manage handler lifecycle with optional JIT loading and unloading."""
+
+    _handler: MLXHandler | None
+
+    def __init__(
+        self,
+        config_args: MLXServerConfig,
+        *,
+        on_change: Callable[[MLXHandler | None], None] | None = None,
+        on_activity: Callable[[], None] | None = None,
+    ) -> None:
+        """Initialize the LazyHandlerManager.
 
         Parameters
         ----------
-        app:
-            FastAPI application instance being started.
+        config_args : MLXServerConfig
+            Configuration arguments for the server.
+        on_change : Callable[[MLXHandler | None], None], optional
+            Callback called when the handler changes.
+        on_activity : Callable[[], None], optional
+            Callback called on activity.
+        """
+        self.config_args = config_args
+        self._handler = None
+        self._lock = asyncio.Lock()
+        self._shutdown = False
+        self._on_change = on_change
+        self._on_activity = on_activity
+        self._last_activity = time.monotonic()
+        self._background_tasks: set[asyncio.Task[None]] = set()
+
+        if self._on_change:
+            self._on_change(None)
+
+    @property
+    def auto_unload_minutes(self) -> int | None:
+        """Get the auto-unload timeout in minutes from configuration."""
+        return self.config_args.auto_unload_minutes
+
+    @property
+    def jit_enabled(self) -> bool:
+        """Check if JIT loading is enabled."""
+        return self.config_args.jit_enabled
+
+    @property
+    def current_handler(self) -> MLXHandler | None:
+        """Get the currently loaded handler instance, or None if unloaded."""
+        return self._handler
+
+    def record_activity(self) -> None:
+        """Record that activity has occurred for auto-unload tracking.
+
+        This method updates the last activity timestamp and calls the
+        on_activity callback if provided.
+        """
+        self._last_activity = time.monotonic()
+        if self._on_activity:
+            self._on_activity()
+
+    def set_activity_callback(self, callback: Callable[[], None] | None) -> None:
+        """Set the activity callback function.
+
+        Parameters
+        ----------
+        callback : Callable[[], None] or None
+            Function to call when activity occurs, or None to disable.
+        """
+        self._on_activity = callback
+
+    def seconds_since_last_activity(self) -> float:
+        """Return the number of seconds since the last recorded activity.
+
+        Returns
+        -------
+        float
+            Seconds since last activity.
+        """
+        return time.monotonic() - self._last_activity
+
+    def idle_timeout_seconds(self) -> int | None:
+        """Return the idle timeout in seconds, or None if auto-unload is disabled.
+
+        Returns
+        -------
+        int or None
+            Idle timeout in seconds, or None if disabled.
+        """
+        if self.auto_unload_minutes is None:
+            return None
+        return self.auto_unload_minutes * 60
+
+    async def ensure_loaded(self, reason: str = "request") -> MLXHandler | None:
+        """Ensure the handler is loaded, loading it if necessary.
+
+        If the handler is already loaded and not shutting down, records
+        activity and returns it. Otherwise, instantiates a new handler
+        and loads it.
+
+        Parameters
+        ----------
+        reason : str, default "request"
+            Reason for loading, used in log messages.
+
+        Returns
+        -------
+        MLXHandler or None
+            The loaded handler instance, or None if shutting down.
+        """
+        async with self._lock:
+            if self._handler and not self._shutdown:
+                self.record_activity()
+                return self._handler
+
+            if self._shutdown:
+                return None
+
+            logger.info(self._format_log_message("Loading model", reason))
+            handler = await instantiate_handler(self.config_args)
+            self._handler = handler
+            self.record_activity()
+            if self._on_change:
+                self._on_change(handler)
+            self._schedule_memory_cleanup()
+            logger.info(self._format_log_message("Model loaded", reason))
+            return handler
+
+    async def unload(self, reason: str = "manual") -> bool:
+        """Unload the current handler if loaded.
+
+        Cleans up the handler resources and clears memory caches.
+
+        Parameters
+        ----------
+        reason : str, default "manual"
+            Reason for unloading, used in log messages.
+
+        Returns
+        -------
+        bool
+            True if a handler was unloaded, False if none was loaded.
+        """
+        if not self._handler:
+            return False
+
+        async with self._lock:
+            if not self._handler:
+                return False
+            handler = self._handler
+            self._handler = None
+            if self._on_change:
+                self._on_change(None)
+
+        try:
+            logger.info(self._format_log_message("Unloading model", reason))
+            await handler.cleanup()
+            logger.info(self._format_log_message("Model unloaded", reason))
+        finally:
+            mx.clear_cache()
+            gc.collect()
+        return True
+
+    async def shutdown(self) -> None:
+        """Shutdown the handler manager and unload any loaded handler.
+
+        Sets the shutdown flag and unloads the handler.
+        """
+        self._shutdown = True
+        await self.unload("shutdown")
+
+    def _format_log_message(self, action: str, reason: str) -> str:
+        """Format a log message with model identifier.
+
+        Parameters
+        ----------
+        action : str
+            The action being performed.
+        reason : str
+            The reason for the action.
+
+        Returns
+        -------
+        str
+            Formatted log message.
+        """
+        identifier = f"{self.config_args.model_type}:{self.config_args.model_path}"
+        return f"[{identifier}] {action} ({reason})"
+
+    def _schedule_memory_cleanup(self) -> None:
+        """Run cache clearing in the background to avoid blocking requests."""
+
+        async def _run() -> None:
+            try:
+                await asyncio.to_thread(mx.clear_cache)
+                await asyncio.to_thread(gc.collect)
+            except Exception as exc:  # pragma: no cover - best-effort logging
+                logger.warning(f"Background memory cleanup failed. {type(exc).__name__}: {exc}")
+
+        task = asyncio.create_task(_run())
+
+        def _on_complete(done: asyncio.Task[None]) -> None:
+            self._background_tasks.discard(done)
+            exc = done.exception()
+            if exc:
+                logger.warning(f"Background memory cleanup raised. {type(exc).__name__}: {exc}")
+
+        self._background_tasks.add(task)
+        task.add_done_callback(_on_complete)
+
+
+class IdleAutoUnloadController:
+    """Background helper that unloads handlers after idle periods."""
+
+    WATCH_LOOP_MAX_WAIT_SECONDS = 10
+
+    def __init__(self, handler_manager: LazyHandlerManager) -> None:
+        """Initialize the IdleAutoUnloadController.
+
+        Parameters
+        ----------
+        handler_manager : LazyHandlerManager
+            The handler manager to monitor for idle periods.
+        """
+        self.handler_manager = handler_manager
+        self._event = asyncio.Event()
+        self._task: asyncio.Task[None] | None = None
+        self._active = False
+
+    @property
+    def auto_unload_minutes(self) -> int | None:
+        """Expose auto-unload configuration for logging."""
+        return self.handler_manager.auto_unload_minutes
+
+    def start(self) -> None:
+        """Start the auto-unload background task if configured.
+
+        Starts the background task that monitors for idle periods and
+        automatically unloads handlers when the configured timeout is
+        exceeded. Only starts if JIT is enabled and auto-unload is
+        configured.
+        """
+        if not self.handler_manager.jit_enabled:
+            return
+        if self.handler_manager.auto_unload_minutes is None:
+            return
+        if self._active:
+            return
+
+        self._active = True
+        self._task = asyncio.create_task(self._watch_loop())
+
+    async def stop(self) -> None:
+        """Stop the auto-unload background task.
+
+        Cancels the background monitoring task and waits for it to
+        complete. Safe to call multiple times.
+        """
+        if not self._active:
+            return
+
+        self._active = False
+        self._event.set()
+        if self._task:
+            self._task.cancel()
+            with suppress(asyncio.CancelledError):
+                await self._task
+
+    def notify_activity(self) -> None:
+        """Notify the background task of recent activity.
+
+        Signals the background monitoring task that activity has
+        occurred, resetting the idle timeout counter.
+        """
+        if self._active:
+            self._event.set()
+
+    async def _watch_loop(self) -> None:
+        """Background loop that monitors for idle periods and unloads handlers.
+
+        Runs continuously while active, awaiting activity notifications or
+        idle timeouts. When the idle timeout is exceeded without activity,
+        automatically unloads the current handler to free memory.
         """
         try:
-            model_identifier = get_model_identifier(config_args)
-            if config_args.model_type == "image-generation":
-                logger.info(f"Initializing MLX handler with model name: {model_identifier}")
-            else:
-                logger.info(f"Initializing MLX handler with model path: {model_identifier}")
+            while self._active:
+                timeout = self.handler_manager.idle_timeout_seconds()
+                if timeout is None:
+                    break
 
-            if config_args.model_type == "multimodal":
-                handler = MLXVLMHandler(
-                    model_path=model_identifier,
-                    context_length=config_args.context_length,
-                    max_concurrency=config_args.max_concurrency,
-                    disable_auto_resize=config_args.disable_auto_resize,
-                    enable_auto_tool_choice=config_args.enable_auto_tool_choice,
-                    tool_call_parser=config_args.tool_call_parser,
-                    reasoning_parser=config_args.reasoning_parser,
-                    trust_remote_code=config_args.trust_remote_code,
-                )
-            elif config_args.model_type == "image-generation":
-                if not MFLUX_AVAILABLE:
-                    raise ValueError(
-                        "Image generation requires mflux. Install with: pip install git+https://github.com/cubist38/mflux.git"
+                if not self.handler_manager.current_handler:
+                    try:
+                        await asyncio.wait_for(
+                            self._event.wait(), timeout=self.WATCH_LOOP_MAX_WAIT_SECONDS
+                        )
+                    except TimeoutError:
+                        continue
+                    else:
+                        self._event.clear()
+                        continue
+
+                idle_elapsed = self.handler_manager.seconds_since_last_activity()
+                idle_remaining = max(timeout - idle_elapsed, 0)
+                wait_duration = min(idle_remaining, self.WATCH_LOOP_MAX_WAIT_SECONDS)
+
+                if wait_duration <= 0:
+                    await self.handler_manager.unload(
+                        f"Idle for {self.auto_unload_minutes} minutes"
                     )
-                if config_args.config_name not in ["flux-schnell", "flux-dev", "flux-krea-dev"]:
-                    raise ValueError(
-                        f"Invalid config name: {config_args.config_name}. Only flux-schnell, flux-dev, and flux-krea-dev are supported for image generation."
-                    )
-                handler = MLXFluxHandler(
-                    model_path=model_identifier,
-                    max_concurrency=config_args.max_concurrency,
-                    quantize=config_args.quantize,
-                    config_name=config_args.config_name,
-                    lora_paths=config_args.lora_paths,
-                    lora_scales=config_args.lora_scales,
+                    continue
+
+                try:
+                    await asyncio.wait_for(self._event.wait(), timeout=wait_duration)
+                except TimeoutError:
+                    if self.handler_manager.seconds_since_last_activity() >= timeout:
+                        await self.handler_manager.unload(
+                            f"Idle for {self.auto_unload_minutes} minutes"
+                        )
+                else:
+                    self._event.clear()
+        except asyncio.CancelledError:
+            pass
+
+
+def create_lifespan(
+    config_args: MLXServerConfig,
+) -> Callable[[FastAPI], AbstractAsyncContextManager[None]]:
+    """Create an async FastAPI lifespan context manager bound to configuration.
+
+    The returned context manager sets up JIT-aware handler management and
+    auto-unload functionality during application startup:
+
+    - Creates a LazyHandlerManager to manage model loading/unloading
+    - Creates an IdleAutoUnloadController for automatic unloading when idle
+    - If JIT is disabled, loads the handler immediately at startup
+    - Starts the auto-unload background task if configured
+    - Performs initial memory cleanup
+
+    During shutdown:
+    - Stops the auto-unload controller
+    - Shuts down the handler manager and cleans up resources
+    - Performs final memory cleanup
+
+    Parameters
+    ----------
+    config_args : MLXServerConfig
+        Configuration object containing CLI settings for
+        model type, path, JIT settings, auto-unload configuration, etc.
+
+    Returns
+    -------
+    Callable
+        An async context manager usable as FastAPI ``lifespan``.
+    """
+
+    @asynccontextmanager
+    async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
+        """FastAPI lifespan that wires the LazyHandlerManager into app state.
+
+        Sets up the handler manager and auto-unload controller during
+        application startup, and performs cleanup during shutdown.
+        Manages the application lifecycle for JIT-aware model loading.
+
+        Parameters
+        ----------
+        app : FastAPI
+            The FastAPI application instance.
+        """
+
+        def _update_model_metadata(handler: MLXHandler | None) -> None:
+            model_metadata = getattr(app.state, "model_metadata", None)
+            if not model_metadata:
+                return
+
+            entry = model_metadata[0]
+            metadata_block = entry.setdefault("metadata", {})
+            metadata_block["status"] = "initialized" if handler else "unloaded"
+            if handler:
+                entry["created"] = getattr(handler, "model_created", int(time.time()))
+                metadata_block["model_path"] = getattr(
+                    handler, "model_path", metadata_block.get("model_path")
                 )
-            elif config_args.model_type == "embeddings":
-                handler = MLXEmbeddingsHandler(
-                    model_path=model_identifier, max_concurrency=config_args.max_concurrency
-                )
-            elif config_args.model_type == "image-edit":
-                if not MFLUX_AVAILABLE:
-                    raise ValueError(
-                        "Image editing requires mflux. Install with: pip install git+https://github.com/cubist38/mflux.git"
-                    )
-                if config_args.config_name != "flux-kontext-dev":
-                    raise ValueError(
-                        f"Invalid config name: {config_args.config_name}. Only flux-kontext-dev is supported for image edit."
-                    )
-                handler = MLXFluxHandler(
-                    model_path=model_identifier,
-                    max_concurrency=config_args.max_concurrency,
-                    quantize=config_args.quantize,
-                    config_name=config_args.config_name,
-                    lora_paths=config_args.lora_paths,
-                    lora_scales=config_args.lora_scales,
-                )
-            elif config_args.model_type == "whisper":
-                handler = MLXWhisperHandler(
-                    model_path=model_identifier, max_concurrency=config_args.max_concurrency
-                )
-            else:
-                handler = MLXLMHandler(
-                    model_path=model_identifier,
-                    context_length=config_args.context_length,
-                    max_concurrency=config_args.max_concurrency,
-                    enable_auto_tool_choice=config_args.enable_auto_tool_choice,
-                    tool_call_parser=config_args.tool_call_parser,
-                    reasoning_parser=config_args.reasoning_parser,
-                    trust_remote_code=config_args.trust_remote_code,
-                )
-            # Initialize queue
-            await handler.initialize(
-                {
-                    "max_concurrency": config_args.max_concurrency,
-                    "timeout": config_args.queue_timeout,
-                    "queue_size": config_args.queue_size,
-                }
-            )
-            logger.info("MLX handler initialized successfully")
+
+        def _update_handler(handler: MLXHandler | None) -> None:
             app.state.handler = handler
+            _update_model_metadata(handler)
 
-        except Exception as e:
-            logger.error(f"Failed to initialize MLX handler: {str(e)}")
+        handler_manager = LazyHandlerManager(config_args, on_change=_update_handler)
+        app.state.handler_manager = handler_manager
+        auto_unload_controller = IdleAutoUnloadController(handler_manager)
+        app.state.auto_unload_controller = auto_unload_controller
+        handler_manager.set_activity_callback(auto_unload_controller.notify_activity)
+
+        try:
+            if not config_args.jit_enabled:
+                await handler_manager.ensure_loaded("startup")
+        except Exception:
+            await handler_manager.shutdown()
             raise
+
+        auto_unload_controller.start()
 
         # Initial memory cleanup
         mx.clear_cache()
@@ -234,14 +691,16 @@ def create_lifespan(config_args: MLXServerConfig):
 
         # Shutdown
         logger.info("Shutting down application")
-        if hasattr(app.state, "handler") and app.state.handler:
-            try:
-                # Use the proper cleanup method which handles both request queue and image processor
-                logger.info("Cleaning up resources")
-                await app.state.handler.cleanup()
-                logger.info("Resources cleaned up successfully")
-            except Exception as e:
-                logger.error(f"Error during shutdown: {str(e)}")
+        try:
+            await auto_unload_controller.stop()
+        except Exception as e:
+            logger.error(f"Error stopping auto-unload controller. {type(e).__name__}: {e}")
+
+        try:
+            await handler_manager.shutdown()
+            logger.info("Resources cleaned up successfully")
+        except Exception as e:
+            logger.error(f"Error during shutdown. {type(e).__name__}: {e}")
 
         # Final memory cleanup
         mx.clear_cache()
@@ -250,28 +709,24 @@ def create_lifespan(config_args: MLXServerConfig):
     return lifespan
 
 
-# App instance will be created during setup with the correct lifespan
-app = None
-
-
 def setup_server(config_args: MLXServerConfig) -> uvicorn.Config:
-    global app
-
     """Create and configure the FastAPI app and return a Uvicorn config.
 
     This function sets up logging, constructs the FastAPI application with
     a configured lifespan, registers routes and middleware, and returns a
     :class:`uvicorn.Config` ready to be used to run the server.
 
-    Note: This function mutates the module-level ``app`` global variable.
+    Parameters
+    ----------
+    config_args : MLXServerConfig
+        Configuration object usually produced by the CLI. Expected
+        to have attributes like ``host``, ``port``, ``log_level``,
+        and logging-related fields.
 
-    Args:
-        args: Configuration object usually produced by the CLI. Expected
-            to have attributes like ``host``, ``port``, ``log_level``,
-            and logging-related fields.
-
-    Returns:
-        uvicorn.Config: A configuration object that can be passed to
+    Returns
+    -------
+    uvicorn.Config
+        A configuration object that can be passed to
         ``uvicorn.Server(config).run()`` to start the application.
     """
 
@@ -289,8 +744,27 @@ def setup_server(config_args: MLXServerConfig) -> uvicorn.Config:
         version=__version__,
         lifespan=create_lifespan(config_args),
     )
+    app.state.server_config = config_args
+    app.state.model_metadata = [
+        {
+            "id": config_args.model_identifier,
+            "object": "model",
+            "created": int(time.time()),
+            "owned_by": "local",
+            "metadata": {
+                "model_type": config_args.model_type,
+                "context_length": config_args.context_length,
+                "jit_enabled": config_args.jit_enabled,
+                "auto_unload_minutes": config_args.auto_unload_minutes,
+                "max_concurrency": config_args.max_concurrency,
+                "status": "unloaded",
+                "model_path": config_args.model_identifier,
+            },
+        }
+    ]
 
     app.include_router(router)
+    app.add_middleware(RequestTrackingMiddleware)
 
     # Add CORS middleware
     app.add_middleware(
@@ -302,12 +776,26 @@ def setup_server(config_args: MLXServerConfig) -> uvicorn.Config:
     )
 
     @app.middleware("http")
-    async def add_process_time_header(request: Request, call_next):
+    async def add_process_time_header(
+        request: Request, call_next: Callable[[Request], Awaitable[Response]]
+    ) -> Response:
         """Middleware to add processing time header and run cleanup.
 
         Measures request processing time, appends an ``X-Process-Time``
         header, and increments a simple request counter used to trigger
         periodic memory cleanup for long-running processes.
+
+        Parameters
+        ----------
+        request : Request
+            The incoming HTTP request.
+        call_next : Callable[[Request], Awaitable[Response]]
+            The next middleware/request handler in the chain.
+
+        Returns
+        -------
+        Response
+            The HTTP response with added processing time header.
         """
         start_time = time.time()
         response = await call_next(request)
@@ -331,16 +819,28 @@ def setup_server(config_args: MLXServerConfig) -> uvicorn.Config:
         return response
 
     @app.exception_handler(Exception)
-    async def global_exception_handler(request: Request, exc: Exception):
+    async def global_exception_handler(_request: Request, exc: Exception) -> JSONResponse:
         """Global exception handler that logs and returns a 500 payload.
 
         Logs the exception (with traceback) and returns a generic JSON
         response with a 500 status code so internal errors do not leak
         implementation details to clients.
+
+        Parameters
+        ----------
+        _request : Request
+            The HTTP request that caused the exception (unused).
+        exc : Exception
+            The exception that was raised.
+
+        Returns
+        -------
+        JSONResponse
+            A JSON response with 500 status code and error details.
         """
-        logger.error(f"Global exception handler caught: {str(exc)}", exc_info=True)
+        logger.exception(f"Global exception handler caught. {type(exc).__name__}: {exc}")
         return JSONResponse(
-            status_code=500,
+            status_code=HTTPStatus.INTERNAL_SERVER_ERROR,
             content={"error": {"message": "Internal server error", "type": "internal_error"}},
         )
 

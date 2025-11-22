@@ -3,24 +3,26 @@
 
 from __future__ import annotations
 
+from collections.abc import Generator
+from dataclasses import dataclass, field
 import json
 import os
-import sys
 import time
-from dataclasses import dataclass, field
-from typing import List, Literal, Optional, Tuple
+from typing import Any, Literal
+
+from loguru import logger
 
 try:  # Dependency guards preserve useful error messages for local runs.
     import httpx
-except ImportError as exc:  # pragma: no cover - defensive
-    print("This dashboard requires httpx. Install via `pip install httpx`.", file=sys.stderr)
-    raise SystemExit(1) from exc
+except ImportError as e:  # pragma: no cover - defensive
+    logger.error("This dashboard requires httpx. Install via `pip install httpx`.")
+    raise SystemExit(1) from e
 
 try:
     from pydantic import BaseModel, ConfigDict
-except ImportError as exc:  # pragma: no cover
-    print("This dashboard requires pydantic. Install via `pip install pydantic`.", file=sys.stderr)
-    raise SystemExit(1) from exc
+except ImportError as e:  # pragma: no cover
+    logger.error("This dashboard requires pydantic. Install via `pip install pydantic`.")
+    raise SystemExit(1) from e
 
 try:
     from rich import box
@@ -29,55 +31,64 @@ try:
     from rich.live import Live
     from rich.panel import Panel
     from rich.table import Table
-except ImportError as exc:  # pragma: no cover
-    print("This dashboard requires rich. Install via `pip install rich`.", file=sys.stderr)
-    raise SystemExit(1) from exc
+except ImportError as e:  # pragma: no cover
+    logger.error("This dashboard requires rich. Install via `pip install rich`.")
+    raise SystemExit(1) from e
 
 
 class ModelData(BaseModel):
+    """Represents a model in the models list."""
+
     id: str
     object: Literal["model"]
-    created: Optional[int] = None
-    owned_by: Optional[str] = None
+    created: int | None = None
+    owned_by: str | None = None
 
     model_config = ConfigDict(extra="allow")
 
 
 class ModelList(BaseModel):
+    """Represents the response from the models endpoint."""
+
     object: Literal["list"]
-    data: List[ModelData]
+    data: list[ModelData]
 
     model_config = ConfigDict(extra="allow")
 
 
 @dataclass
 class DashboardSnapshot:
+    """Snapshot of the dashboard state at a point in time."""
+
     timestamp: float
     reachable: bool
-    latency_ms: Optional[float]
+    latency_ms: float | None
     status_text: str
-    models: List[ModelData]
-    active_model: Optional[ModelData]
+    models: list[ModelData]
+    active_model: ModelData | None
     stream_ok: bool
     stream_message: str
-    errors: List[str] = field(default_factory=list)
+    errors: list[str] = field(default_factory=list)
 
 
 def build_headers() -> dict[str, str]:
+    """Build authorization headers from environment variables."""
     api_key = os.getenv("OPENAI_API_KEY") or os.getenv("MLX_API_KEY")
     return {"Authorization": f"Bearer {api_key}"} if api_key else {}
 
 
 def env_base_url() -> str:
+    """Get the base URL from environment or default."""
     raw = os.getenv("MLX_URL", "http://127.0.0.1:8000")
     return raw.rstrip("/")
 
 
 def gather_snapshot(client: httpx.Client) -> DashboardSnapshot:
+    """Gather a snapshot of the server's health and models."""
     reachable = False
-    latency_ms: Optional[float] = None
+    latency_ms: float | None = None
     status_text = "unknown"
-    errors: List[str] = []
+    errors: list[str] = []
 
     start = time.perf_counter()
     try:
@@ -87,16 +98,16 @@ def gather_snapshot(client: httpx.Client) -> DashboardSnapshot:
         status_text = str(payload.get("status", "unknown"))
         latency_ms = (time.perf_counter() - start) * 1000.0
         reachable = True
-    except Exception as exc:  # pragma: no cover - network dependent
-        errors.append(f"health: {exc}")
+    except Exception as e:  # pragma: no cover - network dependent
+        errors.append(f"health: {e}")
 
-    models: List[ModelData] = []
+    models: list[ModelData] = []
     try:
         response = client.get("/v1/models")
         response.raise_for_status()
         models = ModelList.model_validate(response.json()).data
-    except Exception as exc:  # pragma: no cover
-        errors.append(f"models: {exc}")
+    except Exception as e:  # pragma: no cover
+        errors.append(f"models: {e}")
 
     active_model = select_active_model(models)
 
@@ -120,7 +131,23 @@ def gather_snapshot(client: httpx.Client) -> DashboardSnapshot:
     )
 
 
-def select_active_model(models: List[ModelData]) -> Optional[ModelData]:
+def select_active_model(models: list[ModelData]) -> ModelData | None:
+    """
+    Select the active model from a list of available models.
+
+    Uses environment variables MLX_ACTIVE_MODEL or MLX_MODEL_ID as preference,
+    otherwise returns the first model in the list.
+
+    Parameters
+    ----------
+    models : list[ModelData]
+        List of available models.
+
+    Returns
+    -------
+    ModelData | None
+        The selected active model, or None if no models are available.
+    """
     if not models:
         return None
     preferred = os.getenv("MLX_ACTIVE_MODEL") or os.getenv("MLX_MODEL_ID")
@@ -131,7 +158,25 @@ def select_active_model(models: List[ModelData]) -> Optional[ModelData]:
     return models[0]
 
 
-def streaming_sanity_check(client: httpx.Client, model_id: str) -> Tuple[bool, str]:
+def streaming_sanity_check(client: httpx.Client, model_id: str) -> tuple[bool, str]:
+    """
+    Perform a streaming sanity check on a model.
+
+    Tests streaming chat completion functionality by sending a simple request
+    and validating the response stream.
+
+    Parameters
+    ----------
+    client : httpx.Client
+        HTTP client for making requests.
+    model_id : str
+        The model ID to test.
+
+    Returns
+    -------
+    tuple[bool, str]
+        A tuple of (success, message) indicating test result and details.
+    """
     payload = {
         "model": model_id,
         "messages": [{"role": "user", "content": "Stream 'hello dashboard'."}],
@@ -154,8 +199,8 @@ def streaming_sanity_check(client: httpx.Client, model_id: str) -> Tuple[bool, s
                     text = delta.get("content")
                     if text:
                         content_chars += len(text)
-    except Exception as exc:  # pragma: no cover
-        return False, f"stream error: {exc}"
+    except Exception as e:  # pragma: no cover
+        return False, f"stream error: {e}"
 
     if chunk_count == 0:
         return False, "stream incomplete (no chunks)"
@@ -164,10 +209,30 @@ def streaming_sanity_check(client: httpx.Client, model_id: str) -> Tuple[bool, s
     return True, f"chunks={chunk_count} chars~{content_chars}"
 
 
-def parse_chunk(data: dict) -> dict:
+def parse_chunk(data: dict[str, Any]) -> dict[str, Any]:
+    """
+    Parse and validate a streaming response chunk.
+
+    Ensures the chunk contains required OpenAI-compatible fields.
+
+    Parameters
+    ----------
+    data : dict[str, Any]
+        The parsed JSON data from a streaming chunk.
+
+    Returns
+    -------
+    dict[str, Any]
+        The validated chunk data.
+
+    Raises
+    ------
+    ValueError
+        If the chunk is missing required fields or has invalid structure.
+    """
     # We only need to ensure essential OpenAI chunk keys exist.
     if not isinstance(data, dict):
-        raise ValueError("Chunk payload must be a JSON object")
+        raise TypeError("Chunk payload must be a JSON object")
     required = {"id", "object", "created", "model", "choices"}
     missing = required - data.keys()
     if missing:
@@ -177,7 +242,22 @@ def parse_chunk(data: dict) -> dict:
     return data
 
 
-def iter_sse_payloads(response: httpx.Response):
+def iter_sse_payloads(response: httpx.Response) -> Generator[str, None, None]:
+    """
+    Iterate over Server-Sent Events payloads from a streaming response.
+
+    Parses SSE-formatted lines and yields the data payloads.
+
+    Parameters
+    ----------
+    response : httpx.Response
+        The streaming HTTP response containing SSE data.
+
+    Yields
+    ------
+    str
+        The data payload from each SSE event.
+    """
     for raw_line in response.iter_lines():
         if not raw_line:
             continue
@@ -190,6 +270,23 @@ def iter_sse_payloads(response: httpx.Response):
 
 
 def render_dashboard(snapshot: DashboardSnapshot, base_url: str) -> Layout:
+    """
+    Render the complete dashboard layout.
+
+    Creates a rich terminal UI layout with status, models, and footer panels.
+
+    Parameters
+    ----------
+    snapshot : DashboardSnapshot
+        The current dashboard data snapshot.
+    base_url : str
+        The base URL of the MLX server.
+
+    Returns
+    -------
+    Layout
+        The rendered dashboard layout.
+    """
     layout = Layout(name="root")
     layout.split_column(
         Layout(name="header", size=3),
@@ -212,6 +309,19 @@ def render_dashboard(snapshot: DashboardSnapshot, base_url: str) -> Layout:
 
 
 def render_status_panel(snapshot: DashboardSnapshot) -> Panel:
+    """
+    Render the status panel showing server health and active model info.
+
+    Parameters
+    ----------
+    snapshot : DashboardSnapshot
+        The current dashboard data snapshot.
+
+    Returns
+    -------
+    Panel
+        The rendered status panel.
+    """
     table = Table.grid(padding=(0, 1))
     table.add_row("Reachable", "Yes" if snapshot.reachable else "No")
     latency = f"{snapshot.latency_ms:.1f} ms" if snapshot.latency_ms is not None else "--"
@@ -231,6 +341,19 @@ def render_status_panel(snapshot: DashboardSnapshot) -> Panel:
 
 
 def render_models_panel(snapshot: DashboardSnapshot) -> Panel:
+    """
+    Render the models panel showing available models.
+
+    Parameters
+    ----------
+    snapshot : DashboardSnapshot
+        The current dashboard data snapshot.
+
+    Returns
+    -------
+    Panel
+        The rendered models panel.
+    """
     table = Table(title="Model Registry", box=box.MINIMAL_DOUBLE_HEAD)
     table.add_column("ID", ratio=2)
     table.add_column("Owner", ratio=1)
@@ -247,6 +370,19 @@ def render_models_panel(snapshot: DashboardSnapshot) -> Panel:
 
 
 def render_footer(snapshot: DashboardSnapshot) -> Panel:
+    """
+    Render the footer panel showing errors or status notes.
+
+    Parameters
+    ----------
+    snapshot : DashboardSnapshot
+        The current dashboard data snapshot.
+
+    Returns
+    -------
+    Panel
+        The rendered footer panel.
+    """
     if snapshot.errors:
         content = "\n".join(snapshot.errors)
     else:
@@ -255,20 +391,27 @@ def render_footer(snapshot: DashboardSnapshot) -> Panel:
 
 
 def main() -> None:
+    """
+    Run the LLM health dashboard.
+
+    Runs a live terminal dashboard displaying server health, models, and status.
+    """
     base_url = env_base_url()
     console = Console()
     headers = build_headers()
     refresh_seconds = float(os.getenv("MLX_DASHBOARD_REFRESH", "2"))
 
-    with httpx.Client(base_url=base_url, headers=headers, timeout=30.0) as client:
-        with Live(console=console, screen=True, refresh_per_second=4) as live:
-            try:
-                while True:
-                    snapshot = gather_snapshot(client)
-                    live.update(render_dashboard(snapshot, base_url))
-                    time.sleep(refresh_seconds)
-            except KeyboardInterrupt:
-                console.print("\nExiting dashboard...")
+    with (
+        httpx.Client(base_url=base_url, headers=headers, timeout=30.0) as client,
+        Live(console=console, screen=True, refresh_per_second=4) as live,
+    ):
+        try:
+            while True:
+                snapshot = gather_snapshot(client)
+                live.update(render_dashboard(snapshot, base_url))
+                time.sleep(refresh_seconds)
+        except KeyboardInterrupt:
+            console.print("\nExiting dashboard...")
 
 
 if __name__ == "__main__":
