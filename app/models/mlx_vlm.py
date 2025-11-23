@@ -19,7 +19,7 @@ class MLX_VLM:
     supporting both streaming and non-streaming modes.
     """
     
-    def __init__(self, model_path: str, context_length: int = 32768, trust_remote_code: bool = False):
+    def __init__(self, model_path: str, context_length: int = 32768, trust_remote_code: bool = False, chat_template_file: str = None):
         """
         Initialize the MLX_VLM model.
         
@@ -34,6 +34,11 @@ class MLX_VLM:
             self.model, self.processor = load(model_path, lazy=False, trust_remote_code=trust_remote_code)
             self.max_kv_size = context_length
             self.config = self.model.config
+            if chat_template_file:
+                if not os.path.exists(chat_template_file):
+                    raise ValueError(f"Chat template file {chat_template_file} does not exist")
+                with open(chat_template_file, "r") as f:
+                    self.processor.chat_template = f.read()
         except Exception as e:
             raise ValueError(f"Error loading model: {str(e)}")
 
