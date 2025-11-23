@@ -175,7 +175,7 @@ if __name__ == "__main__":
             "content": [
                 {
                     "type": "text",
-                    "text": "Describe the video in detail"
+                    "text": "Describe the image in detail"
                 },
                 {
                     "type": "image",
