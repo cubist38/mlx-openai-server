@@ -137,7 +137,7 @@ if __name__ == "__main__":
     image_path = "examples/images/attention.png"
     video_path = "examples/videos/demo.mp4"
     model_path = "mlx-community/Llama-4-Scout-17B-16E-Instruct-8bit"
-    chat_template_file = "examples/templates/llama4.jinja"
+    chat_template_file = "examples/chat_templates/llama4.jinja"
 
     model = MLX_VLM(model_path, chat_template_file=chat_template_file)
     print("MODEL TYPE: ", model.get_model_type())
