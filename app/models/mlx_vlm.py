@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from collections.abc import Generator
 import os
+from pathlib import Path
 from typing import Any
 
 from loguru import logger
@@ -59,9 +60,10 @@ class MLX_VLM:
             self.max_kv_size = context_length
             self.config = self.model.config
             if chat_template_file:
-                if not os.path.exists(chat_template_file):
+                chat_template_path = Path(chat_template_file)
+                if not chat_template_path.exists():
                     raise ValueError(f"Chat template file {chat_template_file} does not exist")
-                with open(chat_template_file) as f:
+                with chat_template_path.open() as f:
                     self.processor.chat_template = f.read()
         except Exception as e:
             raise ValueError(f"Error loading model: {e}") from e

@@ -7,10 +7,11 @@ streaming, and caching capabilities.
 
 from __future__ import annotations
 
+from collections.abc import Generator
 import gc
 import os
-from collections.abc import Generator
-from typing import Any
+from pathlib import Path
+from typing import Any, cast
 
 import mlx.core as mx
 from mlx_lm.generate import generate, stream_generate
@@ -18,6 +19,7 @@ from mlx_lm.models.cache import make_prompt_cache
 from mlx_lm.sample_utils import make_logits_processors, make_sampler
 from mlx_lm.utils import load
 from outlines.processors import OutlinesLogitsProcessor
+from transformers import PreTrainedTokenizer
 
 from ..utils.outlines_transformer_tokenizer import OutlinesTransformerTokenizer
 
@@ -44,7 +46,7 @@ class MLX_LM:
         context_length: int = 32768,
         *,
         trust_remote_code: bool = False,
-        chat_template_file: str = None,
+        chat_template_file: str | None = None,
     ) -> None:
         try:
             self.model, self.tokenizer, *_ = load(
@@ -54,11 +56,14 @@ class MLX_LM:
             self.bos_token = self.tokenizer.bos_token
             self.model_type = self.model.model_type
             self.max_kv_size = context_length
-            self.outlines_tokenizer = OutlinesTransformerTokenizer(self.tokenizer)
+            self.outlines_tokenizer = OutlinesTransformerTokenizer(
+                cast("PreTrainedTokenizer", self.tokenizer)
+            )
             if chat_template_file:
-                if not os.path.exists(chat_template_file):
+                chat_template_path = Path(chat_template_file)
+                if not chat_template_path.exists():
                     raise ValueError(f"Chat template file {chat_template_file} does not exist")
-                with open(chat_template_file) as f:
+                with chat_template_path.open() as f:
                     self.tokenizer.chat_template = f.read()
         except Exception as e:
             raise ValueError(f"Error loading model: {e}") from e

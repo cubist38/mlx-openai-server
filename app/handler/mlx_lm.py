@@ -37,7 +37,7 @@ class MLXLMHandler:
         tool_call_parser: str | None = None,
         reasoning_parser: str | None = None,
         trust_remote_code: bool = False,
-        chat_template_file: str = None,
+        chat_template_file: str | None = None,
     ) -> None:
         """
         Initialize the handler with the specified model path.
