@@ -158,6 +158,7 @@ def create_lifespan(config_args: MLXServerConfig):
                     tool_call_parser=config_args.tool_call_parser,
                     reasoning_parser=config_args.reasoning_parser,
                     trust_remote_code=config_args.trust_remote_code,
+                    chat_template_file=config_args.chat_template_file,
                 )
             elif config_args.model_type == "image-generation":
                 if not MFLUX_AVAILABLE:
@@ -210,6 +211,7 @@ def create_lifespan(config_args: MLXServerConfig):
                     tool_call_parser=config_args.tool_call_parser,
                     reasoning_parser=config_args.reasoning_parser,
                     trust_remote_code=config_args.trust_remote_code,
+                    chat_template_file=config_args.chat_template_file,
                 )
             # Initialize queue
             await handler.initialize(

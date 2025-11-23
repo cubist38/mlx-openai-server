@@ -19,7 +19,7 @@ class MLX_VLM:
     supporting both streaming and non-streaming modes.
     """
     
-    def __init__(self, model_path: str, context_length: int = 32768, trust_remote_code: bool = False):
+    def __init__(self, model_path: str, context_length: int = 32768, trust_remote_code: bool = False, chat_template_file: str = None):
         """
         Initialize the MLX_VLM model.
         
@@ -34,6 +34,11 @@ class MLX_VLM:
             self.model, self.processor = load(model_path, lazy=False, trust_remote_code=trust_remote_code)
             self.max_kv_size = context_length
             self.config = self.model.config
+            if chat_template_file:
+                if not os.path.exists(chat_template_file):
+                    raise ValueError(f"Chat template file {chat_template_file} does not exist")
+                with open(chat_template_file, "r") as f:
+                    self.processor.chat_template = f.read()
         except Exception as e:
             raise ValueError(f"Error loading model: {str(e)}")
 
@@ -100,11 +105,13 @@ class MLX_VLM:
 
         if images:
             model_params["pixel_values"] = mx.array(inputs["pixel_values"])
-            model_params["image_grid_thw"] = mx.array(inputs["image_grid_thw"])
+            if inputs.get("image_grid_thw", None) is not None:
+                model_params["image_grid_thw"] = mx.array(inputs["image_grid_thw"])
 
         if videos:
             model_params["pixel_values"] = mx.array(inputs["pixel_values_videos"])
-            model_params["video_grid_thw"] = mx.array(inputs["video_grid_thw"])
+            if inputs.get("video_grid_thw", None) is not None:
+                model_params["video_grid_thw"] = mx.array(inputs["video_grid_thw"])
 
         prompt_cache = make_prompt_cache(self.model.language_model, self.max_kv_size)
 
@@ -131,9 +138,10 @@ class MLX_VLM:
 if __name__ == "__main__":
     image_path = "examples/images/attention.png"
     video_path = "examples/videos/demo.mp4"
-    model_path = "mlx-community/GLM-4.5V-4bit"
-    
-    model = MLX_VLM(model_path)
+    model_path = "mlx-community/Llama-4-Scout-17B-16E-Instruct-8bit"
+    chat_template_file = "examples/chat_templates/llama4.jinja"
+
+    model = MLX_VLM(model_path, chat_template_file=chat_template_file)
     print("MODEL TYPE: ", model.get_model_type())
 
     tools = [{
@@ -160,7 +168,8 @@ if __name__ == "__main__":
         "seed": 0,
         "max_tokens": 8192,
         "frequency_penalty": 0.0,
-        "presence_penalty": 0.0
+        "presence_penalty": 0.0,
+        "images": [image_path],
     }
     messages = [
         {
@@ -168,7 +177,7 @@ if __name__ == "__main__":
             "content": [
                 {
                     "type": "text",
-                    "text": "Describe the video in detail"
+                    "text": "Describe the image in detail"
                 },
                 {
                     "type": "image",

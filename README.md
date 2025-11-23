@@ -140,6 +140,34 @@ The server supports customizable context length for language models to optimize 
 - **Document processing**: Use larger context lengths (e.g., 8192, 16384) for long document analysis
 - **Memory-constrained systems**: Reduce context length to fit larger models in limited RAM
 
+### Custom Chat Templates
+
+The server supports custom chat templates for language models (`lm`) and multimodal models (`multimodal`). Chat templates define how conversation messages are formatted before being sent to the model.
+
+**Features:**
+- **Custom formatting**: Override the model's default chat template with your own Jinja2 template
+- **Model compatibility**: Works with both text-only and multimodal models
+- **File-based configuration**: Specify a path to a `.jinja` template file when launching the server
+
+**Usage:**
+```bash
+# Launch server with custom chat template
+python -m app.main \
+  --model-path <path-to-model> \
+  --model-type lm \
+  --chat-template-file /path/to/custom_template.jinja
+```
+
+**Template file format:**
+Chat templates use Jinja2 syntax and should follow the standard format expected by the tokenizer/processor. The template receives a `messages` variable containing the conversation history.
+
+**Example use cases:**
+- **Custom prompt formatting**: Modify how system prompts, user messages, and assistant responses are formatted
+- **Model-specific requirements**: Adapt templates for models that require specific formatting
+- **Fine-tuning compatibility**: Use templates that match your fine-tuning data format
+
+> **Note:** If the chat template file does not exist, the server will raise an error during startup. Make sure the file path is correct and the file is accessible.
+
 ## Installation
 
 Follow these steps to set up the MLX-powered server:
@@ -408,6 +436,7 @@ mlx-openai-server launch \
 - `--tool-call-parser`: Specify tool call parser to use instead of auto-detection. Only works with language models (`lm` or `multimodal` model types). Available options: `qwen3`, `glm4_moe`, `qwen3_moe`, `qwen3_next`, `qwen3_vl`, `harmony`, `minimax`.
 - `--reasoning-parser`: Specify reasoning parser to use instead of auto-detection. Only works with language models (`lm` or `multimodal` model types). Available options: `qwen3`, `glm4_moe`, `qwen3_moe`, `qwen3_next`, `qwen3_vl`, `harmony`, `minimax`.
 - `--trust-remote-code`: Enable `trust_remote_code` when loading models. This allows loading custom code from model repositories. Default: `False` (disabled). Only works with `lm` or `multimodal` model types.
+- `--chat-template-file`: Path to a custom chat template file. Only works with language models (`lm`) and multimodal models (`multimodal`). Default: `None` (uses model's default chat template).
 - `--log-file`: Path to log file. If not specified, logs will be written to 'logs/app.log' by default.
 - `--no-log-file`: Disable file logging entirely. Only console output will be shown.
 - `--log-level`: Set the logging level. Choices: `DEBUG`, `INFO`, `WARNING`, `ERROR`, `CRITICAL`. Default: `INFO`.
@@ -511,6 +540,17 @@ python -m app.main \
   --model-path <path-to-model-requiring-custom-code> \
   --model-type lm \
   --trust-remote-code \
+  --max-concurrency 1 \
+  --queue-timeout 300 \
+  --queue-size 100
+```
+
+**Model with custom chat template:**
+```bash
+python -m app.main \
+  --model-path <path-to-model> \
+  --model-type lm \
+  --chat-template-file /path/to/custom_template.jinja \
   --max-concurrency 1 \
   --queue-timeout 300 \
   --queue-size 100
@@ -643,10 +683,17 @@ mlx-openai-server launch \
   --model-type lm \
   --trust-remote-code
 
+# With custom chat template file
+mlx-openai-server launch \
+  --model-path <path-to-mlx-model> \
+  --model-type lm \
+  --chat-template-file /path/to/custom_template.jinja
+
 # Using python -m app.main (alternative method)
 python -m app.main --model-path <path-to-mlx-model> --model-type lm --no-log-file
 python -m app.main --model-path <path-to-mlx-model> --model-type lm --log-file /tmp/custom.log
 python -m app.main --model-path <path-to-mlx-model> --model-type lm --trust-remote-code
+python -m app.main --model-path <path-to-mlx-model> --model-type lm --chat-template-file /path/to/custom_template.jinja
 ```
 
 > **Note:** Text embeddings via the `/v1/embeddings` endpoint are now available with both text-only models (`--model-type lm`) and multimodal models (`--model-type multimodal`).

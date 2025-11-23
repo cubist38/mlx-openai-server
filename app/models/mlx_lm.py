@@ -28,7 +28,7 @@ class MLX_LM:
     supporting both streaming and non-streaming modes.
     """
 
-    def __init__(self, model_path: str, context_length: int = 32768, trust_remote_code: bool = False):
+    def __init__(self, model_path: str, context_length: int = 32768, trust_remote_code: bool = False, chat_template_file: str = None):
         try:
             self.model, self.tokenizer = load(model_path, lazy=False, tokenizer_config = {"trust_remote_code": trust_remote_code})
             self.pad_token_id = self.tokenizer.pad_token_id
@@ -36,6 +36,11 @@ class MLX_LM:
             self.model_type = self.model.model_type
             self.max_kv_size = context_length
             self.outlines_tokenizer = OutlinesTransformerTokenizer(self.tokenizer)
+            if chat_template_file:
+                if not os.path.exists(chat_template_file):
+                    raise ValueError(f"Chat template file {chat_template_file} does not exist")
+                with open(chat_template_file, "r") as f:
+                    self.tokenizer.chat_template = f.read()
         except Exception as e:
             raise ValueError(f"Error loading model: {str(e)}")
         
