@@ -22,26 +22,49 @@ classifiers = [
 ]
 
 dependencies = [
-  "mlx-vlm==0.3.7",
+  "aiofiles>=25,<26",
+  "av>=16.0.1,<17",
+  "click>=8.2.1,<8.4",
+  "fastapi>=0.115.14,<0.130",
+  "httpx>=0.28,<1",
+  "json_repair>=0.52.1,<0.60",
+  "librosa>=0.11.0,<0.12",
+  "loguru>=0.7.3,<0.8",
+  "mlx-embeddings>=0.0.4,<0.1",
   "mlx-lm==0.28.3",
-  "torchvision==0.23.0",
-  "mlx-whisper==0.4.3",
-  "mlx-embeddings==0.0.4",
-  "fastapi==0.115.14",
-  "av==16.0.1",
-  "uvicorn==0.35.0",
-  "Pillow==10.4.0",
-  "click==8.2.1",
-  "loguru==0.7.3",
-  "outlines==1.1.1",
-  "librosa==0.11.0",
-  "openai-harmony==0.0.4",
-  "json_repair==0.52.1",
-  "python-multipart==0.0.20",
+  "mlx-vlm>=0.3.7,<0.4",
+  "mlx-whisper>=0.4.3,<0.5",
+  "mlx>=0.30",                        # Needed due to a typing issue in <0.30
+  "numpy>=2.2.0,<2.4",
+  "openai-harmony>=0.0.4,<0.1",
+  "outlines>=1.1.1,<1.3",
+  "pillow>=11,<13",
+  "pydantic>=2,<3",
+  "python-multipart>=0.0.20,<0.0.25",
+  "rich>=14,<15",
+  "torchvision>=0.23.0,<0.30",
+  "uvicorn>=0.35.0,<0.40",
 ]
 
 [dependency-groups]
-dev = ["pytest", "black[jupyter]", "isort", "flake8-pyproject"]
+dev = [
+  "codespell",
+  "mypy",
+  "pre-commit",
+  "pytest",
+  "ruff",
+  "types-aiofiles",
+  "types-cffi",
+  "types-PyMySQL",
+  "types-pyRFC3339",
+  "types-python-dateutil",
+  "types-PyYAML",
+  "types-regex",
+  "types-requests",
+  "types-setuptools",
+]
+image-generation = ["mflux @ git+https://github.com/cubist38/mflux.git"]
+enhanced-caching = ["spacy", "regex", "tiktoken", "torch", "transformers"]
 
 [tool.setuptools]
 packages = ["mlx_openai_server"]
@@ -50,7 +73,7 @@ packages = ["mlx_openai_server"]
 mlx_openai_server = "app"
 
 [tool.setuptools.dynamic]
-version = { attr = "app.__version__" }
+version = { attr = "app.version.__version__" }
 
 [project.urls]
 Homepage = "https://github.com/cubist38/mlx-openai-server"
@@ -62,12 +85,240 @@ mlx-openai-server = "mlx_openai_server.cli:cli"
 requires = ["setuptools>=77.0"]
 build-backend = "setuptools.build_meta"
 
-[tool.black]
+[tool.codespell]
+skip = "*.py,*.toml,*.ipynb"
+quiet-level = 3
+
+[tool.pytest.ini_options]
+addopts = "--tb=short"
+markers = [
+  "integration: marks tests as integration tests that require external services",
+]
+
+[tool.ruff]
 line-length = 100
+indent-width = 4
+fix = true
+force-exclude = true
+required-version = ">=0.12.0"
+exclude = ["examples/"]
 
-[tool.isort]
-profile = "black"
-line_length = 100
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+skip-magic-trailing-comma = false
+line-ending = "lf"
+docstring-code-format = true
+docstring-code-line-length = "dynamic"
 
-[tool.flake8]
-ignore = ['E501', 'W503']
+[tool.ruff.lint]
+select = [
+  "A001",     # Variable {name} is shadowing a Python builtin
+  "ANN001",   # Missing type annotation for function argument
+  "ANN003",   # Missing type annotation for **kwargs
+  "ANN201",   # Missing return type annotation for public function
+  "ANN202",   # Missing return type annotation for private function
+  "ANN204",   # Missing return type annotation for special method
+  "ANN206",   # Missing return type annotation for classmethod
+  "ASYNC210", # Async functions should not call blocking HTTP methods
+  "ASYNC220", # Async functions should not create subprocesses with blocking methods
+  "ASYNC221", # Async functions should not run processes with blocking methods
+  "ASYNC222", # Async functions should not wait on processes with blocking methods
+  "ASYNC230", # Async functions should not open files with blocking methods like open
+  "ASYNC251", # Async functions should not call time.sleep
+  "B002",     # Python does not support the unary prefix increment
+  "B005",     # Using .strip() with multi-character strings is misleading
+  "B007",     # Loop control variable {name} not used within loop body
+  "B014",     # Exception handler with duplicate exception
+  "B015",     # Pointless comparison. Did you mean to assign a value? Otherwise, prepend assert or remove it.
+  "B017",     # pytest.raises(BaseException) should be considered evil
+  "B018",     # Found useless attribute access. Either assign it to a variable or remove it.
+  "B023",     # Function definition does not bind loop variable {name}
+  "B026",     # Star-arg unpacking after a keyword argument is strongly discouraged
+  "B032",     # Possible unintentional type annotation (using :). Did you mean to assign (using =)?
+  "B904",     # Use raise from to specify exception cause
+  "B905",     # zip() without an explicit strict= parameter
+  #"BLE",
+  "C",      # complexity
+  "COM818", # Trailing comma on bare tuple prohibited
+  "D",      # docstrings
+  "DTZ003", # Use datetime.now(tz=) instead of datetime.utcnow()
+  "DTZ004", # Use datetime.fromtimestamp(ts, tz=) instead of datetime.utcfromtimestamp(ts)
+  "E",      # pycodestyle
+  "F",      # pyflakes/autoflake
+  "F541",   # f-string without any placeholders
+  "FLY",    # flynt
+  "FURB",   # refurb
+  "G",      # flake8-logging-format
+  "I",      # isort
+  "INP",    # flake8-no-pep420
+  "ISC",    # flake8-implicit-str-concat
+  "ICN001", # import concentions; {name} should be imported as {asname}
+  "LOG",    # flake8-logging
+  "N804",   # First argument of a class method should be named cls
+  "N805",   # First argument of a method should be named self
+  "N815",   # Variable {name} in class scope should not be mixedCase
+  "PERF",   # Perflint
+  "PGH",    # pygrep-hooks
+  "PIE",    # flake8-pie
+  "PL",     # pylint
+  "PT",     # flake8-pytest-style
+  "PTH",    # flake8-pathlib
+  "PYI",    # flake8-pyi
+  "RET",    # flake8-return
+  "RSE",    # flake8-raise
+  "RUF005", # Consider iterable unpacking instead of concatenation
+  #"RUF006", # Store a reference to the return value of asyncio.create_task
+  "RUF010", # Use explicit conversion flag
+  "RUF013", # PEP 484 prohibits implicit Optional
+  "RUF017", # Avoid quadratic list summation
+  "RUF018", # Avoid assignment expressions in assert statements
+  "RUF019", # Unnecessary key check before dictionary access
+  # "RUF100", # Unused `noqa` directive; temporarily every now and then to clean them up
+  "S102",  # Use of exec detected
+  "S103",  # bad-file-permissions
+  "S108",  # hardcoded-temp-file
+  "S306",  # suspicious-mktemp-usage
+  "S307",  # suspicious-eval-usage
+  "S313",  # suspicious-xmlc-element-tree-usage
+  "S314",  # suspicious-xml-element-tree-usage
+  "S315",  # suspicious-xml-expat-reader-usage
+  "S316",  # suspicious-xml-expat-builder-usage
+  "S317",  # suspicious-xml-sax-usage
+  "S318",  # suspicious-xml-mini-dom-usage
+  "S319",  # suspicious-xml-pull-dom-usage
+  "S601",  # paramiko-call
+  "S602",  # subprocess-popen-with-shell-equals-true
+  "S604",  # call-with-shell-equals-true
+  "S608",  # hardcoded-sql-expression
+  "S609",  # unix-command-wildcard-injection
+  "SIM",   # flake8-simplify
+  "SLF",   # flake8-self
+  "SLOT",  # flake8-slots
+  "T100",  # Trace found: {name} used
+  "T20",   # flake8-print
+  "TC",    # flake8-type-checking
+  "TID",   # Tidy imports
+  "TRY",   # tryceratops
+  "UP",    # pyupgrade
+  "UP031", # Use format specifiers instead of percent format
+  "UP032", # Use f-string instead of `format` call
+  "W",     # pycodestyle
+]
+
+ignore = [
+  "ANN401", # Dynamically typed expressions (typing.Any) are allowed when necessary
+  "D202",   # No blank lines allowed after function docstring
+  "D203",   # 1 blank line required before class docstring
+  "D213",   # Multi-line docstring summary should start at the second line
+  "D401",   # First line should be in imperative mood
+  "D406",   # Section name should end with a newline
+  "D407",   # Section name underlining
+  "E501",   # line too long
+
+  "PLC1901", # {existing} can be simplified to {replacement} as an empty string is falsey; too many false positives
+  "PLR0904", # Too many public methods
+  "PLR0911", # Too many return statements ({returns} > {max_returns})
+  "PLR0912", # Too many branches ({branches} > {max_branches})
+  "PLR0913", # Too many arguments to function call ({c_args} > {max_args})
+  "PLR0914", # Too many local variables
+  "PLR0915", # Too many statements ({statements} > {max_statements})
+  "PLR0916", # Too many Boolean expressions
+  "PLR0917", # Too many positional arguments
+  "PLR1702", # Too many nested blocks
+  "PLR2004", # Magic value used in comparison, consider replacing {value} with a constant variable
+  "PLW2901", # Outer {outer_kind} variable {name} overwritten by inner {inner_kind} target
+  "PT011",   # pytest.raises({exception}) is too broad, set the `match` parameter or use a more specific exception
+  "PT018",   # Assertion should be broken down into multiple parts
+  "RUF001",  # String contains ambiguous unicode character.
+  "RUF002",  # Docstring contains ambiguous unicode character.
+  "RUF003",  # Comment contains ambiguous unicode character.
+  "RUF015",  # Prefer next(...) over single element slice
+  "SIM102",  # Use a single if statement instead of nested if statements
+  "SIM103",  # Return the condition {condition} directly
+  "SIM108",  # Use ternary operator {contents} instead of if-else-block
+  "SIM115",  # Use context handler for opening files
+
+  # Moving imports into type-checking blocks can mess with pytest.patch()
+  "TC001",  # Move application import {} into a type-checking block
+  "TC002",  # Move third-party import {} into a type-checking block
+  "TC003",  # Move standard library import {} into a type-checking block
+  "TID252", # Prefer absolute import over a relative import
+
+  "TRY003", # Avoid specifying long messages outside the exception class
+  "TRY301", # Abstract 'raise' to an inner function
+  "TRY400", # Use `logging.exception` instead of `logging.error`
+
+  "UP046", # Generic class uses `Generic` subclass instead of type parameters (Remove when minimum Python version is 3.12+)
+
+  # May conflict with the formatter, https://docs.astral.sh/ruff/formatter/#conflicting-lint-rules
+  "W191",
+  "E111",
+  "E114",
+  "E117",
+  "D206",
+  "D300",
+  "Q",
+  "COM812",
+  "COM819",
+  "ISC001",
+
+  # Disabled because ruff does not understand type of __all__ generated by a function
+  "PLE0605",
+]
+fixable = ["ALL"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = [
+  "SLF001", # Private member accessed
+  #"D100", "D101", "D102", "D103", "D104", "D105", "D106", "D107",  # Docstring rules
+  "PLR2004", # Magic value used in comparison
+  "S101",    # Use of assert detected
+  "PLR0913", # Too many arguments to function call
+  "C901",    # Function is too complex
+  "E501",    # line too long
+  "B017",    # Don't assert blind Exception
+  "PT006",   # Wrong type passed to first argument
+  "S108",
+  "D401",
+  "D417",
+]
+
+[tool.ruff.lint.flake8-pytest-style]
+fixture-parentheses = false
+mark-parentheses = false
+
+[tool.ruff.lint.isort]
+force-sort-within-sections = true
+combine-as-imports = true
+split-on-trailing-comma = false
+
+[tool.ruff.lint.mccabe]
+max-complexity = 25
+
+[tool.ruff.lint.pydocstyle]
+property-decorators = ["propcache.cached_property"]
+convention = "numpy"
+
+[tool.mypy]
+check_untyped_defs = true
+disallow_any_generics = true
+disallow_incomplete_defs = true
+disallow_untyped_defs = true
+no_implicit_optional = true
+warn_redundant_casts = true
+warn_return_any = true
+warn_unused_configs = true
+warn_unused_ignores = true
+disable_error_code = ["import-untyped"]
+files = ["app", "scripts"]
+exclude = ["tests"]
+python_executable = "./.venv/bin/python"
+
+[[tool.mypy.overrides]]
+module = ["dill.*", "mflux.*", "openai_harmony.*", "spacy.*"]
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = ["untyped_package.*"]
+follow_untyped_imports = true
