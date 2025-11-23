@@ -7,6 +7,7 @@ from .qwen3_vl import Qwen3VLToolParser, Qwen3VLThinkingParser
 from .base import BaseToolParser, BaseThinkingParser, BaseMessageConverter
 from .minimax import MinimaxToolParser, MinimaxThinkingParser, MiniMaxMessageConverter
 from .hermes import HermesToolParser, HermesThinkingParser
+from .llama4_pythonic import Llama4PythonicToolParser
 from .factory import ParserFactory
 
 __all__ = [
@@ -27,5 +28,6 @@ __all__ = [
     'MinimaxThinkingParser',
     'HermesThinkingParser',
     'HermesToolParser',
+    'Llama4PythonicToolParser',
     'ParserFactory',
 ]
