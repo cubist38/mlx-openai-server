@@ -136,9 +136,10 @@ class MLX_VLM:
 if __name__ == "__main__":
     image_path = "examples/images/attention.png"
     video_path = "examples/videos/demo.mp4"
-    model_path = "mlx-community/GLM-4.5V-4bit"
-    
-    model = MLX_VLM(model_path)
+    model_path = "mlx-community/Llama-4-Scout-17B-16E-Instruct-8bit"
+    chat_template_file = "examples/templates/llama4.jinja"
+
+    model = MLX_VLM(model_path, chat_template_file=chat_template_file)
     print("MODEL TYPE: ", model.get_model_type())
 
     tools = [{
@@ -165,7 +166,8 @@ if __name__ == "__main__":
         "seed": 0,
         "max_tokens": 8192,
         "frequency_penalty": 0.0,
-        "presence_penalty": 0.0
+        "presence_penalty": 0.0,
+        "images": [image_path],
     }
     messages = [
         {
