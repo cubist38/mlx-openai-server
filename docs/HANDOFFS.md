@@ -354,6 +354,8 @@ This document tracks session-to-session handoffs for the `mlx-openai-server-lab`
 ### Actions Taken
 1. ✅ Added `HubModelActionRequest/Response` schemas and new FastAPI routes to proxy controller `load_model`/`unload_model` actions with proper error handling.
 2. ✅ Extended the CLI with `hub start-model`, `hub stop-model`, and `hub watch` commands, wiring them to the controller endpoints alongside live status rendering and shared HTTP helpers.
+    - Note: The CLI now uses the hub daemon HTTP API (no IPC shim). Start the daemon for local testing with:
+       - `uvicorn app.hub.daemon:create_app --host 127.0.0.1 --port 8001`
 3. ✅ Created integration and CLI regression tests to cover the new endpoints and commands, ensuring HTTP calls are formed correctly and controller failures propagate.
 4. ✅ Updated the README to document the new commands so users know how to manage running hubs interactively.
 
@@ -389,10 +391,24 @@ This document tracks session-to-session handoffs for the `mlx-openai-server-lab`
 ### Next Actions
 - Continue with the observability/logging polish workstream outlined in the roadmap (per-model log bindings, structured output, etc.).
 
+
 ### Files Changed
 - `app/api/endpoints.py`
 - `tests/test_hub_integration.py`
 - `README.md`
 - `docs/HANDOFFS.md`
+
+---
+
+## Hub Daemon Migration — Single-daemon approach (summary)
+
+The hub architecture is now a single long-lived FastAPI "hub daemon" that owns process supervision, memory/runtime state, and an HTTP control plane. The daemon exposes a canonical API rooted under `/hub/*` (examples: `/hub/status`, `/hub/models/{name}/start`, `/hub/models/{name}/load`) and is implemented in `app/hub/daemon.py`.
+
+Key points:
+- Ownership: the daemon is the sole owner of model process lifecycle (spawn/monitor/terminate), handler memory load/unload state, and per-model metadata.
+- Control API: operators and the CLI MUST interact with the daemon via HTTP. There is no backwards compatibility shim; code that previously imported hub internals must be updated to call the daemon HTTP API.
+- Consolidation: previous multi-process orchestration logic (for example `app/hub/controller.py`, `app/hub/manager.py`, `app/hub/runtime.py`) has been consolidated into the daemon. Those files are retained only for historical reference; runtime logic lives in `app/hub/daemon.py` and the `HubSupervisor` abstraction.
+
+See `TEMP_PROJECT_STEPS.md` at the repository root for a detailed, step-by-step migration checklist, verification commands, and suggested tests to add or update.
 
 ---

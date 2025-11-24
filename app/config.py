@@ -12,6 +12,33 @@ from dataclasses import dataclass, field
 
 from loguru import logger
 
+from .const import (
+    DEFAULT_AUTO_UNLOAD_MINUTES,
+    DEFAULT_BIND_HOST,
+    DEFAULT_CONFIG_NAME,
+    DEFAULT_CONTEXT_LENGTH,
+    DEFAULT_DISABLE_AUTO_RESIZE,
+    DEFAULT_ENABLE_AUTO_TOOL_CHOICE,
+    DEFAULT_ENABLE_STATUS_PAGE,
+    DEFAULT_GROUP,
+    DEFAULT_IS_DEFAULT_MODEL,
+    DEFAULT_JIT_ENABLED,
+    DEFAULT_LOG_FILE,
+    DEFAULT_LOG_LEVEL,
+    DEFAULT_LORA_PATHS_STR,
+    DEFAULT_LORA_SCALES_STR,
+    DEFAULT_MAX_CONCURRENCY,
+    DEFAULT_MODEL_TYPE,
+    DEFAULT_NO_LOG_FILE,
+    DEFAULT_PORT,
+    DEFAULT_QUANTIZE,
+    DEFAULT_QUEUE_SIZE,
+    DEFAULT_QUEUE_TIMEOUT,
+    DEFAULT_REASONING_PARSER,
+    DEFAULT_TOOL_CALL_PARSER,
+    DEFAULT_TRUST_REMOTE_CODE,
+)
+
 
 @dataclass
 class MLXServerConfig:
@@ -24,35 +51,35 @@ class MLXServerConfig:
     """
 
     model_path: str
-    model_type: str = "lm"
-    context_length: int = 32768
-    port: int = 8000
-    host: str = "0.0.0.0"
-    max_concurrency: int = 1
-    queue_timeout: int = 300
-    queue_size: int = 100
-    disable_auto_resize: bool = False
-    quantize: int = 8
-    config_name: str | None = None
+    model_type: str = DEFAULT_MODEL_TYPE
+    context_length: int = DEFAULT_CONTEXT_LENGTH
+    port: int = DEFAULT_PORT
+    host: str = DEFAULT_BIND_HOST
+    max_concurrency: int = DEFAULT_MAX_CONCURRENCY
+    queue_timeout: int = DEFAULT_QUEUE_TIMEOUT
+    queue_size: int = DEFAULT_QUEUE_SIZE
+    disable_auto_resize: bool = DEFAULT_DISABLE_AUTO_RESIZE
+    quantize: int = DEFAULT_QUANTIZE
+    config_name: str | None = DEFAULT_CONFIG_NAME
     lora_paths: list[str] | None = field(default=None, init=False)
     lora_scales: list[float] | None = field(default=None, init=False)
-    log_file: str | None = None
-    no_log_file: bool = False
-    log_level: str = "INFO"
-    enable_auto_tool_choice: bool = False
-    tool_call_parser: str | None = None
-    reasoning_parser: str | None = None
-    trust_remote_code: bool = False
-    jit_enabled: bool = False
-    auto_unload_minutes: int | None = None
-    name: str | None = None
-    group: str | None = None
-    is_default_model: bool = False
-    enable_status_page: bool = True
+    log_file: str | None = DEFAULT_LOG_FILE
+    no_log_file: bool = DEFAULT_NO_LOG_FILE
+    log_level: str = DEFAULT_LOG_LEVEL
+    enable_auto_tool_choice: bool = DEFAULT_ENABLE_AUTO_TOOL_CHOICE
+    tool_call_parser: str | None = DEFAULT_TOOL_CALL_PARSER
+    reasoning_parser: str | None = DEFAULT_REASONING_PARSER
+    trust_remote_code: bool = DEFAULT_TRUST_REMOTE_CODE
+    jit_enabled: bool = DEFAULT_JIT_ENABLED
+    auto_unload_minutes: int | None = DEFAULT_AUTO_UNLOAD_MINUTES
+    name: str | None = DEFAULT_CONFIG_NAME
+    group: str | None = DEFAULT_GROUP
+    is_default_model: bool = DEFAULT_IS_DEFAULT_MODEL
+    enable_status_page: bool = DEFAULT_ENABLE_STATUS_PAGE
 
     # Used to capture raw CLI input before processing
-    lora_paths_str: str | None = None
-    lora_scales_str: str | None = None
+    lora_paths_str: str | None = DEFAULT_LORA_PATHS_STR
+    lora_scales_str: str | None = DEFAULT_LORA_SCALES_STR
 
     def __post_init__(self) -> None:
         """Normalize certain CLI fields after instantiation.

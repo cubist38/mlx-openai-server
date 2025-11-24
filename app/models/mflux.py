@@ -18,6 +18,8 @@ from mflux.flux.flux import Config, Flux1
 from mflux.kontext.flux_kontext import Flux1Kontext
 from PIL import Image
 
+from ..const import DEFAULT_QUANTIZE
+
 
 # Custom Exceptions
 class FluxModelError(Exception):
@@ -43,7 +45,7 @@ class ModelConfiguration:
         self,
         model_type: str,
         model_config: ModelConfig | None = None,
-        quantize: int = 8,
+        quantize: int = DEFAULT_QUANTIZE,
         default_steps: int = 20,
         default_guidance: float = 2.5,
         lora_paths: list[str] | None = None,
@@ -76,7 +78,7 @@ class ModelConfiguration:
     @classmethod
     def schnell(
         cls,
-        quantize: int = 8,
+        quantize: int = DEFAULT_QUANTIZE,
         lora_paths: list[str] | None = None,
         lora_scales: list[float] | None = None,
     ) -> ModelConfiguration:
@@ -94,7 +96,7 @@ class ModelConfiguration:
     @classmethod
     def dev(
         cls,
-        quantize: int = 8,
+        quantize: int = DEFAULT_QUANTIZE,
         lora_paths: list[str] | None = None,
         lora_scales: list[float] | None = None,
     ) -> ModelConfiguration:
@@ -112,7 +114,7 @@ class ModelConfiguration:
     @classmethod
     def krea_dev(
         cls,
-        quantize: int = 8,
+        quantize: int = DEFAULT_QUANTIZE,
         lora_paths: list[str] | None = None,
         lora_scales: list[float] | None = None,
     ) -> ModelConfiguration:
@@ -353,7 +355,7 @@ class FluxModel:
         self,
         model_path: str,
         config_name: str,
-        quantize: int = 8,
+        quantize: int = DEFAULT_QUANTIZE,
         lora_paths: list[str] | None = None,
         lora_scales: list[float] | None = None,
     ) -> None:

@@ -8,13 +8,12 @@ This document expands on the **Hub Mode** section in the project README and desc
    - Loads `hub.yaml`, validates model/group definitions, and spawns a dedicated subprocess per model using the standard single-model server entrypoint. Group `max_loaded` limits are enforced later by the in-process runtime when a handler tries to load into memory.
    - Persists telemetry (`hub-manager.log`, `<model>.log`, `hub-manager.pid`, and `hub-manager.sock`) inside the configured `log_path`.
    - Emits structured observability events via `HubObservabilitySink` so you can stream process lifecycle updates to third-party collectors.
-2. **HubService (IPC server)**
-   - Wraps `HubManager` behind a UNIX domain socket so the CLI, FastAPI routes, and HTML dashboard all share the same control plane.
-   - "IPC" stands for **Inter-Process Communication** — the mechanisms processes use to exchange data and coordinate operations. In this project, IPC is implemented via a UNIX domain socket and Python's `multiprocessing.connection` APIs.
-   - Supports `ping`, `status`, `reload`, `start_model`, `stop_model`, and `shutdown` actions. Every public control surface ultimately maps to one of these subcommands.
-3. **HubServiceClient (IPC client)**
-   - Lightweight helper used by FastAPI (`app/api/hub_routes.py`) and the CLI (`app/cli.py`).
-   - Always reloads `hub.yaml` before servicing requests to keep the HubManager in sync with on-disk changes.
+2. **Hub daemon (HTTP control plane)**
+   - The legacy IPC-based `HubService` was replaced by a single FastAPI-backed hub daemon. The daemon owns process supervision, memory lifecycle, and an HTTP control surface under `/hub/*`.
+   - The CLI and FastAPI routes interact with the daemon via HTTP (for example, `GET /hub/status`, `POST /hub/reload`, `POST /hub/models/{model}/start`).
+   - Supported actions include health checks, status queries, reloads, model start/stop, memory load/unload, and graceful shutdowns. Every public control surface maps to one of these HTTP endpoints.
+3. **Daemon client pattern**
+   - Instead of an IPC client, callers now issue HTTP requests to the daemon. Tests and tools should call the daemon endpoints or stub the async HTTP helper used by `app.api.hub_routes`.
 4. **FastAPI `/hub` surface**
    - Exposes JSON APIs plus the HTML dashboard. Operators can trigger the same start/reload/stop/load/unload actions directly from the browser while receiving flash/toast feedback.
 
@@ -88,8 +87,8 @@ Flash helper tones (`info`, `success`, `warning`, `error`) mirror the HTML dashb
 | `/hub/service/stop` | POST | Requests shutdown, returning HTTP 503 if no manager is running. |
 | `/hub/models/{model}/start-model` | POST | Reloads, then issues `start_model`. HTTP 429 indicates group capacity exhaustion. |
 | `/hub/models/{model}/stop-model` | POST | Reloads, then issues `stop_model`. |
-| `/hub/models/{model}/load-model` | POST | Passes the request to the controller so it can instantiate the handler locally. |
-| `/hub/models/{model}/unload-model` | POST | Requests the controller tear down the in-memory handler and free resources. |
+| `/hub/models/{model}/load` | POST | Passes the request to the controller so it can instantiate the handler locally. |
+| `/hub/models/{model}/unload` | POST | Requests the controller tear down the in-memory handler and free resources. |
 
 All responses use the same OpenAI-style `error` envelope (`type`, `message`, `code`) so upstream tooling can reuse existing error handling paths.
 
@@ -103,5 +102,6 @@ For more implementation details, inspect:
 
 - `app/hub/config.py` – YAML loader, slug validation, log-path normalization.
 - `app/hub/manager.py` – Process orchestration, group accounting, observability events.
-- `app/hub/service.py` – IPC service/client plus logging setup.
+- `app/hub/daemon.py` – FastAPI-based hub daemon, process supervision, and HTTP control plane.
+- `app/hub/service.py` – (removed) legacy IPC service. The daemon replaces this component; do not rely on the IPC shim.
 - `app/api/hub_routes.py` – FastAPI endpoints powering `/hub`, `/hub/status`, and service/model controls.

@@ -96,7 +96,7 @@ def test_models_without_ports_receive_unique_offsets(tmp_path: Path) -> None:
     config = load_hub_config(hub_path)
 
     ports = [model.port for model in config.models]
-    assert ports == [47850, 47851]
+    assert ports == [47851, 47852]  # Daemon gets 47850, models start at 47851
 
 
 def test_models_honor_custom_starting_port(tmp_path: Path) -> None:
@@ -119,7 +119,7 @@ def test_models_honor_custom_starting_port(tmp_path: Path) -> None:
     config = load_hub_config(hub_path)
 
     ports = [model.port for model in config.models]
-    assert ports == [60000, 60001]
+    assert ports == [60001, 60002]  # Daemon gets 60000, models start at 60001
 
 
 def test_starting_port_below_range_raises(tmp_path: Path) -> None:
@@ -223,14 +223,21 @@ def test_auto_port_skips_in_use_candidates(tmp_path: Path, monkeypatch: pytest.M
     )
 
     config = load_hub_config(hub_path)
-    assert [model.port for model in config.models] == [47851]
-    assert calls[:2] == [47850, 47851]
+    assert [model.port for model in config.models] == [47852]  # Daemon gets 47851, model gets 47852
+    assert calls[:3] == [
+        47850,
+        47851,
+        47852,
+    ]  # Daemon tries 47850 (busy), 47851 (free), model gets 47852
 
 
 def test_explicit_port_in_use_raises(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """Explicit ports should also be probed and rejected when busy."""
 
-    monkeypatch.setattr("app.hub.config._is_port_available", lambda _host, _port: False)
+    def _fake_probe(_host: str, port: int) -> bool:
+        return port != 60010  # Make 60010 unavailable, others available
+
+    monkeypatch.setattr("app.hub.config._is_port_available", _fake_probe)
 
     hub_path = _write_yaml(
         tmp_path / "hub.yaml",

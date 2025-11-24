@@ -13,12 +13,16 @@ from loguru import logger
 import yaml
 
 from ..config import MLXServerConfig
+from ..const import (
+    DEFAULT_BIND_HOST,
+    DEFAULT_ENABLE_STATUS_PAGE,
+    DEFAULT_HUB_CONFIG_PATH,
+    DEFAULT_HUB_LOG_PATH,
+    DEFAULT_LOG_LEVEL,
+    DEFAULT_MODEL_STARTING_PORT,
+    DEFAULT_PORT,
+)
 
-HUB_CONFIG_FILENAME = "hub.yaml"
-HUB_HOME = Path("~/mlx-openai-server").expanduser()
-DEFAULT_HUB_CONFIG_PATH = HUB_HOME / HUB_CONFIG_FILENAME
-DEFAULT_HUB_LOG_PATH = HUB_HOME / "logs"
-DEFAULT_MODEL_STARTING_PORT = 47850
 PORT_MIN = 1024
 PORT_MAX = 65535
 
@@ -61,12 +65,13 @@ class MLXHubGroupConfig:
 class MLXHubConfig:
     """Top-level hub configuration derived from YAML."""
 
-    host: str = "0.0.0.0"
-    port: int = 8000
+    host: str = DEFAULT_BIND_HOST
+    port: int = DEFAULT_PORT
+    daemon_port: int = field(init=False)  # Dynamically allocated
     model_starting_port: int = DEFAULT_MODEL_STARTING_PORT
-    log_level: str = "INFO"
+    log_level: str = DEFAULT_LOG_LEVEL
     log_path: Path = field(default_factory=lambda: DEFAULT_HUB_LOG_PATH)
-    enable_status_page: bool = True
+    enable_status_page: bool = DEFAULT_ENABLE_STATUS_PAGE
     models: list[MLXServerConfig] = field(default_factory=list)
     groups: list[MLXHubGroupConfig] = field(default_factory=list)
     source_path: Path | None = None
@@ -202,6 +207,7 @@ def _build_models(
     hub_log_path: Path,
     group_lookup: dict[str, MLXHubGroupConfig],
     persisted_ports: dict[str, int] | None = None,
+    additional_reserved_ports: set[int] | None = None,
 ) -> list[MLXServerConfig]:
     """Build model configurations from raw data.
 
@@ -241,6 +247,8 @@ def _build_models(
     models: list[MLXServerConfig] = []
     seen_names: set[str] = set()
     reserved_ports: set[int] = {base_port}
+    if additional_reserved_ports:
+        reserved_ports.update(additional_reserved_ports)
     next_auto_port = max(starting_port, PORT_MIN)
 
     persisted_ports = persisted_ports or {}
@@ -343,7 +351,7 @@ def load_hub_config(
 
     data = _load_yaml(path)
 
-    port_value = data.get("port", 8000)
+    port_value = data.get("port", DEFAULT_PORT)
     try:
         port = int(port_value)
     except (TypeError, ValueError) as exc:
@@ -360,10 +368,10 @@ def load_hub_config(
         )
 
     hub = MLXHubConfig(
-        host=str(data.get("host", "0.0.0.0")),
+        host=str(data.get("host", DEFAULT_BIND_HOST)),
         port=port,
         model_starting_port=model_starting_port,
-        log_level=str(data.get("log_level", "INFO")),
+        log_level=str(data.get("log_level", DEFAULT_LOG_LEVEL)),
         log_path=Path(str(data.get("log_path", DEFAULT_HUB_LOG_PATH))),
         enable_status_page=data.get("enable_status_page", True),
         source_path=path,
@@ -371,15 +379,28 @@ def load_hub_config(
 
     hub.groups = _build_groups(data.get("groups"))
     group_lookup = {group.name: group for group in hub.groups}
+
+    # Allocate daemon port first (before models) to give it priority for lowest port
+    reserved_ports = {hub.port}  # Reserve main server port
+    daemon_port, next_auto_port = _allocate_port(
+        "hub-daemon",
+        hub.host,
+        hub.model_starting_port,
+        reserved_ports,
+    )
+    hub.daemon_port = daemon_port
+    reserved_ports.add(daemon_port)  # Reserve daemon port for model allocation
+
     hub.models = _build_models(
         raw_models=data.get("models"),
         base_host=hub.host,
         base_port=hub.port,
-        starting_port=hub.model_starting_port,
+        starting_port=next_auto_port,  # Start model allocation after daemon port
         base_log_level=hub.log_level,
         hub_log_path=hub.log_path,
         group_lookup=group_lookup,
         persisted_ports=persisted_ports,
+        additional_reserved_ports={daemon_port},
     )
 
     # Ensure all models inherit the hub's status page setting
@@ -448,11 +469,11 @@ def _is_ipv6_host(host: str) -> bool:
 def _normalize_host_for_binding(host: str, family: int) -> str:
     value = host.strip()
     if not value:
-        return "::" if family == socket.AF_INET6 else "0.0.0.0"
+        return "::" if family == socket.AF_INET6 else DEFAULT_BIND_HOST
     if family == socket.AF_INET6 and value.startswith("[") and value.endswith("]"):
         return value[1:-1]
     if family == socket.AF_INET6:
         return value
     if value == "::":
-        return "0.0.0.0"
+        return DEFAULT_BIND_HOST
     return value

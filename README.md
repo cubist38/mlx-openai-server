@@ -742,53 +742,59 @@ python -m app.main --model-path <path-to-model> --model-type lm --log-file /tmp/
 
 ### Hub Mode
 
-Hub mode orchestrates multiple MLX models behind a single OpenAI-compatible port using a declarative YAML file and a background manager service. Use the `hub` CLI to launch the service, trigger reloads, start/stop individual models, and open the `/hub` dashboard for live controls and flash-style messaging. A deeper architecture overview lives in [`docs/HUB_MODE.md`](docs/HUB_MODE.md).
+Hub mode provides multi-model orchestration via a dedicated hub daemon. The daemon owns process supervision, memory/runtime state, and an HTTP control plane rooted at `/hub/*`.
 
-#### Hub manager service architecture
+Summary
+- The hub daemon is the authoritative owner of model lifecycle (spawn/monitor/terminate) and handler memory load/unload state.
+- Operators use the CLI to interact with the hub; the CLI issues HTTP requests to the daemon for control actions.
+- The hub exposes a lightweight HTML status page at `/hub` (when enabled) that polls `/hub/status`.
 
-- `mlx-openai-server hub start` launches a **HubManager** process that reads `hub.yaml`, spawns per-model worker processes, listens on a UNIX domain socket for control commands, and ensures the local FastAPI controller is running so `/hub`, `/hub/status`, and the OpenAI-compatible API come online automatically.
-- Every CLI call and FastAPI `/hub` endpoint goes through the same `HubServiceClient`, so actions issued from the dashboard, CLI, or API all converge on the background service.
-- `hub start` (and the FastAPI `/hub/status` endpoint) reload `hub.yaml` before reporting status to guarantee that counts/default flags match the current file on disk.
-- Commands such as `hub start-model MODEL` and `POST /hub/models/{model}/start-model` return OpenAI-style 429 responses when group caps are saturated; other failures propagate the underlying status code from the manager.
-- Logs live under the configured `log_path`: the service writes `hub-manager.log`, each model writes `<log_path>/<name>.log`, and PID/socket files are colocated for simple cleanup.
+Configuration
+- The hub uses a `hub.yaml` file with `models` and `groups` entries to declare managed models, default-start flags, group capacities, and per-model handler options (e.g., `jit_enabled`, `auto_unload_minutes`).
 
-#### Hub configuration file
+Hub configuration file
+- Default location: `~/mlx-openai-server/hub.yaml` (override with CLI `--config` when needed)
+- Purpose: declare the models the hub should manage, per-model runtime flags, and optional groups that constrain memory loading.
 
-- Default location: `~/mlx-openai-server/hub.yaml`
-- Default log directory: `~/mlx-openai-server/logs`
-- All field names use `snake_case`
 
-Top-level keys:
+Top-level keys (common)
 
 | Field | Type | Required | Default | Description |
-| --- | --- | --- | --- | --- |
-| `host` | string | — | `0.0.0.0` | Hostname for the shared OpenAI endpoint. |
-| `port` | integer | — | `8000` | Port exposed to clients. |
-| `model_starting_port` | integer | — | `47850` | Base port for auto-assigned model workers. Ports increment sequentially and skip sockets that appear busy. |
-| `log_level` | string | — | `INFO` | Log level inherited by models unless overridden. |
-| `log_path` | string | — | `~/mlx-openai-server/logs` | Directory for hub logs. The controller stores each model's logs under `log_path/<name>.log`. |
-| `enable_status_page` | bool | — | `true` | Enables the `/hub` HTML status page that polls `/hub/status`. |
-| `models` | list | ✅ | — | Required list of model entries (see below). |
-| `groups` | list | — | `[]` | Optional group throttling rules (see below). |
+| --- | --- | ---: | --- | --- |
+| `host` | string | — | `0.0.0.0` | Host/address the shared OpenAI-compatible endpoint binds to. |
+| `port` | integer | — | `8000` | Port for the shared controller (OpenAI-compatible API). |
+| `model_starting_port` | integer | — | `47850` | Base port for auto-assigned model workers when `port` is omitted. |
+| `log_path` | string | — | `~/mlx-openai-server/logs` | Directory for hub and model logs. |
+| `enable_status_page` | bool | — | `true` | Enable the HTML `/hub` dashboard which polls `/hub/status`. |
+| `models` | list | ✅ | — | Required list of model entries to register/manage. |
+| `groups` | list | — | `[]` | Optional list of group rules to enforce memory-throttling. |
 
-Each entry under `models` accepts every `MLXServerConfig` option plus hub-specific keys:
+Per-model fields
 
-- `name` (required, slug-compliant) – Friendly identifier referenced by clients. The hub validates the slug format (letters in any case, numbers, `-` or `_`) but does not modify the provided value.
-- `model_path` (required) – Local path or Hugging Face repo ID.
-- `default` (optional, bool) – Models with `true` start their background process automatically when the hub starts. When attached to a group, defaults are still allowed to start, but only `max_loaded` models from that group can be memory-loaded at the same time.
-- `group` (optional, slug) – Associates the model with a group defined under `groups`.
-- `log_file` / `no_log_file` – Override hub-level logging rules if needed.
-- Any existing CLI flag (e.g., `model_type`, `jit_enabled`, `auto_unload_minutes`, `tool_call_parser`, ...).
+| Field | Type | Required | Default | Description |
+| --- | --- | ---: | --- | --- |
+| `name` | string | ✅ | — | Friendly model identifier used by clients (slug-safe: letters, digits, `-` or `_`). |
+| `model_path` | string | ✅ | — | Local path or Hugging Face repo ID for the model. |
+| `port` | integer | — | auto-assigned | Explicit worker port; hub assigns one from `model_starting_port` if omitted. |
+| `default` | bool | — | `false` | If `true`, hub starts the worker process when the hub starts. |
+| `group` | string | — | — | Name of the group this model belongs to (see `groups`). |
+| `jit_enabled` | bool | — | — | JIT loading flag (passed through to the model server). |
+| `auto_unload_minutes` | integer | — | — | Idle minutes after which handlers are auto-unloaded from memory. |
+| `max_concurrency` | integer | — | — | Maximum concurrent requests allowed for the model. |
+| `log_level` | string | — | — | Per-model log level override. |
+| `...` | — | — | — | Any other `MLXServerConfig` options are accepted per model. |
 
-> **Port allocation:** When a model omits the `port` field, the loader assigns sequential ports starting at `model_starting_port` (default `47850`). Each candidate socket is probed and busy ports are skipped automatically so the FastAPI controller can continue using the primary `host:port`. Explicit `port` values must be unique and cannot reuse the controller's port.
+Groups
 
-`groups` entries describe shared constraints:
+| Field | Type | Required | Default | Description |
+| --- | --- | ---: | --- | --- |
+| `name` | string | ✅ | — | Group identifier referenced by per-model `group`. |
+| `max_loaded` | integer | — | — | Maximum number of models in this group that may be memory-loaded simultaneously. Exceeding the cap returns an OpenAI-style `429`. |
 
-- `name` (required, slug as provided) – Must already satisfy slug rules (letters in any case, numbers, `-` or `_`). The hub validates inputs but never mutates them.
-- `max_loaded` (optional, integer ≥ 1) – Maximum simultaneously loaded models within the group. Attempts to load additional models beyond the cap return an OpenAI-style `429`, but the worker processes are still allowed to run and will load once a slot opens.
+Port allocation note
+- When a model omits the `port` field, the hub assigns sequential ports starting at `model_starting_port` (default `47850`). Busy ports are skipped automatically.
 
-#### Example `hub.yaml`
-
+Example `hub.yaml`
 ```yaml
 host: 0.0.0.0
 port: 5005
@@ -838,133 +844,39 @@ groups:
     max_loaded: 1
 ```
 
-#### Per-model logs and telemetry
+Per-model logs and telemetry
+- Each managed model writes to `log_path/<name>.log`. The hub emits structured records including `hub_model` and `hub_group` fields to aid observability.
 
-- Every managed model writes to its own file inside `log_path/<name>.log`. Each file lives directly under the shared log directory so it's easy to ship or rotate individually.
-- Use `tail -F ~/mlx-openai-server/logs/qwen3_30b.log` (changing the name as needed) to follow a specific model while the hub is running.
-- The hub manager emits structured Loguru records that include `hub_model`, `hub_group`, and `hub_log_path` bindings. External observability stacks can subscribe by providing a custom `HubObservabilitySink` implementation (see `docs/HUB_OBSERVABILITY.md`).
-- Keep application-level metrics inside the model process itself; the hub focuses on lifecycle telemetry (start/stop/crash notifications) and log routing.
+Control API
+- `GET /hub/status` — Returns a registry snapshot with counts, timestamps, and per-model metadata.
+- `POST /hub/reload` — Reload the hub configuration and reconcile running processes. Returns a diff with `started`, `stopped`, and `unchanged` lists.
+- `POST /hub/shutdown` — Gracefully request the daemon to stop all managed models and exit.
+- `POST /hub/models/{model}/start` — Start the worker process for the named model (if configured).
+- `POST /hub/models/{model}/stop` — Stop the worker process for the named model.
+- `POST /hub/models/{model}/load` — Instruct the daemon/controller to load handlers into memory for the named model.
+- `POST /hub/models/{model}/unload` — Instruct the daemon/controller to unload handlers from memory for the named model.
 
-#### CLI usage
-
-The `hub` subcommand centralizes every multi-model workflow:
-
-- `hub start` launches (or attaches to) the background HubManager process using the default `~/mlx-openai-server/hub.yaml` and ensures the FastAPI controller is running on the configured host/port. Re-running the command while the service is already up prints a warning and shows live status instead of spawning another process.
-- `hub status [MODEL ...]` reloads `hub.yaml`, fetches the live snapshot when the service is reachable, and prints per-model summaries. Add `--config PATH` to inspect alternate files without modifying the running service.
-- `hub reload` calls the service to reconcile `hub.yaml` changes and prints started/stopped/unchanged counts using the CLI flash helper.
-- `hub stop` reloads once more (to ensure diffs are flushed) and then requests a graceful shutdown; CLI flash output confirms the outcome.
-- `hub start-model MODEL [...]` and `hub stop-model MODEL [...]` call the running service to start/stop specific models, respecting group capacity rules and surfacing 429s if a group is saturated.
-- `hub load-model MODEL [...]` and `hub unload-model MODEL [...]` talk directly to the controller to load/unload handlers in memory, which requires the controller to be running on the same host.
-- `hub watch [--interval 5]` keeps streaming `/hub/status` snapshots with uptime columns, exit codes, and log file hints until you press Ctrl+C.
-- `GET /hub` serves the HTML dashboard described below (guarded by `enable_status_page: true`).
-
+CLI usage
 ```bash
-# Inspect hub configuration (default path)
+# Show hub status (reads hub.yaml by default unless --config is provided)
 mlx-openai-server hub status
 
-# Provide a custom hub.yaml
-mlx-openai-server hub --config ~/work/mlx/hub.yaml status
+# Start configured models via the hub
+mlx-openai-server hub start-model alpha
 
-# Launch the hub stack (manager + controller)
-mlx-openai-server hub start
+# Load handlers into memory via the hub
+mlx-openai-server hub load-model alpha
 
-# Launch with a custom hub.yaml (manager + controller)
-mlx-openai-server hub --config ~/mlx-openai-server/hub.yaml start
+# Reload hub config through the hub
+mlx-openai-server hub reload
 
-# Start specific models on demand (run while the hub server is up)
-mlx-openai-server hub --config ~/mlx-openai-server/hub.yaml start-model alpha beta
-
-# Stop a model using hub.yaml routing
-mlx-openai-server hub stop-model beta
-
-# Load handlers into memory via the controller
-mlx-openai-server hub load-model alpha --reason dashboard
-
-# Unload handlers from memory when they are no longer needed
-mlx-openai-server hub unload-model beta
-
-# Watch live status with automatic refreshes
-mlx-openai-server hub watch --interval 2
-
-# Query a running server's hub snapshot
-curl http://localhost:8000/hub/status | jq
-
-# Open the HTML dashboard (defaults to localhost)
-open http://127.0.0.1:8000/hub
+# Shutdown the hub
+mlx-openai-server hub stop
 ```
 
-The CLI prints per-model summaries (name, model path, `default` flag, group membership, PID/log targets, and live state). Because the CLI and FastAPI routes share the HubServiceClient, any action you trigger (reloads, loads, stops) is immediately reflected in `/hub/status`, the dashboard, and future CLI output.
-
-#### Selecting models when using hub mode
-
-When the server is launched through `hub start`, every OpenAI-compatible request **must** include the `model` field referencing one of the `name` entries defined in `hub.yaml`. Requests that omit the field (or supply a blank value) return HTTP 400 to prevent accidental routing to the wrong model. Run `mlx-openai-server hub status` or `curl http://localhost:8000/hub/status` to discover the available names before issuing requests.
-
-Single-model launches started via `mlx-openai-server launch --model-path ...` keep their prior behavior: clients may continue using the default `local-model` identifier or any value because only one handler exists.
-
-#### Hub HTTP status API
-
-Every running hub server exposes a registry snapshot at `GET /hub/status`. The JSON response mirrors what the CLI prints and powers the `/hub` HTML status page:
-
-```json
-{
-  "status": "ok",
-  "timestamp": 1732147200,
-  "host": "0.0.0.0",
-  "port": 8000,
-  "counts": {"registered": 1, "loaded": 1},
-  "warnings": [],
-  "models": [
-    {
-      "id": "qwen3_4b",
-      "object": "model",
-      "created": 1732147200,
-      "owned_by": "local",
-      "metadata": {
-        "status": "initialized",
-        "model_type": "lm",
-        "model_path": "mlx-community/Qwen3-4B-Instruct",
-        "group": null
-      }
-    }
-  ]
-}
-```
-
-When the central registry is unavailable (for example, while running the legacy single-model CLI), the endpoint falls back to the cached metadata and emits warnings so callers know the snapshot may be partial.
-
-#### Hub HTML status page
-
-When `enable_status_page` is set to `true` (the default), visiting `/hub` in a browser renders a compact dashboard that polls `/hub/status` every few seconds. It highlights controller health, loaded versus registered counts, warnings, and a sortable table of every configured model. Each row includes **Start**/**Stop** buttons wired to `/hub/models/{model}/start-model|stop-model` plus conditional **Load**/**Unload** buttons that reach `/hub/models/{model}/load-model|unload-model` once the controller is available. The top of the page also exposes **Start**, **Reload**, and **Stop** buttons for the service itself; all actions surface flash-style notices inline plus toast popups so operators immediately know whether a request succeeded, degraded, or hit a 429. Buttons automatically disable themselves while an action is pending or when the model/service state makes the action invalid. Set `enable_status_page: false` inside `hub.yaml` to disable the route entirely (the server responds with HTTP 404 when disabled).
-
-#### Hub service control endpoints
-
-FastAPI exposes the same building blocks as the CLI for automation or remote tooling:
-
-- `GET /hub/status` – Always reloads `hub.yaml` before returning the latest service snapshot. Falls back to cached metadata (with warnings) when the service is offline.
-- `POST /hub/service/start` – Spawns the HubManager if it is not running, waits for availability, and returns the PID plus the latest snapshot. Returns HTTP 400 when `hub.yaml` cannot be found or parsed.
-- `POST /hub/service/reload` – Forces the background service to reload `hub.yaml` and returns the diff (`started/stopped/unchanged`).
-- `POST /hub/service/stop` – Raises HTTP 503 with a clear error when no manager is running; otherwise reloads one last time and requests shutdown.
-- `POST /hub/models/{model}/start-model` – Ensures the service is available, reloads, and calls `start_model`. Returns HTTP 429 when group capacity is exhausted, mirroring OpenAI rate-limit errors.
-- `POST /hub/models/{model}/stop-model` – Ensures the service is available, reloads, and calls `stop_model`. All responses share the OpenAI-style `error` envelope used by the main API so tooling can reuse existing handlers.
-- `POST /hub/models/{model}/load-model` – Sends the request to the in-process controller so it can instantiate the handler locally (requires the controller to be running on the same host).
-- `POST /hub/models/{model}/unload-model` – Tells the controller to tear down the in-memory handler while keeping the worker process online for future loads.
-
-Example `curl` usage:
-
-```bash
-# Reload the running hub manager
-curl -X POST http://localhost:8000/hub/service/reload | jq
-
-# Start a model on demand and capture flash message text
-curl -X POST http://localhost:8000/hub/models/alpha/start-model | jq '.message'
-
-# Load handlers into memory through the controller
-curl -X POST http://localhost:8000/hub/models/alpha/load-model -H 'Content-Type: application/json' \
-  -d '{"reason": "dashboard"}' | jq '.message'
-
-# Stop the hub manager service
-curl -X POST http://localhost:8000/hub/service/stop
-```
+Web status page
+- When `enable_status_page` is `true`, the HTML dashboard at `/hub` displays a live snapshot of registered models, process state, memory load status, and exposes Start/Stop and Load/Unload controls for operators.
+- The dashboard polls `/hub/status` periodically and shows flash/toast messages for actions.
 
 ### Using the API
 

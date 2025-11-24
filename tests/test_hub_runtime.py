@@ -1,140 +1,98 @@
-"""Tests for hub runtime scaffolding and validation."""
+"""Combined unit tests for hub runtime state helpers and cleanup.
+
+This file merges the previous `test_hub_runtime_state.py` and
+`test_hub_runtime_cleanup.py` tests so runtime persistence and the daemon's
+cleanup behavior are verified together.
+"""
 
 from __future__ import annotations
 
+import contextlib
+import json
+import os
 from pathlib import Path
-from textwrap import dedent
+import socket
 
-import pytest
+from fastapi.testclient import TestClient
 
-from app.config import MLXServerConfig
-from app.hub.config import HubConfigError, MLXHubConfig, MLXHubGroupConfig, load_hub_config
-from app.hub.runtime import HubRuntime
-
-
-def _write_hub_file(base: Path, contents: str) -> Path:
-    path = base / "hub.yaml"
-    path.write_text(contents, encoding="utf-8")
-    return path
+from app.cli import _read_hub_runtime_state, _runtime_state_path, _write_hub_runtime_state
+from app.hub.config import MLXHubConfig
+from app.hub.daemon import create_app
 
 
-def test_load_hub_config_rejects_unknown_group_when_declared(tmp_path: Path) -> None:
-    """Models referencing undefined groups should error when groups are declared."""
+def test_hub_runtime_state_written_and_read(tmp_path: Path) -> None:
+    """Writing runtime state should create the file and it should be readable.
 
-    hub_path = _write_hub_file(
-        tmp_path,
-        dedent(
-            """
-            models:
-              - name: foo
-                model_path: /models/foo
-                group: missing
-            groups:
-              - name: existing
-                max_loaded: 1
-            """
-        ).strip(),
-    )
+    The test binds a temporary listening socket on localhost to simulate a
+    running daemon port and uses the current process PID so the liveness
+    checks in `_read_hub_runtime_state` succeed.
+    """
 
-    with pytest.raises(HubConfigError, match="not defined"):
-        load_hub_config(hub_path)
+    # Configure a hub config that writes logs into the temporary directory
+    config = MLXHubConfig(host="127.0.0.1", log_path=tmp_path)
 
+    # Create a listening socket so the quick port check passes
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    sock.bind(("127.0.0.1", 0))
+    sock.listen(1)
+    port = sock.getsockname()[1]
 
-def test_group_default_limit_not_enforced(tmp_path: Path) -> None:
-    """Default process counts should not be limited by max_loaded."""
+    try:
+        # Write runtime state using current pid and the listening port
+        _write_hub_runtime_state(config, os.getpid(), port)
 
-    hub_path = _write_hub_file(
-        tmp_path,
-        dedent(
-            f"""
-            log_path: {tmp_path / "logs"}
-            models:
-              - name: alpha
-                model_path: /models/alpha
-                group: constrained
-                default: true
-              - name: beta
-                model_path: /models/beta
-                group: constrained
-                default: true
-            groups:
-              - name: constrained
-                max_loaded: 1
-            """
-        ).strip(),
-    )
+        path = _runtime_state_path(config)
+        assert path.exists(), "runtime file should be created"
 
-    config = load_hub_config(hub_path)
-    assert [model.name for model in config.models] == ["alpha", "beta"]
+        runtime = _read_hub_runtime_state(config)
+        assert isinstance(runtime, dict)
+        assert runtime["pid"] == os.getpid()
+        assert runtime["daemon_port"] == port
+
+        # Closing the listening socket should make the quick port check fail
+        sock.close()
+        after = _read_hub_runtime_state(config)
+        assert after is None, "runtime read should return None when port is closed"
+    finally:
+        # Defensive cleanup
+        with contextlib.suppress(Exception):
+            sock.close()
 
 
-def test_hub_runtime_bootstrap_and_selection(tmp_path: Path) -> None:
-    """HubRuntime should summarize models and honor selection filters."""
-
-    models = [
-        MLXServerConfig(model_path="/models/foo", name="foo", is_default_model=True),
-        MLXServerConfig(model_path="/models/bar", name="bar", is_default_model=False),
-    ]
-    config = MLXHubConfig(
-        log_path=tmp_path / "logs",
-        models=models,
-        groups=[MLXHubGroupConfig(name="general", max_loaded=None)],
-    )
-
-    runtime = HubRuntime(config)
-
-    assert runtime.bootstrap_targets() == []
-
-    summaries = runtime.describe_models(["bar"])
-    assert len(summaries) == 1
-    assert summaries[0]["name"] == "bar"
-
-    with pytest.raises(HubConfigError, match="Unknown model"):
-        runtime.describe_models(["missing"])
+def _write_hub_yaml(path: Path) -> Path:
+    data = {
+        "log_path": str(path),
+        "models": [{"name": "testmodel", "model_path": "dummy"}],
+    }
+    yaml_path = path / "hub.yaml"
+    # JSON is valid YAML for our simple mapping; write it for the loader.
+    yaml_path.write_text(json.dumps(data))
+    return yaml_path
 
 
-def test_hub_runtime_enforces_group_slots(tmp_path: Path) -> None:
-    """HubRuntime should reserve group slots and block when caps reached."""
+def test_runtime_file_removed_on_shutdown(tmp_path: Path) -> None:
+    """Daemon lifespan should remove `hub_runtime.json` from its log path.
 
-    models = [
-        MLXServerConfig(model_path="/models/a", name="alpha", group="g", is_default_model=True),
-        MLXServerConfig(model_path="/models/b", name="beta", group="g", is_default_model=True),
-    ]
-    config = MLXHubConfig(
-        log_path=tmp_path / "logs",
-        models=models,
-        groups=[MLXHubGroupConfig(name="g", max_loaded=1)],
-    )
+    We create a temporary hub YAML where `log_path` points at `tmp_path`,
+    create a dummy `hub_runtime.json` there, start the daemon app with
+    `TestClient` (which triggers lifespan events), and verify the file is
+    removed after the client context exits.
+    """
 
-    runtime = HubRuntime(config)
-    assert runtime.bootstrap_targets() == []
+    yaml_path = _write_hub_yaml(tmp_path)
 
-    assert runtime.can_load("alpha") is True
-    runtime.mark_loading("alpha")
-    assert runtime.describe_models(["alpha"])[0]["status"] == "loading"
+    runtime_file = tmp_path / "hub_runtime.json"
+    runtime_file.write_text(json.dumps({"pid": 1, "daemon_port": 12345, "host": "127.0.0.1"}))
 
-    assert runtime.can_load("beta") is False
-    with pytest.raises(HubConfigError):
-        runtime.mark_loading("beta")
+    assert runtime_file.exists()
 
-    runtime.mark_failed("alpha", "init failed")
-    assert runtime.describe_models(["alpha"])[0]["status"] == "failed"
-    assert runtime.can_load("beta") is True
-    runtime.mark_loading("beta")
+    app = create_app(str(yaml_path))
+    with TestClient(app) as client:
+        # During app lifetime the runtime file should still exist
+        assert runtime_file.exists()
+        resp = client.get("/health")
+        assert resp.status_code == 200
 
-
-def test_hub_runtime_load_and_unload_transitions(tmp_path: Path) -> None:
-    """State transitions should update statuses and group usage."""
-
-    config = MLXHubConfig(
-        log_path=tmp_path / "logs",
-        models=[MLXServerConfig(model_path="/m/foo", name="foo", group=None)],
-    )
-    runtime = HubRuntime(config)
-
-    runtime.mark_loading("foo")
-    runtime.mark_loaded("foo")
-    assert runtime.describe_models(["foo"])[0]["status"] == "loaded"
-
-    runtime.mark_unloaded("foo")
-    assert runtime.describe_models(["foo"])[0]["status"] == "unloaded"
+    # After exiting the client context the lifespan shutdown should have run
+    assert not runtime_file.exists()

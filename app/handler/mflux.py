@@ -20,6 +20,7 @@ from loguru import logger
 import mlx.core as mx
 from PIL import Image
 
+from ..const import DEFAULT_MAX_CONCURRENCY, DEFAULT_QUANTIZE
 from ..core.queue import RequestQueue
 from ..models.mflux import FluxModel
 from ..schemas.openai import (
@@ -43,8 +44,8 @@ class MLXFluxHandler:
     def __init__(
         self,
         model_path: str,
-        max_concurrency: int = 1,
-        quantize: int = 8,
+        max_concurrency: int = DEFAULT_MAX_CONCURRENCY,
+        quantize: int = DEFAULT_QUANTIZE,
         config_name: str = "flux-schnell",
         lora_paths: list[str] | None = None,
         lora_scales: list[float] | None = None,

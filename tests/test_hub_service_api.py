@@ -7,13 +7,11 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.testclient import TestClient
 import pytest
 
-from app.api.hub_routes import hub_router
-from app.hub.errors import HubControllerError
-from app.hub.service import HubServiceError
+from app.api.hub_routes import HubServiceError, hub_router
 from app.server import configure_fastapi_app
 
 
@@ -23,7 +21,7 @@ class _StubServiceState:
     def __init__(self) -> None:
         self.available = True
         self.reload_calls = 0
-        self.reload_result = {"started": [], "stopped": [], "unchanged": []}
+        self.reload_result: dict[str, list[str]] = {"started": [], "stopped": [], "unchanged": []}
         self.status_payload: dict[str, Any] = {
             "models": [],
             "timestamp": 1,
@@ -82,18 +80,18 @@ class _StubController:
     """Stub controller for testing hub controller interactions."""
 
     def __init__(self) -> None:
-        self.loaded: list[tuple[str, str]] = []
-        self.unloaded: list[tuple[str, str]] = []
+        self.loaded: list[str] = []
+        self.unloaded: list[str] = []
 
-    async def load_model(self, name: str, *, reason: str = "manual") -> None:
-        self.loaded.append((name, reason))
+    async def load_model(self, name: str) -> None:
+        self.loaded.append(name)
         if name == "denied":
-            raise HubControllerError("group busy", status_code=HTTPStatus.TOO_MANY_REQUESTS)
+            raise HTTPException(status_code=HTTPStatus.TOO_MANY_REQUESTS, detail="group busy")
 
-    async def unload_model(self, name: str, *, reason: str = "manual") -> None:
-        self.unloaded.append((name, reason))
+    async def unload_model(self, name: str) -> None:
+        self.unloaded.append(name)
         if name == "missing":
-            raise HubControllerError("not loaded", status_code=HTTPStatus.BAD_REQUEST)
+            raise HTTPException(status_code=HTTPStatus.BAD_REQUEST, detail="not loaded")
 
 
 @pytest.fixture
@@ -140,9 +138,48 @@ models:
     ]
 
     _StubServiceClient.state = state
-    monkeypatch.setattr("app.api.hub_routes.HubServiceClient", _StubServiceClient)
 
-    def _fake_start_process(path: str) -> int:  # noqa: ARG001
+    async def _stub_call(
+        config: Any, method: str, path: str, *, json: Any | None = None, timeout: float = 5.0
+    ) -> dict[str, Any]:
+        # Emulate the daemon HTTP surface used by the routes.
+        if method == "GET" and path == "/health":
+            if not _StubServiceClient.state.available:
+                raise HubServiceError("unavailable")
+            return {"status": "ok"}
+        if method == "POST" and path == "/hub/reload":
+            if not _StubServiceClient.state.available:
+                raise HubServiceError("unavailable")
+            _StubServiceClient.state.reload_calls += 1
+            return _StubServiceClient.state.reload_result
+        if method == "GET" and path == "/hub/status":
+            if not _StubServiceClient.state.available:
+                raise HubServiceError("unavailable")
+            return _StubServiceClient.state.status_payload
+        if method == "POST" and path.startswith("/hub/models/") and path.endswith("/start"):
+            if not _StubServiceClient.state.available:
+                raise HubServiceError("unavailable")
+            name = path.split("/")[-2]
+            if name == "saturated":
+                raise HubServiceError("group full", status_code=HTTPStatus.TOO_MANY_REQUESTS)
+            _StubServiceClient.state.start_calls.append(name)
+            return {"message": "started"}
+        if method == "POST" and path.startswith("/hub/models/") and path.endswith("/stop"):
+            if not _StubServiceClient.state.available:
+                raise HubServiceError("unavailable")
+            name = path.split("/")[-2]
+            _StubServiceClient.state.stop_calls.append(name)
+            return {"message": "stopped"}
+        if method == "POST" and path == "/hub/shutdown":
+            if not _StubServiceClient.state.available:
+                raise HubServiceError("unavailable")
+            _StubServiceClient.state.shutdown_called = True
+            return {"message": "shutdown"}
+        raise HubServiceError("unhandled stub call")
+
+    monkeypatch.setattr("app.api.hub_routes._call_daemon_api_async", _stub_call)
+
+    def _fake_start_process(path: str, *, host: str | None = None, port: int | None = None) -> int:  # noqa: ARG001
         state.available = True
         return 4321
 
@@ -301,17 +338,17 @@ def test_hub_service_reload_endpoint_returns_diff(
     assert state.reload_calls == 1
 
 
-def test_hub_memory_load_invokes_controller(
+def test_hub_load_model_invokes_controller(
     hub_service_app: tuple[TestClient, _StubServiceState, _StubController],
 ) -> None:
-    """/hub/models/{model}/load-model should call the controller."""
+    """/hub/models/{model}/load should call the controller."""
 
     client, _state, controller = hub_service_app
 
-    response = client.post("/hub/models/alpha/load-model", json={"reason": "dashboard"})
+    response = client.post("/hub/models/alpha/load", json={"reason": "dashboard"})
 
     assert response.status_code == HTTPStatus.OK
-    assert controller.loaded == [("alpha", "dashboard")]
+    assert controller.loaded == ["alpha"]
 
 
 def test_hub_memory_actions_surface_controller_errors(
@@ -321,11 +358,11 @@ def test_hub_memory_actions_surface_controller_errors(
 
     client, _state, controller = hub_service_app
 
-    response = client.post("/hub/models/denied/load-model", json={})
+    response = client.post("/hub/models/denied/load", json={})
     assert response.status_code == HTTPStatus.TOO_MANY_REQUESTS
     payload = response.json()
     assert "group busy" in payload["error"]["message"]
 
-    response = client.post("/hub/models/missing/unload-model", json={})
+    response = client.post("/hub/models/missing/unload", json={})
     assert response.status_code == HTTPStatus.BAD_REQUEST
-    assert controller.unloaded[-1] == ("missing", "manual")
+    assert controller.unloaded[-1] == "missing"

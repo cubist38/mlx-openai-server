@@ -17,6 +17,8 @@ from mlx_vlm import generate, load, stream_generate
 from mlx_vlm.models.cache import make_prompt_cache
 from mlx_vlm.video_generate import process_vision_info
 
+from ..const import DEFAULT_CONTEXT_LENGTH, DEFAULT_TRUST_REMOTE_CODE
+
 # Default model parameters
 DEFAULT_MAX_TOKENS = int(os.getenv("DEFAULT_MAX_TOKENS", "8192"))
 DEFAULT_TEMPERATURE = float(os.getenv("DEFAULT_TEMPERATURE", "0.0"))
@@ -33,7 +35,11 @@ class MLX_VLM:
     """
 
     def __init__(
-        self, model_path: str, *, context_length: int = 32768, trust_remote_code: bool = False
+        self,
+        model_path: str,
+        *,
+        context_length: int = DEFAULT_CONTEXT_LENGTH,
+        trust_remote_code: bool = DEFAULT_TRUST_REMOTE_CODE,
     ) -> None:
         """
         Initialize the MLX_VLM model.

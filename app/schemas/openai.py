@@ -482,18 +482,13 @@ class HubStatusResponse(OpenAIBaseModel):
         False,
         description=(
             "True when this FastAPI instance hosts the hub controller, which enables dashboard "
-            "memory controls and CLI load-model/unload-model commands."
+            "memory controls and CLI load-model/unload commands."
         ),
     )
 
 
 class HubModelActionRequest(OpenAIBaseModel):
     """Request payload for hub model lifecycle actions."""
-
-    reason: str | None = Field(
-        None,
-        description="Optional human-readable reason recorded in controller logs.",
-    )
 
 
 class HubModelActionResponse(OpenAIBaseModel):

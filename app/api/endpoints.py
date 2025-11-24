@@ -18,7 +18,6 @@ from ..handler.mlx_embeddings import MLXEmbeddingsHandler
 from ..handler.mlx_lm import MLXLMHandler
 from ..handler.mlx_vlm import MLXVLMHandler
 from ..handler.mlx_whisper import MLXWhisperHandler
-from ..hub.errors import HubControllerError
 from ..schemas.openai import (
     ChatCompletionChunk,
     ChatCompletionMessageToolCall,
@@ -51,13 +50,13 @@ from .hub_routes import (
     get_cached_model_metadata,
     get_configured_model_id,
     get_running_hub_models,
-    hub_memory_load_model,
-    hub_memory_unload_model,
+    hub_load_model,
     hub_router,
     hub_start_model,
     hub_status,
     hub_status_page,
     hub_stop_model,
+    hub_unload_model,
 )
 
 router = APIRouter()
@@ -69,8 +68,8 @@ __all__ = [
     "hub_status_page",
     "hub_start_model",
     "hub_stop_model",
-    "hub_memory_load_model",
-    "hub_memory_unload_model",
+    "hub_load_model",
+    "hub_unload_model",
 ]
 
 
@@ -119,8 +118,8 @@ async def _get_handler_or_error(
             )
         try:
             handler = await controller.acquire_handler(target, reason=reason)
-        except HubControllerError as exc:
-            status = exc.status_code or HTTPStatus.INTERNAL_SERVER_ERROR
+        except Exception as exc:
+            status = getattr(exc, "status_code", HTTPStatus.INTERNAL_SERVER_ERROR)
             return (
                 None,
                 JSONResponse(

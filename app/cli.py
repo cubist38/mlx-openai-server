@@ -9,7 +9,12 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Iterable
+import datetime
+import json
+import os
 from pathlib import Path
+import socket
+import subprocess
 import sys
 import time
 from typing import Any, Literal
@@ -20,19 +25,22 @@ import httpx
 from loguru import logger
 
 from .config import MLXServerConfig
+from .const import (
+    DEFAULT_BIND_HOST,
+    DEFAULT_CONTEXT_LENGTH,
+    DEFAULT_HUB_CONFIG_PATH,
+    DEFAULT_LOG_LEVEL,
+    DEFAULT_MAX_CONCURRENCY,
+    DEFAULT_MODEL_TYPE,
+    DEFAULT_PORT,
+    DEFAULT_QUANTIZE,
+    DEFAULT_QUEUE_SIZE,
+    DEFAULT_QUEUE_TIMEOUT,
+)
 from .handler.parser.factory import PARSER_REGISTRY
-from .hub.config import DEFAULT_HUB_CONFIG_PATH, HubConfigError, MLXHubConfig, load_hub_config
-from .hub.server import (
-    is_hub_controller_running,
-    start_hub_controller_process,
-    stop_hub_controller_process,
-)
-from .hub.service import (
-    HubServiceClient,
-    HubServiceError,
-    get_service_paths,
-    start_hub_service_process,
-)
+from .hub.config import HubConfigError, MLXHubConfig, load_hub_config
+
+# Hub IPC service removed: CLI uses HTTP API to contact the hub daemon
 from .main import start
 from .version import __version__
 
@@ -55,12 +63,8 @@ class UpperChoice(click.Choice[str]):
             Raw value supplied by the user (may be ``None``).
         ctx:
             Click context object (unused here but part of the API).
-
-        Returns
-        -------
-        str | None
-            Canonical matching choice, or ``None`` if ``choice`` is ``None``.
         """
+
         if choice is None:
             return None
         upperchoice = choice.upper()
@@ -129,21 +133,152 @@ def _load_hub_config_or_fail(config_path: str | None) -> MLXHubConfig:
         raise click.ClickException(str(exc)) from exc
 
 
-def _build_service_client(config: MLXHubConfig) -> HubServiceClient:
-    """Build a hub service client for the given configuration.
+def _controller_base_url(config: MLXHubConfig) -> str:
+    """Return the base HTTP URL for the hub daemon from the config.
+
+    The daemon host/port values are read from the hub config. This helper
+    centralizes where the CLI constructs the daemon base URL.
+    """
+    # Prefer runtime state file (written by `hub start`) when available
+    runtime = _read_hub_runtime_state(config)
+    if runtime:
+        host = runtime.get("host") or (config.host or DEFAULT_BIND_HOST)
+        port = runtime.get("daemon_port") or config.daemon_port
+        return f"http://{host}:{port}"
+
+    host = config.host or DEFAULT_BIND_HOST
+    port = config.daemon_port
+    return f"http://{host}:{port}"
+
+
+def _runtime_state_path(config: MLXHubConfig) -> Path:
+    """Return path for the transient runtime state file under the configured log path."""
+    try:
+        log_dir = (
+            Path(config.log_path) if getattr(config, "log_path", None) else Path.cwd() / "logs"
+        )
+    except Exception:
+        log_dir = Path.cwd() / "logs"
+    return log_dir / "hub_runtime.json"
+
+
+def _write_hub_runtime_state(config: MLXHubConfig, pid: int, daemon_port: int) -> None:
+    """Persist transient runtime info so other CLI commands can find the running daemon.
+
+    The file is intentionally lightweight and not used for durable configuration.
+    """
+    path = _runtime_state_path(config)
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        payload = {
+            "pid": int(pid),
+            "daemon_port": int(daemon_port),
+            "host": config.host or "127.0.0.1",
+            "started_at": datetime.datetime.now(datetime.UTC).isoformat(),
+        }
+        path.write_text(json.dumps(payload))
+        logger.debug(f"Wrote hub runtime state to {path}")
+    except Exception as exc:  # pragma: no cover - best-effort logging
+        logger.warning(f"Failed to write hub runtime state to {path}: {exc}")
+
+
+def _read_hub_runtime_state(config: MLXHubConfig) -> dict[str, object] | None:
+    """Return runtime state dict if valid and the process appears alive, otherwise None."""
+    path = _runtime_state_path(config)
+    try:
+        if not path.exists():
+            return None
+        data = json.loads(path.read_text())
+        pid = int(data.get("pid"))
+        port = int(data.get("daemon_port"))
+        host = data.get("host") or "127.0.0.1"
+    except Exception:
+        return None
+
+    # Check PID alive (best-effort)
+    pid_alive = False
+    try:
+        # os.kill with signal 0 raises OSError if process does not exist
+        os.kill(pid, 0)
+        pid_alive = True
+    except Exception:
+        pid_alive = False
+
+    if not pid_alive:
+        return None
+
+    # Quick port check on localhost
+    try:
+        with socket.create_connection((host, port), timeout=0.2):
+            pass
+    except Exception:
+        return None
+
+    return {"pid": pid, "daemon_port": port, "host": host}
+
+
+def _call_daemon_api(
+    config: MLXHubConfig,
+    method: str,
+    path: str,
+    *,
+    json: object | None = None,
+    timeout: float = 5.0,
+) -> dict[str, object] | None:
+    """Call the hub daemon HTTP API synchronously and return parsed JSON.
 
     Parameters
     ----------
     config : MLXHubConfig
-        The hub configuration.
+        Hub configuration used to determine daemon base URL.
+    method : str
+        HTTP method (GET/POST/etc).
+    path : str
+        Path part of the URL (should start with '/').
+    json : object | None
+        JSON body to send for POST/PUT requests.
+    timeout : float
+        Request timeout in seconds.
 
     Returns
     -------
-    HubServiceClient
-        Configured service client.
+    dict[str, object] | None
+        Parsed JSON response (if any).
+
+    Raises
+    ------
+    click.ClickException
+        On connectivity or non-2xx responses.
     """
-    paths = get_service_paths(config)
-    return HubServiceClient(paths.socket_path)
+    base = _controller_base_url(config)
+    url = f"{base.rstrip('/')}{path}"
+    try:
+        with httpx.Client(timeout=timeout) as client:
+            resp = client.request(method, url, json=json)
+    except httpx.HTTPError as exc:  # pragma: no cover - network error handling
+        raise click.ClickException(f"Failed to contact hub daemon at {base}: {exc}") from exc
+
+    if resp.status_code >= 400:
+        # Try to include JSON error message if present
+        try:
+            payload: object = resp.json()
+        except ValueError:
+            payload = resp.text
+        raise click.ClickException(f"Daemon responded {resp.status_code}: {payload}")
+
+    if not resp.content:
+        return None
+
+    try:
+        payload = resp.json()
+    except ValueError:
+        return {"raw": resp.text}
+
+    # Ensure we return a dict[str, object] as declared; if the JSON is not a
+    # mapping, fall back to returning the raw text.
+    if isinstance(payload, dict):
+        return payload
+    return {"raw": resp.text}
 
 
 def _print_hub_status(
@@ -186,20 +321,76 @@ def _print_hub_status(
             if isinstance(name, str):
                 live_lookup[name] = entry
 
-    name_width = max(len(model.name or "<unnamed>") for model in configured)
     click.echo("Models:")
+    headers = ["NAME", "STATE", "LOADED", "AUTO-UNLOAD", "TYPE", "GROUP", "DEFAULT", "MODEL"]
+    rows: list[dict[str, str]] = []
     for model in configured:
         name = model.name or "<unnamed>"
         live = live_lookup.get(name)
         state = (live or {}).get("state", "inactive")
-        pid = (live or {}).get("pid") or "-"
-        log_target = model.log_file or "<hub managed>"
-        group = model.group or "<none>"
-        default_flag = "⭐ auto-start" if model.is_default_model else "manual"
-        click.echo(
-            f"  - {name:<{name_width}} | state={state} | pid={pid} | "
-            f"group={group} | log={log_target} | {default_flag}"
+        pid = (live or {}).get("pid")
+        port = (live or {}).get("port") or model.port
+
+        # Format state with pid and port if running
+        if state == "running" and pid is not None:
+            state_display = f"{state} (pid={pid}"
+            if port is not None:
+                state_display += f", port={port}"
+            state_display += ")"
+        else:
+            state_display = state
+
+        # Loaded in memory: prefer explicit runtime flag when available,
+        # otherwise approximate with process state.
+        memory_flag = (live or {}).get("memory_loaded")
+        loaded_in_memory = "yes" if (memory_flag or state == "running") else "no"
+
+        # Auto-unload
+        auto_unload = f"{model.auto_unload_minutes}min" if model.auto_unload_minutes else "-"
+
+        # Model type
+        model_type = model.model_type
+
+        # Group
+        group = model.group or "-"
+
+        # Default
+        default = "✓" if model.is_default_model else "-"
+
+        # Model path
+        model_path = model.model_path
+
+        rows.append(
+            {
+                "NAME": name,
+                "STATE": state_display,
+                "LOADED": loaded_in_memory,
+                "AUTO-UNLOAD": auto_unload,
+                "TYPE": model_type,
+                "GROUP": group,
+                "DEFAULT": default,
+                "MODEL": model_path,
+            }
         )
+
+    # Calculate column widths
+    widths: dict[str, int] = {header: len(header) for header in headers}
+    for row in rows:
+        for header in headers:
+            widths[header] = max(widths[header], len(row[header]))
+
+    # Print header
+    header_line = "  " + " | ".join(header.ljust(widths[header]) for header in headers)
+    click.echo(header_line)
+
+    # Print divider
+    divider = "  " + "-+-".join("-" * widths[header] for header in headers)
+    click.echo(divider)
+
+    # Print rows
+    for row in rows:
+        row_line = "  " + " | ".join(row[header].ljust(widths[header]) for header in headers)
+        click.echo(row_line)
 
 
 _FLASH_STYLES: dict[str, tuple[str, str]] = {
@@ -263,13 +454,13 @@ def _emit_reload_summary(diff: dict[str, Any], *, header: str) -> None:
     _flash(f"{header}: started={started} | stopped={stopped} | unchanged={unchanged}", tone=tone)
 
 
-def _reload_or_fail(client: HubServiceClient, *, header: str) -> dict[str, Any]:
-    """Reload the hub service and emit a summary, or fail with an exception.
+def _reload_or_fail(config: MLXHubConfig, *, header: str) -> dict[str, Any]:
+    """Reload the hub daemon and emit a summary, or fail with an exception.
 
     Parameters
     ----------
-    client : HubServiceClient
-        The hub service client.
+    config : MLXHubConfig
+        The hub configuration used to contact the daemon.
     header : str
         The header message for the reload summary.
 
@@ -284,14 +475,14 @@ def _reload_or_fail(client: HubServiceClient, *, header: str) -> dict[str, Any]:
         If the reload operation fails.
     """
     try:
-        diff = client.reload()
-    except HubServiceError as exc:
+        diff = _call_daemon_api(config, "POST", "/hub/reload") or {}
+    except click.ClickException as exc:
         raise click.ClickException(f"Hub reload failed: {exc}") from exc
     _emit_reload_summary(diff, header=header)
     return diff
 
 
-def _require_service_client(config: MLXHubConfig) -> HubServiceClient:
+def _require_service_client(config: MLXHubConfig) -> bool:
     """Build and validate a hub service client.
 
     Parameters
@@ -301,52 +492,27 @@ def _require_service_client(config: MLXHubConfig) -> HubServiceClient:
 
     Returns
     -------
-    HubServiceClient
-        The validated service client.
+    bool
+        True if the daemon is reachable (used to assert availability), otherwise raises.
 
     Raises
     ------
     click.ClickException
         If the hub manager is not running.
     """
-    client = _build_service_client(config)
-    if not client.is_available():
+    try:
+        _call_daemon_api(config, "GET", "/health", timeout=1.0)
+    except click.ClickException as exc:
         raise click.ClickException(
             "Hub manager is not running. Start it via 'mlx-openai-server hub start'."
-        )
-    return client
-
-
-def _resolve_controller_base_url(config: MLXHubConfig) -> str:
-    """Resolve the base URL for the hub controller.
-
-    Parameters
-    ----------
-    config : MLXHubConfig
-        The hub configuration.
-
-    Returns
-    -------
-    str
-        The base URL for the controller.
-    """
-    host = (config.host or "127.0.0.1").strip()
-    if host in {"0.0.0.0", "::", "[::]"}:
-        host = "127.0.0.1"
-    if host.startswith("[") and host.endswith("]"):
-        host = host[1:-1]
-    if ":" in host and not host.startswith("["):
-        host = f"[{host}]"
-    port = config.port or 8000
-    return f"http://{host}:{port}"
+        ) from exc
+    return True
 
 
 def _perform_memory_action_request(
     config: MLXHubConfig,
     model_name: str,
     action: Literal["load-model", "unload-model"],
-    *,
-    reason: str,
 ) -> tuple[bool, str]:
     """Perform a memory action request to the hub controller.
 
@@ -358,32 +524,26 @@ def _perform_memory_action_request(
         The name of the model.
     action : Literal["load-model", "unload-model"]
         The action to perform.
-    reason : str
-        The reason for the action.
 
     Returns
     -------
     tuple[bool, str]
         Success flag and message.
     """
-    base_url = _resolve_controller_base_url(config)
-    url = f"{base_url}/hub/models/{quote(model_name, safe='')}/{action}"
     try:
-        response = httpx.post(url, json={"reason": reason}, timeout=10.0)
-    except httpx.HTTPError as exc:  # pragma: no cover - network errors
-        return False, f"controller unreachable ({exc})"
-    try:
-        payload = response.json()
-    except ValueError:
-        payload = {}
-    if response.is_error:
-        message = (
-            payload.get("error", {}).get("message")
-            or payload.get("message")
-            or f"Failed to {action} {model_name}"
+        payload = _call_daemon_api(
+            config,
+            "POST",
+            f"/hub/models/{quote(model_name, safe='')}/{action}",
+            timeout=10.0,
         )
-        return False, message
-    message = payload.get("message") or f"Memory {action} requested"
+    except click.ClickException as exc:
+        return False, str(exc)
+    raw_message = (payload or {}).get("message")
+    if raw_message is None:
+        message = f"Memory {action} requested"
+    else:
+        message = str(raw_message)
     return True, message
 
 
@@ -391,8 +551,6 @@ def _run_memory_actions(
     config: MLXHubConfig,
     model_names: Iterable[str],
     action: Literal["load-model", "unload-model"],
-    *,
-    reason: str,
 ) -> None:
     """Run memory actions for multiple models.
 
@@ -404,8 +562,6 @@ def _run_memory_actions(
         The names of the models.
     action : Literal["load-model", "unload-model"]
         The action to perform.
-    reason : str
-        The reason for the action.
 
     Raises
     ------
@@ -419,89 +575,15 @@ def _run_memory_actions(
             had_error = True
             _flash("Skipping blank model name entry", tone="warning")
             continue
-        ok, message = _perform_memory_action_request(config, target, action, reason=reason)
+        ok, message = _perform_memory_action_request(config, target, action)
+        verb = "load" if action.startswith("load") else "unload"
         if ok:
-            verb = "load" if action == "load" else "unload"
             _flash(f"{target}: memory {verb} requested ({message})", tone="success")
         else:
             had_error = True
             _flash(f"{target}: {message}", tone="error")
     if had_error:
         raise click.ClickException("One or more memory actions failed")
-
-
-def _wait_for_controller_available(config: MLXHubConfig, timeout: float = 20.0) -> bool:
-    """Wait for the hub controller to become available.
-
-    Parameters
-    ----------
-    config : MLXHubConfig
-        The hub configuration.
-    timeout : float, optional
-        Maximum time to wait in seconds, defaults to 20.0.
-
-    Returns
-    -------
-    bool
-        True if the controller became available, False otherwise.
-    """
-    base_url = _resolve_controller_base_url(config)
-    deadline = time.time() + timeout
-    last_error: str | None = None
-    while time.time() < deadline:
-        try:
-            response = httpx.get(f"{base_url}/health", timeout=5.0)
-            if response.status_code < 500:
-                return True
-        except httpx.HTTPError as exc:  # pragma: no cover - network timing
-            last_error = str(exc)
-        time.sleep(0.5)
-    if last_error:
-        logger.debug(f"Controller readiness check failed: {last_error}")
-    return False
-
-
-def _start_controller_if_needed(config: MLXHubConfig) -> None:
-    """Start the hub controller if it's not already running.
-
-    Parameters
-    ----------
-    config : MLXHubConfig
-        The hub configuration.
-
-    Raises
-    ------
-    click.ClickException
-        If the configuration is not saved or the controller fails to start.
-    """
-    if is_hub_controller_running(config):
-        _flash("Hub controller already running", tone="warning")
-        return
-    if config.source_path is None:
-        raise click.ClickException(
-            "Hub configuration must be saved to disk before starting the controller."
-        )
-    pid = start_hub_controller_process(config.source_path)
-    _flash(f"Launching hub controller (pid={pid})", tone="info")
-    if not _wait_for_controller_available(config):
-        raise click.ClickException(
-            "Hub controller failed to start within 20 seconds. Inspect hub logs for details."
-        )
-    _flash("Hub controller is now running", tone="success")
-
-
-def _stop_controller_if_running(config: MLXHubConfig) -> None:
-    """Stop the hub controller if it's running.
-
-    Parameters
-    ----------
-    config : MLXHubConfig
-        The hub configuration.
-    """
-    if stop_hub_controller_process(config):
-        _flash("Hub controller shutdown requested", tone="success")
-    else:
-        _flash("Hub controller is not running", tone="warning")
 
 
 def _format_duration(seconds: float | None) -> str:
@@ -629,7 +711,7 @@ def _print_watch_snapshot(snapshot: dict[str, Any]) -> None:
 )
 @click.option(
     "--model-type",
-    default="lm",
+    default=DEFAULT_MODEL_TYPE,
     type=click.Choice(
         ["lm", "multimodal", "image-generation", "image-edit", "embeddings", "whisper"]
     ),
@@ -637,20 +719,30 @@ def _print_watch_snapshot(snapshot: dict[str, Any]) -> None:
 )
 @click.option(
     "--context-length",
-    default=32768,
+    default=DEFAULT_CONTEXT_LENGTH,
     type=int,
     help="Context length for language models. Only works with `lm` or `multimodal` model types.",
 )
-@click.option("--port", default=8000, type=int, help="Port to run the server on")
-@click.option("--host", default="0.0.0.0", help="Host to run the server on")
+@click.option("--port", default=DEFAULT_PORT, type=int, help="Port to run the server on")
+@click.option("--host", default=DEFAULT_BIND_HOST, help="Host to run the server on")
 @click.option(
-    "--max-concurrency", default=1, type=int, help="Maximum number of concurrent requests"
+    "--max-concurrency",
+    default=DEFAULT_MAX_CONCURRENCY,
+    type=int,
+    help="Maximum number of concurrent requests",
 )
-@click.option("--queue-timeout", default=300, type=int, help="Request timeout in seconds")
-@click.option("--queue-size", default=100, type=int, help="Maximum queue size for pending requests")
+@click.option(
+    "--queue-timeout", default=DEFAULT_QUEUE_TIMEOUT, type=int, help="Request timeout in seconds"
+)
+@click.option(
+    "--queue-size",
+    default=DEFAULT_QUEUE_SIZE,
+    type=int,
+    help="Maximum queue size for pending requests",
+)
 @click.option(
     "--quantize",
-    default=8,
+    default=DEFAULT_QUANTIZE,
     type=int,
     help="Quantization level for the model. Only used for image-generation and image-edit Flux models.",
 )
@@ -690,7 +782,7 @@ def _print_watch_snapshot(snapshot: dict[str, Any]) -> None:
 )
 @click.option(
     "--log-level",
-    default="INFO",
+    default=DEFAULT_LOG_LEVEL,
     type=UpperChoice(["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"]),
     help="Set the logging level. Default is INFO.",
 )
@@ -872,32 +964,124 @@ def hub_start(ctx: click.Context, model_names: tuple[str, ...]) -> None:
     """Launch the hub manager and print status."""
 
     config = _load_hub_config_or_fail(ctx.obj.get("hub_config_path"))
-    client = _build_service_client(config)
     models = model_names or None
 
-    if not client.is_available():
+    # Check daemon availability
+    daemon_running = False
+    try:
+        _call_daemon_api(config, "GET", "/health", timeout=2.0)
+        daemon_running = True
+    except click.ClickException:
+        # Daemon not running, start it directly
         if config.source_path is None:
             raise click.ClickException(
-                "Hub configuration must be loaded from disk. Provide --config to specify a file."
-            )
-        pid = start_hub_service_process(config.source_path)
-        _flash(f"Launching hub manager (pid={pid})", tone="info")
-        if not client.wait_until_available(timeout=20.0):
-            raise click.ClickException("Hub manager failed to start within 20 seconds")
-        _flash("Hub manager is now running", tone="success")
-    else:
-        _flash("Hub manager already running", tone="warning")
+                "Hub configuration must be saved to disk before starting the manager."
+            ) from None
 
-    _start_controller_if_needed(config)
+        click.echo("Starting hub manager...")
+        host_val = config.host or DEFAULT_BIND_HOST
+        port_val = str(config.daemon_port)
+
+        # Set environment variable for daemon to use the same config
+        env = os.environ.copy()
+        if config.source_path:
+            env["MLX_HUB_CONFIG_PATH"] = str(config.source_path)
+
+        cmd = [
+            sys.executable,  # Use the same Python executable
+            "-m",
+            "uvicorn",
+            "app.hub.daemon:create_app",
+            "--factory",
+            "--host",
+            host_val,
+            "--port",
+            port_val,
+        ]
+
+        try:
+            proc = subprocess.Popen(
+                cmd,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                env=env,
+                cwd=Path.cwd(),
+            )
+            click.echo(f"Hub manager process started (PID: {proc.pid})")
+        except Exception as exc:
+            raise click.ClickException(f"Failed to start hub manager: {exc}") from exc
+
+        # Wait for daemon to become available
+        deadline = time.time() + 20.0
+        while time.time() < deadline:
+            try:
+                _call_daemon_api(config, "GET", "/health", timeout=1.0)
+                daemon_running = True
+                click.echo("Hub manager is now running.")
+                break
+            except click.ClickException:
+                time.sleep(0.5)
+
+        if not daemon_running:
+            raise click.ClickException(
+                "Hub manager failed to start within 20 seconds.\n"
+                "You can also start it manually (for example):\n"
+                f"  uvicorn app.hub.daemon:create_app --host {host_val} --port {port_val}"
+            ) from None
+        # Persist runtime state for other CLI invocations to find this daemon
+        try:
+            _write_hub_runtime_state(config, proc.pid, int(port_val))
+        except Exception:
+            # Best-effort; do not fail start if writing runtime state fails
+            logger.debug("Failed to write hub runtime state after start")
+
+        # After the daemon is running, attempt to start any models marked as default
+        try:
+            # Refresh the controller state so it sees the latest config
+            _call_daemon_api(config, "POST", "/hub/reload")
+            for model in config.models:
+                try:
+                    if not getattr(model, "is_default_model", False):
+                        continue
+                    name = model.name
+                    jit = bool(getattr(model, "jit_enabled", False))
+                    click.echo(f"Requesting process start for default model: {name}")
+                    try:
+                        _call_daemon_api(
+                            config, "POST", f"/hub/models/{quote(str(name), safe='')}/start"
+                        )
+                        _flash(f"{name}: start requested", tone="success")
+                    except click.ClickException as exc_start:
+                        # If start failed and the model is non-JIT, fall back
+                        # to requesting a memory load so the configured default
+                        # ends up available in the controller view.
+                        if not jit:
+                            try:
+                                _call_daemon_api(
+                                    config, "POST", f"/hub/models/{quote(str(name), safe='')}/load"
+                                )
+                                _flash(f"{name}: memory load requested (fallback)", tone="success")
+                            except click.ClickException as exc_load:
+                                _flash(f"{name}: load failed ({exc_load})", tone="error")
+                        else:
+                            _flash(f"{name}: start failed ({exc_start})", tone="error")
+                except Exception as exc:  # pragma: no cover - best-effort
+                    logger.debug(f"Error while auto-starting default model: {exc}")
+        except Exception:
+            # Ignore failures here; user can start models manually
+            pass
 
     click.echo(f"Status page enabled: {'yes' if config.enable_status_page else 'no'}")
     if config.enable_status_page:
-        click.echo(f"Browse to http://{config.host}:{config.port}/hub for the status dashboard")
+        host_display = "localhost" if config.host == "0.0.0.0" else config.host
+        click.echo(
+            f"Browse to http://{host_display}:{config.daemon_port}/hub for the status dashboard"
+        )
 
     snapshot = None
     try:
-        snapshot = client.status()
-    except HubServiceError as exc:
+        snapshot = _call_daemon_api(config, "GET", "/hub/status") or {}
+    except click.ClickException as exc:
         _flash(f"Unable to fetch live status: {exc}", tone="warning")
     _print_hub_status(config, model_names=models, live_status=snapshot)
 
@@ -917,16 +1101,11 @@ def hub_status(ctx: click.Context, model_names: tuple[str, ...]) -> None:
     """
 
     config = _load_hub_config_or_fail(ctx.obj.get("hub_config_path"))
-    client = _build_service_client(config)
     snapshot = None
-    if client.is_available():
-        _reload_or_fail(client, header="Config synced")
-        try:
-            snapshot = client.status()
-        except HubServiceError as exc:
-            _flash(f"Unable to fetch live status: {exc}", tone="warning")
-    else:
-        _flash("Hub manager is not running", tone="warning")
+    try:
+        snapshot = _call_daemon_api(config, "GET", "/hub/status") or {}
+    except click.ClickException:
+        _flash("Hub daemon is not running", tone="warning")
     _print_hub_status(config, model_names=model_names or None, live_status=snapshot)
 
 
@@ -942,8 +1121,11 @@ def hub_reload(ctx: click.Context) -> None:
     """
 
     config = _load_hub_config_or_fail(ctx.obj.get("hub_config_path"))
-    client = _require_service_client(config)
-    _reload_or_fail(client, header="Hub reload complete")
+    try:
+        diff = _call_daemon_api(config, "POST", "/hub/reload") or {}
+    except click.ClickException as exc:
+        raise click.ClickException(f"Hub reload failed: {exc}") from exc
+    _emit_reload_summary(diff, header="Hub reload complete")
 
 
 @hub.command(name="stop", help="Stop the hub manager and all models")
@@ -958,17 +1140,10 @@ def hub_stop(ctx: click.Context) -> None:
     """
 
     config = _load_hub_config_or_fail(ctx.obj.get("hub_config_path"))
-    _stop_controller_if_running(config)
-
-    client = _build_service_client(config)
-    if not client.is_available():
-        _flash("Hub manager is not running", tone="warning")
-        return
-
-    _reload_or_fail(client, header="Config synced before shutdown")
     try:
-        client.shutdown()
-    except HubServiceError as exc:
+        _call_daemon_api(config, "POST", "/hub/reload")
+        _call_daemon_api(config, "POST", "/hub/shutdown")
+    except click.ClickException as exc:
         raise click.ClickException(f"Hub shutdown failed: {exc}") from exc
     _flash("Hub manager shutdown requested", tone="success")
 
@@ -988,16 +1163,18 @@ def hub_start_model(ctx: click.Context, model_names: tuple[str, ...]) -> None:
     """
 
     config = _load_hub_config_or_fail(ctx.obj.get("hub_config_path"))
-    client = _require_service_client(config)
-    _reload_or_fail(client, header="Config synced before load")
+    try:
+        _call_daemon_api(config, "POST", "/hub/reload")
+    except click.ClickException as exc:
+        raise click.ClickException(f"Config sync failed before load: {exc}") from exc
     for raw_name in model_names:
         target = raw_name.strip()
         if not target:
             _flash("Skipping blank model name entry", tone="warning")
             continue
         try:
-            client.start_model(target)
-        except HubServiceError as exc:
+            _call_daemon_api(config, "POST", f"/hub/models/{quote(target, safe='')}/start")
+        except click.ClickException as exc:
             _flash(f"{target}: start failed ({exc})", tone="error")
         else:
             _flash(f"{target}: start requested", tone="success")
@@ -1018,16 +1195,18 @@ def hub_stop_model(ctx: click.Context, model_names: tuple[str, ...]) -> None:
     """
 
     config = _load_hub_config_or_fail(ctx.obj.get("hub_config_path"))
-    client = _require_service_client(config)
-    _reload_or_fail(client, header="Config synced before unload")
+    try:
+        _call_daemon_api(config, "POST", "/hub/reload")
+    except click.ClickException as exc:
+        raise click.ClickException(f"Config sync failed before unload: {exc}") from exc
     for raw_name in model_names:
         target = raw_name.strip()
         if not target:
             _flash("Skipping blank model name entry", tone="warning")
             continue
         try:
-            client.stop_model(target)
-        except HubServiceError as exc:
+            _call_daemon_api(config, "POST", f"/hub/models/{quote(target, safe='')}/stop")
+        except click.ClickException as exc:
             _flash(f"{target}: stop failed ({exc})", tone="error")
         else:
             _flash(f"{target}: stop requested", tone="success")
@@ -1035,34 +1214,22 @@ def hub_stop_model(ctx: click.Context, model_names: tuple[str, ...]) -> None:
 
 @hub.command(name="load-model", help="Load handlers for one or more models into memory")
 @click.argument("model_names", nargs=-1, required=True)
-@click.option(
-    "--reason",
-    default="cli",
-    show_default=True,
-    help="Reason string recorded alongside the controller action.",
-)
 @click.pass_context
-def hub_memory_load(ctx: click.Context, model_names: tuple[str, ...], reason: str) -> None:
+def hub_load_model(ctx: click.Context, model_names: tuple[str, ...]) -> None:
     """Trigger controller-backed memory loads for the provided models."""
 
     config = _load_hub_config_or_fail(ctx.obj.get("hub_config_path"))
-    _run_memory_actions(config, model_names, "load-model", reason=reason)
+    _run_memory_actions(config, model_names, "load-model")
 
 
 @hub.command(name="unload-model", help="Unload handlers for one or more models from memory")
 @click.argument("model_names", nargs=-1, required=True)
-@click.option(
-    "--reason",
-    default="cli",
-    show_default=True,
-    help="Reason string recorded alongside the controller action.",
-)
 @click.pass_context
-def hub_memory_unload(ctx: click.Context, model_names: tuple[str, ...], reason: str) -> None:
+def hub_unload_model(ctx: click.Context, model_names: tuple[str, ...]) -> None:
     """Trigger controller-backed memory unloads for the provided models."""
 
     config = _load_hub_config_or_fail(ctx.obj.get("hub_config_path"))
-    _run_memory_actions(config, model_names, "unload-model", reason=reason)
+    _run_memory_actions(config, model_names, "unload-model")
 
 
 @hub.command(name="watch", help="Continuously print live hub manager status")
@@ -1086,31 +1253,21 @@ def hub_watch(ctx: click.Context, interval: float) -> None:
     """
 
     config = _load_hub_config_or_fail(ctx.obj.get("hub_config_path"))
-    client = _build_service_client(config)
     click.echo("Watching hub manager (press Ctrl+C to stop)...")
     sleep_interval = max(interval, 0.5)
     try:
         while True:
-            if not client.is_available():
+            try:
+                snapshot = _call_daemon_api(config, "GET", "/hub/status") or {}
+            except click.ClickException:
                 click.echo(
                     click.style(
-                        "Hub manager is not running. Start it via 'mlx-openai-server hub start'.",
+                        "Hub daemon is not running. Start it via 'mlx-openai-server hub start'.",
                         fg="yellow",
                     )
                 )
             else:
-                try:
-                    snapshot = client.status()
-                except HubServiceError as exc:
-                    click.echo(click.style(f"[watch] status request failed: {exc}", fg="red"))
-                    click.echo(
-                        click.style(
-                            "        Inspect hub logs (hub status) or restart the service if needed.",
-                            fg="yellow",
-                        )
-                    )
-                else:
-                    _print_watch_snapshot(snapshot)
+                _print_watch_snapshot(snapshot)
             time.sleep(sleep_interval)
     except KeyboardInterrupt:  # pragma: no cover - interactive command
         click.echo("Stopped watching hub manager")

@@ -1,0 +1,67 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>MLX Hub Status</title>
+    <style>
+        body {
+            font-family: Arial, Helvetica, sans-serif;
+            padding: 12px;
+        }
+
+        table {
+            border-collapse: collapse;
+            width: 100%;
+        }
+
+        th,
+        td {
+            border: 1px solid #ddd;
+            padding: 8px;
+        }
+
+        th {
+            background: #f6f6f6;
+        }
+    </style>
+</head>
+
+<body>
+    <h1>MLX Hub Status</h1>
+
+    <div>
+        <strong>Host:</strong> {{ hub_config.host }} &nbsp;
+        <strong>Port:</strong> {{ hub_config.port }} &nbsp;
+        <strong>Daemon port:</strong> {{ hub_config.daemon_port }}
+    </div>
+    <div><em>Last updated:</em> {{ timestamp }}</div>
+
+    <table>
+        <thead>
+            <tr>
+                <th>Name</th>
+                <th>State</th>
+                <th>PID</th>
+                <th>Port</th>
+                <th>Loaded</th>
+                <th>Model Path</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for m in models %}
+            <tr>
+                <td>{{ m.name }}</td>
+                <td>{{ m.state }}</td>
+                <td>{{ m.pid or '-' }}</td>
+                <td>{{ m.port or '-' }}</td>
+                <td>{{ 'Yes' if m.memory_loaded else 'No' }}</td>
+                <td>{{ m.model_path or '-' }}</td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</body>
+
+</html>

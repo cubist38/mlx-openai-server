@@ -13,6 +13,14 @@ import uuid
 from fastapi import HTTPException
 from loguru import logger
 
+from ..const import (
+    DEFAULT_CONTEXT_LENGTH,
+    DEFAULT_ENABLE_AUTO_TOOL_CHOICE,
+    DEFAULT_MAX_CONCURRENCY,
+    DEFAULT_REASONING_PARSER,
+    DEFAULT_TOOL_CALL_PARSER,
+    DEFAULT_TRUST_REMOTE_CODE,
+)
 from ..core.queue import RequestQueue
 from ..models.mlx_lm import MLX_LM
 from ..schemas.openai import ChatCompletionRequest, EmbeddingRequest, UsageInfo
@@ -31,12 +39,12 @@ class MLXLMHandler:
         self,
         model_path: str,
         *,
-        context_length: int = 32768,
-        max_concurrency: int = 1,
-        enable_auto_tool_choice: bool = False,
-        tool_call_parser: str | None = None,
-        reasoning_parser: str | None = None,
-        trust_remote_code: bool = False,
+        context_length: int = DEFAULT_CONTEXT_LENGTH,
+        max_concurrency: int = DEFAULT_MAX_CONCURRENCY,
+        enable_auto_tool_choice: bool = DEFAULT_ENABLE_AUTO_TOOL_CHOICE,
+        tool_call_parser: str | None = DEFAULT_TOOL_CALL_PARSER,
+        reasoning_parser: str | None = DEFAULT_REASONING_PARSER,
+        trust_remote_code: bool = DEFAULT_TRUST_REMOTE_CODE,
     ) -> None:
         """
         Initialize the handler with the specified model path.

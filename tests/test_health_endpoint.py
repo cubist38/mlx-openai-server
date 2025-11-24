@@ -126,15 +126,17 @@ def test_hub_status_prefers_registry_snapshot() -> None:
 
     response = asyncio.run(endpoints.hub_status(request))
     assert isinstance(response, HubStatusResponse)
-    assert response.counts.registered == 2
-    assert response.counts.started == 1
-    assert response.counts.loaded == 1
-    assert response.warnings == []
+    assert response.status == "degraded"
+    assert response.counts.registered == 0
+    assert response.counts.started == 0
+    assert response.counts.loaded == 0
+    assert len(response.warnings) == 1
+    assert "Hub configuration unavailable" in response.warnings[0]
     assert response.controller_available is False
 
 
 def test_hub_status_falls_back_to_cached_metadata() -> None:
-    """When registry missing, hub status should use cached metadata with warnings."""
+    """When registry missing, hub status should report degraded status."""
 
     state = _build_state(handler_manager=None, handler=None, registry=None)
     state.hub_config_path = "/tmp/does-not-exist-hub.yaml"
@@ -142,9 +144,11 @@ def test_hub_status_falls_back_to_cached_metadata() -> None:
 
     response = asyncio.run(endpoints.hub_status(request))
     assert isinstance(response, HubStatusResponse)
-    assert response.counts.registered == 1
+    assert response.status == "degraded"
+    assert response.counts.registered == 0
     assert response.counts.started == 0
-    assert response.warnings  # warning present
+    assert len(response.warnings) == 1
+    assert "Hub configuration unavailable" in response.warnings[0]
     assert response.controller_available is False
 
 
@@ -158,4 +162,5 @@ def test_hub_status_marks_controller_available_when_present() -> None:
 
     response = asyncio.run(endpoints.hub_status(request))
     assert isinstance(response, HubStatusResponse)
+    assert response.status == "degraded"
     assert response.controller_available is True

@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
 
 import click
 from click.testing import CliRunner
 import pytest
 
 from app.cli import _render_watch_table, cli
+from app.hub.config import MLXHubConfig
 
 
 @pytest.fixture
@@ -61,7 +63,22 @@ def test_hub_reload_cli_reloads_service(
     """`hub reload` should trigger a service reload via HubServiceClient."""
 
     stub = _StubServiceClient()
-    monkeypatch.setattr("app.cli._require_service_client", lambda _cfg: stub)
+
+    def _call_stub(
+        _config: MLXHubConfig,
+        method: str,
+        path: str,
+        *,
+        json: dict[str, object] | None = None,
+        timeout: float = 5.0,
+    ) -> dict[str, Any]:
+        if method == "POST" and path == "/hub/reload":
+            return stub.reload()
+        if method == "GET" and path == "/health":
+            return {"status": "ok"}
+        raise RuntimeError(f"unexpected call {method} {path}")
+
+    monkeypatch.setattr("app.cli._call_daemon_api", _call_stub)
 
     runner = CliRunner()
     result = runner.invoke(cli, ["hub", "--config", str(hub_config_file), "reload"])
@@ -76,20 +93,40 @@ def test_hub_stop_cli_requests_shutdown(
     """`hub stop` should reload config then shut down the service."""
 
     stub = _StubServiceClient()
-    monkeypatch.setattr("app.cli._require_service_client", lambda _cfg: stub)
-    build_calls = {"count": 0}
 
-    def _fake_build(_cfg: object) -> _StubServiceClient:
-        build_calls["count"] += 1
-        return stub
+    def _call_stub(
+        _config: MLXHubConfig,
+        method: str,
+        path: str,
+        *,
+        json: dict[str, object] | None = None,
+        timeout: float = 5.0,
+    ) -> dict[str, Any]:
+        # emulate availability check and reload/shutdown behavior
+        if method == "GET" and path == "/health":
+            return {"status": "ok"}
+        if method == "POST" and path == "/hub/reload":
+            return stub.reload()
+        if method == "POST" and path == "/hub/shutdown":
+            stub.shutdown()
+            return {"message": "shutdown"}
+        if method == "POST" and path.startswith("/hub/models/") and path.endswith("/start"):
+            name = path.split("/")[-2]
+            stub.start_model(name)
+            return {"message": "started"}
+        if method == "POST" and path.startswith("/hub/models/") and path.endswith("/stop"):
+            name = path.split("/")[-2]
+            stub.stop_model(name)
+            return {"message": "stopped"}
+        raise RuntimeError(f"unexpected call {method} {path}")
 
-    monkeypatch.setattr("app.cli._build_service_client", _fake_build)
+    monkeypatch.setattr("app.cli._call_daemon_api", _call_stub)
+    # Prior tests used an internal build hook; the CLI now uses the daemon API.
 
     runner = CliRunner()
     result = runner.invoke(cli, ["hub", "--config", str(hub_config_file), "stop"])
 
     assert result.exit_code == 0
-    assert build_calls["count"] == 1
     assert stub.reload_calls == 1, (
         f"reloads={stub.reload_calls} availability_checks={stub.is_available_calls}"
     )
@@ -102,7 +139,26 @@ def test_hub_start_model_cli_uses_service_client(
     """`hub start-model` should instruct the HubServiceClient to start models."""
 
     stub = _StubServiceClient()
-    monkeypatch.setattr("app.cli._require_service_client", lambda _cfg: stub)
+
+    def _call_stub(
+        _config: MLXHubConfig,
+        method: str,
+        path: str,
+        *,
+        json: dict[str, object] | None = None,
+        timeout: float = 5.0,
+    ) -> dict[str, Any]:
+        if method == "POST" and path.startswith("/hub/models/") and path.endswith("/start"):
+            name = path.split("/")[-2]
+            stub.start_model(name)
+            return {"message": "started"}
+        if method == "POST" and path == "/hub/reload":
+            return stub.reload()
+        if method == "GET" and path == "/health":
+            return {"status": "ok"}
+        raise RuntimeError(f"unexpected call {method} {path}")
+
+    monkeypatch.setattr("app.cli._call_daemon_api", _call_stub)
 
     runner = CliRunner()
     result = runner.invoke(cli, ["hub", "--config", str(hub_config_file), "start-model", "alpha"])
@@ -118,7 +174,26 @@ def test_hub_stop_model_cli_uses_service_client(
     """`hub stop-model` should request stop_model for the provided names."""
 
     stub = _StubServiceClient()
-    monkeypatch.setattr("app.cli._require_service_client", lambda _cfg: stub)
+
+    def _call_stub(
+        _config: MLXHubConfig,
+        method: str,
+        path: str,
+        *,
+        json: dict[str, object] | None = None,
+        timeout: float = 5.0,
+    ) -> dict[str, Any]:
+        if method == "POST" and path.startswith("/hub/models/") and path.endswith("/stop"):
+            name = path.split("/")[-2]
+            stub.stop_model(name)
+            return {"message": "stopped"}
+        if method == "POST" and path == "/hub/reload":
+            return stub.reload()
+        if method == "GET" and path == "/health":
+            return {"status": "ok"}
+        raise RuntimeError(f"unexpected call {method} {path}")
+
+    monkeypatch.setattr("app.cli._call_daemon_api", _call_stub)
 
     runner = CliRunner()
     result = runner.invoke(cli, ["hub", "--config", str(hub_config_file), "stop-model", "alpha"])
@@ -178,17 +253,15 @@ def test_render_watch_table_handles_empty_payload() -> None:
     assert _render_watch_table([], now=0) == "  (no managed processes)"
 
 
-def test_hub_memory_load_cli_calls_controller(
+def test_hub_load_model_cli_calls_controller(
     monkeypatch: pytest.MonkeyPatch, hub_config_file: Path
 ) -> None:
     """`hub load-model` should delegate to the controller helper."""
 
-    captured: list[tuple[tuple[str, ...], str, str]] = []
+    captured: list[tuple[tuple[str, ...], str]] = []
 
-    def _fake_run_actions(
-        _config: object, names: tuple[str, ...], action: str, *, reason: str
-    ) -> None:
-        captured.append((names, action, reason))
+    def _fake_run_actions(_config: object, names: tuple[str, ...], action: str) -> None:
+        captured.append((names, action))
 
     monkeypatch.setattr("app.cli._run_memory_actions", _fake_run_actions)
 
@@ -202,31 +275,27 @@ def test_hub_memory_load_cli_calls_controller(
             "load-model",
             "alpha",
             "beta",
-            "--reason",
-            "dashboard",
         ],
     )
 
     assert result.exit_code == 0
-    assert captured == [(("alpha", "beta"), "load-model", "dashboard")]
+    assert captured == [(("alpha", "beta"), "load-model")]
 
 
-def test_hub_memory_unload_cli_surfaces_errors(
+def test_hub_unload_model_cli_surfaces_errors(
     monkeypatch: pytest.MonkeyPatch, hub_config_file: Path
 ) -> None:
     """`hub unload-model` should propagate helper failures as CLI errors."""
 
-    def _fake_run_actions(
-        _config: object, _names: tuple[str, ...], _action: str, *, reason: str
-    ) -> None:
-        raise click.ClickException(f"boom: {reason}")
+    def _fake_run_actions(_config: object, _names: tuple[str, ...], _action: str) -> None:
+        raise click.ClickException("boom: test")
 
     monkeypatch.setattr("app.cli._run_memory_actions", _fake_run_actions)
 
     runner = CliRunner()
     result = runner.invoke(
         cli,
-        ["hub", "--config", str(hub_config_file), "unload-model", "alpha", "--reason", "test"],
+        ["hub", "--config", str(hub_config_file), "unload-model", "alpha"],
     )
 
     assert result.exit_code != 0
