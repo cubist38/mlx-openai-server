@@ -191,7 +191,7 @@ This document tracks session-to-session handoffs for the `mlx-openai-server-lab`
 **Goal**: Finish the Phase 0 work required to expose LazyHandlerManager + idle auto-unload through the API surface, health endpoint, and docs.
 
 ### Discoveries
-- Handler lifecycle plumbing (LazyHandlerManager + IdleAutoUnloadController) was already present in `app/server.py`, but API routes still referenced `app.state.handler` directly, preventing JIT loading.
+-- Handler lifecycle plumbing (LazyHandlerManager + CentralIdleAutoUnloadController) was already present in `app/server.py`, but API routes still referenced `app.state.handler` directly, preventing JIT loading.
 - `/health` returned `503` whenever the handler was unloaded, which made JIT unusable for liveness probes.
 - Model metadata cache in `app.state.model_metadata` only tracked a timestamp, so `/v1/models` had to hit the handler each time.
 
@@ -349,7 +349,7 @@ This document tracks session-to-session handoffs for the `mlx-openai-server-lab`
 
 ### Discoveries
 - The CLI already had helper plumbing for `/hub/status`, so exposing new commands only required lightweight HTTP helpers plus controller endpoints.
-- We needed dedicated API routes for start/stop actions because the controller previously only ran in-process; adding `/hub/models/{model}/start-model` and `/hub/models/{model}/stop-model` keeps the flow uniform for future automation.
+- We needed dedicated API routes for start/stop actions because the controller previously only ran in-process; adding canonical `/hub/models/{model}/start` and `/hub/models/{model}/stop` endpoints (which the CLI commands `hub start-model` and `hub stop-model` call) keeps the flow uniform for future automation.
 
 ### Actions Taken
 1. ✅ Added `HubModelActionRequest/Response` schemas and new FastAPI routes to proxy controller `load_model`/`unload_model` actions with proper error handling.

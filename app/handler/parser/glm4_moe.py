@@ -35,7 +35,8 @@ class Glm4MoEToolParser(BaseToolParser):
         # Regex patterns for parsing GLM4 XML-style tool calls
         self.func_detail_regex = re.compile(r"([^\n]*)\n(.*)", re.DOTALL)
         self.func_arg_regex = re.compile(
-            r"<arg_key>(.*?)</arg_key>\s*<arg_value>(.*?)</arg_value>", re.DOTALL
+            r"<arg_key>(.*?)</arg_key>\s*<arg_value>(.*?)</arg_value>",
+            re.DOTALL,
         )
 
     def _deserialize_value(self, value: str) -> Any:
@@ -89,7 +90,7 @@ class Glm4MoEToolParser(BaseToolParser):
             TypeError,
         ) as e:
             logger.warning(
-                f"Error parsing GLM4 tool call content: {tool_content}. {type(e).__name__}: {e}"
+                f"Error parsing GLM4 tool call content: {tool_content}. {type(e).__name__}: {e}",
             )
             return None
         else:

@@ -67,7 +67,7 @@ class MLXWhisperHandler:
                 "object": "model",
                 "created": self.model_created,
                 "owned_by": "local",
-            }
+            },
         ]
 
     async def initialize(self, queue_config: dict[str, Any] | None = None) -> None:
@@ -80,20 +80,24 @@ class MLXWhisperHandler:
             }
         self.request_queue = RequestQueue(
             max_concurrency=queue_config.get(
-                "max_concurrency", self.request_queue.max_concurrency if self.request_queue else 1
+                "max_concurrency",
+                self.request_queue.max_concurrency if self.request_queue else 1,
             ),
             timeout=queue_config.get(
-                "timeout", self.request_queue.timeout if self.request_queue else 600
+                "timeout",
+                self.request_queue.timeout if self.request_queue else 600,
             ),
             queue_size=queue_config.get(
-                "queue_size", self.request_queue.queue_size if self.request_queue else 50
+                "queue_size",
+                self.request_queue.queue_size if self.request_queue else 50,
             ),
         )
         await self.request_queue.start(self._process_request)
         logger.info("Initialized MLXWhisperHandler and started request queue")
 
     async def generate_transcription_response(
-        self, request: TranscriptionRequest
+        self,
+        request: TranscriptionRequest,
     ) -> TranscriptionResponse | str:
         """Generate a transcription response for the given request."""
         request_id = f"transcription-{uuid.uuid4()}"
@@ -124,7 +128,8 @@ class MLXWhisperHandler:
             gc.collect()
 
     async def generate_transcription_stream_from_data(
-        self, request_data: dict[str, Any]
+        self,
+        request_data: dict[str, Any],
     ) -> AsyncGenerator[str, None]:
         """
         Generate a transcription stream from prepared request data.
@@ -165,9 +170,16 @@ class MLXWhisperHandler:
                         model=self.model_path,
                         choices=[
                             TranscriptionResponseStreamChoice(
-                                delta=Delta(content=chunk.get("text", "")),  # type: ignore[call-arg]
+                                delta=Delta(
+                                    content=chunk.get("text", ""),
+                                    function_call=None,
+                                    refusal=None,
+                                    role=None,
+                                    tool_calls=None,
+                                    reasoning_content=None,
+                                ),
                                 finish_reason=None,
-                            )
+                            ),
                         ],
                     )
 
@@ -183,7 +195,17 @@ class MLXWhisperHandler:
                 created=created_time,
                 model=self.model_path,
                 choices=[
-                    TranscriptionResponseStreamChoice(delta=Delta(content=""), finish_reason="stop")  # type: ignore[call-arg]
+                    TranscriptionResponseStreamChoice(
+                        delta=Delta(
+                            content="",
+                            function_call=None,
+                            refusal=None,
+                            role=None,
+                            tool_calls=None,
+                            reasoning_content=None,
+                        ),
+                        finish_reason="stop",
+                    ),
                 ],
             )
             yield f"data: {final_response.model_dump_json()}\n\n"
@@ -336,7 +358,9 @@ class MLXWhisperHandler:
         except Exception as e:
             logger.error(f"Failed to prepare transcription request. {type(e).__name__}: {e}")
             content = create_error_response(
-                f"Failed to process request: {e}", "bad_request", HTTPStatus.BAD_REQUEST
+                f"Failed to process request: {e}",
+                "bad_request",
+                HTTPStatus.BAD_REQUEST,
             )
             raise HTTPException(status_code=HTTPStatus.BAD_REQUEST, detail=content) from e
         else:

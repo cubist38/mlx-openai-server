@@ -25,14 +25,13 @@ def _live_snapshot(pid: int = 4321) -> dict[str, object]:
                 "pid": pid,
                 "log_path": "/tmp/foo.log",
                 "started_at": 1,
-            }
-        ]
+            },
+        ],
     }
 
 
 def test_build_models_defaults_to_process_state(tmp_path: Path) -> None:
     """Models default to process state when runtime context is absent."""
-
     config = _make_config(tmp_path)
 
     models, counts = _build_models_from_config(config, _live_snapshot())

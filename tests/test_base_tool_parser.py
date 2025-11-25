@@ -73,6 +73,6 @@ class TestBaseToolParser(unittest.TestCase):
                 )
 
                 for i, (output, expected) in enumerate(
-                    zip(outputs, test_case["expected_outputs"], strict=True)
+                    zip(outputs, test_case["expected_outputs"], strict=True),
                 ):
                     assert output == expected, f"Chunk {i}: Expected {expected}, got {output}"

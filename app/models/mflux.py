@@ -54,17 +54,17 @@ class ModelConfiguration:
         # Validate quantization level
         if quantize not in [4, 8, 16]:
             raise InvalidConfigurationError(
-                f"Invalid quantization level: {quantize}. Must be 4, 8, or 16."
+                f"Invalid quantization level: {quantize}. Must be 4, 8, or 16.",
             )
 
         # Validate LoRA parameters: both must be provided together and have matching lengths
         if (lora_paths is None) != (lora_scales is None):
             raise InvalidConfigurationError(
-                "Both lora_paths and lora_scales must be provided together."
+                "Both lora_paths and lora_scales must be provided together.",
             )
         if lora_paths and lora_scales and len(lora_paths) != len(lora_scales):
             raise InvalidConfigurationError(
-                f"lora_paths and lora_scales must have the same length (got {len(lora_paths)} and {len(lora_scales)})"
+                f"lora_paths and lora_scales must have the same length (got {len(lora_paths)} and {len(lora_scales)})",
             )
 
         self.model_type = model_type
@@ -130,7 +130,7 @@ class ModelConfiguration:
         )
 
     @classmethod
-    def kontext(cls, quantize: int = 8) -> ModelConfiguration:
+    def kontext(cls, quantize: int = DEFAULT_QUANTIZE) -> ModelConfiguration:
         """Create configuration for Flux Kontext model."""
         return cls(
             model_type="kontext",
@@ -233,7 +233,8 @@ class BaseFluxModel(ABC):
 
         # Validate guidance
         guidance = kwargs.get(
-            "guidance_scale", kwargs.get("guidance", self.config.default_guidance)
+            "guidance_scale",
+            kwargs.get("guidance", self.config.default_guidance),
         )
         if not isinstance(guidance, (int, float)) or guidance < 0:
             raise ModelGenerationError("Guidance must be a non-negative number.")
@@ -369,7 +370,7 @@ class FluxModel:
         if config_name not in self._MODEL_CONFIGS:
             available_configs = ", ".join(self._MODEL_CONFIGS.keys())
             raise InvalidConfigurationError(
-                f"Invalid config name: {config_name}. Available options: {available_configs}"
+                f"Invalid config name: {config_name}. Available options: {available_configs}",
             )
 
         # Validate LoRA parameters for kontext model
@@ -385,7 +386,9 @@ class FluxModel:
                 self.config = config_factory(quantize=quantize)
             else:
                 self.config = config_factory(
-                    quantize=quantize, lora_paths=lora_paths, lora_scales=lora_scales
+                    quantize=quantize,
+                    lora_paths=lora_paths,
+                    lora_scales=lora_scales,
                 )
 
             # Create model instance

@@ -137,14 +137,16 @@ class MLXLMHandler:
         """
         try:
             input_tokens = self.model.tokenizer.apply_chat_template(
-                messages, add_generation_prompt=True, **kwargs
+                messages,
+                add_generation_prompt=True,
+                **kwargs,
             )
             return len(input_tokens)
         except Exception as e:
             logger.warning(f"Failed to count message tokens. {type(e).__name__}: {e}")
             # Fallback: rough estimate
             total_text = " ".join(
-                [msg.get("content", "") for msg in messages if isinstance(msg.get("content"), str)]
+                [msg.get("content", "") for msg in messages if isinstance(msg.get("content"), str)],
             )
             return self._count_tokens(total_text)
 
@@ -192,7 +194,7 @@ class MLXLMHandler:
                     "created": self.model_created,
                     "owned_by": "local",
                     "metadata": self._extract_model_metadata(),
-                }
+                },
             ]
         except Exception as e:
             logger.error(f"Error getting models. {type(e).__name__}: {e}")
@@ -211,7 +213,8 @@ class MLXLMHandler:
         logger.info("Initialized MLXHandler and started request queue")
 
     async def generate_text_stream(
-        self, request: ChatCompletionRequest
+        self,
+        request: ChatCompletionRequest,
     ) -> AsyncGenerator[str | dict[str, Any], None]:
         """
         Generate a streaming response for text-only chat completion requests.
@@ -244,7 +247,8 @@ class MLXLMHandler:
                 "prompt_tokens": prompt_tokens,
             }
             response_generator, _prompt_tokens_returned = await self.request_queue.submit(
-                request_id, request_data
+                request_id,
+                request_data,
             )
             # Create appropriate parsers for this model type
 
@@ -281,7 +285,7 @@ class MLXLMHandler:
 
                     if is_first_chunk:
                         if thinking_parser and ParserFactory.needs_redacted_reasoning_prefix(
-                            self.reasoning_parser
+                            self.reasoning_parser,
                         ):
                             text = thinking_parser.get_thinking_open() + text
                         is_first_chunk = False
@@ -318,7 +322,7 @@ class MLXLMHandler:
                     prompt_tokens=prompt_tokens,
                     completion_tokens=completion_tokens,
                     total_tokens=total_tokens,
-                )
+                ),
             }
 
         except asyncio.QueueFull:
@@ -334,7 +338,7 @@ class MLXLMHandler:
             raise
         except Exception as e:
             logger.error(
-                f"Error in text stream generation for request {request_id}. {type(e).__name__}: {e}"
+                f"Error in text stream generation for request {request_id}. {type(e).__name__}: {e}",
             )
             content = create_error_response(
                 f"Failed to generate text stream: {e}",
@@ -375,7 +379,8 @@ class MLXLMHandler:
                 "prompt_tokens": prompt_tokens,
             }
             response, _prompt_tokens_returned = await self.request_queue.submit(
-                request_id, request_data
+                request_id,
+                request_data,
             )
         except asyncio.QueueFull:
             logger.error("Too many requests. Service is at capacity.")
@@ -399,7 +404,7 @@ class MLXLMHandler:
         else:
             # Count completion tokens
             completion_tokens = self._count_tokens(
-                response if isinstance(response, str) else response.get("content", "")
+                response if isinstance(response, str) else response.get("content", ""),
             )
             total_tokens = prompt_tokens + completion_tokens
 
@@ -430,7 +435,7 @@ class MLXLMHandler:
                 return {"response": parsed, "usage": usage}
 
             if thinking_parser and ParserFactory.needs_redacted_reasoning_prefix(
-                self.reasoning_parser
+                self.reasoning_parser,
             ):
                 # Add thinking tag to response for parsers that need it
                 response_text = thinking_parser.get_thinking_open() + response_text
@@ -575,7 +580,8 @@ class MLXLMHandler:
             logger.error(f"Error during MLXLMHandler cleanup. {type(e).__name__}: {e}")
 
     async def _prepare_text_request(
-        self, request: ChatCompletionRequest
+        self,
+        request: ChatCompletionRequest,
     ) -> tuple[list[dict[str, str]], dict[str, Any]]:
         """
         Prepare a text request by parsing model parameters and verifying the format of messages.
@@ -642,7 +648,7 @@ class MLXLMHandler:
             if system_messages:
                 # Combine all system message contents
                 combined_system_content = "\n\n".join(
-                    [msg["content"] for msg in system_messages if msg.get("content")]
+                    [msg["content"] for msg in system_messages if msg.get("content")],
                 )
 
                 # Create merged system message using the first system message as template
@@ -658,7 +664,9 @@ class MLXLMHandler:
         except Exception as e:
             logger.error(f"Failed to prepare text request. {type(e).__name__}: {e}")
             content = create_error_response(
-                f"Failed to process request: {e}", "bad_request", HTTPStatus.BAD_REQUEST
+                f"Failed to process request: {e}",
+                "bad_request",
+                HTTPStatus.BAD_REQUEST,
             )
             raise HTTPException(status_code=HTTPStatus.BAD_REQUEST, detail=content) from e
         else:

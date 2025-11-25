@@ -5,14 +5,17 @@ from __future__ import annotations
 import asyncio
 import contextlib
 from http import HTTPStatus
+import os
 from pathlib import Path
 import subprocess
 import sys
+import threading
 import time
-from typing import Any, Literal, cast
+from typing import IO, Any, Literal, cast
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, BackgroundTasks, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.templating import Jinja2Templates
 import httpx
 from loguru import logger
 
@@ -22,7 +25,7 @@ from ..const import (
     DEFAULT_HUB_CONFIG_PATH,
     DEFAULT_MODEL_STARTING_PORT,
 )
-from ..hub.config import PORT_MAX, HubConfigError, MLXHubConfig, _is_port_available, load_hub_config
+from ..hub.config import PORT_MAX, HubConfigError, MLXHubConfig, load_hub_config
 from ..schemas.openai import (
     HubModelActionRequest,
     HubModelActionResponse,
@@ -32,6 +35,7 @@ from ..schemas.openai import (
     Model,
 )
 from ..utils.errors import create_error_response
+from ..utils.network import is_port_available
 
 
 class HubServiceError(RuntimeError):
@@ -51,7 +55,10 @@ class HubServiceError(RuntimeError):
 
 
 def start_hub_service_process(
-    config_path: str, *, host: str | None = None, port: int | None = None
+    config_path: str,
+    *,
+    host: str | None = None,
+    port: int | None = None,
 ) -> int:
     """Start the hub daemon process (development helper).
 
@@ -65,12 +72,12 @@ def start_hub_service_process(
     # Find an available port starting from the specified port
     port_val = starting_port
     while port_val <= PORT_MAX:
-        if _is_port_available(host_val, port_val):
+        if is_port_available(host_val, port_val):
             break
         port_val += 1
     else:
         raise HubServiceError(
-            f"Unable to find an available port for hub daemon starting at {starting_port}"
+            f"Unable to find an available port for hub daemon starting at {starting_port}",
         )
 
     cmd = [
@@ -85,642 +92,52 @@ def start_hub_service_process(
         str(port_val),
     ]
 
-    proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    # Set environment variable for the hub daemon to use the specified config
+    env = os.environ.copy()
+    env["MLX_HUB_CONFIG_PATH"] = config_path
+
+    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env)
+
+    # Start background threads to log subprocess output
+    def _log_output(stream: IO[bytes], level: str, prefix: str) -> None:
+        """Log output from subprocess stream."""
+        try:
+            for line in iter(stream.readline, b""):
+                line_str = line.decode("utf-8", errors="replace").rstrip()
+                if line_str:
+                    if level == "info":
+                        logger.info(f"{prefix}: {line_str}")
+                    elif level == "error":
+                        logger.error(f"{prefix}: {line_str}")
+                    else:
+                        logger.debug(f"{prefix}: {line_str}")
+        except Exception as e:
+            logger.warning(f"Error reading subprocess {prefix} output: {e}")
+
+    # Start threads to read stdout and stderr
+    if proc.stdout:
+        stdout_thread = threading.Thread(
+            target=_log_output,
+            args=(proc.stdout, "info", f"hub-daemon[{proc.pid}].stdout"),
+            daemon=True,
+        )
+        stdout_thread.start()
+
+    if proc.stderr:
+        stderr_thread = threading.Thread(
+            target=_log_output,
+            args=(proc.stderr, "error", f"hub-daemon[{proc.pid}].stderr"),
+            daemon=True,
+        )
+        stderr_thread.start()
+
     return proc.pid
 
 
 hub_router = APIRouter()
 
-_HUB_STATUS_PAGE_HTML = """<!DOCTYPE html>
-<html lang=\"en\">
-<head>
-    <meta charset=\"utf-8\" />
-    <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\" />
-    <title>MLX Hub Status · MLX OpenAI Server</title>
-    <style>
-        :root {
-            color-scheme: dark;
-            font-family: 'Inter', system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
-            background-color: #0f1115;
-            color: #f5f5f7;
-        }
-        body {
-            margin: 0;
-            padding: 24px;
-            line-height: 1.5;
-            background: linear-gradient(135deg, #0f1115 0%, #13161d 100%);
-            min-height: 100vh;
-        }
-        header {
-            display: flex;
-            flex-direction: column;
-            gap: 8px;
-            margin-bottom: 24px;
-        }
-        header h1 {
-            font-size: 1.75rem;
-            margin: 0;
-        }
-        header p {
-            margin: 0;
-            color: #b0b5c0;
-        }
-        .pill {
-            display: inline-flex;
-            align-items: center;
-            gap: 6px;
-            background: rgba(255, 255, 255, 0.08);
-            border-radius: 999px;
-            padding: 4px 12px;
-            font-weight: 600;
-            text-transform: uppercase;
-            letter-spacing: 0.04em;
-        }
-        .pill--ok { color: #7af79a; }
-        .pill--warn { color: #f7d67a; }
-        .pill--error { color: #f77a7a; }
-        .card {
-            background: rgba(255, 255, 255, 0.04);
-            border: 1px solid rgba(255, 255, 255, 0.08);
-            border-radius: 16px;
-            padding: 16px;
-            box-shadow: 0 20px 45px rgba(0, 0, 0, 0.35);
-            backdrop-filter: blur(8px);
-        }
-        table {
-            width: 100%;
-            border-collapse: collapse;
-            margin-top: 16px;
-        }
-        th, td {
-            text-align: left;
-            padding: 12px;
-            border-bottom: 1px solid rgba(255, 255, 255, 0.08);
-        }
-        th {
-            font-size: 0.85rem;
-            text-transform: uppercase;
-            letter-spacing: 0.04em;
-            color: #9aa0af;
-        }
-        tbody tr:hover {
-            background: rgba(255, 255, 255, 0.03);
-        }
-        .grid {
-            display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
-            gap: 16px;
-            margin-bottom: 16px;
-        }
-        .muted {
-            color: #8b92a3;
-        }
-        .warnings {
-            border-left: 3px solid #f7d67a;
-            padding-left: 12px;
-            margin-top: 12px;
-        }
-        .warnings ul {
-            margin: 4px 0 0;
-            padding-left: 20px;
-        }
-        .error-banner {
-            background: rgba(247, 122, 122, 0.12);
-            border: 1px solid rgba(247, 122, 122, 0.35);
-            color: #f7b6b6;
-            padding: 12px 16px;
-            border-radius: 12px;
-            margin-bottom: 16px;
-        }
-        button {
-            background: rgba(255, 255, 255, 0.08);
-            border: 1px solid rgba(255, 255, 255, 0.15);
-            color: inherit;
-            border-radius: 12px;
-            padding: 8px 16px;
-            cursor: pointer;
-            font-weight: 600;
-        }
-        button:hover {
-            background: rgba(255, 255, 255, 0.12);
-        }
-        .actions {
-            display: flex;
-            gap: 8px;
-            flex-wrap: wrap;
-        }
-        .action-group {
-            display: flex;
-            flex-direction: column;
-            gap: 6px;
-            min-width: 140px;
-        }
-        .action-group__label {
-            font-size: 0.7rem;
-            text-transform: uppercase;
-            color: #9aa0af;
-            letter-spacing: 0.08em;
-        }
-        .action-group__buttons {
-            display: flex;
-            gap: 6px;
-        }
-        .action-btn--secondary {
-            background: transparent;
-            border-color: rgba(255, 255, 255, 0.25);
-        }
-        .action-btn[disabled] {
-            opacity: 0.4;
-            cursor: not-allowed;
-        }
-        .toast {
-            position: fixed;
-            bottom: 24px;
-            right: 24px;
-            padding: 12px 16px;
-            border-radius: 14px;
-            background: rgba(255, 255, 255, 0.1);
-            border: 1px solid rgba(255, 255, 255, 0.2);
-            box-shadow: 0 15px 35px rgba(0, 0, 0, 0.4);
-            backdrop-filter: blur(12px);
-            min-width: 220px;
-            text-align: center;
-        }
-        .toast--success { color: #7af79a; border-color: rgba(122, 247, 154, 0.4); }
-        .toast--error { color: #f77a7a; border-color: rgba(247, 122, 122, 0.4); }
-        .flash {
-            border-radius: 12px;
-            padding: 12px 16px;
-            font-weight: 600;
-            border: 1px solid transparent;
-            margin-bottom: 16px;
-        }
-        .flash--info {
-            background: rgba(122, 207, 247, 0.12);
-            border-color: rgba(122, 207, 247, 0.4);
-            color: #a8e7ff;
-        }
-        .flash--success {
-            background: rgba(122, 247, 154, 0.12);
-            border-color: rgba(122, 247, 154, 0.35);
-            color: #b2ffcb;
-        }
-        .flash--warn {
-            background: rgba(247, 214, 122, 0.12);
-            border-color: rgba(247, 214, 122, 0.35);
-            color: #ffe3a6;
-        }
-        .flash--error {
-            background: rgba(247, 122, 122, 0.12);
-            border-color: rgba(247, 122, 122, 0.35);
-            color: #ffc1c1;
-        }
-        .stat-block {
-            display: flex;
-            flex-direction: column;
-            gap: 4px;
-        }
-        .stat-line {
-            font-size: 1.25rem;
-            font-weight: 600;
-        }
-        .stat-line--subtle {
-            font-size: 1rem;
-            color: #b0b5c0;
-        }
-    </style>
-</head>
-<body>
-    <header>
-        <h1>MLX Hub Status • MLX OpenAI Server</h1>
-        <p>Live snapshot of registered models, groups, and controller health.</p>
-    </header>
-
-    <div id=\"error-banner\" class=\"error-banner\" hidden></div>
-    <div id="flash-banner" class="flash flash--info" hidden></div>
-    <div id=\"toast\" class=\"toast\" hidden></div>
-
-    <section class="card">
-        <div class="grid">
-            <div class="stat-block">
-                <div class="muted">Hub status</div>
-                <div id="status-pill" class="pill pill--warn">Loading…</div>
-            </div>
-            <div class="stat-block">
-                <div class="muted">Processes</div>
-                <div id="started-counts" class="stat-line">—</div>
-                <div id="counts" class="stat-line">—</div>
-            </div>
-            <div class="stat-block">
-                <div class="muted">Last updated</div>
-                <div id="updated-at" class="stat-line">—</div>
-                <div class="muted" style="margin-top: 8px;">OpenAI URL</div>
-                <div id="openai-url" class="stat-line">—</div>
-            </div>
-            <div class="stat-block">
-                <div class="muted">Controls</div>
-                <div class="actions">
-                    <button class="refresh-btn" type="button">Refresh</button>
-                    <button class="action-btn action-btn--secondary" type="button" data-service-action="reload">Reload</button>
-                    <button class="action-btn action-btn--secondary" type="button" data-service-action="stop">Stop</button>
-                </div>
-            </div>
-        </div>
-        <div id="warnings" class="warnings" hidden>
-            <strong>Warnings</strong>
-            <ul id="warning-list"></ul>
-        </div>
-    </section>
-
-    <section class=\"card\">
-        <div class=\"muted\" style=\"margin-bottom: 8px;\">Registered Models</div>
-        <table>
-            <thead>
-                <tr>
-                    <th>Name</th>
-                    <th>Process</th>
-                    <th>Memory</th>
-                    <th>Auto-Unload</th>
-                    <th>Type</th>
-                    <th>Group</th>
-                    <th>Default</th>
-                    <th>Model</th>
-                    <th>Actions</th>
-                </tr>
-            </thead>
-            <tbody id=\"models-body\">
-                <tr>
-                    <td colspan=\"8\" class=\"muted\">Fetching hub snapshot…</td>
-                </tr>
-            </tbody>
-        </table>
-    </section>
-
-    <script>
-        const REFRESH_INTERVAL_MS = 5000;
-        const SERVICE_ENDPOINTS = {
-            start: '/hub/service/start',
-            stop: '/hub/service/stop',
-            reload: '/hub/service/reload',
-        };
-        const CONTROLLER_WARNING_MESSAGE = 'Hub controller is not running on this server. Memory buttons stay disabled until the hub server is up.';
-        let controllerAvailable = false;
-
-        function escapeHtml(value) {
-            return String(value ?? '')
-                .replace(/&/g, '&amp;')
-                .replace(/</g, '&lt;')
-                .replace(/>/g, '&gt;')
-                .replace(/\"/g, '&quot;')
-                .replace(/'/g, '&#39;');
-        }
-
-        function formatTimestamp(ts) {
-            if (!ts) {
-                return '—';
-            }
-            try {
-                return new Intl.DateTimeFormat(undefined, {
-                    hour: '2-digit',
-                    minute: '2-digit',
-                    second: '2-digit',
-                }).format(new Date(ts * 1000));
-            } catch (err) {
-                return new Date(ts * 1000).toLocaleTimeString();
-            }
-        }
-
-        function setStatusPill(value) {
-            const pill = document.getElementById('status-pill');
-            const map = {
-                ok: 'pill--ok',
-                degraded: 'pill--warn',
-                error: 'pill--error',
-            };
-            pill.textContent = value;
-            pill.className = `pill ${map[value] ?? 'pill--warn'}`;
-        }
-
-        function formatOpenAiUrl(hostValue, portValue) {
-            let host = typeof hostValue === 'string' ? hostValue.trim() : '';
-            if (!host) {
-                return '—';
-            }
-            if (host === '0.0.0.0' || host === '::' || host === '[::]') {
-                host = 'localhost';
-            }
-            if (host.includes(':') && !(host.startsWith('[') && host.endsWith(']'))) {
-                host = `[${host}]`;
-            }
-            let port = Number(portValue);
-            if (!Number.isFinite(port) || port <= 0) {
-                port = 8000;
-            }
-            return `http://${host}:${port}/v1`;
-        }
-
-        function renderWarnings(warnings) {
-            const wrapper = document.getElementById('warnings');
-            const list = document.getElementById('warning-list');
-            if (!warnings || warnings.length === 0) {
-                wrapper.hidden = true;
-                list.innerHTML = '';
-                return;
-            }
-            wrapper.hidden = false;
-            list.innerHTML = warnings.map((warning) => `<li>${escapeHtml(warning)}</li>`).join('');
-        }
-
-        function describeProcess(meta) {
-            const state = String(meta.process_state ?? 'inactive').toLowerCase();
-            const pid = meta.pid ? `PID ${meta.pid}` : null;
-            const port = meta.port ? `PORT ${meta.port}` : null;
-            const exitInfo = meta.exit_code && meta.exit_code !== 0 ? `exit ${meta.exit_code}` : null;
-            const pieces = [state.toUpperCase()];
-            if (state === 'running') {
-                if (pid) {
-                    pieces.push(pid);
-                }
-                if (port) {
-                    pieces.push(port);
-                }
-            } else if (exitInfo) {
-                pieces.push(exitInfo);
-            }
-            return pieces.join(' • ');
-        }
-
-        function describeMemory(meta) {
-            const state = String(meta.memory_state ?? 'unloaded').toLowerCase();
-            const transition = meta.memory_last_transition_at ? formatTimestamp(meta.memory_last_transition_at) : null;
-            const error = meta.memory_last_error ? `Error: ${escapeHtml(meta.memory_last_error)}` : null;
-            const pieces = [state.toUpperCase()];
-            if (transition) {
-                pieces.push(`${transition}`);
-            }
-            return {
-                label: pieces.join(' • '),
-                error,
-            };
-        }
-
-        function renderModels(models) {
-            const body = document.getElementById('models-body');
-            if (!models || models.length === 0) {
-                body.innerHTML = '<tr><td colspan="9">No models registered.</td></tr>';
-                return;
-            }
-            body.innerHTML = models
-                .map((model) => {
-                    const meta = model.metadata ?? {};
-                    const processState = String(meta.process_state ?? 'inactive').toLowerCase();
-                    const memoryState = String(meta.memory_state ?? 'unloaded').toLowerCase();
-                    const processRunning = processState === 'running';
-                    const group = meta.group ?? '—';
-                    const defaultFlag = meta.default ? '✅' : '—';
-                    const modelType = meta.model_type ?? 'n/a';
-                    const modelPath = meta.model_path ?? '';
-                    const autoUnloadMinutes = meta.auto_unload_minutes;
-                    const autoUnloadLabel = Number.isFinite(autoUnloadMinutes) ? `${autoUnloadMinutes} min` : '—';
-                    const safeId = escapeHtml(model.id);
-                    const processLabel = describeProcess(meta);
-                    const memoryDescriptor = describeMemory(meta);
-                    const memoryCell = processRunning
-                        ? `<div>${escapeHtml(memoryDescriptor.label)}</div>${memoryDescriptor.error ? `<div class="muted">${memoryDescriptor.error}</div>` : ''}`
-                        : '<div>—</div>';
-                    const processStartVisible = !processRunning;
-                    const processStopVisible = processRunning;
-                    const processStartDisabled = ['starting'].includes(processState);
-                    const processStopDisabled = ['stopping'].includes(processState);
-                    const memoryGroupVisible = controllerAvailable && processRunning;
-                    const memoryLoaded = memoryState === 'loaded';
-                    const memoryButtonLabel = memoryLoaded ? 'Unload' : 'Load';
-                    const memoryButtonAction = memoryLoaded ? 'unload-model' : 'load-model';
-                    const memoryButtonDisabled = ['loading', 'unloading'].includes(memoryState);
-                    return `<tr>
-                        <td>${safeId}</td>
-                        <td>${escapeHtml(processLabel)}</td>
-                        <td>
-                            ${memoryCell}
-                        </td>
-                        <td>${escapeHtml(autoUnloadLabel)}</td>
-                        <td>${escapeHtml(modelType)}</td>
-                        <td>${escapeHtml(group)}</td>
-                        <td>${escapeHtml(defaultFlag)}</td>
-                        <td>${escapeHtml(modelPath)}</td>
-                        <td>
-                            <div class=\"actions\">
-                                <div class=\"action-group\">
-                                    <div class=\"action-group__label\">Process</div>
-                                    <div class=\"action-group__buttons\">
-                                        ${processStartVisible ? `<button class=\"action-btn\" data-scope=\"process\" data-action=\"start-model\" data-model=\"${safeId}\" ${processStartDisabled ? 'disabled' : ''}>Start</button>` : ''}
-                                        ${processStopVisible ? `<button class=\"action-btn action-btn--secondary\" data-scope=\"process\" data-action=\"stop-model\" data-model=\"${safeId}\" ${processStopDisabled ? 'disabled' : ''}>Stop</button>` : ''}
-                                    </div>
-                                </div>
-                                ${memoryGroupVisible ? `
-                                <div class=\"action-group\">
-                                    <div class=\"action-group__label\">Memory</div>
-                                    <div class=\"action-group__buttons\">
-                                        <button class=\"action-btn ${memoryLoaded ? 'action-btn--secondary' : ''}\" data-scope=\"memory\" data-action=\"${memoryButtonAction}\" data-model=\"${safeId}\" ${memoryButtonDisabled ? 'disabled' : ''}>${memoryButtonLabel}</button>
-                                    </div>
-                                </div>` : ''}
-                            </div>
-                        </td>
-                    </tr>`;
-                })
-                .join('');
-            attachModelActionListeners();
-        }
-
-        function showError(message) {
-            const banner = document.getElementById('error-banner');
-            banner.textContent = message;
-            banner.hidden = false;
-        }
-
-        function clearError() {
-            const banner = document.getElementById('error-banner');
-            banner.hidden = true;
-            banner.textContent = '';
-        }
-
-        function showFlash(message, tone = 'info') {
-            const flash = document.getElementById('flash-banner');
-            flash.textContent = message;
-            flash.className = `flash flash--${tone}`;
-            flash.hidden = false;
-        }
-
-        function clearFlash() {
-            const flash = document.getElementById('flash-banner');
-            flash.hidden = true;
-            flash.textContent = '';
-        }
-
-        let toastTimeoutId;
-        function showToast(message, tone = 'success') {
-            const toast = document.getElementById('toast');
-            toast.textContent = message;
-            toast.className = `toast toast--${tone}`;
-            toast.hidden = false;
-            if (toastTimeoutId) {
-                clearTimeout(toastTimeoutId);
-            }
-            toastTimeoutId = setTimeout(() => {
-                toast.hidden = true;
-            }, 4000);
-        }
-
-        function attachModelActionListeners() {
-            const buttons = document.querySelectorAll('[data-action]');
-            buttons.forEach((button) => {
-                button.addEventListener('click', onModelActionClick);
-            });
-        }
-
-        function attachServiceActionListeners() {
-            const buttons = document.querySelectorAll('[data-service-action]');
-            buttons.forEach((button) => {
-                button.addEventListener('click', onServiceActionClick);
-            });
-        }
-
-        async function onModelActionClick(event) {
-            const button = event.currentTarget;
-            const model = button.getAttribute('data-model');
-            const action = button.getAttribute('data-action');
-            const scope = button.getAttribute('data-scope') ?? 'process';
-            if (!model || !action) {
-                return;
-            }
-
-            const row = button.closest('tr');
-            const rowButtons = row ? row.querySelectorAll('[data-action]') : [button];
-            rowButtons.forEach((btn) => {
-                btn.disabled = true;
-            });
-            const originalLabel = button.textContent;
-            const pendingLabel = {
-                'start-model': 'Starting…',
-                'stop-model': 'Stopping…',
-                'load-model': 'Loading…',
-                'unload-model': 'Unloading…',
-            }[action] ?? 'Working…';
-            button.textContent = pendingLabel;
-
-            try {
-                const endpoint = `/hub/models/${encodeURIComponent(model)}/${action}`;
-                const response = await fetch(endpoint, {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ reason: 'dashboard' }),
-                });
-                const payload = await response.json().catch(() => ({}));
-                if (!response.ok) {
-                    const friendlyAction = action.replace(/-/g, ' ');
-                    const message = payload?.error?.message ?? payload?.message ?? `Failed to ${friendlyAction} ${model}`;
-                    throw new Error(message);
-                }
-                const scopeLabel = scope === 'memory' ? 'memory' : 'process';
-                const verb = {
-                    'start-model': 'Start',
-                    'stop-model': 'Stop',
-                    'load-model': 'Load',
-                    'unload-model': 'Unload',
-                }[action] ?? 'Action';
-                showToast(`${verb} ${scopeLabel} request sent for ${model}`, 'success');
-            } catch (error) {
-                showToast(error.message ?? 'Action failed', 'error');
-            } finally {
-                rowButtons.forEach((btn) => {
-                    btn.disabled = false;
-                });
-                if (button.isConnected) {
-                    button.textContent = originalLabel;
-                }
-                try {
-                    await fetchSnapshot();
-                } catch (err) {
-                    console.error(err);
-                }
-            }
-        }
-
-        async function onServiceActionClick(event) {
-            const button = event.currentTarget;
-            const action = button.getAttribute('data-service-action');
-            if (!action || !(action in SERVICE_ENDPOINTS)) {
-                return;
-            }
-
-            const endpoint = SERVICE_ENDPOINTS[action];
-            const originalLabel = button.textContent;
-            button.disabled = true;
-            button.textContent = `${action.charAt(0).toUpperCase() + action.slice(1)}…`;
-            clearFlash();
-
-            try {
-                const response = await fetch(endpoint, { method: 'POST' });
-                const payload = await response.json().catch(() => ({}));
-                if (!response.ok) {
-                    const message = payload?.error?.message ?? payload?.message ?? `Failed to ${action} hub manager`;
-                    showFlash(message, 'error');
-                    return;
-                }
-                const tone = action === 'stop' ? 'warn' : 'success';
-                const message = payload?.message ?? `Hub ${action} request accepted`;
-                showFlash(message, tone);
-            } catch (error) {
-                showFlash(error.message ?? `Failed to ${action} hub manager`, 'error');
-            } finally {
-                button.disabled = false;
-                button.textContent = originalLabel;
-                try {
-                    await fetchSnapshot();
-                } catch (err) {
-                    console.error(err);
-                }
-            }
-        }
-
-        async function fetchSnapshot() {
-            try {
-                const response = await fetch('/hub/status');
-                if (!response.ok) {
-                    throw new Error(`Request failed with status ${response.status}`);
-                }
-                const data = await response.json();
-                controllerAvailable = Boolean(data.controller_available);
-                const warningList = Array.isArray(data.warnings) ? [...data.warnings] : [];
-                if (!controllerAvailable && !warningList.includes(CONTROLLER_WARNING_MESSAGE)) {
-                    warningList.push(CONTROLLER_WARNING_MESSAGE);
-                }
-                clearError();
-                setStatusPill(data.status ?? 'unknown');
-                const registered = data.counts?.registered ?? 0;
-                const started = data.counts?.started ?? 0;
-                const loaded = data.counts?.loaded ?? 0;
-                document.getElementById('started-counts').textContent = `${started} / ${registered} started`;
-                document.getElementById('counts').textContent = `${loaded} / ${registered} loaded`;
-                document.getElementById('updated-at').textContent = formatTimestamp(data.timestamp);
-                document.getElementById('openai-url').textContent = formatOpenAiUrl(data.host, data.port);
-                renderWarnings(warningList);
-                renderModels(data.models ?? []);
-            } catch (error) {
-                showError(error.message ?? 'Failed to fetch hub status');
-                setStatusPill('error');
-            }
-        }
-
-        document.querySelectorAll('.refresh-btn').forEach(btn => {
-            btn.addEventListener('click', fetchSnapshot);
-        });
-        attachServiceActionListeners();
-        fetchSnapshot();
-        setInterval(fetchSnapshot, REFRESH_INTERVAL_MS);
-    </script>
-</body>
-</html>"""
+# Jinja2 templates directory (project root / `templates`)
+templates = Jinja2Templates(directory=str(Path(__file__).resolve().parents[2] / "templates"))
 
 
 def _resolve_hub_config_path(raw_request: Request) -> Path:
@@ -797,11 +214,12 @@ def _daemon_base_url(config: MLXHubConfig) -> str:
     host = (config.host or DEFAULT_BIND_HOST).strip()
     if host in {"0.0.0.0", "::", "[::]"}:
         host = DEFAULT_API_HOST
-    if host.startswith("[") and host.endswith("]"):
+    # Normalize IPv6: trim any surrounding brackets if present, then add brackets once if IPv6
+    while host.startswith("[") and host.endswith("]"):
         host = host[1:-1]
-    if ":" in host and not host.startswith("["):
+    if ":" in host:
         host = f"[{host}]"
-    port = config.daemon_port
+    port = config.port
     return f"http://{host}:{port}"
 
 
@@ -822,8 +240,8 @@ async def _call_daemon_api_async(
     try:
         async with httpx.AsyncClient(timeout=timeout) as client:
             resp = await client.request(method, url, json=json)
-    except Exception as exc:  # pragma: no cover - network error handling
-        raise HubServiceError(f"Failed to contact hub daemon at {base}: {exc}") from exc
+    except Exception as e:  # pragma: no cover - network error handling
+        raise HubServiceError(f"Failed to contact hub daemon at {base}: {e}") from e
 
     if resp.status_code >= 400:
         # Try to parse JSON error
@@ -833,7 +251,8 @@ async def _call_daemon_api_async(
         except Exception:
             payload = resp.text
         raise HubServiceError(
-            f"Daemon responded {resp.status_code}: {payload}", status_code=resp.status_code
+            f"Daemon responded {resp.status_code}: {payload}",
+            status_code=resp.status_code,
         )
 
     if resp.content:
@@ -868,8 +287,8 @@ def _call_daemon_api_sync(
     try:
         with httpx.Client(timeout=timeout) as client:
             resp = client.request(method, url, json=json)
-    except Exception as exc:  # pragma: no cover - network error handling
-        raise HubServiceError(f"Failed to contact hub daemon at {base}: {exc}") from exc
+    except Exception as e:  # pragma: no cover - network error handling
+        raise HubServiceError(f"Failed to contact hub daemon at {base}: {e}") from e
 
     if resp.status_code >= 400:
         try:
@@ -877,7 +296,8 @@ def _call_daemon_api_sync(
         except Exception:
             payload = resp.text
         raise HubServiceError(
-            f"Daemon responded {resp.status_code}: {payload}", status_code=resp.status_code
+            f"Daemon responded {resp.status_code}: {payload}",
+            status_code=resp.status_code,
         )
 
     if resp.content:
@@ -911,9 +331,15 @@ def _service_error_response(action: str, exc: HubServiceError) -> JSONResponse:
     error_type = (
         "rate_limit_error" if status == HTTPStatus.TOO_MANY_REQUESTS else "service_unavailable"
     )
+    # Log the full exception for diagnostics but avoid exposing low-level
+    # transport errors (e.g. BrokenPipeError) directly to the UI.
+    logger.debug(f"Hub service error while attempting {action}: {exc}")
+    friendly_message = f"Failed to {action} via hub manager. See server logs for details."
     return JSONResponse(
         content=create_error_response(
-            f"Failed to {action} via hub manager: {exc}", error_type, status
+            friendly_message,
+            error_type,
+            status,
         ),
         status_code=status,
     )
@@ -991,6 +417,53 @@ def _controller_error_response(exc: Exception) -> JSONResponse:
     JSONResponse
         JSON error response.
     """
+    status = getattr(exc, "status_code", HTTPStatus.INTERNAL_SERVER_ERROR)
+    error_type = "invalid_request_error"
+    if status == HTTPStatus.TOO_MANY_REQUESTS:
+        error_type = "rate_limit_error"
+    elif status >= HTTPStatus.INTERNAL_SERVER_ERROR:
+        error_type = "service_unavailable"
+    # If the controller raised an HTTPException (or similar) include the
+    # detail in the response so clients/tests can observe controller-level
+    # status and messages. For other exceptions we keep a friendly message
+    # and log the full details to server logs to avoid leaking low-level IO
+    # errors to the UI.
+    logger.debug(f"Controller error converted to response: {exc}")
+    if isinstance(exc, HTTPException):
+        # fastapi.HTTPException uses .detail for human-friendly info
+        detail = exc.detail
+        try:
+            message = f"{exc.status_code}: {detail}"
+        except Exception:
+            message = str(detail)
+        return JSONResponse(
+            content=create_error_response(message, error_type, status),
+            status_code=status,
+        )
+
+    friendly_message = (
+        "Controller failed to execute the requested action. See server logs for details."
+    )
+    return JSONResponse(
+        content=create_error_response(friendly_message, error_type, status),
+        status_code=status,
+    )
+
+
+def _registry_unavailable_response() -> JSONResponse:
+    """Create a JSON error response for missing ModelRegistry on app.state."""
+    return JSONResponse(
+        content=create_error_response(
+            "Model registry is not available. Ensure the server is configured with a registry.",
+            "service_unavailable",
+            HTTPStatus.SERVICE_UNAVAILABLE,
+        ),
+        status_code=HTTPStatus.SERVICE_UNAVAILABLE,
+    )
+
+
+def _registry_error_response(exc: Exception) -> JSONResponse:
+    """Convert registry exceptions into JSON responses."""
     status = getattr(exc, "status_code", HTTPStatus.INTERNAL_SERVER_ERROR)
     error_type = "invalid_request_error"
     if status == HTTPStatus.TOO_MANY_REQUESTS:
@@ -1077,18 +550,29 @@ def _build_models_from_config(
     created_ts = _model_created_timestamp(config)
     rendered: list[Model] = []
     process_running = 0
-    memory_loaded = 0
+    memory_loaded_count = 0
     for server_cfg in config.models:
         name = server_cfg.name or server_cfg.model_identifier
         live = live_entries.get(name, {})
         state = str(live.get("state") or "inactive").lower()
-        memory_state = None
+        # Read memory state from live entry
+        memory_state_raw = live.get("memory_state") or live.get("memory")
+        if memory_state_raw is not None:
+            memory_state = str(memory_state_raw).lower()
+        elif "memory_loaded" in live:
+            memory_loaded_bool = live["memory_loaded"]
+            memory_state = "loaded" if memory_loaded_bool else "unloaded"
+        else:
+            memory_state = None
+        memory_loaded = (
+            memory_state == "loaded" if memory_state is not None else (state == "running")
+        )
         if state == "running":
             process_running += 1
-        if memory_state == "loaded":
-            memory_loaded += 1
+        if memory_loaded:
+            memory_loaded_count += 1
         metadata = {
-            "status": memory_state or state,
+            "status": state,
             "process_state": state,
             "memory_state": memory_state,
             "group": server_cfg.group,
@@ -1110,10 +594,10 @@ def _build_models_from_config(
                 created=created_ts,
                 owned_by="hub",
                 metadata=metadata,
-            )
+            ),
         )
 
-    loaded_count = process_running
+    loaded_count = memory_loaded_count
     counts = HubStatusCounts(
         registered=len(rendered),
         started=process_running,
@@ -1135,7 +619,6 @@ def get_running_hub_models(raw_request: Request) -> set[str] | None:
     set[str] | None
         Names of running models, or ``None`` when the service is unavailable.
     """
-
     server_config = getattr(raw_request.app.state, "server_config", None)
     if not isinstance(server_config, MLXHubConfig):
         return None
@@ -1147,9 +630,9 @@ def get_running_hub_models(raw_request: Request) -> set[str] | None:
 
     try:
         snapshot = _call_daemon_api_sync(config, "GET", "/hub/status", timeout=1.0)
-    except HubServiceError as exc:
+    except HubServiceError as e:
         logger.debug(
-            f"Hub manager status unavailable; skipping running model filter. {type(exc).__name__}: {exc}"
+            f"Hub manager status unavailable; skipping running model filter. {type(e).__name__}: {e}",
         )
         return None
 
@@ -1225,10 +708,9 @@ async def hub_status(raw_request: Request) -> HubStatusResponse:
     HubStatusResponse
         The hub status response.
     """
-
     try:
         config = _load_hub_config_from_request(raw_request)
-    except HubConfigError as exc:
+    except HubConfigError as e:
         controller_available = getattr(raw_request.app.state, "hub_controller", None) is not None
         return HubStatusResponse(
             status="degraded",
@@ -1237,19 +719,36 @@ async def hub_status(raw_request: Request) -> HubStatusResponse:
             port=None,
             models=[],
             counts=HubStatusCounts(registered=0, started=0, loaded=0),
-            warnings=[f"Hub configuration unavailable: {exc}"],
+            warnings=[f"Hub configuration unavailable: {e}"],
             controller_available=controller_available,
         )
 
     warnings: list[str] = []
     snapshot: dict[str, Any] | None = None
-    try:
-        # Try to reconcile via daemon then fetch status snapshot
-        with contextlib.suppress(HubServiceError):
-            await _call_daemon_api_async(config, "POST", "/hub/reload")
-        snapshot = await _call_daemon_api_async(config, "GET", "/hub/status")
-    except HubServiceError as exc:
-        warnings.append(f"Hub manager unavailable: {exc}")
+
+    # Check if controller is available directly (unified daemon mode)
+    controller = getattr(raw_request.app.state, "hub_controller", None)
+    if controller is None:
+        controller = getattr(raw_request.app.state, "supervisor", None)
+
+    if controller is not None:
+        # Use controller directly in unified daemon mode
+        try:
+            # Ensure config is up to date
+            with contextlib.suppress(Exception):
+                await controller.reload_config()
+            snapshot = controller.get_status()
+        except Exception as e:
+            warnings.append(f"Failed to get status from controller: {e}")
+    else:
+        # Fall back to daemon API calls (legacy mode)
+        try:
+            # Try to reconcile via daemon then fetch status snapshot
+            with contextlib.suppress(HubServiceError):
+                await _call_daemon_api_async(config, "POST", "/hub/reload")
+            snapshot = await _call_daemon_api_async(config, "GET", "/hub/status")
+        except HubServiceError as e:
+            warnings.append(f"Hub manager unavailable: {e}")
 
     models, counts = _build_models_from_config(config, snapshot)
     response_timestamp = int(time.time())
@@ -1258,7 +757,7 @@ async def hub_status(raw_request: Request) -> HubStatusResponse:
         if isinstance(timestamp_value, (int, float)):
             response_timestamp = int(timestamp_value)
 
-    controller_available = getattr(raw_request.app.state, "hub_controller", None) is not None
+    controller_available = controller is not None
 
     return HubStatusResponse(
         status="ok" if snapshot is not None else "degraded",
@@ -1291,7 +790,15 @@ async def hub_status_page(raw_request: Request) -> HTMLResponse:
     HTTPException
         If the status page is disabled.
     """
-    config = getattr(raw_request.app.state, "server_config", None)
+    try:
+        config = _load_hub_config_from_request(raw_request)
+    except HubConfigError as e:
+        # If config can't be loaded, default to disabled
+        raise HTTPException(
+            status_code=HTTPStatus.NOT_FOUND,
+            detail="Hub status page is disabled in configuration.",
+        ) from e
+
     enabled = bool(getattr(config, "enable_status_page", False))
     if not enabled:
         raise HTTPException(
@@ -1299,25 +806,12 @@ async def hub_status_page(raw_request: Request) -> HTMLResponse:
             detail="Hub status page is disabled in configuration.",
         )
 
-    # Prefer the daemon's rendered status page when the daemon is available
-    try:
-        config = _load_hub_config_from_request(raw_request)
-    except HubConfigError:
-        # Fall back to the inline page when config missing
-        return HTMLResponse(content=_HUB_STATUS_PAGE_HTML, media_type="text/html")
-
-    try:
-        base = _daemon_base_url(config)
-        url = f"{base.rstrip('/')}/hub"
-        with httpx.Client(timeout=2.0) as client:
-            resp = client.get(url)
-            if resp.status_code == 200 and "text/html" in resp.headers.get("content-type", ""):
-                return HTMLResponse(content=resp.text, media_type="text/html")
-    except Exception:
-        # If daemon is unreachable or returns non-HTML, fall back to inline page
-        pass
-
-    return HTMLResponse(content=_HUB_STATUS_PAGE_HTML, media_type="text/html")
+    # Serve the inline hub dashboard HTML directly on the main API port.
+    # Do not proxy or fetch a separate page from the hub daemon; the
+    # dashboard communicates with the daemon (if present) via the
+    # `/hub/status` and service endpoints exposed by this API.
+    context = {"request": raw_request}
+    return templates.TemplateResponse(raw_request, "hub_status.html.jinja", context)
 
 
 @hub_router.post("/hub/service/start", response_model=HubServiceActionResponse)
@@ -1348,35 +842,41 @@ async def hub_service_start(raw_request: Request) -> HubServiceActionResponse | 
     try:
         await _call_daemon_api_async(config, "GET", "/health", timeout=1.0)
         return HubServiceActionResponse(
-            status="ok", action="start", message="Hub manager already running."
+            status="ok",
+            action="start",
+            message="Hub manager already running.",
         )
     except HubServiceError:
         pass
 
     if config.source_path is None:
         return _hub_config_error_response(
-            "Hub configuration must be saved to disk before starting the manager."
+            "Hub configuration must be saved to disk before starting the manager.",
         )
 
-    pid = start_hub_service_process(
-        str(config.source_path), host=config.host, port=config.daemon_port
-    )
+    pid = start_hub_service_process(str(config.source_path), host=config.host, port=config.port)
 
     # Wait for daemon to become available
-    deadline = time.time() + 20.0
+    deadline = time.time() + 10.0
     available = False
+    attempts = 0
     while time.time() < deadline:
+        attempts += 1
         try:
             await _call_daemon_api_async(config, "GET", "/health", timeout=1.0)
             available = True
             break
         except HubServiceError:
-            await asyncio.sleep(0.5)
+            remaining_seconds = deadline - time.time()
+            logger.info(
+                f"Waiting for hub daemon to start... attempt {attempts}, {remaining_seconds:.1f}s remaining",
+            )
+            await asyncio.sleep(0.25)
 
     if not available:
         return JSONResponse(
             content=create_error_response(
-                "Hub manager failed to start within 20 seconds.",
+                "Hub manager failed to start within 10 seconds.",
                 "service_unavailable",
                 HTTPStatus.SERVICE_UNAVAILABLE,
             ),
@@ -1386,9 +886,9 @@ async def hub_service_start(raw_request: Request) -> HubServiceActionResponse | 
     try:
         await _call_daemon_api_async(config, "POST", "/hub/reload")
         snapshot = await _call_daemon_api_async(config, "GET", "/hub/status")
-    except HubServiceError as exc:
+    except HubServiceError as e:
         snapshot = None
-        logger.warning(f"Hub manager started (pid={pid}) but status fetch failed: {exc}")
+        logger.warning(f"Hub manager started (pid={pid}) but status fetch failed: {e}")
 
     details: dict[str, Any] = {"pid": pid}
     if snapshot is not None:
@@ -1483,16 +983,29 @@ async def hub_service_reload(raw_request: Request) -> HubServiceActionResponse |
     except HubConfigError as exc:
         return _hub_config_error_response(str(exc))
 
-    try:
-        # Ensure daemon responds to health check
-        await _call_daemon_api_async(config, "GET", "/health")
-    except HubServiceError:
-        return _manager_unavailable_response()
+    # Check if controller is available directly (unified daemon mode)
+    controller = getattr(raw_request.app.state, "hub_controller", None)
+    if controller is None:
+        controller = getattr(raw_request.app.state, "supervisor", None)
 
-    try:
-        diff = await _call_daemon_api_async(config, "POST", "/hub/reload") or {}
-    except HubServiceError as exc:
-        return _service_error_response("reload hub configuration", exc)
+    if controller is not None:
+        # Use controller directly in unified daemon mode
+        try:
+            diff = await controller.reload_config()
+        except Exception as exc:
+            return _service_error_response("reload hub configuration", HubServiceError(str(exc)))
+    else:
+        # Fall back to daemon API calls (legacy mode)
+        try:
+            # Ensure daemon responds to health check
+            await _call_daemon_api_async(config, "GET", "/health")
+        except HubServiceError:
+            return _manager_unavailable_response()
+
+        try:
+            diff = await _call_daemon_api_async(config, "POST", "/hub/reload") or {}
+        except HubServiceError as exc:
+            return _service_error_response("reload hub configuration", exc)
 
     return HubServiceActionResponse(
         status="ok",
@@ -1502,7 +1015,7 @@ async def hub_service_reload(raw_request: Request) -> HubServiceActionResponse |
     )
 
 
-@hub_router.post("/hub/models/{model_name}/start-model", response_model=HubModelActionResponse)
+@hub_router.post("/hub/models/{model_name}/start", response_model=HubModelActionResponse)
 async def hub_start_model(
     model_name: str,
     raw_request: Request,
@@ -1524,12 +1037,11 @@ async def hub_start_model(
     HubModelActionResponse or JSONResponse
         Response indicating the result of the load action.
     """
-
     _ = payload  # reserved for future compatibility
-    return await _hub_model_service_action(raw_request, model_name, "start-model")
+    return await _hub_model_service_action(raw_request, model_name, "start")
 
 
-@hub_router.post("/hub/models/{model_name}/stop-model", response_model=HubModelActionResponse)
+@hub_router.post("/hub/models/{model_name}/stop", response_model=HubModelActionResponse)
 async def hub_stop_model(
     model_name: str,
     raw_request: Request,
@@ -1551,16 +1063,14 @@ async def hub_stop_model(
     HubModelActionResponse or JSONResponse
         Response indicating the result of the unload action.
     """
-
     _ = payload  # reserved for future compatibility
-    return await _hub_model_service_action(raw_request, model_name, "stop-model")
+    return await _hub_model_service_action(raw_request, model_name, "stop")
 
 
 @hub_router.post("/hub/models/{model_name}/load", response_model=HubModelActionResponse)
 async def hub_load_model(
     model_name: str,
     raw_request: Request,
-    payload: HubModelActionRequest | None = None,
 ) -> HubModelActionResponse | JSONResponse:
     """Request that the in-process controller load ``model_name`` into memory.
 
@@ -1570,22 +1080,19 @@ async def hub_load_model(
         The name of the model to load.
     raw_request : Request
         The incoming FastAPI request.
-    payload : HubModelActionRequest, optional
-        Additional payload for the request.
 
     Returns
     -------
     HubModelActionResponse or JSONResponse
         Response indicating the result of the load action.
     """
-    return await _hub_memory_controller_action(raw_request, model_name, "load-model", payload)
+    return await _hub_memory_controller_action(raw_request, model_name, "load")
 
 
 @hub_router.post("/hub/models/{model_name}/unload", response_model=HubModelActionResponse)
 async def hub_unload_model(
     model_name: str,
     raw_request: Request,
-    payload: HubModelActionRequest | None = None,
 ) -> HubModelActionResponse | JSONResponse:
     """Request that the in-process controller unload ``model_name`` from memory.
 
@@ -1595,21 +1102,132 @@ async def hub_unload_model(
         The name of the model to unload.
     raw_request : Request
         The incoming FastAPI request.
-    payload : HubModelActionRequest, optional
-        Additional payload for the request.
 
     Returns
     -------
     HubModelActionResponse or JSONResponse
         Response indicating the result of the unload action.
     """
-    return await _hub_memory_controller_action(raw_request, model_name, "unload-model", payload)
+    return await _hub_memory_controller_action(raw_request, model_name, "unload")
+
+
+@hub_router.post("/hub/models/{model_name}/vram/load", response_model=HubModelActionResponse)
+async def hub_vram_load(
+    model_name: str,
+    raw_request: Request,
+    payload: HubModelActionRequest | None = None,
+) -> HubModelActionResponse | JSONResponse:
+    """Admin endpoint to request VRAM residency for a registered model via the registry."""
+    target = _normalize_model_name(model_name)
+    if not target:
+        return JSONResponse(
+            content=create_error_response(
+                "Model name cannot be empty",
+                "invalid_request_error",
+                HTTPStatus.BAD_REQUEST,
+            ),
+            status_code=HTTPStatus.BAD_REQUEST,
+        )
+
+    registry = getattr(raw_request.app.state, "model_registry", None)
+    if registry is None:
+        return _registry_unavailable_response()
+
+    try:
+        await registry.request_vram_load(
+            target,
+            force=bool(getattr(payload, "force", False)),
+            timeout=getattr(payload, "timeout", None),
+        )
+        message = f"VRAM load requested for '{target}'"
+    except Exception as exc:
+        return _registry_error_response(exc)
+
+    return HubModelActionResponse(status="ok", action="load", model=target, message=message)
+
+
+@hub_router.post("/hub/models/{model_name}/vram/unload", response_model=HubModelActionResponse)
+async def hub_vram_unload(
+    model_name: str,
+    raw_request: Request,
+    payload: HubModelActionRequest | None = None,
+) -> HubModelActionResponse | JSONResponse:
+    """Admin endpoint to request VRAM release for a registered model via the registry."""
+    target = _normalize_model_name(model_name)
+    if not target:
+        return JSONResponse(
+            content=create_error_response(
+                "Model name cannot be empty",
+                "invalid_request_error",
+                HTTPStatus.BAD_REQUEST,
+            ),
+            status_code=HTTPStatus.BAD_REQUEST,
+        )
+
+    registry = getattr(raw_request.app.state, "model_registry", None)
+    if registry is None:
+        return _registry_unavailable_response()
+
+    try:
+        await registry.request_vram_unload(target, timeout=getattr(payload, "timeout", None))
+        message = f"VRAM unload requested for '{target}'"
+    except Exception as exc:
+        return _registry_error_response(exc)
+
+    return HubModelActionResponse(status="ok", action="unload", model=target, message=message)
+
+
+@hub_router.post("/hub/shutdown", response_model=HubServiceActionResponse)
+async def hub_shutdown(
+    raw_request: Request,
+    background_tasks: BackgroundTasks,
+) -> HubServiceActionResponse | JSONResponse:
+    """Request the hub daemon to shutdown all managed models and exit.
+
+    This endpoint forwards the shutdown request to the running hub manager
+    process. If the hub manager is not running an appropriate error is returned.
+    """
+    try:
+        config = _load_hub_config_from_request(raw_request)
+    except HubConfigError as exc:
+        return _hub_config_error_response(str(exc))
+
+    controller = getattr(raw_request.app.state, "hub_controller", None)
+    if controller is None:
+        controller = getattr(raw_request.app.state, "supervisor", None)
+    if controller is not None:
+        background_tasks.add_task(controller.shutdown_all)
+
+        # Schedule server shutdown after model shutdown
+        async def shutdown_server() -> None:
+            await asyncio.sleep(1)  # Give time for response to be sent
+            sys.exit(0)
+
+        background_tasks.add_task(shutdown_server)
+        return HubServiceActionResponse(
+            status="ok",
+            action="stop",
+            message="Shutdown requested",
+            details={},
+        )
+
+    try:
+        await _call_daemon_api_async(config, "POST", "/hub/shutdown")
+    except HubServiceError as exc:
+        return _service_error_response("shutdown hub manager", exc)
+
+    return HubServiceActionResponse(
+        status="ok",
+        action="stop",
+        message="Shutdown requested",
+        details={},
+    )
 
 
 async def _hub_model_service_action(
     raw_request: Request,
     model_name: str,
-    action: Literal["start-model", "stop-model"],
+    action: Literal["start", "stop"],
 ) -> HubModelActionResponse | JSONResponse:
     """Execute a load or unload action on a model via the hub service.
 
@@ -1619,7 +1237,7 @@ async def _hub_model_service_action(
         The incoming FastAPI request.
     model_name : str
         Name of the model to act on.
-    action : Literal["start-model", "stop-model"]
+    action : Literal["start", "stop"]
         The action to perform.
 
     Returns
@@ -1643,6 +1261,21 @@ async def _hub_model_service_action(
     except HubConfigError as exc:
         return _hub_config_error_response(str(exc))
 
+    controller = getattr(raw_request.app.state, "hub_controller", None)
+    if controller is None:
+        controller = getattr(raw_request.app.state, "supervisor", None)
+    if controller is not None:
+        try:
+            if action == "start":
+                await controller.start_model(target)
+                message = f"Model '{target}' start requested"
+            else:
+                await controller.stop_model(target)
+                message = f"Model '{target}' stop requested"
+        except Exception as exc:
+            return _controller_error_response(exc)
+        return HubModelActionResponse(status="ok", action=action, model=target, message=message)
+
     try:
         await _call_daemon_api_async(config, "GET", "/health")
     except HubServiceError:
@@ -1654,7 +1287,7 @@ async def _hub_model_service_action(
         return _service_error_response("reload before executing the model action", exc)
 
     try:
-        if action == "start-model":
+        if action == "start":
             await _call_daemon_api_async(config, "POST", f"/hub/models/{target}/start")
             message = f"Model '{target}' start requested"
         else:
@@ -1670,8 +1303,7 @@ async def _hub_model_service_action(
 async def _hub_memory_controller_action(
     raw_request: Request,
     model_name: str,
-    action: Literal["load-model", "unload-model"],
-    payload: HubModelActionRequest | None,
+    action: Literal["load", "unload"],
 ) -> HubModelActionResponse | JSONResponse:
     """Execute a memory load/unload request using the in-process controller.
 
@@ -1681,10 +1313,8 @@ async def _hub_memory_controller_action(
         The incoming FastAPI request.
     model_name : str
         The name of the model to act on.
-    action : Literal["load-model", "unload-model"]
+    action : Literal["load", "unload"]
         The action to perform.
-    payload : HubModelActionRequest or None
-        Additional payload for the request.
 
     Returns
     -------
@@ -1707,32 +1337,57 @@ async def _hub_memory_controller_action(
         return _controller_unavailable_response()
 
     try:
-        if action == "load-model":
-            await controller.load_model(target)
-            message = f"Model '{target}' memory load requested"
+        if action == "load":
+            # Shield the long-running load so cancellation of the request
+            # (for example due to a client disconnect) doesn't cancel the
+            # underlying model initialization. If the await is cancelled
+            # we schedule the operation in the background and return a
+            # "requested" response to the client.
+            coro = controller.load_model(target)
+            try:
+                await asyncio.shield(coro)
+                message = f"Model '{target}' memory load requested"
+            except asyncio.CancelledError:
+                # Request task was cancelled (client disconnected). Ensure
+                # the load continues in background and return a requested
+                # response.
+                asyncio.create_task(coro)
+                message = f"Model '{target}' memory load requested (running in background)"
         else:
-            await controller.unload_model(target)
-            message = f"Model '{target}' memory unload requested"
-    except Exception as exc:
-        return _controller_error_response(exc)
-    except Exception as exc:  # pragma: no cover - defensive logging
+            coro = controller.unload_model(target)
+            try:
+                await asyncio.shield(coro)
+                message = f"Model '{target}' memory unload requested"
+            except asyncio.CancelledError:
+                asyncio.create_task(coro)
+                message = f"Model '{target}' memory unload requested (running in background)"
+    except BrokenPipeError as e:  # pragma: no cover - defensive handling
+        # Broken pipe can surface from low-level I/O during heavy init; log
+        # and schedule the operation in background to avoid exposing raw
+        # socket errors to the UI while still performing the work.
         logger.exception(
-            f"Unexpected failure while executing {action} for {target}. {type(exc).__name__}: {exc}",
+            f"Broken pipe while executing {action} for {target}: {e}",
         )
-        return JSONResponse(
-            content=create_error_response(
-                f"Unexpected failure while executing {action.replace('-', ' ')} for '{target}'",
-                "internal_error",
-                HTTPStatus.INTERNAL_SERVER_ERROR,
-            ),
-            status_code=HTTPStatus.INTERNAL_SERVER_ERROR,
+        try:
+            asyncio.create_task(
+                controller.load_model(target)
+                if action == "load"
+                else controller.unload_model(target)
+            )
+        except Exception:
+            logger.debug("Failed to schedule background model action after BrokenPipeError")
+        message = f"Model '{target}' memory {action} requested (running in background)"
+    except Exception as e:  # pragma: no cover - defensive logging
+        logger.exception(
+            f"Unexpected failure while executing {action} for {target}. {type(e).__name__}: {e}",
         )
+        return _controller_error_response(e)
 
     return HubModelActionResponse(status="ok", action=action, model=target, message=message)
 
 
 __all__ = [
-    "hub_router",
     "get_cached_model_metadata",
     "get_configured_model_id",
+    "hub_router",
 ]

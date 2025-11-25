@@ -40,7 +40,7 @@ class OpenAIBaseModel(BaseModel):
         # Compare against both field names and aliases
         if any(k not in field_names for k in data):
             logger.warning(
-                f"The following fields were present in the request but ignored: {data.keys() - field_names}"
+                f"The following fields were present in the request but ignored: {data.keys() - field_names}",
             )
         return result
 
@@ -69,7 +69,8 @@ class HealthCheckResponse(OpenAIBaseModel):
     status: HealthCheckStatus = Field(..., description="The status of the health check.")
     model_id: str | None = Field(None, description="ID of the loaded model, if any.")
     model_status: str | None = Field(
-        None, description="Status of the model handler (initialized/uninitialized)."
+        None,
+        description="Status of the model handler (initialized/uninitialized).",
     )
 
 
@@ -94,7 +95,8 @@ class ChatCompletionContentPartImage(OpenAIBaseModel):
     """Represents an image content part in a chat completion message."""
 
     image_url: ImageURL | None = Field(
-        None, description="Either a URL of the image or the base64 encoded image data."
+        None,
+        description="Either a URL of the image or the base64 encoded image data.",
     )
     type: Literal["image_url"] = Field(..., description="The type of content, e.g., 'image_url'.")
 
@@ -109,7 +111,8 @@ class ChatCompletionContentPartVideo(OpenAIBaseModel):
     """Represents a video content part in a chat completion message."""
 
     video_url: VideoURL | None = Field(
-        None, description="Either a URL of the video or the base64 encoded video data."
+        None,
+        description="Either a URL of the video or the base64 encoded video data.",
     )
     type: Literal["video_url"] = Field(..., description="The type of content, e.g., 'video_url'.")
 
@@ -118,7 +121,8 @@ class InputAudio(OpenAIBaseModel):
     """Represents input audio data."""
 
     data: str = Field(
-        ..., description="Either a URL of the audio or the base64 encoded audio data."
+        ...,
+        description="Either a URL of the audio or the base64 encoded audio data.",
     )
     format: Literal["mp3", "wav"] = Field(..., description="The audio format.")
 
@@ -127,10 +131,12 @@ class ChatCompletionContentPartInputAudio(OpenAIBaseModel):
     """Represents an input audio content part in a chat completion message."""
 
     input_audio: InputAudio | None = Field(
-        None, description="Either a URL of the audio or the base64 encoded audio data."
+        None,
+        description="Either a URL of the audio or the base64 encoded audio data.",
     )
     type: Literal["input_audio"] = Field(
-        ..., description="The type of content, e.g., 'input_audio'."
+        ...,
+        description="The type of content, e.g., 'input_audio'.",
     )
 
 
@@ -189,11 +195,13 @@ class Message(OpenAIBaseModel):
     )
     refusal: str | None = Field(None, description="The refusal reason, if any.")
     role: Literal["system", "user", "assistant", "tool"] = Field(
-        ..., description="The role of the message sender."
+        ...,
+        description="The role of the message sender.",
     )
     reasoning_content: str | None = Field(None, description="The reasoning content, if any.")
     tool_calls: list[ChatCompletionMessageToolCall] | None = Field(
-        None, description="List of tool calls, if any."
+        None,
+        description="List of tool calls, if any.",
     )
     tool_call_id: str | None = Field(None, description="The ID of the tool call, if any.")
 
@@ -205,10 +213,12 @@ class ChatCompletionRequestBase(OpenAIBaseModel):
     model: str = Field(Config.TEXT_MODEL, description="The model to use for completion.")
     messages: list[Message] = Field(..., description="The list of messages in the conversation.")
     tools: list[dict[str, Any]] | None = Field(
-        None, description="List of tools available for the request."
+        None,
+        description="List of tools available for the request.",
     )
     tool_choice: str | dict[str, Any] | None = Field(
-        "auto", description="Tool choice for the request."
+        "auto",
+        description="Tool choice for the request.",
     )
     max_tokens: int | None = Field(None, description="The maximum number of tokens to generate.")
     temperature: float | None = Field(0.7, description="Sampling temperature.")
@@ -216,10 +226,12 @@ class ChatCompletionRequestBase(OpenAIBaseModel):
     top_k: int | None = Field(20, description="Top-k sampling parameter.")
     min_p: float | None = Field(0.0, description="Minimum probability for token generation.")
     frequency_penalty: float | None = Field(
-        0.0, description="Frequency penalty for token generation."
+        0.0,
+        description="Frequency penalty for token generation.",
     )
     presence_penalty: float | None = Field(
-        0.0, description="Presence penalty for token generation."
+        0.0,
+        description="Presence penalty for token generation.",
     )
     stop: list[str] | None = Field(None, description="List of stop sequences.")
     n: int | None = Field(1, description="Number of completions to generate.")
@@ -230,10 +242,12 @@ class ChatCompletionRequestBase(OpenAIBaseModel):
     )
     user: str | None = Field(None, description="User identifier.")
     repetition_penalty: float | None = Field(
-        1.05, description="Repetition penalty for token generation."
+        1.05,
+        description="Repetition penalty for token generation.",
     )
     repetition_context_size: int | None = Field(
-        20, description="Repetition context size for token generation."
+        20,
+        description="Repetition context size for token generation.",
     )
 
     @field_validator("messages")
@@ -278,7 +292,8 @@ class ChatTemplateKwargs(OpenAIBaseModel):
 
     enable_thinking: bool = Field(default=True, description="Whether to enable thinking.")
     reasoning_effort: Literal["low", "medium", "high"] = Field(
-        default="medium", description="The reasoning effort level."
+        default="medium",
+        description="The reasoning effort level.",
     )
 
 
@@ -288,7 +303,8 @@ class ChatCompletionRequest(ChatCompletionRequestBase):
 
     stream: bool = Field(False, description="Whether to stream the response.")
     chat_template_kwargs: ChatTemplateKwargs = Field(
-        default_factory=ChatTemplateKwargs, description="Arguments for the chat template."
+        default_factory=ChatTemplateKwargs,
+        description="Arguments for the chat template.",
     )
 
 
@@ -307,7 +323,8 @@ class ChatCompletionResponse(OpenAIBaseModel):
 
     id: str = Field(..., description="The response ID.")
     object: Literal["chat.completion"] = Field(
-        ..., description="The object type, always 'chat.completion'."
+        ...,
+        description="The object type, always 'chat.completion'.",
     )
     created: int = Field(..., description="The creation timestamp.")
     model: str = Field(..., description="The model used for completion.")
@@ -329,7 +346,8 @@ class ChoiceDeltaToolCall(OpenAIBaseModel):
     index: int | None = Field(None, description="Index of the tool call delta.")
     id: str | None = Field(None, description="ID of the tool call delta.")
     function: ChoiceDeltaFunctionCall | None = Field(
-        None, description="Function call details in the delta."
+        None,
+        description="Function call details in the delta.",
     )
     type: str | None = Field(None, description="Type of the tool call delta.")
 
@@ -339,14 +357,17 @@ class Delta(OpenAIBaseModel):
 
     content: str | None = Field(None, description="Content of the delta.")
     function_call: ChoiceDeltaFunctionCall | None = Field(
-        None, description="Function call delta, if any."
+        None,
+        description="Function call delta, if any.",
     )
     refusal: str | None = Field(None, description="Refusal reason, if any.")
     role: Literal["system", "user", "assistant", "tool"] | None = Field(
-        None, description="Role in the delta."
+        None,
+        description="Role in the delta.",
     )
     tool_calls: list[ChoiceDeltaToolCall] | None = Field(
-        None, description="List of tool call deltas, if any."
+        None,
+        description="List of tool call deltas, if any.",
     )
     reasoning_content: str | None = Field(None, description="Reasoning content, if any.")
 
@@ -366,12 +387,14 @@ class ChatCompletionChunk(OpenAIBaseModel):
 
     id: str = Field(..., description="The chunk ID.")
     choices: list[StreamingChoice] = Field(
-        ..., description="List of streaming choices in the chunk."
+        ...,
+        description="List of streaming choices in the chunk.",
     )
     created: int = Field(..., description="The creation timestamp of the chunk.")
     model: str = Field(..., description="The model used for the chunk.")
     object: Literal["chat.completion.chunk"] = Field(
-        ..., description="The object type, always 'chat.completion.chunk'."
+        ...,
+        description="The object type, always 'chat.completion.chunk'.",
     )
     usage: UsageInfo | None = Field(default=None, description="The usage of the chunk.")
     request_id: str | None = Field(None, description="Request correlation ID for tracking.")
@@ -383,12 +406,14 @@ class EmbeddingRequest(OpenAIBaseModel):
 
     model: str = Field(Config.EMBEDDING_MODEL, description="The embedding model to use.")
     input: list[str] | str = Field(
-        ..., description="List of text inputs for embedding or the image file to embed."
+        ...,
+        description="List of text inputs for embedding or the image file to embed.",
     )
     image_url: str | None = Field(default=None, description="Image URL to embed.")
     user: str | None = Field(default=None, description="User identifier.")
     encoding_format: Literal["float", "base64"] = Field(
-        default="float", description="The encoding format for the embedding."
+        default="float",
+        description="The encoding format for the embedding.",
     )
 
 
@@ -396,7 +421,8 @@ class EmbeddingResponseData(OpenAIBaseModel):
     """Represents an embedding object in an embedding response."""
 
     embedding: list[float] | str = Field(
-        ..., description="The embedding vector or the base64 encoded embedding."
+        ...,
+        description="The embedding vector or the base64 encoded embedding.",
     )
     index: int = Field(..., description="The index of the embedding in the list.")
     object: str = Field(default="embedding", description="The object type, always 'embedding'.")
@@ -458,13 +484,16 @@ class HubStatusResponse(OpenAIBaseModel):
         ),
     )
     timestamp: int = Field(
-        ..., description="Unix timestamp (seconds) when this snapshot was generated."
+        ...,
+        description="Unix timestamp (seconds) when this snapshot was generated.",
     )
     host: str | None = Field(
-        None, description="Hostname bound by the shared OpenAI-compatible endpoint."
+        None,
+        description="Hostname bound by the shared OpenAI-compatible endpoint.",
     )
     port: int | None = Field(
-        None, description="Port exposed by the shared OpenAI-compatible endpoint."
+        None,
+        description="Port exposed by the shared OpenAI-compatible endpoint.",
     )
     models: list[Model] = Field(
         default_factory=list,
@@ -479,23 +508,30 @@ class HubStatusResponse(OpenAIBaseModel):
         description="Non-fatal warnings explaining why the hub status might be degraded.",
     )
     controller_available: bool = Field(
-        False,
+        default=False,
         description=(
             "True when this FastAPI instance hosts the hub controller, which enables dashboard "
-            "memory controls and CLI load-model/unload commands."
+            "memory controls and CLI load/unload commands."
         ),
     )
 
 
 class HubModelActionRequest(OpenAIBaseModel):
-    """Request payload for hub model lifecycle actions."""
+    """Request payload for hub model lifecycle actions.
+
+    This model intentionally has no body fields. The target model name is
+    provided via the URL path parameter (e.g., the "model" path parameter
+    in routes like "/hub/models/{model}/start"). The request payload is
+    expected to be empty, with all necessary information conveyed through
+    the URL path.
+    """
 
 
 class HubModelActionResponse(OpenAIBaseModel):
     """Response payload emitted after hub model actions."""
 
     status: Literal["ok"] = Field("ok", description="Indicates the action was accepted.")
-    action: Literal["start-model", "stop-model", "load-model", "unload-model"] = Field(
+    action: Literal["start", "stop", "load", "unload"] = Field(
         ...,
         description="Action that was performed.",
     )
@@ -508,7 +544,8 @@ class HubServiceActionResponse(OpenAIBaseModel):
 
     status: Literal["ok"] = Field("ok", description="Indicates the manager accepted the command.")
     action: Literal["start", "stop", "reload"] = Field(
-        ..., description="Service-level action executed by the hub manager."
+        ...,
+        description="Service-level action executed by the hub manager.",
     )
     message: str | None = Field(None, description="Human-readable summary of the outcome.")
     details: dict[str, Any] | None = Field(
@@ -570,16 +607,22 @@ class ImageGenerationRequest(OpenAIBaseModel):
         max_length=1000,
     )
     model: str | None = Field(
-        default=Config.IMAGE_GENERATION_MODEL, description="The model to use for image generation"
+        default=Config.IMAGE_GENERATION_MODEL,
+        description="The model to use for image generation",
     )
     size: ImageSize | None = Field(
-        default=ImageSize.LARGE, description="The size of the generated images"
+        default=ImageSize.LARGE,
+        description="The size of the generated images",
     )
     guidance_scale: float | None = Field(
-        default=4.5, description="The guidance scale for the image generation"
+        default=4.5,
+        description="The guidance scale for the image generation",
     )
     steps: int | None = Field(
-        default=28, ge=1, le=50, description="The number of inference steps (1-50)"
+        default=28,
+        ge=1,
+        le=50,
+        description="The number of inference steps (1-50)",
     )
     seed: int | None = Field(42, description="Seed for reproducible generation")
     response_format: ImageResponseFormat | None = Field(
@@ -592,7 +635,8 @@ class ImageData(OpenAIBaseModel):
     """Individual image data in the response."""
 
     url: str | None = Field(
-        None, description="The URL of the generated image, if response_format is url"
+        None,
+        description="The URL of the generated image, if response_format is url",
     )
     b64_json: str | None = Field(
         None,
@@ -604,7 +648,8 @@ class ImageGenerationResponse(OpenAIBaseModel):
     """Response schema for OpenAI-compatible image generation API."""
 
     created: int = Field(
-        ..., description="The Unix timestamp (in seconds) when the image was created"
+        ...,
+        description="The Unix timestamp (in seconds) when the image was created",
     )
     data: list[ImageData] = Field(..., description="List of generated images")
 
@@ -613,7 +658,8 @@ class ImageGenerationError(OpenAIBaseModel):
     """Error response schema."""
 
     code: str = Field(
-        ..., description="Error code (e.g., 'contentFilter', 'generation_error', 'queue_full')"
+        ...,
+        description="Error code (e.g., 'contentFilter', 'generation_error', 'queue_full')",
     )
     message: str = Field(..., description="Human-readable error message")
     type: str | None = Field(None, description="Error type")
@@ -625,11 +671,13 @@ class ImageEditRequest(OpenAIBaseModel):
     image: UploadFile = Field(..., description="The image to edit")
     prompt: str = Field(..., description="The prompt for the image edit")
     model: str | None = Field(
-        default=Config.IMAGE_EDIT_MODEL, description="The model to use for image edit"
+        default=Config.IMAGE_EDIT_MODEL,
+        description="The model to use for image edit",
     )
     negative_prompt: str | None = Field(None, description="The negative prompt for the image edit")
     guidance_scale: float | None = Field(
-        default=2.5, description="The guidance scale for the image edit"
+        default=2.5,
+        description="The guidance scale for the image edit",
     )
     response_format: ImageResponseFormat | None = Field(
         default=ImageResponseFormat.B64_JSON,
@@ -638,7 +686,8 @@ class ImageEditRequest(OpenAIBaseModel):
     seed: int | None = Field(default=42, description="The seed for the image edit")
     size: ImageSize | None = Field(None, description="The size of the edited image")
     steps: int | None = Field(
-        default=28, description="The number of inference steps for the image edit"
+        default=28,
+        description="The number of inference steps for the image edit",
     )
 
 
@@ -646,7 +695,8 @@ class ImageEditResponse(OpenAIBaseModel):
     """Response schema for OpenAI-compatible image edit API."""
 
     created: int = Field(
-        ..., description="The Unix timestamp (in seconds) when the image was edited"
+        ...,
+        description="The Unix timestamp (in seconds) when the image was edited",
     )
     data: list[ImageData] = Field(..., description="List of edited images")
 
@@ -656,7 +706,8 @@ class TranscriptionRequest(OpenAIBaseModel):
 
     file: UploadFile = Field(..., description="The audio file to transcribe")
     model: str | None = Field(
-        default=Config.TRANSCRIPTION_MODEL, description="The model to use for transcription"
+        default=Config.TRANSCRIPTION_MODEL,
+        description="The model to use for transcription",
     )
     language: str | None = Field(None, description="The language of the audio file")
     prompt: str | None = Field(None, description="The prompt for the transcription")
@@ -666,20 +717,24 @@ class TranscriptionRequest(OpenAIBaseModel):
     )
     stream: bool | None = Field(default=False, description="Whether to stream the transcription")
     temperature: float | None = Field(
-        default=0.0, description="The temperature for the transcription"
+        default=0.0,
+        description="The temperature for the transcription",
     )
     top_p: float | None = Field(default=None, description="The top-p for the transcription")
     top_k: int | None = Field(default=None, description="The top-k for the transcription")
     min_p: float | None = Field(default=None, description="The min-p for the transcription")
     seed: int | None = Field(default=None, description="The seed for the transcription")
     frequency_penalty: float | None = Field(
-        default=None, description="The frequency penalty for the transcription"
+        default=None,
+        description="The frequency penalty for the transcription",
     )
     repetition_penalty: float | None = Field(
-        default=None, description="The repetition penalty for the transcription"
+        default=None,
+        description="The repetition penalty for the transcription",
     )
     presence_penalty: float | None = Field(
-        default=None, description="Presence penalty for token generation"
+        default=None,
+        description="Presence penalty for token generation",
     )
 
 
@@ -711,13 +766,16 @@ class TranscriptionResponseStream(OpenAIBaseModel):
 
     id: str = Field(..., description="The ID of the transcription.")
     object: Literal["transcription.chunk"] = Field(
-        ..., description="The object type, always 'transcription.chunk'."
+        ...,
+        description="The object type, always 'transcription.chunk'.",
     )
     created: int = Field(..., description="The creation timestamp of the chunk.")
     model: str = Field(..., description="The model used for the transcription.")
     choices: list[TranscriptionResponseStreamChoice] = Field(
-        ..., description="The choices for this streaming response."
+        ...,
+        description="The choices for this streaming response.",
     )
     usage: TranscriptionUsageAudio | None = Field(
-        default=None, description="The usage of the transcription."
+        default=None,
+        description="The usage of the transcription.",
     )

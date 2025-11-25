@@ -83,7 +83,7 @@ class MLXFluxHandler:
         self.request_queue = RequestQueue(max_concurrency=max_concurrency)
 
         logger.info(
-            f"Initialized MLXFluxHandler with model path: {model_path}, config name: {config_name}"
+            f"Initialized MLXFluxHandler with model path: {model_path}, config name: {config_name}",
         )
         if lora_paths:
             logger.info(f"Using LoRA adapters: {lora_paths} with scales: {lora_scales}")
@@ -96,7 +96,7 @@ class MLXFluxHandler:
                 "object": "model",
                 "created": self.model_created,
                 "owned_by": "local",
-            }
+            },
         ]
 
     async def initialize(self, queue_config: dict[str, Any] | None = None) -> None:
@@ -176,10 +176,12 @@ class MLXFluxHandler:
             raise
         except Exception as e:
             logger.error(
-                f"Error in image generation for request {request_id}. {type(e).__name__}: {e}"
+                f"Error in image generation for request {request_id}. {type(e).__name__}: {e}",
             )
             content = create_error_response(
-                f"Failed to generate image: {e}", "server_error", HTTPStatus.INTERNAL_SERVER_ERROR
+                "Failed to generate image",
+                "server_error",
+                HTTPStatus.INTERNAL_SERVER_ERROR,
             )
             raise HTTPException(status_code=HTTPStatus.INTERNAL_SERVER_ERROR, detail=content) from e
         else:
@@ -207,25 +209,38 @@ class MLXFluxHandler:
             "image/jpeg",
             "image/jpg",
         ]:
-            raise HTTPException(
-                status_code=HTTPStatus.BAD_REQUEST, detail="Image must be a PNG, JPEG, or JPG file"
+            content = create_error_response(
+                "Image must be a PNG, JPEG, or JPG file",
+                "invalid_request_error",
+                HTTPStatus.BAD_REQUEST,
             )
+            raise HTTPException(status_code=HTTPStatus.BAD_REQUEST, detail=content)
 
         # Check file size (limit to 10MB)
         image_data = await image.read()
         if not image_data:
-            raise HTTPException(
-                status_code=HTTPStatus.BAD_REQUEST, detail="Empty image file received"
+            content = create_error_response(
+                "Empty image file received",
+                "invalid_request_error",
+                HTTPStatus.BAD_REQUEST,
             )
+            raise HTTPException(status_code=HTTPStatus.BAD_REQUEST, detail=content)
         if len(image_data) > 10 * 1024 * 1024:
-            raise HTTPException(
-                status_code=HTTPStatus.BAD_REQUEST,
-                detail="Image file size must be less than 10MB",
+            content = create_error_response(
+                "Image file size must be less than 10MB",
+                "invalid_request_error",
+                HTTPStatus.BAD_REQUEST,
             )
+            raise HTTPException(status_code=HTTPStatus.BAD_REQUEST, detail=content)
 
         # Validate request parameters
         if not image_edit_request.prompt or not image_edit_request.prompt.strip():
-            raise HTTPException(status_code=HTTPStatus.BAD_REQUEST, detail="Prompt cannot be empty")
+            content = create_error_response(
+                "Prompt cannot be empty",
+                "invalid_request_error",
+                HTTPStatus.BAD_REQUEST,
+            )
+            raise HTTPException(status_code=HTTPStatus.BAD_REQUEST, detail=content)
 
         request_id = f"image-edit-{uuid.uuid4()}"
         temp_file_path = None
@@ -236,9 +251,12 @@ class MLXFluxHandler:
                 input_image = Image.open(io.BytesIO(image_data)).convert("RGB")
             except Exception as e:
                 logger.error(f"Failed to process image. {type(e).__name__}: {e}")
-                raise HTTPException(
-                    status_code=HTTPStatus.BAD_REQUEST, detail="Invalid or corrupted image file"
-                ) from e
+                content = create_error_response(
+                    "Invalid or corrupted image file",
+                    "invalid_request_error",
+                    HTTPStatus.BAD_REQUEST,
+                )
+                raise HTTPException(status_code=HTTPStatus.BAD_REQUEST, detail=content) from e
 
             width, height = input_image.size
             if image_edit_request.size is not None:
@@ -247,16 +265,22 @@ class MLXFluxHandler:
             # Create temporary file with proper cleanup handling
             try:
                 temp_file = tempfile.NamedTemporaryFile(
-                    delete=False, suffix=".png", prefix=f"edit_{request_id}_"
+                    delete=False,
+                    suffix=".png",
+                    prefix=f"edit_{request_id}_",
                 )
                 temp_file_path = temp_file.name
                 input_image.save(temp_file_path, format="PNG")
                 temp_file.close()
             except Exception as e:
                 logger.error(f"Failed to create temporary file: {type(e).__name__}: {e}")
+                content = create_error_response(
+                    "Failed to process image for editing",
+                    "server_error",
+                    HTTPStatus.INTERNAL_SERVER_ERROR,
+                )
                 raise HTTPException(
-                    status_code=HTTPStatus.INTERNAL_SERVER_ERROR,
-                    detail="Failed to process image for editing",
+                    status_code=HTTPStatus.INTERNAL_SERVER_ERROR, detail=content
                 ) from e
 
             # Prepare request data with all necessary parameters
@@ -301,10 +325,12 @@ class MLXFluxHandler:
 
         except Exception as e:
             logger.error(
-                f"Unexpected error in image edit for request {request_id}. {type(e).__name__}: {e}"
+                f"Unexpected error in image edit for request {request_id}. {type(e).__name__}: {e}",
             )
             content = create_error_response(
-                f"Failed to edit image: {e}", "server_error", HTTPStatus.INTERNAL_SERVER_ERROR
+                "Failed to edit image",
+                "server_error",
+                HTTPStatus.INTERNAL_SERVER_ERROR,
             )
             raise HTTPException(status_code=HTTPStatus.INTERNAL_SERVER_ERROR, detail=content) from e
         else:
@@ -319,7 +345,7 @@ class MLXFluxHandler:
                     logger.debug(f"Cleaned up temporary file: {temp_file_path}")
                 except OSError as e:
                     logger.warning(
-                        f"Failed to cleanup temporary file {temp_file_path}. {type(e).__name__}: {e}"
+                        f"Failed to cleanup temporary file {temp_file_path}. {type(e).__name__}: {e}",
                     )
 
             # Force garbage collection to free memory
@@ -380,7 +406,7 @@ class MLXFluxHandler:
             if image_path:
                 model_params["image_path"] = image_path
                 logger.info(
-                    f"Processing image edit with prompt: {prompt[:50]}... and image: {image_path}"
+                    f"Processing image edit with prompt: {prompt[:50]}... and image: {image_path}",
                 )
             else:
                 logger.info(f"Generating image with prompt: {prompt[:50]}...")
@@ -401,7 +427,8 @@ class MLXFluxHandler:
             # in a thread executor so we don't block the event loop.
             loop = asyncio.get_running_loop()
             image = await loop.run_in_executor(
-                None, functools.partial(self.model, prompt=prompt, seed=seed, **model_params)
+                None,
+                functools.partial(self.model, prompt=prompt, seed=seed, **model_params),
             )
 
         except Exception:

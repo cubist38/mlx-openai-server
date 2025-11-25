@@ -10,20 +10,33 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import AsyncGenerator
-import contextlib
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
 from dataclasses import dataclass
 import os
 from pathlib import Path
-import sys
 import time
 from typing import Any, cast
 
-from fastapi import BackgroundTasks, FastAPI, HTTPException, Request
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import HTMLResponse
 from fastapi.templating import Jinja2Templates
 from loguru import logger
 
+from ..config import MLXServerConfig
+from ..const import (
+    DEFAULT_API_HOST,
+    DEFAULT_AUTO_UNLOAD_MINUTES,
+    DEFAULT_GROUP,
+    DEFAULT_HUB_LOG_PATH,
+    DEFAULT_IS_DEFAULT_MODEL,
+    DEFAULT_JIT_ENABLED,
+    DEFAULT_LOG_LEVEL,
+    DEFAULT_MODEL_TYPE,
+    DEFAULT_PORT,
+)
+from ..core.model_registry import ModelRegistry
+from ..server import LazyHandlerManager, MLXHandler, configure_fastapi_app, configure_logging
+from ..utils.network import is_port_available
 from .config import MLXHubConfig, load_hub_config
 
 
@@ -34,193 +47,148 @@ def create_app_with_config(config_path: str) -> FastAPI:
 
 @dataclass
 class ModelRecord:
-    """Runtime record for a supervised model.
-
-    Attributes
-    ----------
-    name : str
-        Slug name of the model.
-    config : Any
-        The model configuration object (from `MLXHubConfig`).
-    process : asyncio.subprocess.Process | None
-        The subprocess instance if started.
-    pid : int | None
-        OS process id when running.
-    port : int | None
-        Assigned port for the model process.
-    started_at : float | None
-        Epoch timestamp when process was started.
-    exit_code : int | None
-        Last exit code, if the process exited.
-    memory_loaded : bool
-        Whether the model's runtime/memory is currently loaded.
-    auto_unload_minutes : int | None
-        Optional idle minutes after which memory should be auto-unloaded.
-    group : str | None
-        Group slug for capacity accounting.
-    is_default : bool
-        Whether this model is marked as a default auto-start.
-    model_path : str | None
-        Configured model path.
-    """
+    """Record of a model's runtime state."""
 
     name: str
     config: Any
-    process: asyncio.subprocess.Process | None = None
-    pid: int | None = None
-    port: int | None = None
-    started_at: float | None = None
-    exit_code: int | None = None
-    memory_loaded: bool = False
+    manager: Any | None = None  # LazyHandlerManager
     auto_unload_minutes: int | None = None
     group: str | None = None
     is_default: bool = False
     model_path: str | None = None
+    started_at: float | None = None
+    exit_code: int | None = None
 
 
 class HubSupervisor:
-    """Supervise model worker processes and runtime state.
+    """Supervise model handlers and runtime state.
 
-    This is a conservative scaffold that implements non-blocking process
-    management patterns. Long-running operations should be scheduled as
-    background tasks when invoked from FastAPI endpoints.
+    This manages handler lifecycle with optional JIT loading and unloading.
     """
 
-    def __init__(self, hub_config: MLXHubConfig) -> None:
+    def __init__(self, hub_config: MLXHubConfig, registry: ModelRegistry | None = None) -> None:
         self.hub_config = hub_config
+        self.registry = registry
         self._models: dict[str, ModelRecord] = {}
         self._lock = asyncio.Lock()
         self._bg_tasks: list[asyncio.Task[None]] = []
         self._shutdown = False
 
-        # Populate model records from hub_config (best-effort)
+        # Populate model records from hub_config
         for model in getattr(hub_config, "models", []):
             name = getattr(model, "name", None) or str(model)
+            if name in self._models:
+                existing_record = self._models[name]
+                raise ValueError(
+                    f"Duplicate model name '{name}' detected in hub configuration. "
+                    f"First model: {existing_record.config!r}, "
+                    f"Duplicate model: {model!r}",
+                )
             record = ModelRecord(
                 name=name,
                 config=model,
-                port=getattr(model, "port", None),
-                group=getattr(model, "group", None),
-                is_default=getattr(model, "is_default_model", False),
+                group=getattr(model, "group", DEFAULT_GROUP),
+                is_default=getattr(model, "is_default_model", DEFAULT_IS_DEFAULT_MODEL),
                 model_path=getattr(model, "model_path", None),
+                auto_unload_minutes=getattr(
+                    model,
+                    "auto_unload_minutes",
+                    DEFAULT_AUTO_UNLOAD_MINUTES,
+                ),
             )
             self._models[name] = record
 
     async def start_model(self, name: str) -> dict[str, Any]:
-        """Start the model worker as an OS subprocess.
+        """Load the model's handler.
 
-        The supervisor will attempt to spawn a worker process for the named
-        model. If the model configuration does not supply an explicit command
-        the supervisor constructs a sensible default invocation that runs the
-        package's single-model server with the model's configured settings.
+        The supervisor will attempt to load the handler for the named model.
         """
-
         async with self._lock:
             if name not in self._models:
                 raise HTTPException(status_code=404, detail="model not found")
             record = self._models[name]
 
-            if record.process is not None and record.process.returncode is None:
-                return {"status": "already_running", "name": name, "pid": record.pid}
+            if record.manager and record.manager.is_vram_loaded():
+                return {"status": "already_loaded", "name": name}
 
-            cmd = None
-            cfg = record.config
-            # Construct a default invocation to spawn the single-model
-            # server for this model. The command uses the package CLI
-            # (`python -m app.main launch`) with model settings from the
-            # hub configuration.
-            # Build default invocation: `python -m app.main launch ...`
-            py = sys.executable
-            model_path = getattr(cfg, "model_path", None) or getattr(cfg, "model", None)
-            model_type = getattr(cfg, "model_type", None) or "lm"
-            host = getattr(cfg, "host", "127.0.0.1")
-            port = record.port or getattr(cfg, "port", None) or 0
-            cmd = [
-                py,
-                "-m",
-                "app.main",
-                "launch",
-                "--model-path",
-                str(model_path),
-                "--model-type",
-                str(model_type),
-                "--host",
-                str(host),
-                "--port",
-                str(int(port)),
-            ]
-            if bool(getattr(cfg, "jit_enabled", False)):
-                cmd.append("--jit")
-            if getattr(cfg, "auto_unload_minutes", None) is not None:
-                cmd.extend(["--auto-unload-minutes", str(getattr(cfg, "auto_unload_minutes"))])
+            # Store the original registered model identifier before potentially overwriting
+            original_model_path = record.model_path
 
-            # Spawn subprocess without blocking the event loop
-            proc = await asyncio.create_subprocess_exec(*cmd)
-            record.process = proc
-            record.pid = proc.pid
-            record.started_at = time.time()
-            record.exit_code = None
+            if not record.manager:
+                # Create the manager. Prefer using the parsed MLXServerConfig
+                # from the hub config (record.config) so fields like `log_file`
+                # and `log_level` are preserved. If record.config is not already
+                # an MLXServerConfig, build one and inherit hub defaults.
+                if isinstance(record.config, MLXServerConfig):
+                    cfg = record.config
+                else:
+                    cfg = MLXServerConfig(
+                        model_path=str(
+                            getattr(record.config, "model_path", None)
+                            or getattr(record.config, "model", None)
+                            or "",
+                        ),
+                        model_type=getattr(record.config, "model_type", None) or DEFAULT_MODEL_TYPE,
+                        host=getattr(record.config, "host", DEFAULT_API_HOST),
+                        port=getattr(record.config, "port", None) or 0,
+                        jit_enabled=bool(
+                            getattr(record.config, "jit_enabled", DEFAULT_JIT_ENABLED)
+                        ),
+                        auto_unload_minutes=getattr(
+                            record.config,
+                            "auto_unload_minutes",
+                            DEFAULT_AUTO_UNLOAD_MINUTES,
+                        ),
+                        name=getattr(record.config, "name", None)
+                        or getattr(record.config, "model_name", None),
+                    )
 
-            # schedule a watcher
-            task = asyncio.create_task(self._watch_process(name, proc))
-            self._bg_tasks.append(task)
+                # Ensure model log level falls back to hub log level when unspecified
+                if not getattr(cfg, "log_level", None):
+                    cfg.log_level = getattr(self.hub_config, "log_level", DEFAULT_LOG_LEVEL)
 
-            # If a port is configured (non-zero), wait until the spawned
-            # process is listening on host:port before returning. This makes
-            # `hub start` and controller start operations synchronous from
-            # the operator perspective: they only return once the worker
-            # is reachable, or fail if the process exits or a timeout is
-            # reached.
-            async def _wait_for_listen(
-                host: str,
-                port: int,
-                proc: asyncio.subprocess.Process,
-                timeout: float = 30.0,
-                interval: float = 0.2,
-            ) -> None:
-                start = time.time()
-                while True:
-                    # If process exited while we were waiting, abort
-                    if proc.returncode is not None:
-                        raise HTTPException(
-                            status_code=500,
-                            detail=f"process exited before listening (exit_code={proc.returncode})",
-                        )
-                    try:
-                        reader, writer = await asyncio.open_connection(host, port)
-                        # Connected successfully — close and return
+                # Resolve default per-model log file when not explicitly set and
+                # file logging is enabled. Use hub log path to derive the filename.
+                if not getattr(cfg, "no_log_file", False) and not getattr(cfg, "log_file", None):
+                    model_name = getattr(cfg, "name", None)
+                    if model_name and getattr(self.hub_config, "log_path", None):
                         try:
-                            writer.close()
-                            with contextlib.suppress(Exception):
-                                await writer.wait_closed()
+                            cfg.log_file = str(Path(self.hub_config.log_path) / f"{model_name}.log")
                         except Exception:
-                            pass
-                    except Exception as e:
-                        # Not listening yet — check timeout then sleep
-                        if (time.time() - start) >= timeout:
-                            raise HTTPException(
-                                status_code=504,
-                                detail=f"timed out waiting for process to listen on {host}:{port}",
-                            ) from e
-                        await asyncio.sleep(interval)
-                    else:
-                        return
+                            cfg.log_file = None
 
-            # If we have a port to check, wait until the worker accepts
-            # connections. If port is zero (ephemeral) we can't reliably
-            # determine the bound port here, so skip the wait in that case.
-            try:
-                bound_port = int(port) if port is not None else 0
-            except Exception:
-                bound_port = 0
+                record.manager = LazyHandlerManager(cfg)
+                # Only overwrite record.model_path if cfg.model_path is truthy and matches the registered id
+                if getattr(cfg, "model_path", None) and cfg.model_path == original_model_path:
+                    record.model_path = cfg.model_path
 
-            if bound_port and bound_port > 0:
-                await _wait_for_listen(host, bound_port, proc)
-                logger.info(f"Started model {name} pid={proc.pid} listening={host}:{bound_port}")
-            else:
-                logger.info(f"Started model {name} pid={proc.pid} (no port check)")
+            # Only load immediately if JIT is disabled
+            if not record.manager.jit_enabled:
+                await record.manager.ensure_loaded("start")
+                if self.registry:
+                    # Use the guaranteed registered model_id (original_model_path) for update_model_state
+                    model_id_for_registry = (
+                        original_model_path if original_model_path else record.model_path
+                    )
+                    assert model_id_for_registry is not None
+                    await self.registry.update_model_state(
+                        model_id_for_registry, handler=record.manager
+                    )
+                logger.info(f"Loaded model {name}")
+                return {"status": "loaded", "name": name}
 
-            return {"status": "started", "name": name, "pid": proc.pid, "port": record.port}
+            # JIT enabled: just create the manager, don't load yet
+            if self.registry:
+                # Use the guaranteed registered model_id (original_model_path) for update_model_state
+                model_id_for_registry = (
+                    original_model_path if original_model_path else record.model_path
+                )
+                assert model_id_for_registry is not None
+                await self.registry.update_model_state(
+                    model_id_for_registry, handler=record.manager
+                )
+            logger.info(f"Started model {name} (JIT enabled, not loaded)")
+            return {"status": "started", "name": name}
 
     async def stop_model(self, name: str) -> dict[str, Any]:
         """Stop a supervised model process.
@@ -240,62 +208,136 @@ class HubSupervisor:
         HTTPException
             If the model is not found.
         """
-
         async with self._lock:
             if name not in self._models:
                 raise HTTPException(status_code=404, detail="model not found")
             record = self._models[name]
-            proc = record.process
-            if proc is None or proc.returncode is not None:
+            if record.manager is None:
                 return {"status": "not_running", "name": name}
 
-            with contextlib.suppress(ProcessLookupError):
-                proc.terminate()
+            unloaded = await record.manager.unload("stop")
+            if unloaded:
+                logger.info(f"Unloaded model {name}")
+                # Remove per-model log sink if present
+                try:
+                    if hasattr(record.manager, "remove_log_sink"):
+                        record.manager.remove_log_sink()
+                except Exception:
+                    logger.debug(f"Failed to remove log sink for {name}")
+                record.manager = None  # Clear the manager so the model is fully stopped
+                # Update registry to reflect the stopped state
+                if self.registry and record.model_path is not None:
+                    try:
+                        await self.registry.update_model_state(record.model_path, handler=None)
+                    except Exception as e:
+                        logger.warning(f"Failed to update registry for stopped model {name}: {e}")
+                return {"status": "stopped", "name": name}
 
-        # Wait outside the lock
-        try:
-            await asyncio.wait_for(proc.wait(), timeout=10.0)
-        except TimeoutError:
-            with contextlib.suppress(ProcessLookupError):
-                proc.kill()
-            await proc.wait()
+            # If unload returned False it usually means the manager existed but
+            # there was no loaded handler (JIT manager with no active process).
+            # Treat a stop request as removing the manager in this case so the
+            # supervisor and UI reflect the not-running state.
+            logger.info(f"Removing manager for {name} (no handler loaded)")
+            try:
+                # Remove per-model log sink if present
+                try:
+                    if hasattr(record.manager, "remove_log_sink"):
+                        record.manager.remove_log_sink()
+                except Exception:
+                    logger.debug(f"Failed to remove log sink for {name}")
+                record.manager = None
+                if self.registry and record.model_path is not None:
+                    await self.registry.update_model_state(record.model_path, handler=None)
+            except Exception as e:
+                logger.warning(f"Failed to update registry while removing manager for {name}: {e}")
+            return {"status": "stopped", "name": name}
 
-        record.exit_code = proc.returncode
-        record.process = None
-        record.pid = None
-        logger.info(f"Stopped model {name} exit_code={record.exit_code}")
-        return {"status": "stopped", "name": name, "exit_code": record.exit_code}
+    async def get_handler(self, name: str, reason: str = "request") -> MLXHandler | None:
+        """Get the current handler for a model, loading it if necessary.
+
+        Parameters
+        ----------
+        name : str
+            The model name.
+        reason : str, default "request"
+            Reason for loading the handler (for logging/debugging).
+
+        Returns
+        -------
+        MLXHandler | None
+            The handler instance, or None if not found or failed to load.
+        """
+        async with self._lock:
+            record = self._models.get(name)
+            if record is None or record.manager is None:
+                return None
+            return await record.manager.ensure_loaded(reason)
+
+    async def acquire_handler(self, name: str, reason: str = "request") -> MLXHandler | None:
+        """Acquire a handler for the given model name.
+
+        This is an alias for get_handler for compatibility with hub controller interface.
+        """
+        return await self.get_handler(name, reason)
 
     async def load_model(self, name: str) -> dict[str, Any]:
-        """Mark a model's memory/runtime as loaded.
+        """Ensure a model's handler is loaded into memory.
 
-        This is a lightweight marker; heavy loading work should be scheduled
-        separately as background tasks integrated with model handlers.
+        This loads the handler if not already loaded.
         """
-
         async with self._lock:
             if name not in self._models:
                 raise HTTPException(status_code=404, detail="model not found")
             record = self._models[name]
-            # Mark loaded and schedule any heavy lifting as a background task
-            record.memory_loaded = True
-            logger.info(f"Marked model {name} memory_loaded")
-            return {"status": "memory_loaded", "name": name}
+            if record.manager is None:
+                raise HTTPException(status_code=500, detail="model manager not initialized")
+            handler = await record.manager.ensure_loaded("load")
+            if handler:
+                logger.info(f"Loaded model {name} handler")
+                # Update registry to reflect the loaded state
+                if self.registry and record.model_path is not None:
+                    try:
+                        await self.registry.update_model_state(
+                            record.model_path, handler=record.manager
+                        )
+                    except Exception as e:
+                        logger.warning(f"Failed to update registry for loaded model {name}: {e}")
+                return {"status": "loaded", "name": name}
+            raise HTTPException(
+                status_code=400,
+                detail="model not started; use start_model first to create the manager",
+            )
 
     async def unload_model(self, name: str) -> dict[str, Any]:
-        """Mark a model's memory/runtime as unloaded.
+        """Unload a model's handler from memory.
 
-        The supervisor will not attempt to free in-process handler state here;
-        this method provides a consistent API surface for the CLI and tests.
+        This unloads the handler if loaded.
         """
-
         async with self._lock:
             if name not in self._models:
                 raise HTTPException(status_code=404, detail="model not found")
             record = self._models[name]
-            record.memory_loaded = False
-            logger.info(f"Marked model {name} memory_unloaded")
-            return {"status": "memory_unloaded", "name": name}
+            if record.manager is None:
+                return {"status": "not_loaded", "name": name}
+            unloaded = await record.manager.unload("unload")
+            if unloaded:
+                logger.info(f"Unloaded model {name} handler")
+                # Remove per-model log sink if present
+                try:
+                    if hasattr(record.manager, "remove_log_sink"):
+                        record.manager.remove_log_sink()
+                except Exception:
+                    logger.debug(f"Failed to remove log sink for {name}")
+                # Clear manager and update registry to reflect unloaded state
+                record.manager = None
+                if self.registry and record.model_path is not None:
+                    try:
+                        await self.registry.update_model_state(record.model_path, handler=None)
+                    except Exception as e:
+                        logger.warning(f"Failed to update registry for unloaded model {name}: {e}")
+                return {"status": "unloaded", "name": name}
+
+            return {"status": "not_loaded", "name": name}
 
     async def reload_config(self) -> dict[str, Any]:
         """Reload the hub configuration and reconcile models.
@@ -303,7 +345,6 @@ class HubSupervisor:
         This implementation performs a best-effort reload: it replaces the
         in-memory hub_config and returns a simple diff.
         """
-
         new_hub = load_hub_config(self.hub_config.source_path)
         old_names = set(self._models.keys())
         new_names = {getattr(m, "name", str(m)) for m in getattr(new_hub, "models", [])}
@@ -317,19 +358,43 @@ class HubSupervisor:
         models_list = list(getattr(new_hub, "models", []))
 
         async with self._lock:
+            # Preserve existing records
+            old_models = dict(self._models)
             self.hub_config = new_hub
             self._models = {}
             for model in models_list:
                 name = getattr(model, "name", None) or str(model)
-                record = ModelRecord(
-                    name=name,
-                    config=model,
-                    port=getattr(model, "port", None),
-                    group=getattr(model, "group", None),
-                    is_default=getattr(model, "is_default_model", False),
-                    model_path=getattr(model, "model_path", None),
-                    auto_unload_minutes=getattr(model, "auto_unload_minutes", None),
-                )
+                # Preserve existing record if it exists
+                existing_record = old_models.get(name)
+                if existing_record:
+                    # Update config but keep manager and loaded state
+                    existing_record.config = model
+                    existing_record.group = getattr(model, "group", DEFAULT_GROUP)
+                    existing_record.is_default = getattr(
+                        model,
+                        "is_default_model",
+                        DEFAULT_IS_DEFAULT_MODEL,
+                    )
+                    existing_record.model_path = getattr(model, "model_path", None)
+                    existing_record.auto_unload_minutes = getattr(
+                        model,
+                        "auto_unload_minutes",
+                        DEFAULT_AUTO_UNLOAD_MINUTES,
+                    )
+                    record = existing_record
+                else:
+                    record = ModelRecord(
+                        name=name,
+                        config=model,
+                        group=getattr(model, "group", DEFAULT_GROUP),
+                        is_default=getattr(model, "is_default_model", DEFAULT_IS_DEFAULT_MODEL),
+                        model_path=getattr(model, "model_path", None),
+                        auto_unload_minutes=getattr(
+                            model,
+                            "auto_unload_minutes",
+                            DEFAULT_AUTO_UNLOAD_MINUTES,
+                        ),
+                    )
                 self._models[name] = record
 
             logger.info(f"Reloaded hub config: started={started} stopped={stopped}")
@@ -342,42 +407,36 @@ class HubSupervisor:
         The returned dict includes a `timestamp` and a `models` list where
         each model object contains keys used by the CLI and status UI.
         """
-
         snapshot: dict[str, Any] = {
             "timestamp": time.time(),
             "models": [],
         }
         for name, rec in self._models.items():
-            state = "running" if rec.process and rec.process.returncode is None else "stopped"
+            state = "running" if rec.manager else "stopped"
             snapshot["models"].append(
                 {
                     "name": name,
                     "state": state,
-                    "pid": rec.pid,
-                    "port": rec.port,
+                    "pid": None,
+                    "port": None,
                     "started_at": rec.started_at,
                     "exit_code": rec.exit_code,
-                    "memory_loaded": rec.memory_loaded,
+                    "memory_loaded": rec.manager.is_vram_loaded() if rec.manager else False,
                     "group": rec.group,
                     "is_default_model": rec.is_default,
                     "model_path": rec.model_path,
                     "auto_unload_minutes": rec.auto_unload_minutes,
-                }
+                },
             )
         return snapshot
 
-    async def _watch_process(self, name: str, proc: asyncio.subprocess.Process) -> None:
-        try:
-            await proc.wait()
-            async with self._lock:
-                rec = self._models.get(name)
-                if rec is not None:
-                    rec.exit_code = proc.returncode
-                    rec.process = None
-                    rec.pid = None
-                    logger.info(f"Model process exited: {name} code={proc.returncode}")
-        except asyncio.CancelledError:
-            logger.debug(f"Watcher cancelled for {name}")
+    def add_background_task(self, task: asyncio.Task[None]) -> None:
+        """Add a background task to be tracked by the supervisor."""
+        self._bg_tasks.append(task)
+
+    def remove_background_task(self, task: asyncio.Task[None]) -> None:
+        """Remove a background task from tracking."""
+        self._bg_tasks.remove(task)
 
     async def shutdown_all(self) -> None:
         """Gracefully stop all supervised model processes.
@@ -385,15 +444,60 @@ class HubSupervisor:
         This performs a best-effort shutdown of each supervised process and
         logs failures without raising to the caller.
         """
-
-        logger.info("Shutting down all supervised model processes")
+        logger.info("Shutting down all supervised model handlers")
         async with self._lock:
             names = list(self._models.keys())
         for name in names:
             try:
                 await self.stop_model(name)
-            except Exception as exc:  # pragma: no cover - best-effort shutdown
-                logger.exception(f"Error stopping model {name}: {exc}")
+            except Exception as e:  # pragma: no cover - best-effort shutdown
+                logger.exception(f"Error stopping model {name}: {e}")
+
+
+async def _schedule_default_model_starts(supervisor: HubSupervisor) -> None:
+    """Schedule auto-start tasks for default models."""
+    try:
+        # Iterate the configured models so we can read their JIT flag
+        for model in getattr(supervisor.hub_config, "models", []):
+            try:
+                if not getattr(model, "is_default_model", False):
+                    continue
+                name = getattr(model, "name", None)
+                if not name:
+                    continue
+
+                async def _autostart(cfg_model: Any) -> None:
+                    mname = getattr(cfg_model, "name", "<unknown>")
+                    try:
+                        # Always attempt to start a supervised handler
+                        # for default models. The handler will decide
+                        # whether to eagerly load based on JIT configuration.
+                        await supervisor.start_model(mname)
+                        logger.info(f"Auto-started model handler: {mname}")
+                    except Exception as e:  # pragma: no cover - best-effort
+                        # Starting the supervised handler failed; log the failure and continue.
+                        logger.warning(f"Failed to auto-start model handler '{mname}': {e}")
+
+                t = asyncio.create_task(_autostart(model))
+                supervisor.add_background_task(t)
+
+                def _cleanup_task(
+                    fut: asyncio.Task[None],
+                    model_name: str = getattr(model, "name", "<unknown>"),
+                ) -> None:
+                    supervisor.remove_background_task(fut)
+                    if fut.exception():
+                        logger.exception(
+                            f"Autostart task failed for {model_name}",
+                            exc_info=fut.exception(),
+                        )
+
+                t.add_done_callback(_cleanup_task)
+                logger.info(f"Scheduled auto-start for default model: {name}")
+            except Exception as e:  # pragma: no cover - best-effort
+                logger.warning(f"Failed to schedule auto-start for model entry {model!r}: {e}")
+    except Exception as e:  # pragma: no cover - defensive
+        logger.exception(f"Error while scheduling default model starts: {e}")
 
 
 def create_app(hub_config_path: str | None = None) -> FastAPI:
@@ -418,44 +522,15 @@ def create_app(hub_config_path: str | None = None) -> FastAPI:
         # Startup
         logger.info("Hub daemon starting up")
 
-        # Auto-start models marked as default in configuration. Schedule
-        # start operations as background tasks so the daemon becomes
-        # responsive quickly while model processes spin up.
-        try:
-            # Iterate the configured models so we can read their JIT flag
-            for model in getattr(supervisor.hub_config, "models", []):
-                try:
-                    if not getattr(model, "is_default_model", False):
-                        continue
-                    name = getattr(model, "name", None)
-                    if not name:
-                        continue
+        # Check if the configured port is available
+        configured_port = getattr(hub_config, "port", DEFAULT_PORT)
+        if not is_port_available(port=configured_port):
+            raise RuntimeError(
+                f"Port {configured_port} is already in use. Please stop the service using that port.",
+            )
 
-                    async def _autostart(cfg_model: Any) -> None:
-                        mname = getattr(cfg_model, "name", "<unknown>")
-                        try:
-                            # Always attempt to start a supervised worker process
-                            # for default models. The worker process itself will
-                            # decide whether to eagerly load handlers based on
-                            # its JIT configuration and the LazyHandlerManager.
-                            await supervisor.start_model(mname)
-                            logger.info(f"Auto-started model process: {mname}")
-                        except Exception as exc:  # pragma: no cover - best-effort
-                            # Starting the supervised worker failed; do not
-                            # attempt to mark the model as memory-loaded here.
-                            # Handler loading is the responsibility of the
-                            # worker process via LazyHandlerManager (or of the
-                            # operator). Log the failure and continue.
-                            logger.warning(f"Failed to auto-start model process '{mname}': {exc}")
-
-                    asyncio.create_task(_autostart(model))
-                    logger.info(f"Scheduled auto-start for default model: {name}")
-                except Exception as exc:  # pragma: no cover - best-effort
-                    logger.warning(
-                        f"Failed to schedule auto-start for model entry {model!r}: {exc}"
-                    )
-        except Exception as exc:  # pragma: no cover - defensive
-            logger.exception(f"Error while scheduling default model starts: {exc}")
+        # Auto-start models marked as default in configuration
+        await _schedule_default_model_starts(supervisor)
 
         # Yield to start serving requests while background tasks proceed
         yield
@@ -473,8 +548,8 @@ def create_app(hub_config_path: str | None = None) -> FastAPI:
                 try:
                     runtime_file.unlink()
                     logger.debug(f"Removed hub runtime state file: {runtime_file}")
-                except Exception as exc:  # pragma: no cover - best-effort cleanup
-                    logger.warning(f"Failed to remove hub runtime state file {runtime_file}: {exc}")
+                except Exception as e:  # pragma: no cover - best-effort cleanup
+                    logger.warning(f"Failed to remove hub runtime state file {runtime_file}: {e}")
         except Exception:
             # Defensive: do not allow cleanup failures to raise during shutdown
             logger.debug("Error while attempting to clean up runtime state file")
@@ -490,9 +565,49 @@ def create_app(hub_config_path: str | None = None) -> FastAPI:
         hub_config_path = os.environ.get("MLX_HUB_CONFIG_PATH")
 
     hub_config = load_hub_config(hub_config_path)
-    supervisor = HubSupervisor(hub_config)
+
+    # Ensure hub log path exists and configure logging for hub-level logs
+    # Prefer the configured hub log path; fall back to DEFAULT_HUB_LOG_PATH
+    try:
+        hub_log_path = Path(getattr(hub_config, "log_path", DEFAULT_HUB_LOG_PATH))
+    except Exception:
+        hub_log_path = Path(DEFAULT_HUB_LOG_PATH)
+    # Expand user (~) if present
+    try:
+        hub_log_path = hub_log_path.expanduser()
+    except Exception:
+        hub_log_path = Path.cwd() / "logs"
+    with suppress(Exception):
+        hub_log_path.mkdir(parents=True, exist_ok=True)
+    try:
+        configure_logging(
+            log_file=str(hub_log_path / "app.log"),
+            no_log_file=False,
+            log_level=getattr(hub_config, "log_level", "INFO"),
+        )
+    except Exception:
+        logger.warning("Failed to configure hub logging; continuing with defaults")
+
+    # Create and populate model registry
+    registry = ModelRegistry()
+    app.state.registry = registry
+    for model in getattr(hub_config, "models", []):
+        model_id = getattr(model, "model_path", None)
+        if model_id is None:
+            raise ValueError(f"Model {model} has no model_path")
+        registry.register_model(
+            model_id=model_id,
+            handler=None,  # Will be set when started
+            model_type=getattr(model, "model_type", "unknown"),
+            context_length=getattr(model, "context_length", None),
+        )
+
+    supervisor = HubSupervisor(hub_config, registry)
     app.state.supervisor = supervisor
-    supervisor = cast("HubSupervisor", app.state.supervisor)  # Allow tests to override
+    app.state.hub_controller = supervisor
+
+    # Configure OpenAI API routes and middleware
+    configure_fastapi_app(app)
 
     @app.get("/health")
     async def health() -> dict[str, str]:
@@ -507,10 +622,15 @@ def create_app(hub_config_path: str | None = None) -> FastAPI:
         return await supervisor.reload_config()
 
     @app.post("/hub/shutdown")
-    async def hub_shutdown(background_tasks: BackgroundTasks, request: Request) -> dict[str, str]:
-        supervisor = cast("HubSupervisor", request.app.state.supervisor)
-        background_tasks.add_task(supervisor.shutdown_all)
-        return {"status": "shutdown_scheduled"}
+    async def hub_shutdown() -> dict[str, Any]:
+        """Shutdown all supervised models."""
+        await supervisor.shutdown_all()
+        return {
+            "status": "ok",
+            "action": "stop",
+            "message": "Shutdown requested",
+            "details": {},
+        }
 
     @app.post("/hub/models/{name}/start")
     async def model_start(name: str, request: Request) -> dict[str, Any]:
@@ -565,6 +685,6 @@ def create_app(hub_config_path: str | None = None) -> FastAPI:
             "models": models,
             "timestamp": ts_str,
         }
-        return templates.TemplateResponse("hub_status.html", context)
+        return templates.TemplateResponse("hub_status.html.jinja", context)
 
     return app

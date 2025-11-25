@@ -856,6 +856,11 @@ Control API
 - `POST /hub/models/{model}/load` — Instruct the daemon/controller to load handlers into memory for the named model.
 - `POST /hub/models/{model}/unload` — Instruct the daemon/controller to unload handlers from memory for the named model.
 
+Note: the CLI exposes related commands such as `hub start-model`/`hub stop-model` (to manage model processes) and
+`hub load-model`/`hub unload-model` (to control in-memory handlers). Those CLI commands call the canonical HTTP
+endpoints listed above (`/hub/models/{model}/start`, `/hub/models/{model}/stop`, `/hub/models/{model}/load`,
+`/hub/models/{model}/unload`).
+
 CLI usage
 ```bash
 # Show hub status (reads hub.yaml by default unless --config is provided)

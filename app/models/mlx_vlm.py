@@ -8,7 +8,9 @@ generation, streaming, and multimodal capabilities.
 from __future__ import annotations
 
 from collections.abc import Generator
+from contextlib import redirect_stderr, redirect_stdout
 import os
+from pathlib import Path
 from typing import Any
 
 from loguru import logger
@@ -46,17 +48,27 @@ class MLX_VLM:
 
         Args:
             model_path (str): Path to the model directory containing model weights and configuration.
-            context_length (int): Maximum context length for the model. Defaults to 32768.
-            trust_remote_code (bool): Enable trust_remote_code when loading models. Defaults to False.
+            context_length (int): Maximum context length for the model. Defaults to DEFAULT_CONTEXT_LENGTH from app.const.
+            trust_remote_code (bool): Enable trust_remote_code when loading models. Defaults to DEFAULT_TRUST_REMOTE_CODE from app.const.
 
         Raises
         ------
             ValueError: If model loading fails.
         """
         try:
-            self.model, self.processor = load(
-                model_path, lazy=False, trust_remote_code=trust_remote_code
-            )
+            # See comment in mlx_lm: disable stderr writes from progress
+            # reporting libraries during model load to avoid BrokenPipeError
+            # when stderr is closed by the runtime.
+            with (
+                Path(os.devnull).open("w") as _devnull,
+                redirect_stdout(_devnull),
+                redirect_stderr(_devnull),
+            ):
+                self.model, self.processor = load(
+                    model_path,
+                    lazy=False,
+                    trust_remote_code=trust_remote_code,
+                )
             self.max_kv_size = context_length
             self.config = self.model.config
         except Exception as e:
@@ -115,7 +127,11 @@ class MLX_VLM:
             raise ValueError("Model is not a video model")
 
         inputs = self.processor(
-            text=[text], images=image_inputs, videos=video_inputs, padding=True, return_tensors="pt"
+            text=[text],
+            images=image_inputs,
+            videos=video_inputs,
+            padding=True,
+            return_tensors="pt",
         )
 
         model_params = {
@@ -138,10 +154,18 @@ class MLX_VLM:
 
         if stream:
             return stream_generate(
-                self.model, self.processor, prompt=text, prompt_cache=prompt_cache, **model_params
+                self.model,
+                self.processor,
+                prompt=text,
+                prompt_cache=prompt_cache,
+                **model_params,
             ), prompt_tokens
         return generate(
-            self.model, self.processor, prompt=text, prompt_cache=prompt_cache, **model_params
+            self.model,
+            self.processor,
+            prompt=text,
+            prompt_cache=prompt_cache,
+            **model_params,
         ), prompt_tokens
 
 
@@ -162,12 +186,15 @@ if __name__ == "__main__":
                 "parameters": {
                     "type": "object",
                     "properties": {
-                        "city": {"type": "string", "description": "The city to get the weather for"}
+                        "city": {
+                            "type": "string",
+                            "description": "The city to get the weather for",
+                        },
                     },
                 },
                 "required": ["city"],
             },
-        }
+        },
     ]
     kwargs = {
         "chat_template_kwargs": {
@@ -188,7 +215,7 @@ if __name__ == "__main__":
                 {"type": "text", "text": "Describe the video in detail"},
                 {"type": "image", "image": image_path},
             ],
-        }
+        },
     ]
     response = model(messages, stream=False, **kwargs)
     logger.info(f"{response}")

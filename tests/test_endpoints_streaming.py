@@ -131,15 +131,15 @@ def test_create_response_chunk_respects_tool_call_id() -> None:
                         "prompt_tokens": 5,
                         "completion_tokens": 7,
                         "total_tokens": 12,
-                    }
-                }
+                    },
+                },
             ],
             {
                 "final_usage": {
                     "prompt_tokens": 5,
                     "completion_tokens": 7,
                     "total_tokens": 12,
-                }
+                },
             },
             id="usage_payload_recorded_in_final_chunk",
         ),
@@ -151,7 +151,8 @@ def test_create_response_chunk_respects_tool_call_id() -> None:
     ],
 )
 def test_handle_stream_response_edge_cases(
-    chunk_sequence: list[object], expectation: dict[str, object]
+    chunk_sequence: list[object],
+    expectation: dict[str, object],
 ) -> None:
     """Cover misc stream edge cases via parameterized scenarios."""
 

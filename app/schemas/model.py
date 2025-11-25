@@ -24,7 +24,8 @@ class ModelMetadata(BaseModel):
         description="Model type (lm, multimodal, embeddings, whisper, image-generation, image-edit)",
     )
     context_length: int | None = Field(
-        None, description="Maximum context length for language models"
+        None,
+        description="Maximum context length for language models",
     )
     created_at: int = Field(..., description="Unix timestamp when model was loaded")
     object: str = Field(default="model", description="Object type, always 'model'")

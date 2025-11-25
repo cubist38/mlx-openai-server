@@ -7,11 +7,11 @@ from typing import Any
 
 # Lazy imports to avoid loading MLX during testing
 __all__ = [
+    "MFLUX_AVAILABLE",
+    "MLXEmbeddingsHandler",
+    "MLXFluxHandler",
     "MLXLMHandler",
     "MLXVLMHandler",
-    "MLXFluxHandler",
-    "MLXEmbeddingsHandler",
-    "MFLUX_AVAILABLE",
 ]
 
 

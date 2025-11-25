@@ -2,11 +2,9 @@
 
 from __future__ import annotations
 
-from contextlib import suppress
 from dataclasses import dataclass, field
 from pathlib import Path
 import re
-import socket
 from typing import Any
 
 from loguru import logger
@@ -22,6 +20,7 @@ from ..const import (
     DEFAULT_MODEL_STARTING_PORT,
     DEFAULT_PORT,
 )
+from ..utils.network import is_port_available
 
 PORT_MIN = 1024
 PORT_MAX = 65535
@@ -36,13 +35,12 @@ _slug_pattern = re.compile(r"^[a-z0-9]+(?:[-_][a-z0-9]+)*$", re.IGNORECASE)
 
 def _ensure_slug(value: str, *, field_name: str) -> str:
     """Validate that ``value`` is already a compliant slug without altering it."""
-
     candidate = value.strip()
     if not candidate:
         raise HubConfigError(f"{field_name} cannot be empty")
     if not _slug_pattern.fullmatch(candidate):
         raise HubConfigError(
-            f"{field_name} must be alphanumeric with optional hyphen/underscore separators"
+            f"{field_name} must be alphanumeric with optional hyphen/underscore separators",
         )
     return candidate
 
@@ -67,7 +65,6 @@ class MLXHubConfig:
 
     host: str = DEFAULT_BIND_HOST
     port: int = DEFAULT_PORT
-    daemon_port: int = field(init=False)  # Dynamically allocated
     model_starting_port: int = DEFAULT_MODEL_STARTING_PORT
     log_level: str = DEFAULT_LOG_LEVEL
     log_path: Path = field(default_factory=lambda: DEFAULT_HUB_LOG_PATH)
@@ -77,10 +74,9 @@ class MLXHubConfig:
     source_path: Path | None = None
 
     def __post_init__(self) -> None:
-        """Normalize hub defaults and ensure log directories exist."""
+        """Normalize hub defaults."""
         self.log_level = self.log_level.upper()
         self.log_path = self.log_path.expanduser()
-        self.log_path.mkdir(parents=True, exist_ok=True)
 
 
 def _load_yaml(path: Path) -> dict[str, Any]:
@@ -101,14 +97,13 @@ def _load_yaml(path: Path) -> dict[str, Any]:
     HubConfigError
         If the file is not found or parsing fails.
     """
-
     try:
         with path.open("r", encoding="utf-8") as fh:
             loaded = yaml.safe_load(fh) or {}
-    except FileNotFoundError as exc:
-        raise HubConfigError(f"Hub config file not found: {path}") from exc
-    except yaml.YAMLError as exc:
-        raise HubConfigError(f"Failed to parse hub config '{path}': {exc}") from exc
+    except FileNotFoundError as e:
+        raise HubConfigError(f"Hub config file not found: {path}") from e
+    except yaml.YAMLError as e:
+        raise HubConfigError(f"Failed to parse hub config '{path}': {e}") from e
 
     if not isinstance(loaded, dict):
         raise HubConfigError("Hub config root must be a mapping")
@@ -133,7 +128,6 @@ def _build_groups(raw_groups: list[dict[str, Any]] | None) -> list[MLXHubGroupCo
     HubConfigError
         If group data is invalid.
     """
-
     groups: list[MLXHubGroupConfig] = []
     if not raw_groups:
         return groups
@@ -183,7 +177,6 @@ def _resolve_model_log_file(server_config: MLXServerConfig, hub_log_path: Path) 
     HubConfigError
         If the model name is missing.
     """
-
     if server_config.no_log_file:
         return server_config
 
@@ -219,6 +212,14 @@ def _build_models(
         Base host for models.
     base_port : int
         Base port for models.
+    starting_port : int
+        The first port number to try/assign when auto-allocating model server
+        ports. Must be a positive integer (typically >= 1024 and <= 65535)
+        and should not collide with reserved ports (for example the hub
+        controller `base_port` or any entries in ``additional_reserved_ports``).
+        When ``persisted_ports`` is provided, previously assigned ports are
+        preferred and ``starting_port`` only influences allocation for models
+        without a persisted assignment.
     base_log_level : str
         Base log level for models.
     hub_log_path : Path
@@ -240,7 +241,6 @@ def _build_models(
     HubConfigError
         If model data is invalid.
     """
-
     if not raw_models:
         raise HubConfigError("Hub config must include at least one model entry")
 
@@ -267,7 +267,7 @@ def _build_models(
         group_slug = _ensure_slug(str(group_value), field_name="group") if group_value else None
         if group_slug and group_lookup and group_slug not in group_lookup:
             raise HubConfigError(
-                f"Model '{name}' references group '{group_slug}' which is not defined in hub config"
+                f"Model '{name}' references group '{group_slug}' which is not defined in hub config",
             )
 
         model_payload = dict(raw_model)
@@ -303,7 +303,11 @@ def _build_models(
                 raise HubConfigError(
                     f"Model '{name}' port {candidate_port} conflicts with another model or the controller",
                 )
-            if not _is_port_available(host_value, candidate_port):
+            # Skip availability check when reloading with the same port (already bound by current process)
+            if persisted_port != candidate_port and not is_port_available(
+                host_value,
+                candidate_port,
+            ):
                 raise HubConfigError(
                     f"Model '{name}' port {candidate_port} is already in use on host '{host_value}'",
                 )
@@ -343,7 +347,6 @@ def load_hub_config(
     MLXHubConfig
         The loaded and validated hub configuration.
     """
-
     if config_path is None:
         path = DEFAULT_HUB_CONFIG_PATH
     else:
@@ -373,34 +376,26 @@ def load_hub_config(
         model_starting_port=model_starting_port,
         log_level=str(data.get("log_level", DEFAULT_LOG_LEVEL)),
         log_path=Path(str(data.get("log_path", DEFAULT_HUB_LOG_PATH))),
-        enable_status_page=data.get("enable_status_page", True),
+        enable_status_page=data.get("enable_status_page", DEFAULT_ENABLE_STATUS_PAGE),
         source_path=path,
     )
 
+    # Ensure log directory exists
+    hub.log_path.mkdir(parents=True, exist_ok=True)
+
     hub.groups = _build_groups(data.get("groups"))
     group_lookup = {group.name: group for group in hub.groups}
-
-    # Allocate daemon port first (before models) to give it priority for lowest port
-    reserved_ports = {hub.port}  # Reserve main server port
-    daemon_port, next_auto_port = _allocate_port(
-        "hub-daemon",
-        hub.host,
-        hub.model_starting_port,
-        reserved_ports,
-    )
-    hub.daemon_port = daemon_port
-    reserved_ports.add(daemon_port)  # Reserve daemon port for model allocation
 
     hub.models = _build_models(
         raw_models=data.get("models"),
         base_host=hub.host,
         base_port=hub.port,
-        starting_port=next_auto_port,  # Start model allocation after daemon port
+        starting_port=hub.model_starting_port,  # Start model allocation from starting port
         base_log_level=hub.log_level,
         hub_log_path=hub.log_path,
         group_lookup=group_lookup,
         persisted_ports=persisted_ports,
-        additional_reserved_ports={daemon_port},
+        additional_reserved_ports=set(),
     )
 
     # Ensure all models inherit the hub's status page setting
@@ -408,7 +403,7 @@ def load_hub_config(
         model.enable_status_page = hub.enable_status_page
 
     logger.info(
-        f"Loaded hub config from {path} with {len(hub.models)} model(s) and {len(hub.groups)} group(s)"
+        f"Loaded hub config from {path} with {len(hub.models)} model(s) and {len(hub.groups)} group(s)",
     )
     return hub
 
@@ -433,47 +428,9 @@ def _allocate_port(
 ) -> tuple[int, int]:
     port = max(starting_port, PORT_MIN)
     while port <= PORT_MAX:
-        if port not in reserved_ports and _is_port_available(host, port):
+        if port not in reserved_ports and is_port_available(host, port):
             return port, port + 1
         port += 1
     raise HubConfigError(
         f"Unable to find an available port for model '{name}' starting at {starting_port}",
     )
-
-
-def _is_port_available(host: str, port: int) -> bool:
-    family = socket.AF_INET6 if _is_ipv6_host(host) else socket.AF_INET
-    bind_host = _normalize_host_for_binding(host, family)
-    sock: socket.socket | None = None
-    try:
-        sock = socket.socket(family, socket.SOCK_STREAM)
-        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        bind_address = (bind_host, port, 0, 0) if family == socket.AF_INET6 else (bind_host, port)
-        sock.bind(bind_address)
-    except OSError:
-        return False
-    finally:
-        if sock is not None:
-            with suppress(Exception):
-                sock.close()
-    return True
-
-
-def _is_ipv6_host(host: str) -> bool:
-    value = host.strip()
-    if value.startswith("[") and value.endswith("]"):
-        value = value[1:-1]
-    return ":" in value and not value.count(".")
-
-
-def _normalize_host_for_binding(host: str, family: int) -> str:
-    value = host.strip()
-    if not value:
-        return "::" if family == socket.AF_INET6 else DEFAULT_BIND_HOST
-    if family == socket.AF_INET6 and value.startswith("[") and value.endswith("]"):
-        return value[1:-1]
-    if family == socket.AF_INET6:
-        return value
-    if value == "::":
-        return DEFAULT_BIND_HOST
-    return value

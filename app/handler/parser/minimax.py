@@ -35,7 +35,8 @@ class MinimaxToolParser(BaseToolParser):
         # Regex patterns for parsing MiniMax tool calls
         self.func_detail_regex = re.compile(r'<invoke name="([^"]+)"\s*>(.*)', re.DOTALL)
         self.func_arg_regex = re.compile(
-            r'<parameter name="([^"]+)"\s*>([^<]*)</parameter>', re.DOTALL
+            r'<parameter name="([^"]+)"\s*>([^<]*)</parameter>',
+            re.DOTALL,
         )
 
     def _deserialize_value(self, value: str) -> Any:
@@ -81,7 +82,7 @@ class MinimaxToolParser(BaseToolParser):
 
         except (AttributeError, KeyError, TypeError, ValueError, re.error) as e:
             logger.warning(
-                f"Error parsing MiniMax tool call content: {tool_content}. {type(e).__name__}: {e}"
+                f"Error parsing MiniMax tool call content: {tool_content}. {type(e).__name__}: {e}",
             )
             return None
         else:

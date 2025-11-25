@@ -132,7 +132,9 @@ class ParserFactory:
 
     @staticmethod
     def create_parser(
-        parser_name: str, parser_type: str, **kwargs: Any
+        parser_name: str,
+        parser_type: str,
+        **kwargs: Any,
     ) -> BaseThinkingParser | BaseToolParser | HarmonyParser | None:
         """
         Create a parser instance from the registry.
@@ -187,7 +189,6 @@ class ParserFactory:
         -------
             Tuple of (thinking_parser, tool_parser). Both will be None if not specified.
         """
-
         # Handle unified parsers (harmony) - handles both thinking and tools
         if manual_reasoning_parser == "harmony" or manual_tool_parser == "harmony":
             harmony_parser = ParserFactory.create_parser("harmony", "unified")
@@ -204,7 +205,7 @@ class ParserFactory:
             else:
                 logger.warning(
                     f"Failed to create thinking parser '{manual_reasoning_parser}' "
-                    f"for model type '{model_type}'"
+                    f"for model type '{model_type}'",
                 )
 
         # Create tool parser if explicitly specified
@@ -216,7 +217,7 @@ class ParserFactory:
             else:
                 logger.warning(
                     f"Failed to create tool parser '{manual_tool_parser}' "
-                    f"for model type '{model_type}'"
+                    f"for model type '{model_type}'",
                 )
 
         return thinking_parser, tool_parser
@@ -233,7 +234,6 @@ class ParserFactory:
         -------
             Message converter instance or None if no converter needed
         """
-
         if model_type not in CONVERTER_REGISTRY:
             return None
 

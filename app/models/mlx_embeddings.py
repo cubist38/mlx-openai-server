@@ -72,12 +72,17 @@ class MLX_Embeddings:
         try:
             # Tokenize inputs
             inputs = self.tokenizer.batch_encode_plus(
-                texts, return_tensors="mlx", padding=True, truncation=True, max_length=max_length
+                texts,
+                return_tensors="mlx",
+                padding=True,
+                truncation=True,
+                max_length=max_length,
             )
 
             # Generate embeddings
             outputs = self.model(
-                inputs["input_ids"], attention_mask=inputs["attention_mask"]
+                inputs["input_ids"],
+                attention_mask=inputs["attention_mask"],
             ).text_embeds
 
             # Return a copy to ensure the result persists after cleanup
@@ -98,7 +103,7 @@ class MLX_Embeddings:
                                 del array[key]
                 except (KeyError, AttributeError, TypeError) as e:
                     logger.warning(
-                        f"Error during embeddings array cleanup. {type(e).__name__}: {e}"
+                        f"Error during embeddings array cleanup. {type(e).__name__}: {e}",
                     )
 
     def __call__(self, texts: list[str], max_length: int = 512) -> list[list[float]]:

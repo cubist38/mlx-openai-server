@@ -57,7 +57,7 @@ def print_startup_banner(config_args: MLXServerConfig) -> None:
         logger.info("🧠 JIT Loading: Enabled")
         if config_args.auto_unload_minutes:
             logger.info(
-                f"🧼 Auto-Unload: Unload after idle for {config_args.auto_unload_minutes} minutes"
+                f"🧼 Auto-Unload: Unload after idle for {config_args.auto_unload_minutes} minutes",
             )
         else:
             logger.info("🧼 Auto-Unload: Disabled")

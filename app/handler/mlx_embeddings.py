@@ -51,7 +51,7 @@ class MLXEmbeddingsHandler:
                     "object": "model",
                     "created": self.model_created,
                     "owned_by": "local",
-                }
+                },
             ]
         except Exception as e:
             logger.error(f"Error getting models. {type(e).__name__}: {e}")
@@ -126,7 +126,8 @@ class MLXEmbeddingsHandler:
             # Check if the request is for embeddings
             if request_data.get("type") == "embeddings":
                 result = self.model(
-                    texts=request_data["input"], max_length=request_data.get("max_length", 512)
+                    texts=request_data["input"],
+                    max_length=request_data.get("max_length", 512),
                 )
                 # Force garbage collection after embeddings
                 gc.collect()

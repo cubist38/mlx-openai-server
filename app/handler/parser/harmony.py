@@ -138,7 +138,8 @@ class HarmonyParser:
                                 and stream_text.current_recipient
                             ):
                                 function_name = stream_text.current_recipient.replace(
-                                    "functions.", ""
+                                    "functions.",
+                                    "",
                                 )
                                 self._current_function_name = function_name
                             function_arguments = [content]
@@ -171,12 +172,14 @@ class HarmonyParser:
 
         except (AttributeError, KeyError, TypeError, ValueError) as e:
             logger.exception(
-                f"Error in parse_stream with known exception type: {type(e).__name__}: {e}"
+                f"Error in parse_stream with known exception type: {type(e).__name__}: {e}",
             )
             return None, self.end_stream
 
     def _build_response(
-        self, current_channel: str | None, content_data: dict[str, Any]
+        self,
+        current_channel: str | None,
+        content_data: dict[str, Any],
     ) -> tuple[dict[str, Any] | str | None, bool]:
         """
         Build the appropriate response based on the current channel.
@@ -219,7 +222,7 @@ class HarmonyParser:
                     return "".join(contents), self.end_stream
         except (KeyError, TypeError, ValueError) as e:
             logger.error(
-                f"Error building response for channel {current_channel}: {type(e).__name__}: {e}"
+                f"Error building response for channel {current_channel}: {type(e).__name__}: {e}",
             )
 
         return None, self.end_stream
@@ -282,7 +285,8 @@ class HarmonyParser:
             # Encode and parse messages
             tokens = self.enc.encode(clean_text, allowed_special="all")
             parsed_messages = self.enc.parse_messages_from_completion_tokens(
-                tokens, role=Role.ASSISTANT
+                tokens,
+                role=Role.ASSISTANT,
             )
 
             # Process each parsed message

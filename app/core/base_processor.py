@@ -121,7 +121,7 @@ class BaseProcessor(ABC):
                 gc.collect()  # Force garbage collection after cleanup
             except Exception as e:
                 logger.warning(
-                    f"Failed to clean up old {self._get_media_type_name()} files. {type(e).__name__}: {e}"
+                    f"Failed to clean up old {self._get_media_type_name()} files. {type(e).__name__}: {e}",
                 )
 
     async def _process_single_media(self, media_url: str, **kwargs: Any) -> str:
@@ -139,7 +139,7 @@ class BaseProcessor(ABC):
                 file_size = Path(media_url).stat().st_size
                 if file_size > self._get_max_file_size():
                     raise ValueError(
-                        f"Local {self._get_media_type_name()} file exceeds size limit: {file_size} > {self._get_max_file_size()}"
+                        f"Local {self._get_media_type_name()} file exceeds size limit: {file_size} > {self._get_max_file_size()}",
                     )
                 # Copy local file to cache
                 async with aiofiles.open(media_url, "rb") as f:
@@ -148,7 +148,7 @@ class BaseProcessor(ABC):
                 # Validate size after reading (in case file changed)
                 if len(data) > self._get_max_file_size():
                     raise ValueError(
-                        f"Read {self._get_media_type_name()} data exceeds size limit: {len(data)} > {self._get_max_file_size()}"
+                        f"Read {self._get_media_type_name()} data exceeds size limit: {len(data)} > {self._get_max_file_size()}",
                     )
 
                 if not self._validate_media_data(data):
@@ -161,7 +161,7 @@ class BaseProcessor(ABC):
                 estimated_size = len(encoded) * 3 / 4
                 if estimated_size > self._get_max_file_size():
                     raise ValueError(
-                        f"Base64-encoded {self._get_media_type_name()} exceeds size limit"
+                        f"Base64-encoded {self._get_media_type_name()} exceeds size limit",
                     )
                 data = base64.b64decode(encoded)
 
@@ -179,7 +179,7 @@ class BaseProcessor(ABC):
                         size = int(content_length)
                         if size > self._get_max_file_size():
                             raise ValueError(
-                                f"HTTP {self._get_media_type_name()} Content-Length exceeds size limit: {size} > {self._get_max_file_size()}"
+                                f"HTTP {self._get_media_type_name()} Content-Length exceeds size limit: {size} > {self._get_max_file_size()}",
                             )
                     except ValueError:
                         logger.warning(f"Invalid Content-Length header: {content_length}")
@@ -188,7 +188,7 @@ class BaseProcessor(ABC):
                 # Validate size after reading
                 if len(data) > self._get_max_file_size():
                     raise ValueError(
-                        f"Downloaded {self._get_media_type_name()} data exceeds size limit: {len(data)} > {self._get_max_file_size()}"
+                        f"Downloaded {self._get_media_type_name()} data exceeds size limit: {len(data)} > {self._get_max_file_size()}",
                     )
 
                 if not self._validate_media_data(data):

@@ -22,7 +22,9 @@ class RequestTrackingMiddleware(BaseHTTPMiddleware):
     """
 
     async def dispatch(
-        self, request: Request, call_next: Callable[[Request], Awaitable[Response]]
+        self,
+        request: Request,
+        call_next: Callable[[Request], Awaitable[Response]],
     ) -> Response:
         """
         Process each request with correlation ID tracking.
@@ -47,7 +49,7 @@ class RequestTrackingMiddleware(BaseHTTPMiddleware):
         # Log request start
         start_time = time.time()
         logger.info(
-            f"Request started: {request.method} {request.url.path} [request_id={request_id}]"
+            f"Request started: {request.method} {request.url.path} [request_id={request_id}]",
         )
 
         try:
@@ -64,7 +66,7 @@ class RequestTrackingMiddleware(BaseHTTPMiddleware):
             logger.info(
                 f"Request completed: {request.method} {request.url.path} "
                 f"status={response.status_code} duration={duration:.3f}s "
-                f"[request_id={request_id}]"
+                f"[request_id={request_id}]",
             )
 
         except Exception:
@@ -72,7 +74,7 @@ class RequestTrackingMiddleware(BaseHTTPMiddleware):
             duration = time.time() - start_time
             logger.exception(
                 f"Request failed: {request.method} {request.url.path} "
-                f"duration={duration:.3f}s [request_id={request_id}]"
+                f"duration={duration:.3f}s [request_id={request_id}]",
             )
             raise
         return response

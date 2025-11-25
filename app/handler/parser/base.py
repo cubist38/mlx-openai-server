@@ -443,7 +443,6 @@ class BaseMessageConverter:
 
     def _convert_single_message(self, message: dict[str, Any]) -> dict[str, Any]:
         """Convert a single message."""
-
         # Convert function.arguments from string to object in tool_calls
         tool_calls = message.get("tool_calls")
         if tool_calls and isinstance(tool_calls, list):

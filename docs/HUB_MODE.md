@@ -31,7 +31,7 @@ models:
   - name: alpha                 # required slug (letters, numbers, -, _)
     model_path: /models/alpha   # required
     model_type: lm              # any MLXServerConfig option works
-   default: true               # optional, auto-start the worker process at startup
+    default: true               # optional, auto-start the worker process at startup
     group: tier_one             # optional slug reference
 
   - name: beta
@@ -85,8 +85,8 @@ Flash helper tones (`info`, `success`, `warning`, `error`) mirror the HTML dashb
 | `/hub/service/start` | POST | Starts the HubManager if it is not running. Returns PID details or HTTP 400 if the config is missing. |
 | `/hub/service/reload` | POST | Runs `reload()` inside the service and returns the diff (`started/stopped/unchanged`). |
 | `/hub/service/stop` | POST | Requests shutdown, returning HTTP 503 if no manager is running. |
-| `/hub/models/{model}/start-model` | POST | Reloads, then issues `start_model`. HTTP 429 indicates group capacity exhaustion. |
-| `/hub/models/{model}/stop-model` | POST | Reloads, then issues `stop_model`. |
+| `/hub/models/{model}/start` | POST | Reloads, then issues `start_model`. HTTP 429 indicates group capacity exhaustion. (CLI: `hub start-model`) |
+| `/hub/models/{model}/stop` | POST | Reloads, then issues `stop_model`. (CLI: `hub stop-model`) |
 | `/hub/models/{model}/load` | POST | Passes the request to the controller so it can instantiate the handler locally. |
 | `/hub/models/{model}/unload` | POST | Requests the controller tear down the in-memory handler and free resources. |
 

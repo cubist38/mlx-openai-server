@@ -46,7 +46,9 @@ class MLX_Whisper:
         self.model_path = model_path
 
     def _transcribe_generator(
-        self, audio_path: str, **kwargs: Any
+        self,
+        audio_path: str,
+        **kwargs: Any,
     ) -> Generator[dict[str, Any], None, None]:
         """Stream transcription by processing audio in larger chunks."""
         # Load the audio file
@@ -75,7 +77,10 @@ class MLX_Whisper:
             beg += CHUNK_SIZE
 
     def __call__(
-        self, audio_path: str, stream: bool = False, **kwargs: Any
+        self,
+        audio_path: str,
+        stream: bool = False,
+        **kwargs: Any,
     ) -> Generator[dict[str, Any], None, None] | dict[str, Any]:
         """
         Transcribe audio file.
@@ -105,5 +110,5 @@ if __name__ == "__main__":
     for chunk in result:
         chunk_dict = chunk if isinstance(chunk, dict) else {}
         logger.info(
-            f"[{chunk_dict.get('chunk_start', 0):.1f}s - {chunk_dict.get('chunk_end', 0):.1f}s]: {chunk_dict.get('text', '')}"
+            f"[{chunk_dict.get('chunk_start', 0):.1f}s - {chunk_dict.get('chunk_end', 0):.1f}s]: {chunk_dict.get('text', '')}",
         )

@@ -42,7 +42,10 @@ class RequestQueue:
     """A simple asynchronous request queue with configurable concurrency."""
 
     def __init__(
-        self, max_concurrency: int = 2, timeout: float = 300.0, queue_size: int = 100
+        self,
+        max_concurrency: int = 2,
+        timeout: float = 300.0,
+        queue_size: int = 100,
     ) -> None:
         """
         Initialize the request queue.
@@ -146,7 +149,9 @@ class RequestQueue:
                 logger.error(f"Error in worker loop. {type(e).__name__}: {e}")
 
     async def _process_request(
-        self, request: RequestItem[Any], processor: Callable[[Any], Awaitable[Any]]
+        self,
+        request: RequestItem[Any],
+        processor: Callable[[Any], Awaitable[Any]],
     ) -> None:
         """
         Process a single request with timeout and error handling.
@@ -169,7 +174,7 @@ class RequestQueue:
 
             except TimeoutError:
                 request.set_exception(
-                    TimeoutError(f"Request processing timed out after {self.timeout}s")
+                    TimeoutError(f"Request processing timed out after {self.timeout}s"),
                 )
                 logger.warning(f"Request {request.request_id} timed out after {self.timeout}s")
             except asyncio.CancelledError as e:
@@ -181,7 +186,7 @@ class RequestQueue:
             except Exception as e:
                 request.set_exception(e)
                 logger.error(
-                    f"Error processing request {request.request_id}. {type(e).__name__}: {e}"
+                    f"Error processing request {request.request_id}. {type(e).__name__}: {e}",
                 )
 
             finally:
@@ -232,7 +237,7 @@ class RequestQueue:
         except TimeoutError:
             self.active_requests.pop(request_id, None)
             raise asyncio.QueueFull(
-                "Request queue is full and timed out waiting for space"
+                "Request queue is full and timed out waiting for space",
             ) from None
         else:
             queue_time = time.time() - request.created_at

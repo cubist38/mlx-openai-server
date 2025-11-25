@@ -1,0 +1,702 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>MLX Hub Status · MLX OpenAI Server</title>
+    <style>
+        :root {
+            color-scheme: dark;
+            font-family: 'Inter', system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+            background-color: #0f1115;
+            color: #f5f5f7;
+        }
+        body {
+            margin: 0;
+            padding: 24px;
+            line-height: 1.5;
+            background: linear-gradient(135deg, #0f1115 0%, #13161d 100%);
+            min-height: 100vh;
+        }
+        header {
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+            margin-bottom: 24px;
+        }
+        header h1 {
+            font-size: 1.75rem;
+            margin: 0;
+        }
+        header p {
+            margin: 0;
+            color: #b0b5c0;
+        }
+        .pill {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            background: rgba(255, 255, 255, 0.08);
+            border-radius: 999px;
+            padding: 4px 12px;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 0.04em;
+        }
+        .pill--ok { color: #7af79a; }
+        .pill--warn { color: #f7d67a; }
+        .pill--error { color: #f77a7a; }
+        .card {
+            background: rgba(255, 255, 255, 0.04);
+            border: 1px solid rgba(255, 255, 255, 0.08);
+            border-radius: 16px;
+            padding: 16px;
+            box-shadow: 0 20px 45px rgba(0, 0, 0, 0.35);
+            backdrop-filter: blur(8px);
+        }
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            margin-top: 16px;
+        }
+        th, td {
+            text-align: left;
+            padding: 12px;
+            border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+        }
+        th {
+            font-size: 0.85rem;
+            text-transform: uppercase;
+            letter-spacing: 0.04em;
+            color: #9aa0af;
+        }
+        tbody tr:hover {
+            background: rgba(255, 255, 255, 0.03);
+        }
+        .grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+            gap: 16px;
+            margin-bottom: 16px;
+        }
+        .muted {
+            color: #8b92a3;
+        }
+        .warnings {
+            border-left: 3px solid #f7d67a;
+            padding-left: 12px;
+            margin-top: 12px;
+        }
+        .warnings ul {
+            margin: 4px 0 0;
+            padding-left: 20px;
+        }
+        .error-banner {
+            background: rgba(247, 122, 122, 0.12);
+            border: 1px solid rgba(247, 122, 122, 0.35);
+            color: #f7b6b6;
+            padding: 12px 16px;
+            border-radius: 12px;
+            margin-bottom: 16px;
+        }
+        button {
+            background: rgba(255, 255, 255, 0.08);
+            border: 1px solid rgba(255, 255, 255, 0.15);
+            color: inherit;
+            border-radius: 12px;
+            padding: 8px 16px;
+            cursor: pointer;
+            font-weight: 600;
+        }
+        button:hover {
+            background: rgba(255, 255, 255, 0.12);
+        }
+        .actions {
+            display: flex;
+            gap: 8px;
+            flex-wrap: wrap;
+        }
+        .action-group {
+            display: flex;
+            flex-direction: column;
+            gap: 6px;
+            min-width: 140px;
+        }
+        .action-group__label {
+            font-size: 0.7rem;
+            text-transform: uppercase;
+            color: #9aa0af;
+            letter-spacing: 0.08em;
+        }
+        .action-group__buttons {
+            display: flex;
+            gap: 6px;
+        }
+        .action-btn--secondary {
+            background: transparent;
+            border-color: rgba(255, 255, 255, 0.25);
+        }
+        .action-btn[disabled] {
+            opacity: 0.4;
+            cursor: not-allowed;
+            pointer-events: none;
+        }
+        #overlays {
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            pointer-events: none; /* allow clicks to pass through overlay area */
+            z-index: 99998; /* overlays must be below flash which uses 99999 */
+        }
+
+        .toast {
+            position: fixed;
+            bottom: 24px;
+            right: 24px;
+            padding: 12px 16px;
+            border-radius: 14px;
+            background: rgba(255, 255, 255, 0.1);
+            border: 1px solid rgba(255, 255, 255, 0.2);
+            box-shadow: 0 15px 35px rgba(0, 0, 0, 0.4);
+            backdrop-filter: blur(12px);
+            min-width: 220px;
+            text-align: center;
+            z-index: 99998; /* Ensure toast is above page content */
+            pointer-events: auto; /* allow interactions on toast itself */
+        }
+        .toast--success { color: #7af79a; border-color: rgba(122, 247, 154, 0.4); }
+        .toast--error { color: #f77a7a; border-color: rgba(247, 122, 122, 0.4); }
+        .flash {
+            border-radius: 12px;
+            padding: 12px 16px;
+            font-weight: 600;
+            border: 1px solid transparent;
+            margin-bottom: 16px;
+            position: fixed;
+            top: 120px; /* Position below the header */
+            left: 24px;
+            right: 24px;
+            z-index: 99999; /* Much higher to ensure it sits above all content */
+            pointer-events: auto; /* allow interactions on flash itself */
+            box-shadow: 0 10px 25px rgba(0, 0, 0, 0.3);
+        }
+        .flash--info {
+            background: rgba(122, 207, 247, 0.12);
+            border-color: rgba(122, 207, 247, 0.4);
+            color: #a8e7ff;
+        }
+        .flash--success {
+            background: rgba(122, 247, 154, 0.12);
+            border-color: rgba(122, 247, 154, 0.35);
+            color: #b2ffcb;
+        }
+        .flash--warn {
+            background: rgba(247, 214, 122, 0.12);
+            border-color: rgba(247, 214, 122, 0.35);
+            color: #ffe3a6;
+        }
+        .flash--error {
+            background: rgba(247, 122, 122, 0.12);
+            border-color: rgba(247, 122, 122, 0.35);
+            color: #ffc1c1;
+        }
+        .stat-block {
+            display: flex;
+            flex-direction: column;
+            gap: 4px;
+        }
+        .stat-line {
+            font-size: 1.25rem;
+            font-weight: 600;
+        }
+        .stat-line--subtle {
+            font-size: 1rem;
+            color: #b0b5c0;
+        }
+    </style>
+</head>
+<body>
+    <header>
+        <h1>MLX Hub Status • MLX OpenAI Server</h1>
+        <p>Live snapshot of registered models, groups, and controller health.</p>
+    </header>
+
+        <!-- Overlays are kept in a top-level container appended to body
+            to avoid being trapped inside stacking contexts of content. -->
+
+    <section class="card">
+        <div class="grid">
+            <div class="stat-block">
+                <div class="muted">Hub status</div>
+                <div id="status-pill" class="pill pill--warn">Loading…</div>
+            </div>
+            <div class="stat-block">
+                <div class="muted">Processes</div>
+                <div id="started-counts" class="stat-line">—</div>
+                <div id="counts" class="stat-line">—</div>
+            </div>
+            <div class="stat-block">
+                <div class="muted">Last updated</div>
+                <div id="updated-at" class="stat-line">—</div>
+                <div class="muted" style="margin-top: 8px;">OpenAI URL</div>
+                <div id="openai-url" class="stat-line">—</div>
+            </div>
+            <div class="stat-block">
+                <div class="muted">Controls</div>
+                <div class="actions">
+                    <button class="refresh-btn" type="button">Refresh</button>
+                    <button class="action-btn action-btn--secondary" type="button" data-service-action="reload">Reload</button>
+                    <button class="action-btn action-btn--secondary" type="button" data-service-action="stop">Stop</button>
+                </div>
+            </div>
+        </div>
+        <div id="warnings" class="warnings" hidden>
+            <strong>Warnings</strong>
+            <ul id="warning-list"></ul>
+        </div>
+    </section>
+
+    <section class="card">
+        <div class="muted" style="margin-bottom: 8px;">Registered Models</div>
+        <table>
+            <thead>
+                <tr>
+                    <th>Name</th>
+                    <th>Process</th>
+                    <th>Memory</th>
+                    <th>Auto-Unload</th>
+                    <th>Type</th>
+                    <th>Group</th>
+                    <th>Default</th>
+                    <th>Model</th>
+                    <th>Actions</th>
+                </tr>
+            </thead>
+            <tbody id="models-body">
+                <tr>
+                    <td colspan="9" class="muted">Fetching hub snapshot…</td>
+                </tr>
+            </tbody>
+        </table>
+    </section>
+
+    <script>
+        const REFRESH_INTERVAL_MS = 5000;
+        const SERVICE_ENDPOINTS = {
+            start: '/hub/service/start',
+            stop: '/hub/service/stop',
+            reload: '/hub/service/reload',
+        };
+        const CONTROLLER_WARNING_MESSAGE = 'Hub controller is not running on this server. Memory buttons stay disabled until the hub server is up.';
+        let controllerAvailable = false;
+
+        function escapeHtml(value) {
+            return String(value ?? '')
+                .replace(/&/g, '&amp;')
+                .replace(/</g, '&lt;')
+                .replace(/>/g, '&gt;')
+                .replace(/\"/g, '&quot;')
+                .replace(/'/g, '&#39;');
+        }
+
+        function formatTimestamp(ts) {
+            if (!ts) {
+                return '—';
+            }
+            try {
+                return new Intl.DateTimeFormat(undefined, {
+                    hour: '2-digit',
+                    minute: '2-digit',
+                    second: '2-digit',
+                }).format(new Date(ts * 1000));
+            } catch (err) {
+                return new Date(ts * 1000).toLocaleTimeString();
+            }
+        }
+
+        function setStatusPill(value) {
+            const pill = document.getElementById('status-pill');
+            const map = {
+                ok: 'pill--ok',
+                degraded: 'pill--warn',
+                error: 'pill--error',
+            };
+            pill.textContent = value;
+            pill.className = `pill ${map[value] ?? 'pill--warn'}`;
+        }
+
+        function formatOpenAiUrl(hostValue, portValue) {
+            let host = typeof hostValue === 'string' ? hostValue.trim() : '';
+            if (!host) {
+                return '—';
+            }
+            if (host === '0.0.0.0' || host === '::' || host === '[::]') {
+                host = 'localhost';
+            }
+            if (host.includes(':') && !(host.startsWith('[') && host.endsWith(']')) ) {
+                host = `[${host}]`;
+            }
+            let port = Number(portValue);
+            if (!Number.isFinite(port) || port <= 0) {
+                port = 8000;
+            }
+            return `http://${host}:${port}/v1`;
+        }
+
+        function renderWarnings(warnings) {
+            const wrapper = document.getElementById('warnings');
+            const list = document.getElementById('warning-list');
+            if (!warnings || warnings.length === 0) {
+                wrapper.hidden = true;
+                list.innerHTML = '';
+                return;
+            }
+            wrapper.hidden = false;
+            list.innerHTML = warnings.map((warning) => `<li>${escapeHtml(warning)}</li>`).join('');
+        }
+
+        function describeProcess(meta) {
+            const state = String(meta.process_state ?? 'inactive').toLowerCase();
+            const pid = meta.pid ? `PID ${meta.pid}` : null;
+            const port = meta.port ? `PORT ${meta.port}` : null;
+            const exitInfo = meta.exit_code && meta.exit_code !== 0 ? `exit ${meta.exit_code}` : null;
+            const pieces = [state.toUpperCase()];
+            if (state === 'running') {
+                if (pid) {
+                    pieces.push(pid);
+                }
+                if (port) {
+                    pieces.push(port);
+                }
+            } else if (exitInfo) {
+                pieces.push(exitInfo);
+            }
+            return pieces.join(' • ');
+        }
+
+        function describeMemory(meta) {
+            const state = String(meta.memory_state ?? 'unloaded').toLowerCase();
+            const transition = meta.memory_last_transition_at ? formatTimestamp(meta.memory_last_transition_at) : null;
+            const error = meta.memory_last_error ? `Error: ${escapeHtml(meta.memory_last_error)}` : null;
+            const pieces = [state.toUpperCase()];
+            if (transition) {
+                pieces.push(`${transition}`);
+            }
+            return {
+                label: pieces.join(' • '),
+                error,
+            };
+        }
+
+        function renderModels(models) {
+            const body = document.getElementById('models-body');
+            if (!models || models.length === 0) {
+                body.innerHTML = '<tr><td colspan="9" class="muted">No models registered.</td></tr>';
+                return;
+            }
+            body.innerHTML = models
+                .map((model) => {
+                    const meta = model.metadata ?? {};
+                    const processState = String(meta.process_state ?? 'inactive').toLowerCase();
+                    const memoryState = String(meta.memory_state ?? 'unloaded').toLowerCase();
+                    const processRunning = processState === 'running';
+                    const group = meta.group ?? '—';
+                    const defaultFlag = meta.default ? '✅' : '—';
+                    const modelType = meta.model_type ?? 'n/a';
+                    const modelPath = meta.model_path ?? '';
+                    const autoUnloadMinutes = meta.auto_unload_minutes;
+                    const autoUnloadLabel = Number.isFinite(autoUnloadMinutes) ? `${autoUnloadMinutes} min` : '—';
+                    const safeId = escapeHtml(model.id);
+                    const processLabel = describeProcess(meta);
+                    const memoryDescriptor = describeMemory(meta);
+                    const memoryCell = processRunning
+                        ? `<div>${escapeHtml(memoryDescriptor.label)}</div>${memoryDescriptor.error ? `<div class="muted">${memoryDescriptor.error}</div>` : ''}`
+                        : '<div>—</div>';
+                    const processStartVisible = !processRunning;
+                    const processStopVisible = processRunning;
+                    const processStartDisabled = ['starting'].includes(processState);
+                    const processStopDisabled = ['stopping'].includes(processState);
+                    const memoryGroupVisible = controllerAvailable && processRunning;
+                    const memoryLoaded = memoryState === 'loaded';
+                    const memoryButtonLabel = memoryLoaded ? 'Unload' : 'Load';
+                    const memoryButtonAction = memoryLoaded ? 'unload' : 'load';
+                    const memoryButtonDisabled = ['loading', 'unloading'].includes(memoryState);
+                    return `<tr>
+                        <td>${safeId}</td>
+                        <td>${escapeHtml(processLabel)}</td>
+                        <td>
+                            ${memoryCell}
+                        </td>
+                        <td>${escapeHtml(autoUnloadLabel)}</td>
+                        <td>${escapeHtml(modelType)}</td>
+                        <td>${escapeHtml(group)}</td>
+                        <td>${escapeHtml(defaultFlag)}</td>
+                        <td>${escapeHtml(modelPath)}</td>
+                        <td>
+                            <div class="actions">
+                                <div class="action-group">
+                                    <div class="action-group__label">Process</div>
+                                    <div class="action-group__buttons">
+                                        ${processStartVisible ? `<button class="action-btn" data-scope="process" data-action="start-model" data-model="${safeId}" ${processStartDisabled ? 'disabled' : ''}>Start</button>` : ''}
+                                        ${processStopVisible ? `<button class="action-btn action-btn--secondary" data-scope="process" data-action="stop-model" data-model="${safeId}" ${processStopDisabled ? 'disabled' : ''}>Stop</button>` : ''}
+                                    </div>
+                                </div>
+                                ${memoryGroupVisible ? `
+                                <div class="action-group">
+                                    <div class="action-group__label">Memory</div>
+                                    <div class="action-group__buttons">
+                                        <button class="action-btn ${memoryLoaded ? 'action-btn--secondary' : ''}" data-scope="memory" data-action="${memoryButtonAction}" data-model="${safeId}" ${memoryButtonDisabled ? 'disabled' : ''}>${memoryButtonLabel}</button>
+                                    </div>
+                                </div>` : ''}
+                            </div>
+                        </td>
+                    </tr>`;
+                })
+                .join('');
+            attachModelActionListeners();
+        }
+
+        function showError(message) {
+            const banner = document.getElementById('error-banner');
+            banner.textContent = message;
+            banner.hidden = false;
+        }
+
+        function clearError() {
+            const banner = document.getElementById('error-banner');
+            banner.hidden = true;
+            banner.textContent = '';
+        }
+
+        function showFlash(message, tone = 'info') {
+            const flash = document.getElementById('flash-banner');
+            // Ensure flash banner is appended into overlays to avoid being trapped inside other contexts
+            const overlays = document.getElementById('overlays') || document.body;
+            if (flash && flash.parentElement !== overlays) {
+                overlays.appendChild(flash);
+            }
+            flash.textContent = message;
+            flash.className = `flash flash--${tone}`;
+            flash.hidden = false;
+        }
+
+        function clearFlash() {
+            const flash = document.getElementById('flash-banner');
+            flash.hidden = true;
+            flash.textContent = '';
+        }
+
+        let toastTimeoutId;
+        let serviceListenerAttached = false;
+        function showToast(message, tone = 'success') {
+            const toast = document.getElementById('toast');
+            // Ensure toast is appended into overlays to avoid being trapped inside other contexts
+            const overlays2 = document.getElementById('overlays') || document.body;
+            if (toast && toast.parentElement !== overlays2) {
+                overlays2.appendChild(toast);
+            }
+            toast.textContent = message;
+            toast.className = `toast toast--${tone}`;
+            toast.hidden = false;
+            if (toastTimeoutId) {
+                clearTimeout(toastTimeoutId);
+            }
+            toastTimeoutId = setTimeout(() => {
+                toast.hidden = true;
+            }, 4000);
+        }
+
+        function attachModelActionListeners() {
+            const tbody = document.getElementById('models-body');
+            const table = tbody ? tbody.closest('table') : null;
+            if (table && !table.hasAttribute('data-model-listener-attached')) {
+                table.addEventListener('click', onModelActionClick);
+                // Attach direct listeners to model buttons as a fallback (helps if delegated events are blocked)
+                table.querySelectorAll('[data-action]').forEach(btn => {
+                    if (!btn.hasAttribute('data-model-listener-attached')) {
+                        btn.addEventListener('click', onModelActionClick);
+                        btn.setAttribute('data-model-listener-attached', 'true');
+                    }
+                });
+                console.debug('attachModelActionListeners: listeners attached');
+                table.setAttribute('data-model-listener-attached', 'true');
+            }
+        }
+
+        function attachServiceActionListeners() {
+            if (!serviceListenerAttached) {
+                document.addEventListener('click', onServiceActionClick);
+                // Attach direct listeners to service buttons as a fallback
+                document.querySelectorAll('[data-service-action]').forEach(btn => {
+                    if (!btn.hasAttribute('data-service-listener-attached')) {
+                        btn.addEventListener('click', onServiceActionClick);
+                        btn.setAttribute('data-service-listener-attached', 'true');
+                    }
+                });
+                console.debug('attachServiceActionListeners: listeners attached');
+                serviceListenerAttached = true;
+            }
+        }
+
+        async function onModelActionClick(event) {
+            const button = event.target.closest('[data-action]');
+            if (!button) return;
+            // Diagnostic feedback for debugging clicks in the browser
+            try {
+                console.debug('Model action clicked:', button.getAttribute('data-action'), 'model:', button.getAttribute('data-model'));
+            } catch (e) {
+                // ignore
+            }
+            try { showToast(`${(button.getAttribute('data-action') || '').replace(/-model$/, '')}…`, 'info'); } catch (e) { /* ignore */ }
+            const model = button.getAttribute('data-model');
+            const action = button.getAttribute('data-action');
+            const normalizedAction = action ? action.replace(/-model$/, '') : action;
+            const scope = button.getAttribute('data-scope') ?? 'process';
+            if (!model || !action) {
+                return;
+            }
+
+            const row = button.closest('tr');
+            const rowButtons = row ? row.querySelectorAll('[data-action]') : [button];
+            rowButtons.forEach((btn) => {
+                btn.disabled = true;
+            });
+            const originalLabel = button.textContent;
+            const pendingLabel = {
+                'start': 'Starting…',
+                'stop': 'Stopping…',
+                'load': 'Loading…',
+                'unload': 'Unloading…',
+            }[normalizedAction] ?? 'Working…';
+            button.textContent = pendingLabel;
+
+            try {
+                const endpoint = `/hub/models/${encodeURIComponent(model)}/${normalizedAction}`;
+                console.debug('fetching model endpoint', endpoint, 'body', { reason: 'dashboard' });
+                const response = await fetch(endpoint, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ reason: 'dashboard' }),
+                });
+                console.debug('model action fetch completed, status:', response.status);
+                const payload = await response.json().catch(() => ({}));
+                console.debug('model action payload:', payload);
+                if (!response.ok) {
+                    const friendlyAction = action.replace(/-/g, ' ');
+                    const message = payload?.error?.message ?? payload?.message ?? `Failed to ${friendlyAction} ${model}`;
+                    throw new Error(message);
+                }
+                const scopeLabel = scope === 'memory' ? 'memory' : 'process';
+                const verb = {
+                    'start': 'Start',
+                    'stop': 'Stop',
+                    'load': 'Load',
+                    'unload': 'Unload',
+                }[normalizedAction] ?? 'Action';
+                showToast(`${verb} ${scopeLabel} request sent for ${model}`, 'success');
+            } catch (error) {
+                console.error('model action error', error);
+                showToast(error.message ?? 'Action failed', 'error');
+            } finally {
+                rowButtons.forEach((btn) => {
+                    btn.disabled = false;
+                });
+                if (button.isConnected) {
+                    button.textContent = originalLabel;
+                }
+                try {
+                    await fetchSnapshot();
+                } catch (err) {
+                    console.error(err);
+                }
+            }
+        }
+
+        async function onServiceActionClick(event) {
+            const button = event.target.closest('[data-service-action]');
+            if (!button) return;
+
+            const action = button.getAttribute('data-service-action');
+            if (!action || !(action in SERVICE_ENDPOINTS)) {
+                return;
+            }
+
+            const endpoint = SERVICE_ENDPOINTS[action];
+            const originalLabel = button.textContent;
+            button.disabled = true;
+            button.textContent = `${action.charAt(0).toUpperCase() + action.slice(1)}…`;
+            // Provide immediate debug feedback so users can see the click was registered
+            console.debug('Service action clicked:', action);
+            try { showToast(`${action.charAt(0).toUpperCase() + action.slice(1)} request…`, 'info'); } catch (e) { /* ignore */ }
+            clearFlash();
+
+            try {
+                const response = await fetch(endpoint, { method: 'POST' });
+                const payload = await response.json().catch(() => ({}));
+                if (!response.ok) {
+                    const message = payload?.error?.message ?? payload?.message ?? `Failed to ${action} hub manager`;
+                    showFlash(message, 'error');
+                    return;
+                }
+                const tone = action === 'stop' ? 'warn' : 'success';
+                const message = payload?.message ?? `Hub ${action} request accepted`;
+                showFlash(message, tone);
+            } catch (error) {
+                showFlash(error.message ?? `Failed to ${action} hub manager`, 'error');
+            } finally {
+                button.disabled = false;
+                button.textContent = originalLabel;
+                try {
+                    await fetchSnapshot();
+                } catch (err) {
+                    console.error(err);
+                }
+            }
+        }
+
+        async function fetchSnapshot() {
+            try {
+                const response = await fetch('/hub/status');
+                if (!response.ok) {
+                    throw new Error(`Request failed with status ${response.status}`);
+                }
+                const data = await response.json();
+                controllerAvailable = Boolean(data.controller_available);
+                const warningList = Array.isArray(data.warnings) ? [...data.warnings] : [];
+                if (!controllerAvailable && !warningList.includes(CONTROLLER_WARNING_MESSAGE)) {
+                    warningList.push(CONTROLLER_WARNING_MESSAGE);
+                }
+                clearError();
+                setStatusPill(data.status ?? 'unknown');
+                const registered = data.counts?.registered ?? 0;
+                const started = data.counts?.started ?? 0;
+                const loaded = data.counts?.loaded ?? 0;
+                document.getElementById('started-counts').textContent = `${started} / ${registered} started`;
+                document.getElementById('counts').textContent = `${loaded} / ${registered} loaded`;
+                document.getElementById('updated-at').textContent = formatTimestamp(data.timestamp);
+                document.getElementById('openai-url').textContent = formatOpenAiUrl(data.host, data.port);
+                renderWarnings(warningList);
+                renderModels(data.models ?? []);
+            } catch (error) {
+                showError(error.message ?? 'Failed to fetch hub status');
+                setStatusPill('error');
+            }
+        }
+
+        document.querySelectorAll('.refresh-btn').forEach(btn => {
+            btn.addEventListener('click', fetchSnapshot);
+        });
+        attachServiceActionListeners();
+        fetchSnapshot();
+        setInterval(fetchSnapshot, REFRESH_INTERVAL_MS);
+    </script>
+        <!-- Overlays are kept at the end of body to ensure they are direct children of <body> -->
+        <div id="overlays">
+            <div id="error-banner" class="error-banner" hidden></div>
+            <div id="flash-banner" class="flash flash--info" hidden></div>
+            <div id="toast" class="toast" hidden></div>
+        </div>
+    </body>
+</html>

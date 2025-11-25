@@ -66,7 +66,9 @@ class ImageProcessor(BaseProcessor):
         return "image"
 
     def _resize_image_keep_aspect_ratio(
-        self, image: Image.Image, max_size: int = 448
+        self,
+        image: Image.Image,
+        max_size: int = 448,
     ) -> Image.Image:
         width, height = image.size
         if width <= max_size and height <= max_size:
@@ -114,12 +116,15 @@ class ImageProcessor(BaseProcessor):
                 with contextlib.suppress(Exception):
                     image.close()
 
-    async def process_image_url(self, image_url: str, resize: bool = True) -> str:
+    async def process_image_url(self, image_url: str, *, resize: bool = True) -> str:
         """Process a single image URL and return path to cached file."""
         return await self._process_single_media(image_url, resize=resize)
 
     async def process_image_urls(
-        self, image_urls: list[str], resize: bool = True
+        self,
+        image_urls: list[str],
+        *,
+        resize: bool = True,
     ) -> list[str | BaseException]:
         """Process multiple image URLs and return paths to cached files (exceptions may be BaseException)."""
         tasks = [self.process_image_url(url, resize=resize) for url in image_urls]
