@@ -1,32 +1,40 @@
 """MLX OpenAI Server package."""
 
 # Suppress verbose banners or logs from external packages (e.g. mlx_vlm) which
-# may emit import-time INFO logs that clutter CLI output.
+# may emit import-time INFO logs that clutter CLI output. Use a logging.Filter
+# attached to the package logger instead of monkey-patching Handler.emit.
 import logging as _std_logging
 
-# Silence the specific INFO banner from `mlx_vlm.video_generate` by
-# patching StreamHandler.emit to ignore that message from the package's
-# logger (this avoids editing third-party site packages directly).
-from typing import Any
 
-_orig_emit: Any = _std_logging.StreamHandler.emit
+class _SuppressMlxVlmFilter(_std_logging.Filter):
+    """Filter out a specific noisy banner emitted by the `mlx_vlm` package.
+
+    The filter returns False for LogRecords that originate from the
+    `mlx_vlm` namespace and contain the known banner text, preventing them
+    from being emitted by handlers. For other records it returns True.
+    """
+
+    def filter(self, record: _std_logging.LogRecord) -> bool:  # type: ignore[override]
+        try:
+            name = getattr(record, "name", "")
+            msg = record.getMessage() if hasattr(record, "getMessage") else str(record.msg)
+            if (
+                name.startswith("mlx_vlm")
+                and "This is a beta version of the video understanding" in msg
+            ):
+                return False
+        except Exception:
+            # If anything goes wrong while inspecting the record, allow it
+            # through to avoid suppressing unrelated logs.
+            return True
+        return True
 
 
-def _suppress_mlx_emit(self: _std_logging.Handler, record: _std_logging.LogRecord) -> None:
-    try:
-        name = getattr(record, "name", "")
-        msg = record.getMessage() if hasattr(record, "getMessage") else str(record.msg)
-        if (
-            name.startswith("mlx_vlm")
-            and "This is a beta version of the video understanding" in msg
-        ):
-            return
-    except Exception:
-        pass
-    _orig_emit(self, record)
-
-
-_std_logging.StreamHandler.emit = _suppress_mlx_emit  # type: ignore[method-assign]
+# Attach the filter to the mlx_vlm loggers so the banner is suppressed in a
+# maintainable, testable way without monkey-patching core logging internals.
+_filter = _SuppressMlxVlmFilter()
+_std_logging.getLogger("mlx_vlm").addFilter(_filter)
+_std_logging.getLogger("mlx_vlm.video_generate").addFilter(_filter)
 
 _std_logging.getLogger("mlx_vlm").setLevel(_std_logging.WARNING)
 _std_logging.getLogger("mlx_vlm.video_generate").setLevel(_std_logging.WARNING)

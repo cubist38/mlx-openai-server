@@ -21,7 +21,7 @@ from mlx_lm.sample_utils import make_logits_processors, make_sampler
 from mlx_lm.utils import load
 from outlines.processors import OutlinesLogitsProcessor
 
-from ..const import DEFAULT_CONTEXT_LENGTH
+from ..const import DEFAULT_CONTEXT_LENGTH, DEFAULT_TRUST_REMOTE_CODE
 from ..utils.outlines_transformer_tokenizer import OutlinesTransformerTokenizer
 
 DEFAULT_TEMPERATURE = float(os.getenv("DEFAULT_TEMPERATURE", "0.7"))
@@ -44,9 +44,9 @@ class MLX_LM:
     def __init__(
         self,
         model_path: str,
-        context_length: int = DEFAULT_CONTEXT_LENGTH,
         *,
-        trust_remote_code: bool = False,
+        context_length: int = DEFAULT_CONTEXT_LENGTH,
+        trust_remote_code: bool = DEFAULT_TRUST_REMOTE_CODE,
     ) -> None:
         try:
             # Some third-party download utilities (huggingface_hub + tqdm)

@@ -142,7 +142,7 @@ def _controller_base_url(config: MLXHubConfig) -> str:
     runtime = _read_hub_runtime_state(config)
     if runtime:
         host = runtime.get("host") or (config.host or DEFAULT_BIND_HOST)
-        port = config.port
+        port = int(runtime.get("port") or (config.port or DEFAULT_PORT))
         return f"http://{host}:{port}"
 
     host = config.host or DEFAULT_BIND_HOST
@@ -171,7 +171,8 @@ def _write_hub_runtime_state(config: MLXHubConfig, pid: int) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
         payload = {
             "pid": int(pid),
-            "host": config.host or "127.0.0.1",
+            "host": config.host or DEFAULT_BIND_HOST,
+            "port": int(config.port or DEFAULT_PORT),
             "started_at": datetime.datetime.now(datetime.UTC).isoformat(),
         }
         path.write_text(json.dumps(payload))

@@ -25,7 +25,7 @@ from ..const import (
     DEFAULT_HUB_CONFIG_PATH,
     DEFAULT_MODEL_STARTING_PORT,
 )
-from ..hub.config import PORT_MAX, HubConfigError, MLXHubConfig, load_hub_config
+from ..hub.config import HubConfigError, MLXHubConfig, load_hub_config
 from ..schemas.openai import (
     HubModelActionRequest,
     HubModelActionResponse,
@@ -35,7 +35,10 @@ from ..schemas.openai import (
     Model,
 )
 from ..utils.errors import create_error_response
-from ..utils.network import is_port_available
+
+# `is_port_available` is intentionally not used here; the daemon will perform
+# its own availability checks when starting. Keep import removed to avoid
+# accidental local scanning.
 
 
 class HubServiceError(RuntimeError):
@@ -67,18 +70,12 @@ def start_hub_service_process(
     development convenience for the API's `/hub/service/start` endpoint.
     """
     host_val = host or DEFAULT_BIND_HOST
+    # Use the configured port directly. If the port is unavailable the
+    # daemon's own startup checks (`create_app` / is_port_available) will
+    # raise a clear error; avoiding local scanning prevents the CLI from
+    # starting the daemon on a different port than the configuration.
     starting_port = port or DEFAULT_MODEL_STARTING_PORT
-
-    # Find an available port starting from the specified port
     port_val = starting_port
-    while port_val <= PORT_MAX:
-        if is_port_available(host_val, port_val):
-            break
-        port_val += 1
-    else:
-        raise HubServiceError(
-            f"Unable to find an available port for hub daemon starting at {starting_port}",
-        )
 
     cmd = [
         sys.executable,
@@ -811,7 +808,7 @@ async def hub_status_page(raw_request: Request) -> HTMLResponse:
     # dashboard communicates with the daemon (if present) via the
     # `/hub/status` and service endpoints exposed by this API.
     context = {"request": raw_request}
-    return templates.TemplateResponse(raw_request, "hub_status.html.jinja", context)
+    return templates.TemplateResponse("hub_status.html.jinja", context)
 
 
 @hub_router.post("/hub/service/start", response_model=HubServiceActionResponse)

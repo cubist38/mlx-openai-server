@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from pathlib import Path
+from collections.abc import Callable
 
 import pytest
 
@@ -11,21 +11,9 @@ from app.config import MLXServerConfig
 from app.hub.config import MLXHubConfig
 
 
-@pytest.fixture
-def hub_config(tmp_path: Path) -> MLXHubConfig:
-    """Provide a hub config with an isolated log directory."""
-    log_dir = tmp_path / "logs"
-    return MLXHubConfig(
-        log_path=log_dir,
-        models=[
-            MLXServerConfig(model_path="/models/a", name="alpha", model_type="lm", group="tier"),
-        ],
-    )
-
-
 def test_print_hub_status_includes_live_state(
     capsys: pytest.CaptureFixture[str],
-    hub_config: MLXHubConfig,
+    make_hub_config: Callable[..., MLXHubConfig],
 ) -> None:
     """_print_hub_status should surface live state and PIDs when provided."""
     # Simulate the Model objects returned by the hub_status API
@@ -49,7 +37,12 @@ def test_print_hub_status_includes_live_state(
             },
         ],
     }
-    _print_hub_status(hub_config, live_status=live)
+    cfg = make_hub_config(
+        models=[
+            MLXServerConfig(model_path="/models/a", name="alpha", model_type="lm", group="tier")
+        ]
+    )
+    _print_hub_status(cfg, live_status=live)
     output = capsys.readouterr().out
     assert "running" in output
     assert "4321" in output

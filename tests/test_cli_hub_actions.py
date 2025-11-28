@@ -12,56 +12,20 @@ import pytest
 from app.cli import _render_watch_table, cli
 from app.hub.config import MLXHubConfig
 
-
-@pytest.fixture
-def hub_config_file(tmp_path: Path) -> Path:
-    """Write a minimal hub.yaml used for CLI tests."""
-    config = tmp_path / "hub.yaml"
-    log_dir = tmp_path / "logs"
-    config.write_text(
-        f"""
-log_path: {log_dir}
-models:
-  - name: alpha
-    model_path: /models/a
-    model_type: lm
-""".strip(),
-    )
-    return config
+# `hub_config_file` is provided by `tests/conftest.py`
 
 
-class _StubServiceClient:
-    def __init__(self) -> None:
-        self.started: list[str] = []
-        self.stopped: list[str] = []
-        self.reload_calls = 0
-        self.shutdown_called = False
-        self.is_available_calls = 0
-
-    def is_available(self) -> bool:
-        self.is_available_calls += 1
-        return True
-
-    def start_model(self, name: str) -> None:
-        self.started.append(name)
-
-    def stop_model(self, name: str) -> None:
-        self.stopped.append(name)
-
-    def reload(self) -> dict[str, list[str]]:
-        self.reload_calls += 1
-        return {"started": [], "stopped": [], "unchanged": []}
-
-    def shutdown(self) -> None:
-        self.shutdown_called = True
+# `_StubServiceClient` is provided by `tests/conftest.py` as the
+# `stub_service_client` fixture.
 
 
 def test_hub_reload_cli_reloads_service(
     monkeypatch: pytest.MonkeyPatch,
     hub_config_file: Path,
+    stub_service_client: object,
 ) -> None:
     """`hub reload` should trigger a service reload via HubServiceClient."""
-    stub = _StubServiceClient()
+    stub = stub_service_client
 
     def _call_stub(
         _config: MLXHubConfig,
@@ -89,9 +53,10 @@ def test_hub_reload_cli_reloads_service(
 def test_hub_stop_cli_requests_shutdown(
     monkeypatch: pytest.MonkeyPatch,
     hub_config_file: Path,
+    stub_service_client: object,
 ) -> None:
     """`hub stop` should reload config then shut down the service."""
-    stub = _StubServiceClient()
+    stub = stub_service_client
 
     def _call_stub(
         _config: MLXHubConfig,
@@ -135,9 +100,10 @@ def test_hub_stop_cli_requests_shutdown(
 def test_hub_start_model_cli_uses_service_client(
     monkeypatch: pytest.MonkeyPatch,
     hub_config_file: Path,
+    stub_service_client: object,
 ) -> None:
     """`hub start-model` should instruct the HubServiceClient to start models."""
-    stub = _StubServiceClient()
+    stub = stub_service_client
 
     def _call_stub(
         _config: MLXHubConfig,
@@ -170,9 +136,10 @@ def test_hub_start_model_cli_uses_service_client(
 def test_hub_stop_model_cli_uses_service_client(
     monkeypatch: pytest.MonkeyPatch,
     hub_config_file: Path,
+    stub_service_client: object,
 ) -> None:
     """`hub stop-model` should request stop_model for the provided names."""
-    stub = _StubServiceClient()
+    stub = stub_service_client
 
     def _call_stub(
         _config: MLXHubConfig,

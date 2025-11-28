@@ -7,6 +7,7 @@ and that default models auto-start on hub initialization.
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -70,7 +71,9 @@ class _TestHubSupervisor(HubSupervisor):
 
 
 @pytest.fixture
-def hub_config_with_defaults(tmp_path: Path) -> MLXHubConfig:
+def hub_config_with_defaults(
+    tmp_path: Path, make_model_mock: Callable[..., MagicMock]
+) -> MLXHubConfig:
     """Create a hub config with default and non-default models."""
     config = MLXHubConfig(
         host="127.0.0.1",
@@ -82,22 +85,24 @@ def hub_config_with_defaults(tmp_path: Path) -> MLXHubConfig:
         source_path=tmp_path / "hub.yaml",
     )
 
-    # Mock model configs
-    default_model = MagicMock()
-    default_model.name = "default_model"
-    default_model.model_path = "/models/default"
-    default_model.model_type = "lm"
-    default_model.is_default_model = True
-    default_model.group = None
-    default_model.auto_unload_minutes = 120
+    # Mock model configs using the shared factory from tests.conftest
+    default_model = make_model_mock(
+        "default_model",
+        "/models/default",
+        "lm",
+        is_default=True,
+        group=None,
+        auto_unload_minutes=120,
+    )
 
-    regular_model = MagicMock()
-    regular_model.name = "regular_model"
-    regular_model.model_path = "/models/regular"
-    regular_model.model_type = "lm"
-    regular_model.is_default_model = False
-    regular_model.group = None
-    regular_model.auto_unload_minutes = 120
+    regular_model = make_model_mock(
+        "regular_model",
+        "/models/regular",
+        "lm",
+        is_default=False,
+        group=None,
+        auto_unload_minutes=120,
+    )
 
     config.models = [default_model, regular_model]
     return config
@@ -272,10 +277,11 @@ async def test_reload_config_preserves_loaded_models(
 
 
 @pytest.mark.asyncio
-async def test_default_models_auto_start_during_lifespan(tmp_path: Path) -> None:
+async def test_default_models_auto_start_during_lifespan(
+    tmp_path: Path, write_hub_yaml: Callable[[str, str], Path]
+) -> None:
     """Test that default models are automatically started during daemon lifespan."""
-    cfg = tmp_path / "hub.yaml"
-    cfg.write_text(
+    cfg = write_hub_yaml(
         """
 host: 127.0.0.1
 port: 8123
@@ -287,7 +293,7 @@ models:
   - name: regular_model
     model_path: /models/regular
     model_type: lm
-""".strip(),
+""",
     )
 
     app = create_app(str(cfg))
@@ -317,10 +323,11 @@ models:
 
 
 @pytest.mark.asyncio
-async def test_hub_api_endpoints_call_supervisor_methods(tmp_path: Path) -> None:
+async def test_hub_api_endpoints_call_supervisor_methods(
+    tmp_path: Path, write_hub_yaml: Callable[[str, str], Path]
+) -> None:
     """Test that hub API endpoints properly call supervisor methods."""
-    cfg = tmp_path / "hub.yaml"
-    cfg.write_text(
+    cfg = write_hub_yaml(
         """
 host: 127.0.0.1
 port: 8123
@@ -328,7 +335,7 @@ models:
   - name: test_model
     model_path: /models/test
     model_type: lm
-""".strip(),
+""",
     )
 
     app = create_app(str(cfg))

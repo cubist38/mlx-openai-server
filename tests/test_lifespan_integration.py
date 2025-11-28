@@ -108,7 +108,7 @@ def test_lifespan_with_fake_handler_ensure_vram_and_cleanup(
 
     async def _run() -> None:
         async with lifespan(app):
-            registry = app.state.registry
+            registry = app.state.model_registry
             registry_model_id = next(m["id"] for m in registry.list_models())
 
             # Wait until the registry has attached the handler (update happens
