@@ -67,7 +67,11 @@ class MLXLMHandler:
             Enable trust_remote_code when loading models, by default False.
         """
         self.model_path = model_path
-        self.model = MLX_LM(model_path, context_length, trust_remote_code=trust_remote_code)
+        self.model = MLX_LM(
+            model_path,
+            context_length=context_length,
+            trust_remote_code=trust_remote_code,
+        )
         self.model_created = int(time.time())  # Store creation time when model is loaded
         self.model_type = self.model.get_model_type()
 

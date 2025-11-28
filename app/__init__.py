@@ -14,7 +14,7 @@ class _SuppressMlxVlmFilter(_std_logging.Filter):
     from being emitted by handlers. For other records it returns True.
     """
 
-    def filter(self, record: _std_logging.LogRecord) -> bool:  # type: ignore[override]
+    def filter(self, record: _std_logging.LogRecord) -> bool:
         try:
             name = getattr(record, "name", "")
             msg = record.getMessage() if hasattr(record, "getMessage") else str(record.msg)

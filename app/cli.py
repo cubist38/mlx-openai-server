@@ -142,7 +142,16 @@ def _controller_base_url(config: MLXHubConfig) -> str:
     runtime = _read_hub_runtime_state(config)
     if runtime:
         host = runtime.get("host") or (config.host or DEFAULT_BIND_HOST)
-        port = int(runtime.get("port") or (config.port or DEFAULT_PORT))
+        # runtime may contain untyped values (loaded from JSON). Validate
+        # the port before converting to int to keep mypy and runtime checks happy.
+        rt_port = runtime.get("port")
+        if isinstance(rt_port, (int, str)):
+            try:
+                port = int(rt_port)
+            except Exception:
+                port = int(config.port or DEFAULT_PORT)
+        else:
+            port = int(config.port or DEFAULT_PORT)
         return f"http://{host}:{port}"
 
     host = config.host or DEFAULT_BIND_HOST
