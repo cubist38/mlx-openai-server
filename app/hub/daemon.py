@@ -590,7 +590,6 @@ def create_app(hub_config_path: str | None = None) -> FastAPI:
 
     # Create and populate model registry
     registry = ModelRegistry()
-    # Store the registry under the canonical name only
     app.state.model_registry = registry
     for model in getattr(hub_config, "models", []):
         model_id = getattr(model, "model_path", None)

@@ -343,7 +343,7 @@ async def models(raw_request: Request) -> ModelsResponse | JSONResponse:
         List of available models or error response.
     """
     # Try registry first (Phase 1+), fall back to handler for backward compat
-    registry = getattr(raw_request.app.state, "registry", None)
+    registry = getattr(raw_request.app.state, "model_registry", None)
     supervisor = getattr(raw_request.app.state, "supervisor", None)
     if registry is not None:
         try:

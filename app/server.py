@@ -838,7 +838,6 @@ def create_lifespan(
             The FastAPI application instance.
         """
         registry = ModelRegistry()
-        # Ensure external code can find the registry via the canonical name
         app.state.model_registry = registry
         registry_model_id = get_registry_model_id(config_args)
         base_registry_metadata = {
