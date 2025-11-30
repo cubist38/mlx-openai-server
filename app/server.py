@@ -165,9 +165,9 @@ def create_lifespan(config_args: MLXServerConfig):
                     raise ValueError(
                         "Image generation requires mflux. Install with: pip install git+https://github.com/cubist38/mflux.git"
                     )
-                if config_args.config_name not in ["flux-schnell", "flux-dev", "flux-krea-dev"]:
+                if config_args.config_name not in ["flux-schnell", "flux-dev", "flux-krea-dev", "qwen-image"]:
                     raise ValueError(
-                        f"Invalid config name: {config_args.config_name}. Only flux-schnell, flux-dev, and flux-krea-dev are supported for image generation."
+                        f"Invalid config name: {config_args.config_name}. Only flux-schnell, flux-dev, flux-krea-dev, and qwen-image are supported for image generation."
                     )
                 handler = MLXFluxHandler(
                     model_path=model_identifier,
@@ -186,9 +186,9 @@ def create_lifespan(config_args: MLXServerConfig):
                     raise ValueError(
                         "Image editing requires mflux. Install with: pip install git+https://github.com/cubist38/mflux.git"
                     )
-                if config_args.config_name != "flux-kontext-dev":
+                if config_args.config_name not in ["flux-kontext-dev", "qwen-image-edit"]:
                     raise ValueError(
-                        f"Invalid config name: {config_args.config_name}. Only flux-kontext-dev is supported for image edit."
+                        f"Invalid config name: {config_args.config_name}. Only flux-kontext-dev and qwen-image-edit are supported for image edit."
                     )
                 handler = MLXFluxHandler(
                     model_path=model_identifier,

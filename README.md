@@ -40,7 +40,7 @@ This repository hosts a high-performance API server that provides OpenAI-compati
 - 📈 **Performance and queue monitoring endpoints**
 - 🧑‍💻 **Easy Python and CLI usage**
 - 🛡️ **Robust error handling and request management**
-- 🎛️ **LoRA adapter support** for fine-tuned image generation
+- 🎛️ **LoRA adapter support** for fine-tuned image generation and editing
 - ⚡ **Configurable quantization** (4-bit, 8-bit, 16-bit) for optimal performance
 - 🧠 **Customizable context length** for memory optimization and performance tuning
 
@@ -97,8 +97,8 @@ The server supports six types of MLX models:
 
 1. **Text-only models** (`--model-type lm`) - Uses the `mlx-lm` library for pure language models
 2. **Multimodal models** (`--model-type multimodal`) - Uses the `mlx-vlm` library for multimodal models that can process text, images, and audio
-3. **Image generation models** (`--model-type image-generation`) - Uses the `mflux` library for Flux-series image generation models with enhanced configurations ⚠️ *Requires manual installation of `mflux`*
-4. **Image editing models** (`--model-type image-edit`) - Uses the `mflux` library for Flux-series image editing models ⚠️ *Requires manual installation of `mflux`*
+3. **Image generation models** (`--model-type image-generation`) - Uses the `mflux` library for Flux-series image generation models with enhanced configurations
+4. **Image editing models** (`--model-type image-edit`) - Uses the `mflux` library for Flux-series image editing models
 5. **Embeddings models** (`--model-type embeddings`) - Uses the `mlx-embeddings` library for text embeddings generation with optimized memory management
 6. **Whisper models** (`--model-type whisper`) - Uses the `mlx-whisper` library for audio transcription and speech recognition ⚠️ *Requires ffmpeg installation*
 
@@ -108,21 +108,21 @@ The server supports six types of MLX models:
 
 ### Flux-Series Image Models
 
-> **⚠️ Note:** Image generation and editing capabilities require manual installation of `mflux`: `pip install git+https://github.com/cubist38/mflux.git`
-
-The server supports multiple Flux model configurations for advanced image generation and editing:
+The server supports multiple Flux and Qwen model configurations for advanced image generation and editing:
 
 #### Image Generation Models
 - **`flux-schnell`** - Fast generation with 4 default steps, no guidance (best for quick iterations)
 - **`flux-dev`** - High-quality generation with 25 default steps, 3.5 guidance (balanced quality/speed)
 - **`flux-krea-dev`** - Premium quality with 28 default steps, 4.5 guidance (highest quality)
+- **`qwen-image`** - Qwen image generation model with 50 default steps, 4.0 guidance (high-quality Qwen-based generation)
 
 #### Image Editing Models
 - **`flux-kontext-dev`** - Context-aware editing with 28 default steps, 2.5 guidance (specialized for contextual image editing)
+- **`qwen-image-edit`** - Qwen image editing model with 50 default steps, 4.0 guidance (high-quality Qwen-based editing)
 
 Each configuration supports:
 - **Quantization levels**: 4-bit, 8-bit, or 16-bit for memory/performance optimization
-- **LoRA adapters**: Multiple LoRA paths with custom scaling for fine-tuned generation.
+- **LoRA adapters**: Multiple LoRA paths with custom scaling for fine-tuned generation and editing (supported for all Flux and Qwen image models).
 - **Custom parameters**: Steps, guidance, negative prompts, and more
 
 ### Context Length Configuration
@@ -200,9 +200,6 @@ Follow these steps to set up the MLX-powered server:
     git clone https://github.com/cubist38/mlx-openai-server.git
     cd mlx-openai-server
     pip install -e .
-    
-    # Optional: For image generation/editing support, also install mflux
-    pip install git+https://github.com/cubist38/mflux.git
     ```
 
 ### Using Conda (Recommended)
@@ -237,9 +234,6 @@ For better environment management and to avoid architecture issues, we recommend
     git clone https://github.com/cubist38/mlx-openai-server.git
     cd mlx-openai-server
     pip install -e .
-    
-    # Optional: For image generation/editing support, also install mflux
-    pip install git+https://github.com/cubist38/mflux.git
     ```
 
 ### Optional Dependencies
@@ -257,23 +251,14 @@ pip install mlx-openai-server
 - All core API endpoints and functionality
 
 #### Image Generation & Editing Support
-For image generation and editing capabilities, you need to install `mflux` manually:
+The server includes support for image generation and editing capabilities:
 
-```bash
-# First install the base server
-pip install mlx-openai-server
-
-# Then install mflux for image generation/editing support
-pip install git+https://github.com/cubist38/mflux.git
-```
-
-**Additional features with mflux:**
+**Additional features:**
 - Image generation models (`--model-type image-generation`)
 - Image editing models (`--model-type image-edit`)
 - MLX Flux-series model support
-- LoRA adapter support for fine-tuned generation
-
-> **Note:** If you try to use image generation or editing without `mflux` installed, you'll receive a clear error message directing you to install it manually.
+- Qwen Image model support
+- LoRA adapter support for fine-tuned generation and editing
 
 #### Whisper Models Support
 For whisper models to work properly, you need to install ffmpeg:
@@ -315,21 +300,21 @@ python -m app.main \
   --queue-timeout 300 \
   --queue-size 100
 
-# For image generation models (Flux-series)
+# For image generation models (Flux-series or Qwen)
 python -m app.main \
   --model-type image-generation \
-  --model-path <path-to-local-flux-model> \
-  --config-name <flux-schnell|flux-dev|flux-krea-dev> \
+  --model-path <path-to-local-model> \
+  --config-name <flux-schnell|flux-dev|flux-krea-dev|qwen-image> \
   --quantize <4|8|16> \
   --max-concurrency 1 \
   --queue-timeout 300 \
   --queue-size 100
 
-# For image editing models (Flux-series)
+# For image editing models (Flux-series or Qwen)
 python -m app.main \
   --model-type image-edit \
-  --model-path <path-to-local-flux-model> \
-  --config-name flux-kontext-dev \
+  --model-path <path-to-local-model> \
+  --config-name <flux-kontext-dev|qwen-image-edit> \
   --quantize <4|8|16> \
   --max-concurrency 1 \
   --queue-timeout 300 \
@@ -373,19 +358,19 @@ mlx-openai-server launch \
   --model-type <lm|multimodal> \
 
 
-# For image generation models (Flux-series)
+# For image generation models (Flux-series or Qwen)
 mlx-openai-server launch \
   --model-type image-generation \
-  --model-path <path-to-local-flux-model> \
-  --config-name <flux-schnell|flux-dev|flux-krea-dev> \
+  --model-path <path-to-local-model> \
+  --config-name <flux-schnell|flux-dev|flux-krea-dev|qwen-image> \
   --quantize 8 \
 
 
-# For image editing models (Flux-series)
+# For image editing models (Flux-series or Qwen)
 mlx-openai-server launch \
   --model-type image-edit \
-  --model-path <path-to-local-flux-model> \
-  --config-name flux-kontext-dev \
+  --model-path <path-to-local-model> \
+  --config-name <flux-kontext-dev|qwen-image-edit> \
   --quantize 8 \
 
 
@@ -419,9 +404,9 @@ mlx-openai-server launch \
   - `whisper` for whisper models (audio transcription)
   - Default: `lm`
 - `--context-length`: Context length for language models. Controls the maximum sequence length for text processing and memory usage optimization. Default: `None` (uses model's default context length).
-- `--config-name`: Flux model configuration to use. Only used for `image-generation` and `image-edit` model types:
-  - For `image-generation`: `flux-schnell`, `flux-dev`, `flux-krea-dev`
-  - For `image-edit`: `flux-kontext-dev`
+- `--config-name`: Model configuration to use. Only used for `image-generation` and `image-edit` model types:
+  - For `image-generation`: `flux-schnell`, `flux-dev`, `flux-krea-dev`, `qwen-image`
+  - For `image-edit`: `flux-kontext-dev`, `qwen-image-edit`
   - Default: `flux-schnell` for image-generation, `flux-kontext-dev` for image-edit
 - `--quantize`: Quantization level for Flux models. Available options: `4`, `8`, `16`. Default: `8`
 - `--lora-paths`: Comma-separated paths to LoRA adapter files.
@@ -594,6 +579,18 @@ python -m app.main \
   --queue-size 100
 ```
 
+*High-quality generation with Qwen Image:*
+```bash
+python -m app.main \
+  --model-type image-generation \
+  --model-path <path-to-local-qwen-model> \
+  --config-name qwen-image \
+  --quantize 8 \
+  --max-concurrency 1 \
+  --queue-timeout 300 \
+  --queue-size 100
+```
+
 *Image editing with Kontext:*
 ```bash
 python -m app.main \
@@ -606,12 +603,38 @@ python -m app.main \
   --queue-size 100
 ```
 
-*With LoRA adapters (image generation only):*
+*Image editing with Qwen Image Edit:*
+```bash
+python -m app.main \
+  --model-type image-edit \
+  --model-path <path-to-local-qwen-model> \
+  --config-name qwen-image-edit \
+  --quantize 8 \
+  --max-concurrency 1 \
+  --queue-timeout 300 \
+  --queue-size 100
+```
+
+*With LoRA adapters (image generation):*
 ```bash
 python -m app.main \
   --model-type image-generation \
   --model-path <path-to-local-flux-model> \
   --config-name flux-dev \
+  --quantize 8 \
+  --lora-paths "/path/to/lora1.safetensors,/path/to/lora2.safetensors" \
+  --lora-scales "0.8,0.6" \
+  --max-concurrency 1 \
+  --queue-timeout 300 \
+  --queue-size 100
+```
+
+*With LoRA adapters (image editing):*
+```bash
+python -m app.main \
+  --model-type image-edit \
+  --model-path <path-to-local-flux-model> \
+  --config-name flux-kontext-dev \
   --quantize 8 \
   --lora-paths "/path/to/lora1.safetensors,/path/to/lora2.safetensors" \
   --lora-scales "0.8,0.6" \
@@ -648,17 +671,20 @@ mlx-openai-server launch --help
 # For text-only or multimodal models
 mlx-openai-server launch --model-path <path-to-mlx-model> --model-type <lm|multimodal> --context-length 8192
 
-# For image generation models (Flux-series)
-mlx-openai-server launch --model-type image-generation --model-path <path-to-local-flux-model> --config-name <flux-schnell|flux-dev|flux-krea-dev>
+# For image generation models (Flux-series or Qwen)
+mlx-openai-server launch --model-type image-generation --model-path <path-to-local-model> --config-name <flux-schnell|flux-dev|flux-krea-dev|qwen-image>
 
-# For image editing models (Flux-series)
-mlx-openai-server launch --model-type image-edit --model-path <path-to-local-flux-model> --config-name flux-kontext-dev
+# For image editing models (Flux-series or Qwen)
+mlx-openai-server launch --model-type image-edit --model-path <path-to-local-model> --config-name <flux-kontext-dev|qwen-image-edit>
 
 # For whisper models
 mlx-openai-server launch --model-path mlx-community/whisper-large-v3-mlx --model-type whisper
 
-# With LoRA adapters (image generation only)
+# With LoRA adapters (image generation)
 mlx-openai-server launch --model-type image-generation --model-path <path-to-local-flux-model> --config-name flux-dev --lora-paths "/path/to/lora1.safetensors,/path/to/lora2.safetensors" --lora-scales "0.8,0.6"
+
+# With LoRA adapters (image editing)
+mlx-openai-server launch --model-type image-edit --model-path <path-to-local-flux-model> --config-name flux-kontext-dev --lora-paths "/path/to/lora1.safetensors,/path/to/lora2.safetensors" --lora-scales "0.8,0.6"
 
 # With custom logging configuration
 mlx-openai-server launch --model-path <path-to-mlx-model> --model-type lm --log-file /tmp/server.log --log-level DEBUG
@@ -846,8 +872,6 @@ print(response.choices[0].message.content)
 
 #### Advanced Image Generation with Flux-Series Models
 
-> **⚠️ Note:** Image generation requires manual installation of `mflux`: `pip install git+https://github.com/cubist38/mflux.git`
-
 ```python
 import openai
 import base64
@@ -907,16 +931,14 @@ if response.status_code == 200:
 - `model`: Model identifier (defaults to "local-image-generation-model")
 - `size`: Image dimensions - "256x256", "512x512", or "1024x1024" (default: "1024x1024")
 - `negative_prompt`: What to avoid in the generated image (optional)
-- `steps`: Number of inference steps, 1-50 (default varies by config: 4 for Schnell, 25 for Dev, 28 for Krea-Dev)
+- `steps`: Number of inference steps, 1-50 (default varies by config: 4 for Schnell, 25 for Dev, 28 for Krea-Dev, 50 for Qwen Image)
 - `seed`: Random seed for reproducible generation (optional)
 - `priority`: Task priority - "low", "normal", "high" (default: "normal")
 - `async_mode`: Whether to process asynchronously (default: false)
 
-> **Note:** Image generation requires running the server with `--model-type image-generation` and manual installation of `mflux`: `pip install git+https://github.com/cubist38/mflux.git`. The server uses MLX Flux-series models for high-quality image generation with configurable quality/speed trade-offs.
+> **Note:** Image generation requires running the server with `--model-type image-generation`. The server supports MLX Flux-series models (flux-schnell, flux-dev, flux-krea-dev) and Qwen Image models (qwen-image) for high-quality image generation with configurable quality/speed trade-offs.
 
 #### Image Editing with Flux-Series Models
-
-> **⚠️ Note:** Image editing requires manual installation of `mflux`: `pip install git+https://github.com/cubist38/mflux.git`
 
 ```python
 import openai
@@ -981,13 +1003,13 @@ if response.status_code == 200:
 - `prompt`: Text description of the desired edit (required, max 1000 characters)
 - `model`: Model identifier (defaults to "flux-kontext-dev")
 - `negative_prompt`: What to avoid in the edited image (optional)
-- `guidance_scale`: Controls how closely the model follows the prompt (default: 2.5)
-- `steps`: Number of inference steps, 1-50 (default: 4)
+- `guidance_scale`: Controls how closely the model follows the prompt (default: 2.5 for flux-kontext-dev, 4.0 for qwen-image-edit)
+- `steps`: Number of inference steps, 1-50 (default: 4 for flux-kontext-dev, 50 for qwen-image-edit)
 - `seed`: Random seed for reproducible editing (default: 42)
 - `size`: Output image dimensions - "256x256", "512x512", or "1024x1024" (optional)
 - `response_format`: Response format - "b64_json" (default: "b64_json")
 
-> **Note:** Image editing requires running the server with `--model-type image-edit` and manual installation of `mflux`: `pip install git+https://github.com/cubist38/mflux.git`. The server uses MLX Flux-series models for high-quality image editing with configurable quality/speed trade-offs.
+> **Note:** Image editing requires running the server with `--model-type image-edit`. The server supports MLX Flux-series models (flux-kontext-dev) and Qwen Image Edit models (qwen-image-edit) for high-quality image editing with configurable quality/speed trade-offs.
 
 #### Function Calling
 ```python
@@ -1474,23 +1496,22 @@ The repository includes example notebooks to help you get started with different
   - Exploring different types of audio analysis prompts
   - Understanding audio transcription and content analysis capabilities
 
-- **image_generations.ipynb**: A comprehensive guide to image generation using MLX Flux-series models, including:
+- **image_generations.ipynb**: A comprehensive guide to image generation using MLX Flux-series and Qwen Image models, including:
   - Setting up connection to MLX Server for image generation
   - Basic image generation with default parameters
   - Advanced image generation with custom parameters (negative prompts, steps, seed)
-  - Working with different Flux configurations (schnell, dev, Krea-dev)
+  - Working with different Flux configurations (schnell, dev, Krea-dev) and Qwen Image models
   - Using LoRA adapters for fine-tuned generation
   - Optimizing performance with quantization settings
-  > **⚠️ Note:** Requires manual installation of `mflux`: `pip install git+https://github.com/cubist38/mflux.git`
 
-- **image_edit.ipynb**: A comprehensive guide to image editing using MLX Flux-series models, including:
+- **image_edit.ipynb**: A comprehensive guide to image editing using MLX Flux-series and Qwen Image Edit models, including:
   - Setting up connection to MLX Server for image editing
   - Basic image editing with default parameters
   - Advanced image editing with custom parameters (guidance scale, steps, seed)
-  - Working with the flux-kontext-dev configuration for contextual editing
+  - Working with the flux-kontext-dev and qwen-image-edit configurations for contextual editing
+  - Using LoRA adapters for fine-tuned editing
   - Understanding the differences between generation and editing workflows
   - Best practices for effective image editing prompts
-  > **⚠️ Note:** Requires manual installation of `mflux`: `pip install git+https://github.com/cubist38/mflux.git`
 
 ## Community & Support
 
