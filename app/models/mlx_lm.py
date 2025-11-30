@@ -21,16 +21,18 @@ from mlx_lm.sample_utils import make_logits_processors, make_sampler
 from mlx_lm.utils import load
 from outlines.processors import OutlinesLogitsProcessor
 
-from ..const import DEFAULT_CONTEXT_LENGTH, DEFAULT_TRUST_REMOTE_CODE
+from ..const import (
+    DEFAULT_BATCH_SIZE,
+    DEFAULT_CONTEXT_LENGTH,
+    DEFAULT_LM_TEMPERATURE,
+    DEFAULT_LM_TOP_P,
+    DEFAULT_MAX_TOKENS,
+    DEFAULT_MIN_P,
+    DEFAULT_SEED,
+    DEFAULT_TOP_K,
+    DEFAULT_TRUST_REMOTE_CODE,
+)
 from ..utils.outlines_transformer_tokenizer import OutlinesTransformerTokenizer
-
-DEFAULT_TEMPERATURE = float(os.getenv("DEFAULT_TEMPERATURE", "0.7"))
-DEFAULT_TOP_P = float(os.getenv("DEFAULT_TOP_P", "0.95"))
-DEFAULT_TOP_K = int(os.getenv("DEFAULT_TOP_K", "20"))
-DEFAULT_MIN_P = float(os.getenv("DEFAULT_MIN_P", "0.0"))
-DEFAULT_SEED = int(os.getenv("DEFAULT_SEED", "0"))
-DEFAULT_MAX_TOKENS = int(os.getenv("DEFAULT_MAX_TOKENS", "8192"))
-DEFAULT_BATCH_SIZE = int(os.getenv("DEFAULT_BATCH_SIZE", "32"))
 
 
 class MLX_LM:
@@ -220,10 +222,10 @@ class MLX_LM:
             messages (list[dict[str, str]]): List of messages in the conversation.
             stream (bool): Whether to stream the response.
             **kwargs: Additional parameters for generation
-                - temperature: Sampling temperature (default: 0.0)
-                - top_p: Top-p sampling parameter (default: 1.0)
-                - seed: Random seed (default: 0)
-                - max_tokens: Maximum number of tokens to generate (default: 256)
+                - temperature: Sampling temperature (default: DEFAULT_LM_TEMPERATURE)
+                - top_p: Top-p sampling parameter (default: DEFAULT_LM_TOP_P)
+                - seed: Random seed (default: DEFAULT_SEED)
+                - max_tokens: Maximum number of tokens to generate (default: DEFAULT_MAX_TOKENS)
         """
         # Set default parameters if not provided
         seed = kwargs.get("seed", DEFAULT_SEED)
@@ -231,8 +233,8 @@ class MLX_LM:
         chat_template_kwargs = kwargs.get("chat_template_kwargs", {})
 
         sampler_kwargs = {
-            "temp": kwargs.get("temperature", DEFAULT_TEMPERATURE),
-            "top_p": kwargs.get("top_p", DEFAULT_TOP_P),
+            "temp": kwargs.get("temperature", DEFAULT_LM_TEMPERATURE),
+            "top_p": kwargs.get("top_p", DEFAULT_LM_TOP_P),
             "top_k": kwargs.get("top_k", DEFAULT_TOP_K),
             "min_p": kwargs.get("min_p", DEFAULT_MIN_P),
         }

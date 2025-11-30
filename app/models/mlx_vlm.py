@@ -19,13 +19,14 @@ from mlx_vlm import generate, load, stream_generate
 from mlx_vlm.models.cache import make_prompt_cache
 from mlx_vlm.video_generate import process_vision_info
 
-from ..const import DEFAULT_CONTEXT_LENGTH, DEFAULT_TRUST_REMOTE_CODE
-
-# Default model parameters
-DEFAULT_MAX_TOKENS = int(os.getenv("DEFAULT_MAX_TOKENS", "8192"))
-DEFAULT_TEMPERATURE = float(os.getenv("DEFAULT_TEMPERATURE", "0.0"))
-DEFAULT_TOP_P = float(os.getenv("DEFAULT_TOP_P", "1.0"))
-DEFAULT_SEED = int(os.getenv("DEFAULT_SEED", "0"))
+from ..const import (
+    DEFAULT_CONTEXT_LENGTH,
+    DEFAULT_MAX_TOKENS,
+    DEFAULT_SEED,
+    DEFAULT_TRUST_REMOTE_CODE,
+    DEFAULT_VLM_TEMPERATURE,
+    DEFAULT_VLM_TOP_P,
+)
 
 
 class MLX_VLM:
@@ -201,10 +202,10 @@ if __name__ == "__main__":
             "tools": tools,
             "enable_thinking": True,
         },
-        "temperature": 0.0,
-        "top_p": 1.0,
-        "seed": 0,
-        "max_tokens": 8192,
+        "temperature": DEFAULT_VLM_TEMPERATURE,
+        "top_p": DEFAULT_VLM_TOP_P,
+        "seed": DEFAULT_SEED,
+        "max_tokens": DEFAULT_MAX_TOKENS,
         "frequency_penalty": 0.0,
         "presence_penalty": 0.0,
     }
