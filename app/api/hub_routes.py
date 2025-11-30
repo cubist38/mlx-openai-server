@@ -753,23 +753,9 @@ async def hub_status(raw_request: Request) -> HubStatusResponse:
     HubStatusResponse
         The hub status response.
     """
-    try:
-        config = _load_hub_config_from_request(raw_request)
-    except HubConfigError as e:
-        controller_available = getattr(raw_request.app.state, "hub_controller", None) is not None
-        return HubStatusResponse(
-            status="degraded",
-            timestamp=int(time.time()),
-            host=None,
-            port=None,
-            models=[],
-            counts=HubStatusCounts(registered=0, started=0, loaded=0),
-            warnings=[f"Hub configuration unavailable: {e}"],
-            controller_available=controller_available,
-        )
-
     warnings: list[str] = []
     snapshot: dict[str, Any] | None = None
+    config: MLXHubConfig | None = None
 
     # Check if controller is available directly (unified daemon mode)
     controller = getattr(raw_request.app.state, "hub_controller", None)
@@ -782,18 +768,37 @@ async def hub_status(raw_request: Request) -> HubStatusResponse:
             # Ensure config is up to date
             with contextlib.suppress(Exception):
                 await controller.reload_config()
+            config = controller.hub_config
             snapshot = await controller.get_status()
         except Exception as e:
             warnings.append(f"Failed to get status from controller: {e}")
+            # Fallback: try to load config manually
+            try:
+                config = _load_hub_config_from_request(raw_request)
+            except HubConfigError as e2:
+                warnings.append(f"Hub configuration unavailable: {e2}")
     else:
         # Fall back to daemon API calls (legacy mode)
         try:
+            config = _load_hub_config_from_request(raw_request)
             # Try to reconcile via daemon then fetch status snapshot
             with contextlib.suppress(HubServiceError):
                 await _call_daemon_api_async(config, "POST", "/hub/reload")
             snapshot = await _call_daemon_api_async(config, "GET", "/hub/status")
-        except HubServiceError as e:
+        except (HubConfigError, HubServiceError) as e:
             warnings.append(f"Hub manager unavailable: {e}")
+
+    if config is None:
+        return HubStatusResponse(
+            status="degraded",
+            timestamp=int(time.time()),
+            host=None,
+            port=None,
+            models=[],
+            counts=HubStatusCounts(registered=0, started=0, loaded=0),
+            warnings=warnings,
+            controller_available=controller is not None,
+        )
 
     models, counts = _build_models_from_config(config, snapshot)
     response_timestamp = int(time.time())
