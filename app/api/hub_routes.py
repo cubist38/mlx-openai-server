@@ -983,18 +983,20 @@ async def hub_service_stop(
     # so response can be returned before shutdown proceeds). This mirrors the
     # behavior of the `/hub/shutdown` endpoint.
     controller_stopped = _stop_controller_process(raw_request, background_tasks)
-    manager_shutdown = False
+    manager_shutdown = controller_stopped  # In unified mode, controller is the manager
 
-    try:
-        # Ask daemon to reload before shutdown; if unavailable we still proceed
-        with contextlib.suppress(HubServiceError):
-            await _call_daemon_api_async(config, "POST", "/hub/reload")
+    if not controller_stopped:
+        # Only attempt daemon calls in legacy mode (no in-process controller)
+        try:
+            # Ask daemon to reload before shutdown; if unavailable we still proceed
+            with contextlib.suppress(HubServiceError):
+                await _call_daemon_api_async(config, "POST", "/hub/reload")
 
-        await _call_daemon_api_async(config, "POST", "/hub/shutdown")
-        manager_shutdown = True
-    except HubServiceError:
-        # If daemon unreachable, treat as not running
-        manager_shutdown = False
+            await _call_daemon_api_async(config, "POST", "/hub/shutdown")
+            manager_shutdown = True
+        except HubServiceError:
+            # If daemon unreachable, treat as not running
+            manager_shutdown = False
 
     message_parts = [
         "Hub controller stop requested" if controller_stopped else "Hub controller was not running",

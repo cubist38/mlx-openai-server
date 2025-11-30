@@ -54,17 +54,17 @@ class MLXLMHandler:
         model_path : str
             Path to the model directory.
         context_length : int, optional
-            Maximum context length for the model, by default 32768.
+            Maximum context length for the model (default: DEFAULT_CONTEXT_LENGTH).
         max_concurrency : int, optional
-            Maximum number of concurrent model inference tasks, by default 1.
+            Maximum number of concurrent model inference tasks (default: DEFAULT_MAX_CONCURRENCY).
         enable_auto_tool_choice : bool, optional
-            Enable automatic tool choice, by default False.
+            Enable automatic tool choice (default: DEFAULT_ENABLE_AUTO_TOOL_CHOICE).
         tool_call_parser : str or None, optional
-            Name of the tool call parser to use (qwen3, glm4_moe, harmony, minimax, ...), by default None.
+            Name of the tool call parser to use (qwen3, glm4_moe, harmony, minimax, ...) (default: DEFAULT_TOOL_CALL_PARSER).
         reasoning_parser : str or None, optional
-            Name of the reasoning parser to use (qwen3, qwen3_next, glm4_moe, harmony, minimax, ...), by default None.
+            Name of the reasoning parser to use (qwen3, qwen3_next, glm4_moe, harmony, minimax, ...) (default: DEFAULT_REASONING_PARSER).
         trust_remote_code : bool, optional
-            Enable trust_remote_code when loading models, by default False.
+            Enable trust_remote_code when loading models (default: DEFAULT_TRUST_REMOTE_CODE).
         """
         self.model_path = model_path
         self.model = MLX_LM(
@@ -609,6 +609,7 @@ class MLXLMHandler:
             request_dict = request.model_dump()
             tools = request_dict.pop("tools", None)
             tool_choice = request_dict.pop("tool_choice", None)
+            request_dict.setdefault("chat_template_kwargs", {})
 
             if tools:
                 # Enable auto tool choice if requested via CLI flag
