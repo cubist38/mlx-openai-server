@@ -184,19 +184,25 @@ class BaseImageModel(ABC):
         """Load the specific model implementation."""
         pass
     
-    def _generate_image(self, prompt: str, seed: int, config: Config) -> Image.Image:
+    def _generate_image(self, prompt: str, negative_prompt: Optional[str], seed: int, config: Config) -> Image.Image:
         """Generate image using the specific model implementation."""
         try:
-            result = self._model.generate_image(
-                config=config,
-                prompt=prompt,
-                seed=seed,
-            )
+            # Build kwargs for generate_image call
+            generate_kwargs = {
+                "config": config,
+                "prompt": prompt,
+                "seed": seed,
+            }
+            # Add negative_prompt if provided (some models support this)
+            if negative_prompt is not None:
+                generate_kwargs["negative_prompt"] = negative_prompt
+            
+            result = self._model.generate_image(**generate_kwargs)
             return result.image
         except Exception as e:
             raise ModelGenerationError(f"{self.__class__.__name__} generation failed: {e}") from e
     
-    def __call__(self, prompt: str, seed: int = 42, **kwargs) -> Image.Image:
+    def __call__(self, prompt: str, negative_prompt: Optional[str] = None, seed: int = 42, **kwargs) -> Image.Image:
         """Generate an image from a text prompt."""
         if not self._is_loaded:
             raise ModelLoadError("Model is not loaded. Cannot generate image.")
@@ -214,11 +220,14 @@ class BaseImageModel(ABC):
         except Exception as e:
             raise ModelGenerationError(f"Failed to prepare configuration: {e}")
         
-        self.logger.info(f"Generating image with prompt: '{prompt[:50]}...' "
-                        f"(steps: {generation_config.num_inference_steps}, seed: {seed})")
+        log_msg = f"Generating image with prompt: '{prompt[:50]}...' "
+        if negative_prompt:
+            log_msg += f"negative_prompt: '{negative_prompt[:50]}...' "
+        log_msg += f"(steps: {generation_config.num_inference_steps}, seed: {seed})"
+        self.logger.info(log_msg)
         
         try:
-            result = self._generate_image(prompt, seed, generation_config)
+            result = self._generate_image(prompt, negative_prompt, seed, generation_config)
             if result is None:
                 raise ModelGenerationError("Model returned None instead of an image.")
                 
