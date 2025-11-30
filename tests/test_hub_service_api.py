@@ -14,7 +14,7 @@ import pytest
 from app.api.hub_routes import HubServiceError, hub_router
 from app.core.model_registry import ModelRegistry
 from app.hub.daemon import HubSupervisor
-from app.server import configure_fastapi_app
+from app.server import _hub_sync_once, configure_fastapi_app
 
 # Stub classes `_StubServiceState` and `_StubController` are provided by `tests.conftest`
 
@@ -447,3 +447,55 @@ async def test_stop_model_removes_manager_and_updates_registry() -> None:
     assert record.manager is None
     # Registry handler should be None for the registered model id
     assert registry.get_handler("m1_path") is None
+
+
+@pytest.mark.asyncio
+async def test_hub_sync_once_updates_registry(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Verify `_hub_sync_once` reads hub snapshot and updates the registry."""
+    # Prepare a fake snapshot returned by the hub daemon
+    start_ts = 1764465807
+    model_id = "mlx-community/Qwen3-30B-A3B-4bit-DWQ"
+    snapshot = {
+        "models": [
+            {
+                "name": "qwen3",
+                "state": "running",
+                "memory_loaded": True,
+                "model_path": model_id,
+                "started_at": start_ts,
+                "active_requests": 2,
+                "vram_load_error": None,
+            }
+        ]
+    }
+
+    async def fake_call(cfg: object, method: str, path: str, timeout: float = 2.0) -> dict:
+        return snapshot
+
+    def fake_load_cfg(req: object) -> SimpleNamespace:
+        # Return a simple object with host/port attributes
+        return SimpleNamespace(host="127.0.0.1", port=5005)
+
+    # Patch the functions as used by the server module (they are imported
+    # into `app.server` at module load time), so override there.
+    monkeypatch.setattr("app.server._call_daemon_api_async", fake_call)
+    monkeypatch.setattr("app.server._load_hub_config_from_request", fake_load_cfg)
+
+    app = FastAPI()
+    registry = ModelRegistry()
+    app.state.model_registry = registry
+
+    # Register the model so update_model_state will accept it
+    registry.register_model(model_id, handler=None, model_type="lm")
+
+    # Run one sync iteration
+    await _hub_sync_once(app)
+
+    # Validate registry was updated
+    status = registry.get_vram_status(model_id)
+    assert status["vram_loaded"] is True
+    extra = registry._extra[model_id]
+    assert extra["vram_last_load_ts"] == start_ts
+    assert extra["active_requests"] == 2
+    assert extra.get("vram_load_error") is None
+    assert extra.get("status") == "loaded"

@@ -33,6 +33,7 @@ from http import HTTPStatus
 from pathlib import Path
 import sys
 import time
+from types import SimpleNamespace
 from typing import Any, TypeAlias, cast
 
 from fastapi import FastAPI, Request
@@ -44,7 +45,9 @@ from starlette.responses import Response
 import uvicorn
 
 from .api.endpoints import router
+from .api.hub_routes import HubConfigError, _call_daemon_api_async, _load_hub_config_from_request
 from .config import MLXServerConfig
+from .const import HUB_POLL_INTERVAL_SECONDS
 from .core.manager_protocol import ManagerProtocol
 from .core.model_registry import ModelRegistry
 from .handler import MFLUX_AVAILABLE, MLXFluxHandler
@@ -1049,6 +1052,135 @@ def configure_fastapi_app(app: FastAPI) -> None:
         allow_methods=["*"],
         allow_headers=["*"],
     )
+
+    async def _hub_registry_sync_loop(app: FastAPI) -> None:
+        """Background task: poll hub daemon `/hub/status` and reconcile registry.
+
+        This keeps the authoritative `ModelRegistry` accurate when the hub runs
+        as a separate process. The task is resilient to temporary failures and
+        logs warnings on update failures.
+        """
+        registry: ModelRegistry | None = getattr(app.state, "model_registry", None)
+        if registry is None:
+            logger.debug("No model registry present; hub sync loop exiting")
+            return
+
+        interval = HUB_POLL_INTERVAL_SECONDS
+        # Helper uses its own fake request; no local fake_req needed here
+
+        while True:
+            try:
+                try:
+                    await _hub_sync_once(app)
+                except Exception:
+                    logger.exception("Error running hub sync iteration")
+
+            except asyncio.CancelledError:
+                logger.info("Hub registry sync loop cancelled")
+                return
+            except Exception:
+                logger.exception("Unexpected error in hub registry sync loop")
+
+            await asyncio.sleep(interval)
+
+    def _start_hub_sync_task() -> None:
+        """Start background hub sync task on application startup."""
+        # Avoid starting multiple tasks
+        if getattr(app.state, "hub_sync_task", None) is not None:
+            return
+        loop = asyncio.get_event_loop()
+        task = loop.create_task(_hub_registry_sync_loop(app))
+        app.state.hub_sync_task = task
+
+    def _stop_hub_sync_task() -> None:
+        """Cancel the hub sync background task on shutdown."""
+        task = getattr(app.state, "hub_sync_task", None)
+        if task is None:
+            return
+        try:
+            task.cancel()
+        except Exception:
+            logger.debug("Failed to cancel hub sync task")
+
+    app.add_event_handler("startup", _start_hub_sync_task)
+    app.add_event_handler("shutdown", _stop_hub_sync_task)
+
+
+async def _hub_sync_once(app: FastAPI) -> None:
+    """Perform one hub status poll and reconcile the `ModelRegistry`.
+
+    This helper contains the core logic for a single iteration so unit
+    tests can call it directly without starting the background loop.
+    """
+    registry: ModelRegistry | None = getattr(app.state, "model_registry", None)
+    if registry is None:
+        logger.debug("No model registry present; skipping hub sync iteration")
+        return
+
+    fake_req = SimpleNamespace(app=app)
+    try:
+        hub_config = _load_hub_config_from_request(cast("Request", fake_req))
+    except HubConfigError:
+        # No hub config available for this server
+        return
+
+    try:
+        snapshot = await _call_daemon_api_async(hub_config, "GET", "/hub/status", timeout=2.0)
+    except Exception as e:
+        logger.debug(f"Hub sync: failed to fetch hub status: {e}")
+        return
+
+    models = snapshot.get("models") if isinstance(snapshot, dict) else None
+    if not isinstance(models, list):
+        return
+
+    for entry in models:
+        try:
+            if not isinstance(entry, dict):
+                continue
+            model_path = entry.get("model_path")
+            if not isinstance(model_path, str):
+                continue
+
+            vram_loaded = bool(entry.get("memory_loaded", False))
+            state = str(entry.get("state") or "").lower()
+            status = "loaded" if vram_loaded else ("running" if state == "running" else "stopped")
+
+            metadata_updates: dict[str, object] = {"vram_loaded": vram_loaded}
+
+            # Timestamps: prefer explicit fields if present
+            started_at = entry.get("started_at")
+            if isinstance(started_at, (int, float)):
+                metadata_updates["vram_last_load_ts"] = int(started_at)
+
+            last_request = entry.get("last_request_ts") or entry.get("vram_last_request_ts")
+            if isinstance(last_request, (int, float)):
+                metadata_updates["vram_last_request_ts"] = int(last_request)
+
+            last_unload = entry.get("last_unload_ts") or entry.get("vram_last_unload_ts")
+            if isinstance(last_unload, (int, float)):
+                metadata_updates["vram_last_unload_ts"] = int(last_unload)
+
+            load_error = entry.get("vram_load_error") or entry.get("load_error")
+            if isinstance(load_error, str):
+                metadata_updates["vram_load_error"] = load_error
+
+            active_requests = entry.get("active_requests")
+            if isinstance(active_requests, int):
+                metadata_updates["active_requests"] = active_requests
+
+            try:
+                if registry.has_model(model_path):
+                    await registry.update_model_state(
+                        model_path, metadata_updates=metadata_updates, status=status
+                    )
+            except KeyError:
+                # Not registered locally — skip
+                continue
+            except Exception as e:
+                logger.warning(f"Failed to update registry for {model_path}: {e}")
+        except Exception:
+            logger.exception("Unexpected error while syncing model entry")
 
     @app.middleware("http")
     async def add_process_time_header(
