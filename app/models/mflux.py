@@ -106,7 +106,7 @@ class ModelConfiguration:
         )
     
     @classmethod
-    def kontext(cls, quantize: int = 8) -> 'ModelConfiguration':
+    def kontext(cls, quantize: int = 8, lora_paths: Optional[List[str]] = None, lora_scales: Optional[List[float]] = None) -> 'ModelConfiguration':
         """Create configuration for Flux Kontext model."""
         return cls(
             model_type="kontext",
@@ -168,7 +168,15 @@ class BaseImageModel(ABC):
             return True
         
         # Check if it's a valid model name (for downloading)
-        valid_model_names = ["flux-dev", "flux-schnell", "flux-kontext-dev", "qwen-image", "qwen-image-edit"]
+        # This list should be kept in sync with ImageGenerationModel._MODEL_CONFIGS
+        valid_model_names = [
+            "flux-dev", 
+            "flux-schnell", 
+            "flux-krea-dev",
+            "flux-kontext-dev", 
+            "qwen-image", 
+            "qwen-image-edit"
+        ]
         return self.model_path in valid_model_names
     
     @abstractmethod
@@ -176,10 +184,17 @@ class BaseImageModel(ABC):
         """Load the specific model implementation."""
         pass
     
-    @abstractmethod
     def _generate_image(self, prompt: str, seed: int, config: Config) -> Image.Image:
         """Generate image using the specific model implementation."""
-        pass
+        try:
+            result = self._model.generate_image(
+                config=config,
+                prompt=prompt,
+                seed=seed,
+            )
+            return result.image
+        except Exception as e:
+            raise ModelGenerationError(f"{self.__class__.__name__} generation failed: {e}") from e
     
     def __call__(self, prompt: str, seed: int = 42, **kwargs) -> Image.Image:
         """Generate an image from a text prompt."""
@@ -283,18 +298,6 @@ class FluxStandardModel(BaseImageModel):
             error_msg = f"Failed to load {self.config.model_type} model: {e}"
             self.logger.error(error_msg)
             raise ModelLoadError(error_msg) from e
-    
-    def _generate_image(self, prompt: str, seed: int, config: Config) -> Image.Image:
-        """Generate image using standard Flux model."""
-        try:
-            result = self._model.generate_image(
-                config=config,
-                prompt=prompt,
-                seed=seed,
-            )
-            return result.image
-        except Exception as e:
-            raise ModelGenerationError(f"Standard model generation failed: {e}") from e
 
 
 class FluxKontextModel(BaseImageModel):
@@ -314,18 +317,6 @@ class FluxKontextModel(BaseImageModel):
             error_msg = f"Failed to load Kontext model: {e}"
             self.logger.error(error_msg)
             raise ModelLoadError(error_msg) from e
-    
-    def _generate_image(self, prompt: str, seed: int, config: Config) -> Image.Image:
-        """Generate image using Flux Kontext model."""
-        try:
-            result = self._model.generate_image(
-                config=config,
-                prompt=prompt,
-                seed=seed,
-            )
-            return result.image
-        except Exception as e:
-            raise ModelGenerationError(f"Kontext model generation failed: {e}") from e
 
 class QwenImageModel(BaseImageModel):
     """Qwen Image model implementation."""
@@ -348,18 +339,6 @@ class QwenImageModel(BaseImageModel):
             self.logger.error(error_msg)
             raise ModelLoadError(error_msg) from e
 
-    def _generate_image(self, prompt: str, seed: int, config: Config) -> Image.Image:
-        """Generate image using Qwen Image model."""
-        try:
-            result = self._model.generate_image(
-                config=config,
-                prompt=prompt,
-                seed=seed,
-            )
-            return result.image
-        except Exception as e:
-            raise ModelGenerationError(f"Qwen Image model generation failed: {e}") from e
-
 class QwenImageEditModel(BaseImageModel):
     """Qwen Image Edit model implementation."""
     
@@ -379,18 +358,6 @@ class QwenImageEditModel(BaseImageModel):
             error_msg = f"Failed to load Qwen Image Edit model: {e}"
             self.logger.error(error_msg)
             raise ModelLoadError(error_msg) from e
-    
-    def _generate_image(self, prompt: str, seed: int, config: Config) -> Image.Image:
-        """Generate image using Qwen Image Edit model."""
-        try:
-            result = self._model.generate_image(
-                config=config,
-                prompt=prompt,
-                seed=seed,
-            )
-            return result.image
-        except Exception as e:
-            raise ModelGenerationError(f"Qwen Image Edit model generation failed: {e}") from e
             
             
 
