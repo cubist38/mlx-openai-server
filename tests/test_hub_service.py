@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Callable
 from http import HTTPStatus
 from pathlib import Path
 from types import SimpleNamespace
@@ -439,9 +440,9 @@ models: []
 
     class DummyBackgroundTasks:
         def __init__(self) -> None:
-            self.tasks: list[tuple[callable, tuple, dict]] = []
+            self.tasks: list[tuple[Callable, tuple, dict]] = []
 
-        def add_task(self, func: callable, *args: object, **kwargs: object) -> None:
+        def add_task(self, func: Callable, *args: object, **kwargs: object) -> None:
             self.tasks.append((func, args, kwargs))
 
         def run_all(self) -> None:

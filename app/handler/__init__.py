@@ -12,6 +12,7 @@ __all__ = [
     "MLXFluxHandler",
     "MLXLMHandler",
     "MLXVLMHandler",
+    "MLXWhisperHandler",
 ]
 
 
@@ -28,6 +29,10 @@ def __getattr__(name: str) -> Any:
         from .mlx_vlm import MLXVLMHandler  # noqa: PLC0415
 
         return MLXVLMHandler
+    if name == "MLXWhisperHandler":
+        from .mlx_whisper import MLXWhisperHandler  # noqa: PLC0415
+
+        return MLXWhisperHandler
     if name == "MLXFluxHandler":
         try:
             from .mflux import MLXFluxHandler  # noqa: PLC0415

@@ -248,12 +248,9 @@ class HubSupervisor:
                     )
                     if model_id_for_registry is None:
                         logger.error(
-                            "Registry update skipped: missing model id for registry. "
-                            "model=%r original_model_path=%r record.model_path=%r manager=%r",
-                            name,
-                            original_model_path,
-                            record.model_path,
-                            getattr(record, "manager", None),
+                            f"Registry update skipped: missing model id for registry. "
+                            f"model={name!r} original_model_path={original_model_path!r} "
+                            f"record.model_path={record.model_path!r} manager={getattr(record, 'manager', None)!r}"
                         )
                         raise RuntimeError(
                             f"Cannot update registry for model '{name}': model id is None"
@@ -278,12 +275,9 @@ class HubSupervisor:
                 )
                 if model_id_for_registry is None:
                     logger.error(
-                        "Registry update skipped: missing model id for registry (JIT start). "
-                        "model=%r original_model_path=%r record.model_path=%r manager=%r",
-                        name,
-                        original_model_path,
-                        record.model_path,
-                        getattr(record, "manager", None),
+                        f"Registry update skipped: missing model id for registry (JIT start). "
+                        f"model={name!r} original_model_path={original_model_path!r} "
+                        f"record.model_path={record.model_path!r} manager={getattr(record, 'manager', None)!r}"
                     )
                     raise RuntimeError(
                         f"Cannot update registry for model '{name}' (JIT start): model id is None"

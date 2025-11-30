@@ -41,7 +41,6 @@ class StubManager:
 
     def remove_log_sink(self) -> None:
         """No-op for removing per-model log sinks in the stub."""
-        # Explicitly returning None is unnecessary.
 
 
 @pytest.mark.asyncio
