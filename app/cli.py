@@ -120,8 +120,8 @@ def cli():
 @click.option(
     "--config-name",
     default=None,
-    type=click.Choice(["flux-schnell", "flux-dev", "flux-krea-dev", "flux-kontext-dev"]),
-    help="Config name of the model. Only used for image-generation and image-edit Flux models.",
+    type=click.Choice(["flux-schnell", "flux-dev", "flux-krea-dev", "flux-kontext-dev", "qwen-image", "qwen-image-edit"]),
+    help="Config name of the model. Only used for image-generation and image-edit models.",
 )
 @click.option(
     "--lora-paths",
