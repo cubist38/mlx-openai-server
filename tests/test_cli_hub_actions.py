@@ -185,20 +185,22 @@ def test_render_watch_table_formats_columns() -> None:
         {
             "name": "beta",
             "state": "failed",
-            "pid": 2222,
+            "loaded": "no",
+            "auto_unload": "-",
+            "type": "vlm",
             "group": "vlm",
-            "started_at": 1950.0,
-            "exit_code": 1,
-            "log_path": "/tmp/logs/beta.log",
+            "default": "-",
+            "model": "-",
         },
         {
             "name": "alpha",
             "state": "running",
-            "pid": 1111,
+            "loaded": "yes",
+            "auto_unload": "5min",
+            "type": "lm",
             "group": "lm",
-            "started_at": 1900.0,
-            "exit_code": None,
-            "log_path": "/tmp/logs/alpha.log",
+            "default": "✓",
+            "model": "some/model",
         },
     ]
 
@@ -206,14 +208,18 @@ def test_render_watch_table_formats_columns() -> None:
 
     assert "NAME" in table.splitlines()[0]
     assert "alpha" in table
-    assert "1m40s" in table  # uptime derived from now - started_at
-    assert "beta.log" in table
-    assert "EXIT" in table
+    assert "beta" in table
+    assert "LOADED" in table
+    assert "AUTO-UNLOAD" in table
+    assert "TYPE" in table
+    assert "GROUP" in table
+    assert "DEFAULT" in table
+    assert "MODEL" in table
 
 
 def test_render_watch_table_handles_empty_payload() -> None:
     """The watch table helper should gracefully render empty snapshots."""
-    assert _render_watch_table([], now=0) == "  (no managed processes)"
+    assert _render_watch_table([], now=0) == "  (no managed models)"
 
 
 def test_hub_load_model_cli_calls_controller(

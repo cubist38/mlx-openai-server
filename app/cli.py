@@ -620,12 +620,12 @@ def _format_duration(seconds: float | None) -> str:
 
 
 def _render_watch_table(models: Iterable[dict[str, Any]], *, now: float | None = None) -> str:
-    """Return a formatted table describing hub-managed processes.
+    """Return a formatted table describing hub-managed models, matching hub status format.
 
     Parameters
     ----------
     models : Iterable[dict[str, Any]]
-        The model process data.
+        The model data.
     now : float | None, optional
         Reference time for uptime calculation, defaults to current time.
 
@@ -636,43 +636,45 @@ def _render_watch_table(models: Iterable[dict[str, Any]], *, now: float | None =
     """
     snapshot = list(models)
     if not snapshot:
-        return "  (no managed processes)"
+        return "  (no managed models)"
 
-    reference = now if isinstance(now, (int, float)) else time.time()
-    headers = ["NAME", "STATE", "PID", "GROUP", "UPTIME", "EXIT", "LOG"]
+    headers = ["NAME", "STATE", "LOADED", "AUTO-UNLOAD", "TYPE", "GROUP", "DEFAULT", "MODEL"]
     rows: list[dict[str, str]] = []
     for entry in sorted(snapshot, key=lambda item: str(item.get("name", "?"))):
         name = str(entry.get("name", "?"))
-        state = str(entry.get("state", "unknown")).upper()
-        pid = str(entry.get("pid") or "-")
-        group = entry.get("group") or "-"
-        started_at = entry.get("started_at")
-        uptime = "-"
-        if isinstance(started_at, (int, float)):
-            uptime = _format_duration(reference - float(started_at))
-        exit_code = entry.get("exit_code")
-        exit_display = "-" if exit_code in (None, 0) else str(exit_code)
-        log_path = entry.get("log_path")
-        log_display = Path(log_path).name if isinstance(log_path, str) else "-"
+        state = str(entry.get("state", "inactive"))
+        loaded = str(entry.get("loaded", "no"))
+        auto_unload = str(entry.get("auto_unload", "-"))
+        model_type = str(entry.get("type", "-"))
+        group = str(entry.get("group", "-"))
+        default = str(entry.get("default", "-"))
+        model_path = str(entry.get("model", "-"))
+
         rows.append(
             {
                 "NAME": name,
                 "STATE": state,
-                "PID": pid,
+                "LOADED": loaded,
+                "AUTO-UNLOAD": auto_unload,
+                "TYPE": model_type,
                 "GROUP": group,
-                "UPTIME": uptime,
-                "EXIT": exit_display,
-                "LOG": log_display,
+                "DEFAULT": default,
+                "MODEL": model_path,
             },
         )
 
+    # Calculate column widths
     widths: dict[str, int] = {header: len(header) for header in headers}
     for row in rows:
         for header in headers:
             widths[header] = max(widths[header], len(row[header]))
 
-    divider = "  " + "-+-".join("-" * widths[header] for header in headers)
+    # Print header
     header_line = "  " + " | ".join(header.ljust(widths[header]) for header in headers)
+
+    # Print divider
+    divider = "  " + "-+-".join("-" * widths[header] for header in headers)
+
     lines = [header_line, divider]
     lines.extend(
         "  " + " | ".join(row[header].ljust(widths[header]) for header in headers) for row in rows
@@ -693,7 +695,63 @@ def _print_watch_snapshot(snapshot: dict[str, Any]) -> None:
     formatted = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(reference))
 
     raw_models = snapshot.get("models")
-    models: list[dict[str, Any]] = raw_models if isinstance(raw_models, list) else []
+    models: list[dict[str, Any]] = []
+    if isinstance(raw_models, list):
+        for model in raw_models:
+            if isinstance(model, dict) and "id" in model:
+                # Convert Model dict to format expected by _render_watch_table
+                metadata = model.get("metadata") or {}
+                name = model["id"]
+                state = metadata.get("process_state", "inactive")
+                pid = metadata.get("pid")
+                port = metadata.get("port")
+
+                # Format state with pid and port if running
+                if state == "running" and pid is not None:
+                    state_display = f"{state} (pid={pid}"
+                    if port is not None:
+                        state_display += f", port={port}"
+                    state_display += ")"
+                else:
+                    state_display = state
+
+                # Loaded in memory
+                memory_flag = metadata.get("memory_state") == "loaded"
+                loaded_in_memory = "yes" if memory_flag else "no"
+
+                # Auto-unload
+                auto_unload_minutes = metadata.get("auto_unload_minutes")
+                auto_unload = f"{auto_unload_minutes}min" if auto_unload_minutes else "-"
+
+                # Model type
+                model_type = metadata.get("model_type", "-")
+
+                # Group
+                group = metadata.get("group") or "-"
+
+                # Default
+                is_default = metadata.get("default", False)
+                default = "✓" if is_default else "-"
+
+                # Model path
+                model_path = metadata.get("model_path", "-")
+
+                models.append(
+                    {
+                        "name": name,
+                        "state": state_display,
+                        "loaded": loaded_in_memory,
+                        "auto_unload": auto_unload,
+                        "type": model_type,
+                        "group": group,
+                        "default": default,
+                        "model": model_path,
+                    }
+                )
+            elif isinstance(model, dict):
+                # Fallback for dict format (legacy)
+                models.append(model)
+
     running = sum(1 for entry in models if str(entry.get("state")).lower() == "running")
     stopped = sum(1 for entry in models if str(entry.get("state")).lower() == "stopped")
     failed = sum(
@@ -1069,11 +1127,7 @@ def _start_hub_daemon(config: MLXHubConfig) -> subprocess.Popen[bytes] | None:
         except click.ClickException:
             time.sleep(0.5)
     else:
-        raise click.ClickException(
-            "Hub manager failed to start within 20 seconds.\n"
-            "You can also start it manually (for example):\n"
-            f"  uvicorn app.hub.daemon:create_app --host {host_val} --port {port_val}",
-        )
+        raise click.ClickException("Hub manager failed to start within 20 seconds.")
 
     return proc
 

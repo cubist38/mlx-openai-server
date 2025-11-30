@@ -53,7 +53,7 @@ def test_print_watch_snapshot_handles_empty(capsys: pytest.CaptureFixture[str]) 
     """_print_watch_snapshot should handle empty payloads gracefully."""
     _print_watch_snapshot({"timestamp": 0, "models": []})
     output = capsys.readouterr().out
-    assert "no managed processes" in output
+    assert "no managed models" in output
 
 
 def test_print_watch_snapshot_sorts_models(capsys: pytest.CaptureFixture[str]) -> None:
