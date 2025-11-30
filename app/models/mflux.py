@@ -493,4 +493,11 @@ class ImageGenerationModel:
         return hasattr(self.model_instance, '_is_loaded') and self.model_instance._is_loaded
 
 if __name__ == "__main__":
-    model = QwenImageModel(model_path="qwen-image", config=ModelConfiguration.dev())
+    model = ImageGenerationModel(
+        model_path="qwen-image",
+        config_name="qwen-image",
+        quantize=8,
+        lora_paths=None,
+        lora_scales=None,
+    )
+    print(model.get_model_info("qwen-image"))
