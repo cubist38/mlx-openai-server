@@ -264,8 +264,8 @@
             <thead>
                 <tr>
                     <th>Name</th>
-                    <th>Process</th>
-                    <th>Memory</th>
+                    <th>State</th>
+                    <th>Loaded</th>
                     <th>Auto-Unload</th>
                     <th>Type</th>
                     <th>Group</th>
@@ -305,15 +305,14 @@
             if (!ts) {
                 return '—';
             }
-            try {
-                return new Intl.DateTimeFormat(undefined, {
-                    hour: '2-digit',
-                    minute: '2-digit',
-                    second: '2-digit',
-                }).format(new Date(ts * 1000));
-            } catch (err) {
-                return new Date(ts * 1000).toLocaleTimeString();
-            }
+            const date = new Date(ts * 1000);
+            const year = date.getFullYear();
+            const month = String(date.getMonth() + 1).padStart(2, '0');
+            const day = String(date.getDate()).padStart(2, '0');
+            const hours = String(date.getHours()).padStart(2, '0');
+            const minutes = String(date.getMinutes()).padStart(2, '0');
+            const seconds = String(date.getSeconds()).padStart(2, '0');
+            return `${year}-${month}-${day} ${hours}:${minutes}:${seconds}`;
         }
 
         function setStatusPill(value) {
@@ -381,6 +380,10 @@
             const transition = meta.memory_last_transition_at ? formatTimestamp(meta.memory_last_transition_at) : null;
             const error = meta.memory_last_error ? `Error: ${escapeHtml(meta.memory_last_error)}` : null;
             const pieces = [state.toUpperCase()];
+            if (state === 'loaded' && meta.auto_unload_minutes > 0) {
+                const unloadTs = Date.now() / 1000 + meta.auto_unload_minutes * 60;
+                pieces.push(`Unload ${formatTimestamp(unloadTs)}`);
+            }
             if (transition) {
                 pieces.push(`${transition}`);
             }
