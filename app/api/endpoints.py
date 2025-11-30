@@ -1231,7 +1231,12 @@ async def process_multimodal_request(
         Processed response.
     """
     if request_id:
-        logger.info(f"Processing multimodal request [request_id={request_id}]")
+        # Prefer a model-bound logger when available so the record goes to the
+        # model-specific sink. `handler` is the model handler instance and may
+        # expose `model_path`.
+        model_name = getattr(handler, "model_path", None)
+        model_logger = logger.bind(model=model_name) if model_name else logger
+        model_logger.info(f"Processing multimodal request [request_id={request_id}]")
 
     if request.stream:
         return StreamingResponse(
@@ -1280,7 +1285,9 @@ async def process_text_request(
         Processed response.
     """
     if request_id:
-        logger.info(f"Processing text request [request_id={request_id}]")
+        model_name = getattr(handler, "model_path", None)
+        model_logger = logger.bind(model=model_name) if model_name else logger
+        model_logger.info(f"Processing text request [request_id={request_id}]")
 
     if request.stream:
         return StreamingResponse(

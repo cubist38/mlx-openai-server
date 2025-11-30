@@ -215,6 +215,7 @@ ignore = [
   "D406",   # Section name should end with a newline
   "D407",   # Section name underlining
   "E501",   # line too long
+  "G004",   # Logging statement uses f-string (acceptable with loguru)
 
   "PLC1901", # {existing} can be simplified to {replacement} as an empty string is falsey; too many false positives
   "PLR0904", # Too many public methods

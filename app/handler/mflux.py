@@ -79,8 +79,10 @@ class MLXFluxHandler:
         # Initialize cleanup flag
         self._cleaned: bool = False
 
-        # Initialize request queue for image generation tasks
-        self.request_queue = RequestQueue(max_concurrency=max_concurrency)
+        # Initialize request queue for image generation tasks and bind per-model logger
+        self.request_queue = RequestQueue(
+            max_concurrency=max_concurrency, logger=logger.bind(model=self.model_path)
+        )
 
         logger.info(
             f"Initialized MLXFluxHandler with model path: {model_path}, config name: {config_name}",
@@ -111,6 +113,7 @@ class MLXFluxHandler:
             max_concurrency=queue_config.get("max_concurrency", self.request_queue.max_concurrency),
             timeout=queue_config.get("timeout", self.request_queue.timeout),
             queue_size=queue_config.get("queue_size", self.request_queue.queue_size),
+            logger=logger.bind(model=self.model_path),
         )
         await self.request_queue.start(self._process_request)
         logger.info("Initialized MLXFluxHandler and started request queue")

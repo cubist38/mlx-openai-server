@@ -93,9 +93,13 @@ class MLXVLMHandler:
         self.reasoning_parser = reasoning_parser
 
         # Initialize request queue for multimodal and text tasks
+        # Bind a per-model logger so queue events go to the model-specific sink
         # We use the same queue for both multimodal and text tasks for simplicity
         # and to ensure we don't overload the model with too many concurrent requests
-        self.request_queue = RequestQueue(max_concurrency=max_concurrency)
+        self.request_queue = RequestQueue(
+            max_concurrency=max_concurrency,
+            logger=logger.bind(model=self.model_path),
+        )
 
         logger.info(f"Initialized MLXVLMHandler with model path: {model_path}")
         if disable_auto_resize:
@@ -140,6 +144,7 @@ class MLXVLMHandler:
             max_concurrency=queue_config.get("max_concurrency", self.request_queue.max_concurrency),
             timeout=queue_config.get("timeout", self.request_queue.timeout),
             queue_size=queue_config.get("queue_size", self.request_queue.queue_size),
+            logger=logger.bind(model=self.model_path),
         )
         await self.request_queue.start(self._process_request)
         logger.info("Initialized MLXVLMHandler and started request queue")

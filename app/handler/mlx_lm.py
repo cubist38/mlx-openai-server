@@ -81,7 +81,11 @@ class MLXLMHandler:
         self.reasoning_parser = reasoning_parser
 
         # Initialize request queue for text tasks
-        self.request_queue = RequestQueue(max_concurrency=max_concurrency)
+        # Bind a per-model logger so queue events go to the model-specific sink
+        self.request_queue = RequestQueue(
+            max_concurrency=max_concurrency,
+            logger=logger.bind(model=self.model_path),
+        )
 
         # Initialize message converter for supported models
         self.converter = ParserFactory.create_converter(self.model_type)
@@ -212,6 +216,7 @@ class MLXLMHandler:
             max_concurrency=queue_config.get("max_concurrency", self.request_queue.max_concurrency),
             timeout=queue_config.get("timeout", self.request_queue.timeout),
             queue_size=queue_config.get("queue_size", self.request_queue.queue_size),
+            logger=logger.bind(model=self.model_path),
         )
         await self.request_queue.start(self._process_request)
         logger.info("Initialized MLXHandler and started request queue")

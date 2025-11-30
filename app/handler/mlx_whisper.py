@@ -55,7 +55,10 @@ class MLXWhisperHandler:
         self.model_created: int = int(time.time())  # Store creation time when model is loaded
 
         # Initialize request queue for audio transcription tasks
-        self.request_queue = RequestQueue(max_concurrency=max_concurrency)
+        self.request_queue = RequestQueue(
+            max_concurrency=max_concurrency,
+            logger=logger.bind(model=self.model_path),
+        )
 
         logger.info(f"Initialized MLXWhisperHandler with model path: {model_path}")
 
@@ -91,6 +94,7 @@ class MLXWhisperHandler:
                 "queue_size",
                 self.request_queue.queue_size if self.request_queue else 50,
             ),
+            logger=logger.bind(model=self.model_path),
         )
         await self.request_queue.start(self._process_request)
         logger.info("Initialized MLXWhisperHandler and started request queue")

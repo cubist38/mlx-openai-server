@@ -37,8 +37,11 @@ class MLXEmbeddingsHandler:
         self.model: MLX_Embeddings = MLX_Embeddings(model_path)
         self.model_created = int(time.time())  # Store creation time when model is loaded
 
-        # Initialize request queue for embedding tasks
-        self.request_queue = RequestQueue(max_concurrency=max_concurrency)
+        # Initialize request queue for embedding tasks and bind per-model logger
+        self.request_queue = RequestQueue(
+            max_concurrency=max_concurrency,
+            logger=logger.bind(model=self.model_path),
+        )
 
         logger.info(f"Initialized MLXEmbeddingsHandler with model path: {model_path}")
 

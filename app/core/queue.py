@@ -1,4 +1,10 @@
-"""Asynchronous request queue with concurrency control."""
+"""Asynchronous request queue with concurrency control.
+
+This module's `RequestQueue` accepts an optional bound logger so callers
+can route queue-level events into per-model log sinks (the logger should
+be a `loguru` bound logger). When no logger is provided the global
+loguru logger is used.
+"""
 
 from __future__ import annotations
 
@@ -9,7 +15,7 @@ import gc
 import time
 from typing import Any, Generic, TypeVar
 
-from loguru import logger
+from loguru import logger as _root_logger
 
 T = TypeVar("T")
 
@@ -46,6 +52,7 @@ class RequestQueue:
         max_concurrency: int = 2,
         timeout: float = 300.0,
         queue_size: int = 100,
+        logger: Any | None = None,
     ) -> None:
         """
         Initialize the request queue.
@@ -54,6 +61,7 @@ class RequestQueue:
             max_concurrency (int): Maximum number of concurrent requests to process.
             timeout (float): Timeout in seconds for request processing.
             queue_size (int): Maximum queue size.
+            logger: Optional bound `loguru` logger to use for queue events.
         """
         self.max_concurrency = max_concurrency
         self.timeout = timeout
@@ -64,6 +72,9 @@ class RequestQueue:
         self._worker_task: asyncio.Task[None] | None = None
         self._running = False
         self._tasks: set[asyncio.Task[None]] = set()
+
+        # Per-queue logger (allow passing a bound logger for model-specific logs)
+        self._logger = logger if logger is not None else _root_logger
 
     async def start(self, processor: Callable[[Any], Awaitable[Any]]) -> None:
         """
@@ -77,7 +88,7 @@ class RequestQueue:
 
         self._running = True
         self._worker_task = asyncio.create_task(self._worker_loop(processor))
-        logger.info(f"Started request queue with max concurrency: {self.max_concurrency}")
+        self._logger.info(f"Started request queue with max concurrency: {self.max_concurrency}")
 
     async def stop(self) -> None:
         """Stop the queue worker."""
@@ -111,7 +122,7 @@ class RequestQueue:
                 if hasattr(request, "data"):
                     del request.data
             except Exception as e:
-                logger.opt(exception=e).debug("Failed to remove request.data")
+                self._logger.opt(exception=e).debug("Failed to remove request.data")
 
         self.active_requests.clear()
 
@@ -124,7 +135,7 @@ class RequestQueue:
 
         # Force garbage collection after cleanup
         gc.collect()
-        logger.info("Stopped request queue")
+        self._logger.info("Stopped request queue")
 
     async def _worker_loop(self, processor: Callable[[Any], Awaitable[Any]]) -> None:
         """
@@ -146,7 +157,7 @@ class RequestQueue:
             except asyncio.CancelledError:
                 break
             except Exception as e:
-                logger.error(f"Error in worker loop. {type(e).__name__}: {e}")
+                self._logger.error(f"Error in worker loop. {type(e).__name__}: {e}")
 
     async def _process_request(
         self,
@@ -170,23 +181,27 @@ class RequestQueue:
 
                 # Set the result
                 request.set_result(result)
-                logger.info(f"Request {request.request_id} processed in {processing_time:.2f}s")
+                self._logger.info(
+                    f"Request {request.request_id} processed in {processing_time:.2f}s"
+                )
 
             except TimeoutError:
                 request.set_exception(
                     TimeoutError(f"Request processing timed out after {self.timeout}s"),
                 )
-                logger.warning(f"Request {request.request_id} timed out after {self.timeout}s")
+                self._logger.warning(
+                    f"Request {request.request_id} timed out after {self.timeout}s"
+                )
             except asyncio.CancelledError as e:
                 # Propagate cancellation but ensure the future is not left hanging
                 if not request.future.done():
                     request.future.set_exception(e)
-                logger.info(f"Request {request.request_id} was cancelled")
+                self._logger.info(f"Request {request.request_id} was cancelled")
                 raise
             except Exception as e:
                 request.set_exception(e)
-                logger.error(
-                    f"Error processing request {request.request_id}. {type(e).__name__}: {e}",
+                self._logger.error(
+                    f"Error processing request {request.request_id}. {type(e).__name__}: {e}"
                 )
 
             finally:
@@ -198,7 +213,7 @@ class RequestQueue:
                         if hasattr(removed_request, "data"):
                             del removed_request.data
                     except Exception as e:
-                        logger.opt(exception=e).debug("Failed to remove request.data")
+                        self._logger.opt(exception=e).debug("Failed to remove request.data")
                 # Force garbage collection periodically to prevent memory buildup
                 if len(self.active_requests) % 10 == 0:  # Every 10 requests
                     gc.collect()
@@ -241,7 +256,7 @@ class RequestQueue:
             ) from None
         else:
             queue_time = time.time() - request.created_at
-            logger.info(f"Request {request_id} queued (wait: {queue_time:.2f}s)")
+            self._logger.info(f"Request {request_id} queued (wait: {queue_time:.2f}s)")
             return request
 
     async def submit(self, request_id: str, data: Any) -> Any:

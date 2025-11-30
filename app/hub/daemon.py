@@ -199,6 +199,13 @@ class HubSupervisor:
                         model_id_for_registry, handler=record.manager
                     )
                 logger.info(f"Loaded model {name}")
+                # Also emit the load event to the model-specific log sink
+                try:
+                    model_logger = getattr(record.manager, "_logger", None)
+                    if model_logger:
+                        model_logger.info(f"Loaded model {name}")
+                except Exception:
+                    logger.debug(f"Failed to write model-specific load log for {name}")
                 return {"status": "loaded", "name": name}
 
             # JIT enabled: just create the manager, don't load yet
@@ -223,6 +230,13 @@ class HubSupervisor:
                     model_id_for_registry, handler=record.manager
                 )
             logger.info(f"Started model {name} (JIT enabled, not loaded)")
+            # Also emit the start event to the model-specific log sink
+            try:
+                model_logger = getattr(record.manager, "_logger", None)
+                if model_logger:
+                    model_logger.info(f"Started model {name} (JIT enabled, not loaded)")
+            except Exception:
+                logger.debug(f"Failed to write model-specific start log for {name}")
             return {"status": "started", "name": name}
 
     async def stop_model(self, name: str) -> dict[str, Any]:
@@ -253,6 +267,13 @@ class HubSupervisor:
             unloaded = await record.manager.unload("stop")
             if unloaded:
                 logger.info(f"Unloaded model {name}")
+                # Also emit the unload event to the model-specific log sink
+                try:
+                    model_logger = getattr(record.manager, "_logger", None)
+                    if model_logger:
+                        model_logger.info(f"Unloaded model {name}")
+                except Exception:
+                    logger.debug(f"Failed to write model-specific unload log for {name}")
                 # Remove per-model log sink if present
                 self._remove_log_sink(record, name)
                 record.manager = None  # Clear the manager so the model is fully stopped
@@ -269,6 +290,13 @@ class HubSupervisor:
             # Treat a stop request as removing the manager in this case so the
             # supervisor and UI reflect the not-running state.
             logger.info(f"Removing manager for {name} (no handler loaded)")
+            # Also emit the removal to the model-specific log sink if possible
+            try:
+                model_logger = getattr(record.manager, "_logger", None)
+                if model_logger:
+                    model_logger.info(f"Removing manager for {name} (no handler loaded)")
+            except Exception:
+                logger.debug(f"Failed to write model-specific removal log for {name}")
             try:
                 # Remove per-model log sink if present
                 self._remove_log_sink(record, name)
@@ -324,6 +352,13 @@ class HubSupervisor:
             handler = await record.manager.ensure_loaded("load")
             if handler:
                 logger.info(f"Loaded model {name} handler")
+                # Also emit the handler-loaded event to the model-specific log sink
+                try:
+                    model_logger = getattr(record.manager, "_logger", None)
+                    if model_logger:
+                        model_logger.info(f"Loaded model {name} handler")
+                except Exception:
+                    logger.debug(f"Failed to write model-specific handler load log for {name}")
                 # Update registry to reflect the loaded state
                 if self.registry and record.model_path is not None:
                     try:
@@ -352,6 +387,13 @@ class HubSupervisor:
             unloaded = await record.manager.unload("unload")
             if unloaded:
                 logger.info(f"Unloaded model {name} handler")
+                # Also emit the unload event to the model-specific log sink
+                try:
+                    model_logger = getattr(record.manager, "_logger", None)
+                    if model_logger:
+                        model_logger.info(f"Unloaded model {name} handler")
+                except Exception:
+                    logger.debug(f"Failed to write model-specific handler unload log for {name}")
                 # Remove per-model log sink if present
                 try:
                     if hasattr(record.manager, "remove_log_sink"):
@@ -665,7 +707,9 @@ def create_app(hub_config_path: str | None = None) -> FastAPI:
 
     @app.get("/hub/status")
     async def hub_status() -> dict[str, Any]:
-        return await supervisor.get_status()
+        status = await supervisor.get_status()
+        status["controller_available"] = True
+        return status
 
     @app.post("/hub/reload")
     async def hub_reload() -> dict[str, Any]:
