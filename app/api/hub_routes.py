@@ -1403,7 +1403,7 @@ async def _hub_memory_controller_action(
             coro = controller.load_model(target)
             try:
                 await asyncio.shield(coro)
-                message = f"Model '{target}' memory load requested"
+                message = f"Model '{target}' load requested"
             except asyncio.CancelledError:
                 # Request task was cancelled (client disconnected). Ensure
                 # the load continues in background and return a requested
@@ -1412,17 +1412,17 @@ async def _hub_memory_controller_action(
                 # twice.
                 task = asyncio.create_task(controller.load_model(target))
                 _retain_task(task)
-                message = f"Model '{target}' memory load requested (running in background)"
+                message = f"Model '{target}' load requested (running in background)"
         else:
             coro = controller.unload_model(target)
             try:
                 await asyncio.shield(coro)
-                message = f"Model '{target}' memory unload requested"
+                message = f"Model '{target}' unload requested"
             except asyncio.CancelledError:
                 # Create a fresh coroutine for the background unload task.
                 task = asyncio.create_task(controller.unload_model(target))
                 _retain_task(task)
-                message = f"Model '{target}' memory unload requested (running in background)"
+                message = f"Model '{target}' unload requested (running in background)"
     except BrokenPipeError as e:  # pragma: no cover - defensive handling
         # Broken pipe can surface from low-level I/O during heavy init; log
         # and schedule the operation in background to avoid exposing raw
@@ -1439,7 +1439,7 @@ async def _hub_memory_controller_action(
             _retain_task(task)
         except Exception:
             logger.debug("Failed to schedule background model action after BrokenPipeError")
-        message = f"Model '{target}' memory {action} requested (running in background)"
+        message = f"Model '{target}' {action} requested (running in background)"
     except Exception as e:  # pragma: no cover - defensive logging
         logger.exception(
             f"Unexpected failure while executing {action} for {target}. {type(e).__name__}: {e}",

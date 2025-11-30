@@ -272,6 +272,33 @@ def test_hub_unload_model_cli_surfaces_errors(
     assert "boom: test" in result.output
 
 
+def test_hub_load_model_cli_extracts_user_friendly_error_messages(
+    monkeypatch: pytest.MonkeyPatch,
+    hub_config_file: Path,
+) -> None:
+    """`hub load-model` should extract user-friendly messages from structured error responses."""
+
+    def _fake_run_actions(_config: object, _names: tuple[str, ...], _action: str) -> None:
+        # Simulate the error that would come from a 409 constraint violation
+        raise click.ClickException(
+            "Daemon responded 409: Loading model 'llama32_3b' would violate group max_loaded constraint"
+        )
+
+    monkeypatch.setattr("app.cli._run_memory_actions", _fake_run_actions)
+
+    runner = CliRunner()
+    result = runner.invoke(
+        cli,
+        ["hub", "--config", str(hub_config_file), "load-model", "llama32_3b"],
+    )
+
+    assert result.exit_code != 0
+    # The error message should be the clean, user-friendly version
+    assert "Loading model 'llama32_3b' would violate group max_loaded constraint" in result.output
+    # Should not contain the verbose JSON structure
+    assert "{'error':" not in result.output
+
+
 def test_hub_config_option_loads_specified_file(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

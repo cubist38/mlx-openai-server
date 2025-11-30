@@ -118,6 +118,48 @@ class HubSupervisor:
         except Exception:
             logger.debug(f"Failed to remove log sink for {name}")
 
+    def _check_group_constraints(self, model_name: str) -> bool:
+        """Check if loading the given model would violate group max_loaded constraints.
+
+        Returns True if loading is allowed, False if it would violate constraints.
+        """
+        record = self._models[model_name]
+        group_name = record.group
+
+        # Find the group config
+        group_config = None
+        for group in getattr(self.hub_config, "groups", []):
+            if getattr(group, "name", None) == group_name:
+                group_config = group
+                break
+
+        if (
+            not group_config
+            or not hasattr(group_config, "max_loaded")
+            or group_config.max_loaded is None
+        ):
+            # No constraints for this group
+            return True
+
+        max_loaded: int = group_config.max_loaded
+
+        # Count currently loaded models in this group
+        loaded_count = 0
+        for other_record in self._models.values():
+            if (
+                other_record.group == group_name
+                and other_record.manager
+                and other_record.manager.is_vram_loaded()
+            ):
+                loaded_count += 1
+
+        # Allow loading if we're under the limit, or if this model is already loaded
+        # (in which case we're not increasing the count)
+        if record.manager and record.manager.is_vram_loaded():
+            return True
+
+        return loaded_count < max_loaded
+
     async def start_model(self, name: str) -> dict[str, Any]:
         """Load the model's handler.
 
@@ -192,6 +234,12 @@ class HubSupervisor:
 
             # Only load immediately if JIT is disabled
             if not record.manager.jit_enabled:
+                # Check group constraints before loading
+                if not self._check_group_constraints(name):
+                    raise HTTPException(
+                        status_code=409,
+                        detail=f"Loading model '{name}' would violate group max_loaded constraint",
+                    )
                 await record.manager.ensure_loaded("start")
                 if self.registry:
                     # Use the registered model_id (original_model_path) for update_model_state
@@ -355,6 +403,14 @@ class HubSupervisor:
                 )
             if record.manager.is_vram_loaded():
                 return {"status": "already_loaded", "name": name}
+
+            # Check group constraints before loading
+            if not self._check_group_constraints(name):
+                raise HTTPException(
+                    status_code=409,
+                    detail=f"Loading model '{name}' would violate group max_loaded constraint",
+                )
+
             handler = await record.manager.ensure_loaded("load")
             if handler:
                 # Also emit the handler-loaded event to the model-specific log sink
@@ -408,8 +464,7 @@ class HubSupervisor:
                     logger.debug(f"Failed to write model-specific handler unload log for {name}")
                 # Remove per-model log sink if present
                 self._remove_log_sink(record, name)
-                # Clear manager and update registry to reflect unloaded state
-                record.manager = None
+                # Update registry to reflect unloaded state (but keep manager alive)
                 if self.registry and record.model_path is not None:
                     try:
                         await self.registry.update_model_state(record.model_path, handler=None)
