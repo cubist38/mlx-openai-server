@@ -97,7 +97,7 @@ class ModelConfiguration:
         """Create configuration for Flux Krea Dev model."""
         return cls(
             model_type="krea-dev",
-            model_config=ModelConfig.dev(),
+            model_config=ModelConfig.krea_dev(),
             quantize=quantize,
             default_steps=28,
             default_guidance=4.5,
@@ -114,10 +114,35 @@ class ModelConfiguration:
             quantize=quantize,
             default_steps=28,
             default_guidance=2.5,
-            lora_paths=None,  # Kontext doesn't support LoRA
-            lora_scales=None
+            lora_paths=lora_paths,
+            lora_scales=lora_scales
         )
-    
+
+    @classmethod
+    def qwen_image(cls, quantize: int = 8, lora_paths: Optional[List[str]] = None, lora_scales: Optional[List[float]] = None) -> 'ModelConfiguration':
+        """Create configuration for Qwen Image model."""
+        return cls(
+            model_type="qwen-image",
+            model_config=ModelConfig.qwen_image(),
+            quantize=quantize,
+            default_steps=50,
+            default_guidance=4.0,
+            lora_paths=lora_paths,
+            lora_scales=lora_scales
+        )
+
+    @classmethod
+    def qwen_image_edit(cls, quantize: int = 8, lora_paths: Optional[List[str]] = None, lora_scales: Optional[List[float]] = None) -> 'ModelConfiguration':
+        """Create configuration for Qwen Image Edit model."""
+        return cls(
+            model_type="qwen-image-edit",
+            model_config=None,  # Qwen Image Edit doesn't use ModelConfig
+            quantize=quantize,
+            default_steps=50,
+            default_guidance=4.0,
+            lora_paths=lora_paths,
+            lora_scales=lora_scales
+        )
 
 
 class BaseImageModel(ABC):
@@ -310,7 +335,7 @@ class QwenImageModel(BaseImageModel):
         try:
             self.logger.info(f"Loading Qwen Image model from {self.model_path}")
             self._model = QwenImage( 
-                model_config= ModelConfig(model_name = "qwen-image"),
+                model_config = self.config.model_config,
                 quantize=self.config.quantize,
                 local_path=self.model_path,
                 lora_paths=self.config.lora_paths,
@@ -369,7 +394,7 @@ class QwenImageEditModel(BaseImageModel):
             
             
 
-class FluxModel:
+class ImageGenerationModel:
     """Factory class for creating and managing image generation models."""
     
     _MODEL_CONFIGS = {
@@ -377,6 +402,8 @@ class FluxModel:
         "flux-dev": ModelConfiguration.dev,
         "flux-krea-dev": ModelConfiguration.krea_dev,
         "flux-kontext-dev": ModelConfiguration.kontext,
+        "qwen-image": ModelConfiguration.qwen_image,
+        "qwen-image-edit": ModelConfiguration.qwen_image_edit,
     }
     
     _MODEL_CLASSES = {
@@ -384,6 +411,8 @@ class FluxModel:
         "flux-dev": FluxStandardModel,
         "flux-krea-dev": FluxStandardModel,
         "flux-kontext-dev": FluxKontextModel,
+        "qwen-image": QwenImageModel,
+        "qwen-image-edit": QwenImageEditModel,
     }
     
     def __init__(self, model_path: str, config_name: str, quantize: int = 8, 
@@ -400,29 +429,24 @@ class FluxModel:
         if config_name not in self._MODEL_CONFIGS:
             available_configs = ", ".join(self._MODEL_CONFIGS.keys())
             raise InvalidConfigurationError(f"Invalid config name: {config_name}. Available options: {available_configs}")
-        
-        # Validate LoRA parameters for kontext model
-        if config_name == "flux-kontext-dev" and (lora_paths is not None or lora_scales is not None):
-            raise InvalidConfigurationError("Flux Kontext model does not support LoRA adapters")
+   
         
         try:
             # Create model configuration
             config_factory = self._MODEL_CONFIGS[config_name]
-            if config_name == "flux-kontext-dev":
-                self.config = config_factory(quantize=quantize)
-            else:
-                self.config = config_factory(quantize=quantize, lora_paths=lora_paths, lora_scales=lora_scales)
+            
+            self.config = config_factory(quantize=quantize, lora_paths=lora_paths, lora_scales=lora_scales)
             
             # Create model instance
             model_class = self._MODEL_CLASSES[config_name]
             self.model_instance = model_class(model_path, self.config)
             
-            self.logger.info(f"FluxModel initialized successfully with config: {config_name}")
+            self.logger.info(f"ImageGenerationModel initialized successfully with config: {config_name}")
             if lora_paths:
                 self.logger.info(f"LoRA adapters: {lora_paths}")
             
         except Exception as e:
-            error_msg = f"Failed to initialize FluxModel: {e}"
+            error_msg = f"Failed to initialize ImageGenerationModel: {e}"
             self.logger.error(error_msg)
             raise ModelLoadError(error_msg) from e
     
@@ -467,3 +491,6 @@ class FluxModel:
     def is_loaded(self) -> bool:
         """Check if the model is loaded and ready for inference."""
         return hasattr(self.model_instance, '_is_loaded') and self.model_instance._is_loaded
+
+if __name__ == "__main__":
+    model = QwenImageModel(model_path="qwen-image", config=ModelConfiguration.dev())

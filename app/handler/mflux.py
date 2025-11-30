@@ -12,9 +12,9 @@ from typing import Any, Dict, List, Optional
 
 from PIL import Image
 from loguru import logger
-from fastapi import HTTPException, UploadFile
+from fastapi import HTTPException
 from ..core.queue import RequestQueue
-from ..models.mflux import FluxModel
+from ..models.mflux import ImageGenerationModel
 from ..utils.errors import create_error_response
 from ..schemas.openai import ImageSize, ImageGenerationRequest, ImageGenerationResponse, ImageEditRequest, ImageEditResponse, ImageData
 
@@ -45,7 +45,7 @@ class MLXFluxHandler:
         self.lora_paths = lora_paths
         self.lora_scales = lora_scales
         
-        self.model = FluxModel(
+        self.model = ImageGenerationModel(
             model_path=model_path, 
             quantize=quantize,
             config_name=config_name,
@@ -433,3 +433,7 @@ class MLXFluxHandler:
             return
         # Set flag to prevent multiple cleanup attempts
         self._cleaned = True
+
+if __name__ == "__main__":
+    handler = MLXFluxHandler(model_path="qwen-image", config_name="qwen-image")
+    print(handler.model.get_model_info("qwen-image"))
