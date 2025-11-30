@@ -14,10 +14,9 @@ import pytest
 
 from app.api.hub_routes import HubServiceError, _stop_controller_process, hub_router
 from app.core.model_registry import ModelRegistry
+from app.hub.config import load_hub_config
 from app.hub.daemon import HubSupervisor
 from app.server import _hub_sync_once
-
-# Stub classes `_StubServiceState` and `_StubController` are provided by `tests.conftest`
 
 if TYPE_CHECKING:
     # Import test-only types for annotations without causing runtime imports
@@ -59,6 +58,8 @@ models:
     app.state.server_config = SimpleNamespace(enable_status_page=True, host="0.0.0.0", port=8123)
     app.state.hub_config_path = config_path
     controller = stub_controller
+    # Load the config and set it on the controller so hub_status can use it
+    controller.hub_config = load_hub_config(config_path)
     app.state.hub_controller = controller
 
     state = stub_service_state

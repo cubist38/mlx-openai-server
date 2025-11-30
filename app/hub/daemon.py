@@ -12,6 +12,7 @@ import asyncio
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager, suppress
 from dataclasses import dataclass
+from http import HTTPStatus
 import os
 from pathlib import Path
 import time
@@ -371,9 +372,17 @@ class HubSupervisor:
                     except Exception as e:
                         logger.warning(f"Failed to update registry for loaded model {name}: {e}")
                 return {"status": "loaded", "name": name}
+            # Handler loading failed - log details and raise appropriate exception
+            manager_state = "unknown"
+            with suppress(Exception):
+                manager_state = "loaded" if record.manager.is_vram_loaded() else "not_loaded"
+            logger.warning(
+                f"Failed to load model handler for {name}: ensure_loaded returned None, "
+                f"manager exists with state '{manager_state}'"
+            )
             raise HTTPException(
-                status_code=400,
-                detail="model not started; use start_model first to create the manager",
+                status_code=HTTPStatus.INTERNAL_SERVER_ERROR,
+                detail="failed to load model handler; check logs for details",
             )
 
     async def unload_model(self, name: str) -> dict[str, Any]:
@@ -397,11 +406,7 @@ class HubSupervisor:
                 except Exception:
                     logger.debug(f"Failed to write model-specific handler unload log for {name}")
                 # Remove per-model log sink if present
-                try:
-                    if hasattr(record.manager, "remove_log_sink"):
-                        record.manager.remove_log_sink()
-                except Exception:
-                    logger.debug(f"Failed to remove log sink for {name}")
+                self._remove_log_sink(record, name)
                 # Clear manager and update registry to reflect unloaded state
                 record.manager = None
                 if self.registry and record.model_path is not None:
@@ -450,6 +455,16 @@ class HubSupervisor:
                 # Preserve existing record if it exists
                 existing_record = old_models.get(name)
                 if existing_record:
+                    # Check if model_path is changing for a started model
+                    new_model_path = getattr(model, "model_path", None)
+                    if (
+                        existing_record.manager is not None
+                        and existing_record.model_path != new_model_path
+                    ):
+                        raise HTTPException(
+                            status_code=400,
+                            detail=f"Cannot change model_path for started model '{name}' from '{existing_record.model_path}' to '{new_model_path}'. Stop the model first.",
+                        )
                     # Update config but keep manager and loaded state
                     existing_record.config = model
                     existing_record.group = getattr(model, "group", DEFAULT_GROUP)
@@ -458,7 +473,7 @@ class HubSupervisor:
                         "is_default_model",
                         DEFAULT_IS_DEFAULT_MODEL,
                     )
-                    existing_record.model_path = getattr(model, "model_path", None)
+                    existing_record.model_path = new_model_path
                     existing_record.auto_unload_minutes = getattr(
                         model,
                         "auto_unload_minutes",
@@ -503,10 +518,27 @@ class HubSupervisor:
         # Take a brief, locked snapshot of the model records to avoid races
         # while allowing the lock to be held only for a short time.
         async with self._lock:
-            models_items = list(self._models.items())
+            # Capture manager state while holding the lock to avoid TOCTOU races
+            models_snapshot = []
+            for name, rec in self._models.items():
+                manager_ref = rec.manager
+                manager_is_vram_loaded = manager_ref.is_vram_loaded() if manager_ref else False
+                models_snapshot.append(
+                    {
+                        "name": name,
+                        "record": rec,
+                        "manager": manager_ref,
+                        "is_vram_loaded": manager_is_vram_loaded,
+                    }
+                )
 
-        for name, rec in models_items:
-            state = "running" if rec.manager else "stopped"
+        for item in models_snapshot:
+            name = cast("str", item["name"])
+            rec = cast("ModelRecord", item["record"])
+            manager = cast("LazyHandlerManager | None", item["manager"])
+            is_vram_loaded = cast("bool", item["is_vram_loaded"])
+
+            state = "running" if manager else "stopped"
             snapshot["models"].append(
                 {
                     "name": name,
@@ -515,7 +547,7 @@ class HubSupervisor:
                     "port": None,
                     "started_at": rec.started_at,
                     "exit_code": rec.exit_code,
-                    "memory_loaded": rec.manager.is_vram_loaded() if rec.manager else False,
+                    "memory_loaded": is_vram_loaded,
                     "group": rec.group,
                     "is_default_model": rec.is_default,
                     "model_path": rec.model_path,
@@ -594,7 +626,7 @@ async def _schedule_default_model_starts(supervisor: HubSupervisor) -> None:
         logger.exception(f"Error while scheduling default model starts: {e}")
 
 
-def create_app(hub_config_path: str | None = None) -> FastAPI:
+def create_app(hub_config_path: str | None = None) -> FastAPI:  # noqa: C901
     """Create and configure the FastAPI application for the hub daemon.
 
     Parameters
@@ -611,50 +643,8 @@ def create_app(hub_config_path: str | None = None) -> FastAPI:
         `app.state.supervisor`.
     """
 
-    @asynccontextmanager
-    async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
-        # Startup
-        logger.info("Hub daemon starting up")
-
-        # Check if the configured port is available
-        configured_port = getattr(hub_config, "port", DEFAULT_PORT)
-        if not is_port_available(port=configured_port):
-            raise RuntimeError(
-                f"Port {configured_port} is already in use. Please stop the service using that port.",
-            )
-
-        # Auto-start models marked as default in configuration
-        await _schedule_default_model_starts(supervisor)
-
-        # Start central auto-unload controller for hub models
-        central_controller = CentralIdleAutoUnloadController(registry)
-        registry.register_activity_notifier(central_controller.notify_activity)
-        central_controller.start()
-
-        # Yield to start serving requests while background tasks proceed
-        yield
-        # Shutdown
-        logger.info("Hub daemon shutting down")
-        await central_controller.stop()
-        await supervisor.shutdown_all()
-        # Remove transient CLI runtime state file if present so future CLI
-        # invocations don't pick up a stale PID/port. The runtime file lives
-        # under the hub log path and is named `hub_runtime.json`.
-        try:
-            runtime_file = (
-                Path(getattr(hub_config, "log_path", Path.cwd() / "logs")) / "hub_runtime.json"
-            )
-            if runtime_file.exists():
-                try:
-                    runtime_file.unlink()
-                    logger.debug(f"Removed hub runtime state file: {runtime_file}")
-                except Exception as e:  # pragma: no cover - best-effort cleanup
-                    logger.warning(f"Failed to remove hub runtime state file {runtime_file}: {e}")
-        except Exception:
-            # Defensive: do not allow cleanup failures to raise during shutdown
-            logger.debug("Error while attempting to clean up runtime state file")
-
-    app = FastAPI(title="mlx hub daemon", lifespan=lifespan)
+    # Create FastAPI app (lifespan will be set after hub_config and supervisor are created)
+    app = FastAPI(title="mlx hub daemon")
 
     # Configure templates directory (fall back to inline rendering if missing)
     # Templates folder lives at the repository root `templates/`
@@ -705,6 +695,52 @@ def create_app(hub_config_path: str | None = None) -> FastAPI:
     supervisor = HubSupervisor(hub_config, registry)
     app.state.supervisor = supervisor
     app.state.hub_controller = supervisor
+
+    @asynccontextmanager
+    async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
+        # Startup
+        logger.info("Hub daemon starting up")
+
+        # Check if the configured port is available
+        configured_port = getattr(hub_config, "port", DEFAULT_PORT)
+        if not is_port_available(port=configured_port):
+            raise RuntimeError(
+                f"Port {configured_port} is already in use. Please stop the service using that port.",
+            )
+
+        # Auto-start models marked as default in configuration
+        await _schedule_default_model_starts(supervisor)
+
+        # Start central auto-unload controller for hub models
+        central_controller = CentralIdleAutoUnloadController(registry)
+        registry.register_activity_notifier(central_controller.notify_activity)
+        central_controller.start()
+
+        # Yield to start serving requests while background tasks proceed
+        yield
+        # Shutdown
+        logger.info("Hub daemon shutting down")
+        await central_controller.stop()
+        await supervisor.shutdown_all()
+        # Remove transient CLI runtime state file if present so future CLI
+        # invocations don't pick up a stale PID/port. The runtime file lives
+        # under the hub log path and is named `hub_runtime.json`.
+        try:
+            runtime_file = (
+                Path(getattr(hub_config, "log_path", Path.cwd() / "logs")) / "hub_runtime.json"
+            )
+            if runtime_file.exists():
+                try:
+                    runtime_file.unlink()
+                    logger.debug(f"Removed hub runtime state file: {runtime_file}")
+                except Exception as e:  # pragma: no cover - best-effort cleanup
+                    logger.warning(f"Failed to remove hub runtime state file {runtime_file}: {e}")
+        except Exception:
+            # Defensive: do not allow cleanup failures to raise during shutdown
+            logger.debug("Error while attempting to clean up runtime state file")
+
+    # Set the lifespan on the FastAPI app now that hub_config and supervisor are available
+    app.router.lifespan_context = lifespan
 
     # Configure OpenAI API routes and middleware
     configure_fastapi_app(app)
