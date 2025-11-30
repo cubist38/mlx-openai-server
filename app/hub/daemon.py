@@ -98,6 +98,18 @@ class HubSupervisor:
             )
             self._models[name] = record
 
+    def _remove_log_sink(self, record: ModelRecord, name: str) -> None:
+        """Safely remove a per-model log sink if the manager exposes it.
+
+        The operation is best-effort and failures are logged at debug
+        level to avoid disturbing the shutdown flow.
+        """
+        try:
+            if record.manager and hasattr(record.manager, "remove_log_sink"):
+                record.manager.remove_log_sink()
+        except Exception:
+            logger.debug(f"Failed to remove log sink for {name}")
+
     async def start_model(self, name: str) -> dict[str, Any]:
         """Load the model's handler.
 
@@ -158,19 +170,31 @@ class HubSupervisor:
                             cfg.log_file = None
 
                 record.manager = LazyHandlerManager(cfg)
-                # Only overwrite record.model_path if cfg.model_path is truthy and matches the registered id
-                if getattr(cfg, "model_path", None) and cfg.model_path == original_model_path:
-                    record.model_path = cfg.model_path
+                # Preserve the original registered model id. Do not overwrite
+                # `record.model_path` here — registry updates intentionally
+                # prefer the original registered id (see `model_id_for_registry`
+                # selection below).
 
             # Only load immediately if JIT is disabled
             if not record.manager.jit_enabled:
                 await record.manager.ensure_loaded("start")
                 if self.registry:
-                    # Use the guaranteed registered model_id (original_model_path) for update_model_state
+                    # Use the registered model_id (original_model_path) for update_model_state
                     model_id_for_registry = (
                         original_model_path if original_model_path else record.model_path
                     )
-                    assert model_id_for_registry is not None
+                    if model_id_for_registry is None:
+                        logger.error(
+                            "Registry update skipped: missing model id for registry. "
+                            "model=%r original_model_path=%r record.model_path=%r manager=%r",
+                            name,
+                            original_model_path,
+                            record.model_path,
+                            getattr(record, "manager", None),
+                        )
+                        raise RuntimeError(
+                            f"Cannot update registry for model '{name}': model id is None"
+                        )
                     await self.registry.update_model_state(
                         model_id_for_registry, handler=record.manager
                     )
@@ -179,11 +203,22 @@ class HubSupervisor:
 
             # JIT enabled: just create the manager, don't load yet
             if self.registry:
-                # Use the guaranteed registered model_id (original_model_path) for update_model_state
+                # Use the registered model_id (original_model_path) for update_model_state
                 model_id_for_registry = (
                     original_model_path if original_model_path else record.model_path
                 )
-                assert model_id_for_registry is not None
+                if model_id_for_registry is None:
+                    logger.error(
+                        "Registry update skipped: missing model id for registry (JIT start). "
+                        "model=%r original_model_path=%r record.model_path=%r manager=%r",
+                        name,
+                        original_model_path,
+                        record.model_path,
+                        getattr(record, "manager", None),
+                    )
+                    raise RuntimeError(
+                        f"Cannot update registry for model '{name}' (JIT start): model id is None"
+                    )
                 await self.registry.update_model_state(
                     model_id_for_registry, handler=record.manager
                 )
@@ -219,11 +254,7 @@ class HubSupervisor:
             if unloaded:
                 logger.info(f"Unloaded model {name}")
                 # Remove per-model log sink if present
-                try:
-                    if hasattr(record.manager, "remove_log_sink"):
-                        record.manager.remove_log_sink()
-                except Exception:
-                    logger.debug(f"Failed to remove log sink for {name}")
+                self._remove_log_sink(record, name)
                 record.manager = None  # Clear the manager so the model is fully stopped
                 # Update registry to reflect the stopped state
                 if self.registry and record.model_path is not None:
@@ -240,11 +271,7 @@ class HubSupervisor:
             logger.info(f"Removing manager for {name} (no handler loaded)")
             try:
                 # Remove per-model log sink if present
-                try:
-                    if hasattr(record.manager, "remove_log_sink"):
-                        record.manager.remove_log_sink()
-                except Exception:
-                    logger.debug(f"Failed to remove log sink for {name}")
+                self._remove_log_sink(record, name)
                 record.manager = None
                 if self.registry and record.model_path is not None:
                     await self.registry.update_model_state(record.model_path, handler=None)
@@ -290,7 +317,10 @@ class HubSupervisor:
                 raise HTTPException(status_code=404, detail="model not found")
             record = self._models[name]
             if record.manager is None:
-                raise HTTPException(status_code=500, detail="model manager not initialized")
+                raise HTTPException(
+                    status_code=400,
+                    detail="model manager not initialized; call start_model first",
+                )
             handler = await record.manager.ensure_loaded("load")
             if handler:
                 logger.info(f"Loaded model {name} handler")
@@ -364,6 +394,15 @@ class HubSupervisor:
             self._models = {}
             for model in models_list:
                 name = getattr(model, "name", None) or str(model)
+                # Detect duplicate names in the reloaded configuration (same
+                # behavior as the constructor which validates duplicates).
+                if name in self._models:
+                    first_existing_record = self._models[name]
+                    raise ValueError(
+                        f"Duplicate model name '{name}' detected in hub configuration. "
+                        f"First model: {first_existing_record.config!r}, "
+                        f"Duplicate model: {model!r}",
+                    )
                 # Preserve existing record if it exists
                 existing_record = old_models.get(name)
                 if existing_record:
@@ -401,17 +440,28 @@ class HubSupervisor:
 
         return {"started": started, "stopped": stopped, "unchanged": unchanged}
 
-    def get_status(self) -> dict[str, Any]:
+    async def get_status(self) -> dict[str, Any]:
         """Return a serializable snapshot of supervisor state.
 
         The returned dict includes a `timestamp` and a `models` list where
         each model object contains keys used by the CLI and status UI.
+
+        This method briefly acquires ``self._lock`` to take a shallow copy of
+        the internal ``_models`` mapping (snapshot semantics). The lock is
+        released immediately so callers build the returned dict from the
+        copy without holding the lock for the duration of formatting.
         """
         snapshot: dict[str, Any] = {
             "timestamp": time.time(),
             "models": [],
         }
-        for name, rec in self._models.items():
+
+        # Take a brief, locked snapshot of the model records to avoid races
+        # while allowing the lock to be held only for a short time.
+        async with self._lock:
+            models_items = list(self._models.items())
+
+        for name, rec in models_items:
             state = "running" if rec.manager else "stopped"
             snapshot["models"].append(
                 {
@@ -615,7 +665,7 @@ def create_app(hub_config_path: str | None = None) -> FastAPI:
 
     @app.get("/hub/status")
     async def hub_status() -> dict[str, Any]:
-        return supervisor.get_status()
+        return await supervisor.get_status()
 
     @app.post("/hub/reload")
     async def hub_reload() -> dict[str, Any]:
@@ -660,7 +710,7 @@ def create_app(hub_config_path: str | None = None) -> FastAPI:
         Jinja filters (keeps template simple and safe).
         """
         supervisor = cast("HubSupervisor", request.app.state.supervisor)
-        status = supervisor.get_status()
+        status = await supervisor.get_status()
         hub_cfg = supervisor.hub_config
 
         timestamp = status.get("timestamp")

@@ -237,7 +237,7 @@ class _StubController:
         self.reload_count += 1
         return {"started": [], "stopped": ["old_model"], "unchanged": ["alpha", "beta"]}
 
-    def get_status(self) -> dict[str, Any]:
+    async def get_status(self) -> dict[str, Any]:
         return {
             "timestamp": 1234567890.0,
             "models": [

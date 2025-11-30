@@ -198,7 +198,15 @@ def _read_hub_runtime_state(config: MLXHubConfig) -> dict[str, object] | None:
             return None
         data = json.loads(path.read_text())
         pid = int(data.get("pid"))
-        host = data.get("host") or "127.0.0.1"
+        host = data.get("host") or DEFAULT_BIND_HOST
+        raw_port = data.get("port")
+        if raw_port is None:
+            port = int(config.port or DEFAULT_PORT)
+        else:
+            try:
+                port = int(raw_port)
+            except Exception:
+                port = int(config.port or DEFAULT_PORT)
     except Exception:
         return None
 
@@ -214,7 +222,7 @@ def _read_hub_runtime_state(config: MLXHubConfig) -> dict[str, object] | None:
     if not pid_alive:
         return None
 
-    return {"pid": pid, "host": host}
+    return {"pid": pid, "host": host, "port": port}
 
 
 def _call_daemon_api(
@@ -909,8 +917,10 @@ def launch(
             "--auto-unload-minutes requires --jit to be set.",
         )
 
-    # Type narrowing hint for static analysis (model_path is required by Click)
-    assert model_path is not None
+    # Validate model_path at runtime and provide a clear CLI error if missing.
+    if model_path is None:
+        logger.error("launch: missing required parameter 'model_path'")
+        raise click.ClickException("Missing required argument: --model-path")
 
     args = MLXServerConfig(
         model_path=model_path,

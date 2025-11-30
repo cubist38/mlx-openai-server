@@ -133,6 +133,27 @@ def start_hub_service_process(
 
 hub_router = APIRouter()
 
+# Keep references to any fire-and-forget background tasks created by
+# this module so they are not garbage-collected before completion.
+# Tasks are removed from the set when they finish via a done callback.
+_background_tasks: set[asyncio.Task[Any]] = set()
+
+
+def _retain_task(task: asyncio.Task[Any]) -> None:
+    """Add `task` to the module-level set and register a callback to remove it when complete.
+
+    This ensures background tasks created here are retained until they
+    finish and avoids silent cancellation via GC.
+    """
+    _background_tasks.add(task)
+
+    def _on_done(t: asyncio.Task[Any]) -> None:
+        with contextlib.suppress(Exception):
+            _background_tasks.discard(t)
+
+    task.add_done_callback(_on_done)
+
+
 # Jinja2 templates directory (project root / `templates`)
 templates = Jinja2Templates(directory=str(Path(__file__).resolve().parents[2] / "templates"))
 
@@ -165,28 +186,55 @@ def _resolve_hub_config_path(raw_request: Request) -> Path:
     return DEFAULT_HUB_CONFIG_PATH
 
 
-def _stop_controller_process(config: MLXHubConfig) -> bool:
-    """Request the hub daemon to stop the controller and managed processes.
+def _stop_controller_process(
+    raw_request: Request, background_tasks: BackgroundTasks | None = None
+) -> bool:
+    """Stop the in-process hub controller (if present).
 
-    This function proxies the shutdown request to the hub daemon HTTP API
-    (POST /hub/shutdown) so the controller and supervised processes are
-    stopped in the daemon process. Returns True on success and False when
-    the daemon reports a service-level failure or is unreachable.
+    Adjusts local state by scheduling a shutdown of an in-process
+    controller/supervisor when present.
 
     Parameters
     ----------
-    config : MLXHubConfig
-        The hub configuration used to determine the daemon base URL.
+    raw_request : Request
+        FastAPI request used to access `app.state` and locate the
+        in-process controller/supervisor.
 
     Returns
     -------
     bool
-        True if the controller was stopped, False otherwise.
+        True if a local controller was present and a shutdown was scheduled,
+        False if no in-process controller was found.
     """
-    try:
-        _call_daemon_api_sync(config, "POST", "/hub/shutdown", timeout=1.0)
-    except HubServiceError:
+    controller = getattr(raw_request.app.state, "hub_controller", None)
+    if controller is None:
+        controller = getattr(raw_request.app.state, "supervisor", None)
+
+    if controller is None:
         return False
+
+    # If a FastAPI BackgroundTasks object is provided, schedule the
+    # shutdown via background tasks so it mirrors the behavior of the
+    # `/hub/shutdown` endpoint and allows the response to be returned
+    # to the client before the shutdown proceeds. Also schedule a
+    # delayed process exit so the daemon terminates after shutting down
+    # managed models.
+    try:
+        if background_tasks is not None:
+            background_tasks.add_task(controller.shutdown_all)
+
+            async def _shutdown_server() -> None:
+                await asyncio.sleep(1)
+                sys.exit(0)
+
+            background_tasks.add_task(_shutdown_server)
+        else:
+            # Fallback: schedule as a retained asyncio task so it isn't
+            # garbage-collected prematurely.
+            task = asyncio.create_task(controller.shutdown_all())
+            _retain_task(task)
+    except Exception:
+        logger.exception("Failed to schedule shutdown for in-process controller")
     return True
 
 
@@ -734,7 +782,7 @@ async def hub_status(raw_request: Request) -> HubStatusResponse:
             # Ensure config is up to date
             with contextlib.suppress(Exception):
                 await controller.reload_config()
-            snapshot = controller.get_status()
+            snapshot = await controller.get_status()
         except Exception as e:
             warnings.append(f"Failed to get status from controller: {e}")
     else:
@@ -899,7 +947,9 @@ async def hub_service_start(raw_request: Request) -> HubServiceActionResponse | 
 
 
 @hub_router.post("/hub/service/stop", response_model=HubServiceActionResponse)
-async def hub_service_stop(raw_request: Request) -> HubServiceActionResponse | JSONResponse:
+async def hub_service_stop(
+    raw_request: Request, background_tasks: BackgroundTasks
+) -> HubServiceActionResponse | JSONResponse:
     """Stop the hub controller and manager service when present.
 
     Parameters
@@ -924,7 +974,10 @@ async def hub_service_stop(raw_request: Request) -> HubServiceActionResponse | J
     except HubConfigError as exc:
         return _hub_config_error_response(str(exc))
 
-    controller_stopped = _stop_controller_process(config)
+    # Stop any in-process controller (schedules shutdown via BackgroundTasks
+    # so response can be returned before shutdown proceeds). This mirrors the
+    # behavior of the `/hub/shutdown` endpoint.
+    controller_stopped = _stop_controller_process(raw_request, background_tasks)
     manager_shutdown = False
 
     try:
@@ -1347,8 +1400,11 @@ async def _hub_memory_controller_action(
             except asyncio.CancelledError:
                 # Request task was cancelled (client disconnected). Ensure
                 # the load continues in background and return a requested
-                # response.
-                asyncio.create_task(coro)
+                # response. Create a fresh coroutine for the background
+                # task since coroutine objects cannot be awaited/used
+                # twice.
+                task = asyncio.create_task(controller.load_model(target))
+                _retain_task(task)
                 message = f"Model '{target}' memory load requested (running in background)"
         else:
             coro = controller.unload_model(target)
@@ -1356,7 +1412,9 @@ async def _hub_memory_controller_action(
                 await asyncio.shield(coro)
                 message = f"Model '{target}' memory unload requested"
             except asyncio.CancelledError:
-                asyncio.create_task(coro)
+                # Create a fresh coroutine for the background unload task.
+                task = asyncio.create_task(controller.unload_model(target))
+                _retain_task(task)
                 message = f"Model '{target}' memory unload requested (running in background)"
     except BrokenPipeError as e:  # pragma: no cover - defensive handling
         # Broken pipe can surface from low-level I/O during heavy init; log
@@ -1366,11 +1424,12 @@ async def _hub_memory_controller_action(
             f"Broken pipe while executing {action} for {target}: {e}",
         )
         try:
-            asyncio.create_task(
+            task = asyncio.create_task(
                 controller.load_model(target)
                 if action == "load"
                 else controller.unload_model(target)
             )
+            _retain_task(task)
         except Exception:
             logger.debug("Failed to schedule background model action after BrokenPipeError")
         message = f"Model '{target}' memory {action} requested (running in background)"

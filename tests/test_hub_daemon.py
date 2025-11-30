@@ -22,7 +22,7 @@ class _StubSupervisor:
         self.shutdown_called = False
         self.started: dict[str, int] = {}
 
-    def get_status(self) -> dict[str, Any]:
+    async def get_status(self) -> dict[str, Any]:
         return {"timestamp": 1, "models": [{"name": "alpha", "state": "stopped"}]}
 
     async def start_model(self, name: str) -> dict[str, Any]:

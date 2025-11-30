@@ -72,15 +72,22 @@ ALLOWED_IMAGE_EDIT_CONFIGS: frozenset[str] = frozenset({"flux-kontext-dev"})
 
 def configure_logging(
     log_file: str | None = None,
+    *,
     no_log_file: bool = False,
     log_level: str = "INFO",
 ) -> None:
     """Set up loguru handlers used by the server.
 
     This helper replaces the default loguru handler with a console
-    handler using a compact, colored format. When ``no_log_file`` is
-    False a rotating file handler is also added using ``log_file`` or
-    a default path.
+    handler using a compact, colored format. When `no_log_file` is
+    ``False`` a rotating file handler is also added using ``log_file``
+    or a default path.
+
+    Notes
+    -----
+    The parameter ``no_log_file`` is keyword-only to make call sites
+    explicit and avoid accidental positional mistakes (e.g.,
+    ``configure_logging("file.log", True)``).
 
     Parameters
     ----------
@@ -88,9 +95,9 @@ def configure_logging(
         Optional filesystem path where logs should be written. When
         ``None`` and file logging is enabled a sensible default
         (``logs/app.log``) is used.
-    no_log_file : bool, default False
+    no_log_file : bool, default False (keyword-only)
         When True, file logging is disabled and only console logs are
-        emitted.
+        emitted. Must be passed by name.
     log_level : str, default "INFO"
         Minimum log level to emit (e.g. "DEBUG", "INFO").
     """
@@ -704,9 +711,8 @@ class CentralIdleAutoUnloadController:
             while self._active:
                 # Iterate registered models and consider unloading
                 try:
-                    models = [m["id"] for m in self.registry.list_models()]
-                    # Keep the list_models payload so we can read per-model metadata
                     entries = self.registry.list_models()
+                    models = [m["id"] for m in entries]
                 except Exception:
                     await asyncio.sleep(self.WATCH_LOOP_MAX_WAIT_SECONDS)
                     continue
@@ -1069,19 +1075,27 @@ def configure_fastapi_app(app: FastAPI) -> None:
         # Helper uses its own fake request; no local fake_req needed here
 
         while True:
+            # Run a single sync iteration. We explicitly handle
+            # asyncio.CancelledError separately so that cancellations
+            # raised inside `_hub_sync_once` are not swallowed by a
+            # generic Exception handler.
             try:
-                try:
-                    await _hub_sync_once(app)
-                except Exception:
-                    logger.exception("Error running hub sync iteration")
+                await _hub_sync_once(app)
+            except asyncio.CancelledError:
+                logger.info("Hub registry sync loop cancelled")
+                return
+            except Exception:
+                logger.exception("Error running hub sync iteration")
 
+            # Sleep between iterations, but allow cancellation to
+            # interrupt the sleep as well.
+            try:
+                await asyncio.sleep(interval)
             except asyncio.CancelledError:
                 logger.info("Hub registry sync loop cancelled")
                 return
             except Exception:
                 logger.exception("Unexpected error in hub registry sync loop")
-
-            await asyncio.sleep(interval)
 
     def _start_hub_sync_task() -> None:
         """Start background hub sync task on application startup."""
@@ -1104,6 +1118,49 @@ def configure_fastapi_app(app: FastAPI) -> None:
 
     app.add_event_handler("startup", _start_hub_sync_task)
     app.add_event_handler("shutdown", _stop_hub_sync_task)
+
+    @app.middleware("http")
+    async def add_process_time_header(
+        request: Request,
+        call_next: Callable[[Request], Awaitable[Response]],
+    ) -> Response:
+        """Attach timing metadata and trigger periodic memory cleanup."""
+        start_time = time.time()
+        response = await call_next(request)
+        process_time = time.time() - start_time
+        response.headers["X-Process-Time"] = str(process_time)
+
+        request_count = getattr(request.app.state, "request_count", 0) + 1
+        request.app.state.request_count = request_count
+
+        if request_count % 50 == 0:
+            mx.clear_cache()
+            gc.collect()
+            logger.debug(f"Performed memory cleanup after {request_count} requests")
+
+        return response
+
+    @app.exception_handler(Exception)
+    async def global_exception_handler(_request: Request, exc: Exception) -> JSONResponse:
+        """Log unexpected exceptions and emit a generic payload.
+
+        Preserve FastAPI `HTTPException` responses so controllers and stubs
+        can raise them to communicate status codes to clients. For other
+        unexpected exceptions emit a generic 500 payload.
+        """
+        # Preserve HTTP-like exceptions (Starlette/FastAPI) by reflecting
+        # their status code and detail when present. This is more robust
+        # than relying on a specific exception class identity.
+        status_code = getattr(exc, "status_code", None)
+        if isinstance(status_code, int):
+            detail = getattr(exc, "detail", None)
+            return JSONResponse(status_code=status_code, content={"detail": detail})
+
+        logger.exception(f"Global exception handler caught. {type(exc).__name__}: {exc}")
+        return JSONResponse(
+            status_code=HTTPStatus.INTERNAL_SERVER_ERROR,
+            content={"error": {"message": "Internal server error", "type": "internal_error"}},
+        )
 
 
 async def _hub_sync_once(app: FastAPI) -> None:
@@ -1181,33 +1238,3 @@ async def _hub_sync_once(app: FastAPI) -> None:
                 logger.warning(f"Failed to update registry for {model_path}: {e}")
         except Exception:
             logger.exception("Unexpected error while syncing model entry")
-
-    @app.middleware("http")
-    async def add_process_time_header(
-        request: Request,
-        call_next: Callable[[Request], Awaitable[Response]],
-    ) -> Response:
-        """Attach timing metadata and trigger periodic memory cleanup."""
-        start_time = time.time()
-        response = await call_next(request)
-        process_time = time.time() - start_time
-        response.headers["X-Process-Time"] = str(process_time)
-
-        request_count = getattr(request.app.state, "request_count", 0) + 1
-        request.app.state.request_count = request_count
-
-        if request_count % 50 == 0:
-            mx.clear_cache()
-            gc.collect()
-            logger.debug(f"Performed memory cleanup after {request_count} requests")
-
-        return response
-
-    @app.exception_handler(Exception)
-    async def global_exception_handler(_request: Request, exc: Exception) -> JSONResponse:
-        """Log unexpected exceptions and emit a generic payload."""
-        logger.exception(f"Global exception handler caught. {type(exc).__name__}: {exc}")
-        return JSONResponse(
-            status_code=HTTPStatus.INTERNAL_SERVER_ERROR,
-            content={"error": {"message": "Internal server error", "type": "internal_error"}},
-        )

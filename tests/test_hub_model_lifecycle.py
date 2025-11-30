@@ -227,7 +227,7 @@ async def test_get_status_returns_correct_state(hub_config_with_defaults: MLXHub
     mock_manager.is_vram_loaded.return_value = True
     record.manager = mock_manager
 
-    status = supervisor.get_status()
+    status = await supervisor.get_status()
 
     assert "models" in status
     assert len(status["models"]) == 2

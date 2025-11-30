@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from http import HTTPStatus
 from pathlib import Path
 from types import SimpleNamespace
@@ -11,10 +12,10 @@ from fastapi import FastAPI, HTTPException
 from fastapi.testclient import TestClient
 import pytest
 
-from app.api.hub_routes import HubServiceError, hub_router
+from app.api.hub_routes import HubServiceError, _stop_controller_process, hub_router
 from app.core.model_registry import ModelRegistry
 from app.hub.daemon import HubSupervisor
-from app.server import _hub_sync_once, configure_fastapi_app
+from app.server import _hub_sync_once
 
 # Stub classes `_StubServiceState` and `_StubController` are provided by `tests.conftest`
 
@@ -29,7 +30,7 @@ def hub_service_app(
     monkeypatch: pytest.MonkeyPatch,
     stub_service_state: _StubServiceState,
     stub_controller: _StubController,
-) -> tuple[TestClient, object, object]:
+) -> tuple[TestClient, Any, Any]:
     """Return a TestClient configured with a stubbed hub service backend."""
     config_dir = tmp_path / "hub-config"
     config_dir.mkdir()
@@ -51,7 +52,9 @@ models:
     )
 
     app = FastAPI()
-    configure_fastapi_app(app)
+    # Do not call `configure_fastapi_app` to avoid starting background
+    # hub sync tasks during this focused unit test. We only need the
+    # hub routes and minimal app state.
     app.include_router(hub_router)
     app.state.server_config = SimpleNamespace(enable_status_page=True, host="0.0.0.0", port=8123)
     app.state.hub_config_path = config_path
@@ -120,7 +123,7 @@ models:
 
     monkeypatch.setattr("app.api.hub_routes.start_hub_service_process", _fake_start_process)
 
-    def _fake_stop_controller(_config: Any) -> bool:  # noqa: ANN401
+    def _fake_stop_controller(_raw_request: Any, _background_tasks: Any) -> bool:  # noqa: ANN401
         state.controller_stop_calls += 1
         return True
 
@@ -134,7 +137,7 @@ models:
 
 
 def test_hub_status_uses_service_snapshot(
-    hub_service_app: tuple[TestClient, object, object],
+    hub_service_app: tuple[TestClient, Any, Any],
 ) -> None:
     """Hub status endpoint should prefer hub service snapshots when available."""
     client, state, controller = hub_service_app
@@ -151,7 +154,7 @@ def test_hub_status_uses_service_snapshot(
 
 
 def test_hub_status_ok_when_service_unavailable_and_controller_available(
-    hub_service_app: tuple[TestClient, object, object],
+    hub_service_app: tuple[TestClient, Any, Any],
 ) -> None:
     """Hub status should be ok when controller is available, even if service is offline."""
     client, state, _controller = hub_service_app
@@ -165,7 +168,7 @@ def test_hub_status_ok_when_service_unavailable_and_controller_available(
 
 
 def test_hub_model_start_calls_service_client(
-    hub_service_app: tuple[TestClient, object, object],
+    hub_service_app: tuple[TestClient, Any, Any],
 ) -> None:
     """Model start endpoint should call controller.start_model."""
     client, state, controller = hub_service_app
@@ -179,7 +182,7 @@ def test_hub_model_start_calls_service_client(
 
 
 def test_hub_model_start_surfaces_capacity_errors(
-    hub_service_app: tuple[TestClient, object, object],
+    hub_service_app: tuple[TestClient, Any, Any],
 ) -> None:
     """Capacity errors from controller should translate to HTTP 429 responses."""
     client, state, _controller = hub_service_app
@@ -193,7 +196,7 @@ def test_hub_model_start_surfaces_capacity_errors(
 
 
 def test_hub_service_start_spawns_process_when_missing(
-    hub_service_app: tuple[TestClient, object, object],
+    hub_service_app: tuple[TestClient, Any, Any],
 ) -> None:
     """/hub/service/start should spawn the service when it is not running."""
     client, state, _controller = hub_service_app
@@ -209,7 +212,7 @@ def test_hub_service_start_spawns_process_when_missing(
 
 
 def test_hub_service_stop_handles_missing_manager(
-    hub_service_app: tuple[TestClient, object, object],
+    hub_service_app: tuple[TestClient, Any, Any],
 ) -> None:
     """Stop should still return success when the manager is offline.
 
@@ -231,7 +234,7 @@ def test_hub_service_stop_handles_missing_manager(
 
 
 def test_hub_service_stop_shuts_down_manager_when_available(
-    hub_service_app: tuple[TestClient, object, object],
+    hub_service_app: tuple[TestClient, Any, Any],
 ) -> None:
     """Stop should mirror CLI behavior by halting controller and manager.
 
@@ -254,7 +257,7 @@ def test_hub_service_stop_shuts_down_manager_when_available(
 
 
 def test_hub_service_reload_endpoint_returns_diff(
-    hub_service_app: tuple[TestClient, object, object],
+    hub_service_app: tuple[TestClient, Any, Any],
 ) -> None:
     """/hub/service/reload should surface the diff returned by the service."""
     client, state, controller = hub_service_app
@@ -274,7 +277,7 @@ def test_hub_service_reload_endpoint_returns_diff(
 
 
 def test_hub_load_model_invokes_controller(
-    hub_service_app: tuple[TestClient, object, object],
+    hub_service_app: tuple[TestClient, Any, Any],
 ) -> None:
     """/hub/models/{model}/load should call the controller."""
     client, _state, controller = hub_service_app
@@ -286,7 +289,7 @@ def test_hub_load_model_invokes_controller(
 
 
 def test_hub_memory_actions_surface_controller_errors(
-    hub_service_app: tuple[TestClient, object, object],
+    hub_service_app: tuple[TestClient, Any, Any],
 ) -> None:
     """Controller-originated failures should propagate to the client."""
     client, _state, controller = hub_service_app
@@ -302,7 +305,7 @@ def test_hub_memory_actions_surface_controller_errors(
 
 
 def test_vram_admin_endpoints_invoke_registry(
-    hub_service_app: tuple[TestClient, object, object],
+    hub_service_app: tuple[TestClient, Any, Any],
 ) -> None:
     """Admin VRAM endpoints should call the ModelRegistry on app.state."""
     client, _state, _controller = hub_service_app
@@ -313,31 +316,20 @@ def test_vram_admin_endpoints_invoke_registry(
             self.unloaded: list[str] = []
 
         async def request_vram_load(
-            self,
-            name: str,
-            *,
-            _force: bool = False,
-            _timeout: float | None = None,
-            **kwargs: Any,
+            self, name: str, *, force: bool = False, timeout: float | None = None
         ) -> None:
-            # Accept legacy keyword names for interface compatibility
-            if "force" in kwargs:
-                _force = kwargs.pop("force")
-            if "timeout" in kwargs:
-                _timeout = kwargs.pop("timeout")
-
+            # Accept explicit `force`/`timeout` keyword args from the real API.
+            # Reference them to avoid unused-variable warnings in static analysis.
+            _ = (force, timeout)
             if name == "denied":
                 # Simulate a validation error
                 raise HTTPException(status_code=HTTPStatus.BAD_REQUEST, detail="denied")
             self.loaded.append(name)
 
-        async def request_vram_unload(
-            self, name: str, *, _timeout: float | None = None, **kwargs: Any
-        ) -> None:
-            # Accept legacy keyword name for interface compatibility
-            if "timeout" in kwargs:
-                _timeout = kwargs.pop("timeout")
-
+        async def request_vram_unload(self, name: str, *, timeout: float | None = None) -> None:
+            # Accept explicit `timeout` keyword arg from the real API and
+            # reference it to avoid unused-variable warnings.
+            _ = timeout
             if name == "missing":
                 raise HTTPException(status_code=HTTPStatus.BAD_REQUEST, detail="not loaded")
             self.unloaded.append(name)
@@ -355,35 +347,20 @@ def test_vram_admin_endpoints_invoke_registry(
 
 
 def test_vram_admin_endpoints_surface_registry_errors(
-    hub_service_app: tuple[TestClient, object, object],
+    hub_service_app: tuple[TestClient, Any, Any],
 ) -> None:
     """Registry errors should propagate as HTTP responses from the VRAM endpoints."""
     client, _state, _controller = hub_service_app
 
     class _StubRegistryErr:
         async def request_vram_load(
-            self,
-            name: str,
-            *,
-            _force: bool = False,
-            _timeout: float | None = None,
-            **kwargs: Any,
+            self, name: str, *, force: bool = False, timeout: float | None = None
         ) -> None:
-            # Accept legacy keyword names for interface compatibility
-            if "force" in kwargs:
-                _force = kwargs.pop("force")
-            if "timeout" in kwargs:
-                _timeout = kwargs.pop("timeout")
-
+            _ = (force, timeout)
             raise HTTPException(status_code=HTTPStatus.TOO_MANY_REQUESTS, detail="group busy")
 
-        async def request_vram_unload(
-            self, name: str, *, _timeout: float | None = None, **kwargs: Any
-        ) -> None:
-            # Accept legacy keyword name for interface compatibility
-            if "timeout" in kwargs:
-                _timeout = kwargs.pop("timeout")
-
+        async def request_vram_unload(self, name: str, *, timeout: float | None = None) -> None:
+            _ = timeout
             raise HTTPException(status_code=HTTPStatus.BAD_REQUEST, detail="not loaded")
 
     client.app.state.model_registry = _StubRegistryErr()
@@ -395,13 +372,112 @@ def test_vram_admin_endpoints_surface_registry_errors(
     assert response.status_code == HTTPStatus.BAD_REQUEST
 
 
+def test_hub_service_stop_schedules_background_shutdown(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Ensure `/hub/service/stop` schedules controller shutdown via BackgroundTasks.
+
+    This test constructs a fresh FastAPI app (so it uses the real
+    `_stop_controller_process`) and patches `asyncio.sleep` and `sys.exit`
+    so the background shutdown runs immediately and does not terminate
+    the test process.
+    """
+    # Create a minimal hub config on disk so `_load_hub_config_from_request`
+    # can resolve a path.
+    config_dir = tmp_path / "hub-config"
+    config_dir.mkdir()
+    config_path = config_dir / "hub.yaml"
+    config_path.write_text(
+        """
+host: 0.0.0.0
+port: 8123
+models: []
+""".strip()
+    )
+
+    # Build app without monkeypatching _stop_controller_process so the
+    # real helper runs and registers BackgroundTasks. Avoid calling
+    # `configure_fastapi_app` to prevent background loops from starting.
+    app = FastAPI()
+    app.include_router(hub_router)
+    app.state.server_config = SimpleNamespace(enable_status_page=True, host="0.0.0.0", port=8123)
+    app.state.hub_config_path = config_path
+
+    # Fake controller that records whether shutdown_all was invoked.
+    class FakeController:
+        def __init__(self) -> None:
+            self.shutdown_called = False
+
+        async def shutdown_all(self) -> None:
+            self.shutdown_called = True
+
+    controller = FakeController()
+    app.state.hub_controller = controller
+
+    # Avoid contacting an external daemon during the test
+    async def _fake_call_daemon_api_async(*_args, **_kwargs: Any) -> None:
+        raise HubServiceError("unavailable")
+
+    monkeypatch.setattr("app.api.hub_routes._call_daemon_api_async", _fake_call_daemon_api_async)
+
+    # Patch asyncio.sleep in the hub_routes module so the delayed exit runs immediately
+    async def _no_sleep(_secs: float) -> None:  # pragma: no cover - test helper
+        return None
+
+    monkeypatch.setattr("app.api.hub_routes.asyncio.sleep", _no_sleep)
+
+    exit_called = {"called": False}
+
+    def _fake_exit(code: int = 0) -> None:
+        exit_called["called"] = True
+
+    monkeypatch.setattr("sys.exit", _fake_exit)
+
+    # Call the helper directly with a dummy BackgroundTasks so we can run
+    # scheduled tasks synchronously without involving ASGI/TestClient.
+
+    class DummyBackgroundTasks:
+        def __init__(self) -> None:
+            self.tasks: list[tuple[callable, tuple, dict]] = []
+
+        def add_task(self, func: callable, *args: object, **kwargs: object) -> None:
+            self.tasks.append((func, args, kwargs))
+
+        def run_all(self) -> None:
+            for func, args, kwargs in list(self.tasks):
+                res = func(*args, **kwargs)
+                if asyncio.iscoroutine(res):
+                    asyncio.run(res)
+
+    background_tasks = DummyBackgroundTasks()
+    fake_request = SimpleNamespace(app=app)
+
+    # Execute stop helper directly
+    result = _stop_controller_process(fake_request, background_tasks)
+    assert result is True
+
+    # Run scheduled background tasks (controller.shutdown_all, _shutdown_server)
+    background_tasks.run_all()
+
+    assert controller.shutdown_called is True
+    assert exit_called["called"] is True
+
+
 class FakeManager:
     """A minimal fake manager that simulates an unloaded handler."""
 
-    async def unload(self, reason: str) -> bool:
+    async def unload(self, _reason: str) -> bool:
         """Simulate unloading the handler.
 
-        Returns False to indicate there was no loaded handler.
+        Parameters
+        ----------
+        _reason : str
+            Unused reason string (kept for compatibility with real managers).
+
+        Returns
+        -------
+        bool
+            Returns False to indicate there was no loaded handler.
         """
         return False
 
@@ -469,7 +545,9 @@ async def test_hub_sync_once_updates_registry(monkeypatch: pytest.MonkeyPatch) -
         ]
     }
 
-    async def fake_call(cfg: object, method: str, path: str, timeout: float = 2.0) -> dict:
+    async def fake_call(
+        cfg: object, method: str, path: str, timeout: float = 2.0
+    ) -> dict[str, Any]:
         return snapshot
 
     def fake_load_cfg(req: object) -> SimpleNamespace:
