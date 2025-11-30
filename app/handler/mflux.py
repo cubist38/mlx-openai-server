@@ -334,7 +334,7 @@ class MLXFluxHandler:
             width = request_data.get("width", 1024)
             height = request_data.get("height", 1024)
             image_path = request_data.get("image_path")  # For image editing
-            guidance = request_data.get("guidance_scale", 2.5)
+            guidance = request_data.get("guidance", 2.5)
     
             # Prepare model parameters
             model_params = {
