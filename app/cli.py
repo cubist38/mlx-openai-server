@@ -352,7 +352,13 @@ def _print_hub_status(
         # Loaded in memory: prefer explicit runtime flag when available,
         # based on the memory_state field from runtime metadata.
         memory_flag = metadata.get("memory_state") == "loaded"
-        loaded_in_memory = "yes" if memory_flag else "no"
+        if memory_flag and model.auto_unload_minutes:
+            unload_time = datetime.datetime.now() + datetime.timedelta(
+                minutes=model.auto_unload_minutes
+            )
+            loaded_in_memory = f"yes (unload {unload_time.strftime('%Y-%m-%d %H:%M:%S')})"
+        else:
+            loaded_in_memory = "yes" if memory_flag else "no"
 
         # Auto-unload
         auto_unload = f"{model.auto_unload_minutes}min" if model.auto_unload_minutes else "-"

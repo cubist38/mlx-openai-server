@@ -838,7 +838,7 @@ def create_app(hub_config_path: str | None = None) -> FastAPI:  # noqa: C901
                 "state": m.get("state", "-"),
                 "pid": m.get("pid"),
                 "port": m.get("port"),
-                "memory_loaded": bool(m.get("memory_loaded")),
+                "loaded": bool(m.get("memory_loaded")),
                 "model_path": m.get("model_path"),
                 "auto_unload_minutes": m.get("auto_unload_minutes"),
             }
