@@ -12,9 +12,11 @@ from pathlib import Path
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
+from fastapi import HTTPException
 from fastapi.testclient import TestClient
 import pytest
 
+from app.config import MLXServerConfig
 from app.hub.config import MLXHubConfig
 from app.hub.daemon import HubSupervisor, create_app
 from app.server import LazyHandlerManager
@@ -25,7 +27,7 @@ class _MockHandlerManager:
 
     def __init__(self, model_path: str) -> None:
         self.model_path = model_path
-        self._handler = None
+        self._handler: Any = None  # Can be MagicMock or None
         self._shutdown = False
 
     def is_vram_loaded(self) -> bool:
@@ -202,7 +204,7 @@ async def test_model_load_and_unload(hub_config_with_defaults: MLXHubConfig) -> 
     # Now test load
     mock_manager.ensure_loaded = AsyncMock(return_value=MagicMock())
     result = await supervisor.load_model("regular_model")
-    assert result["status"] == "loaded"
+    assert result["status"] == "already_loaded"  # Model is already loaded from start_model
     assert result["name"] == "regular_model"
 
     # Test unload
@@ -277,6 +279,51 @@ async def test_reload_config_preserves_loaded_models(
 
 
 @pytest.mark.asyncio
+async def test_reload_config_rejects_model_path_change_for_started_models(
+    hub_config_with_defaults: MLXHubConfig,
+) -> None:
+    """Test that reload_config rejects model_path changes for started models."""
+    supervisor = _TestHubSupervisor(hub_config_with_defaults)
+
+    # Load a model before reload
+    record = supervisor._models["regular_model"]
+    mock_manager = MagicMock()
+    record.manager = mock_manager
+    original_path = record.model_path
+    assert original_path is not None  # Should be set from config
+
+    # Create a new config with changed model_path for the started model
+    new_config = MLXHubConfig(
+        source_path=hub_config_with_defaults.source_path,
+        host=hub_config_with_defaults.host,
+        port=hub_config_with_defaults.port,
+        models=[
+            MLXServerConfig(
+                name="regular_model",
+                model_path="/new/path",  # Changed path
+                model_type="lm",
+                group="test",
+                jit_enabled=True,  # Required for auto_unload_minutes
+                auto_unload_minutes=30,
+            )
+        ],
+    )
+
+    with patch(
+        "app.hub.daemon.load_hub_config",
+        return_value=new_config,
+    ):
+        # Reload config should raise HTTPException
+        with pytest.raises(HTTPException) as exc_info:
+            await supervisor.reload_config()
+
+        assert exc_info.value.status_code == 400
+        assert "Cannot change model_path" in str(exc_info.value.detail)
+        assert original_path in str(exc_info.value.detail)
+        assert "/new/path" in str(exc_info.value.detail)
+
+
+@pytest.mark.asyncio
 async def test_default_models_auto_start_during_lifespan(
     tmp_path: Path, write_hub_yaml: Callable[[str, str], Path]
 ) -> None:
@@ -294,6 +341,7 @@ models:
     model_path: /models/regular
     model_type: lm
 """,
+        "hub.yaml",
     )
 
     app = create_app(str(cfg))
@@ -336,6 +384,7 @@ models:
     model_path: /models/test
     model_type: lm
 """,
+        "hub.yaml",
     )
 
     app = create_app(str(cfg))

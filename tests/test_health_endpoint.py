@@ -94,7 +94,7 @@ def test_health_reports_ok_when_controller_present() -> None:
 
 
 def test_hub_status_reports_degraded_when_config_unavailable(tmp_path: Path) -> None:
-    """Hub status should report degraded state when hub config cannot be loaded."""
+    """Hub status reports degraded when config file is missing."""
     state = _build_state(handler_manager=None, handler=None, registry=None)
     state.hub_config_path = tmp_path / "does-not-exist-hub.yaml"
     request = SimpleNamespace(app=SimpleNamespace(state=state))
@@ -106,7 +106,7 @@ def test_hub_status_reports_degraded_when_config_unavailable(tmp_path: Path) -> 
     assert response.counts.started == 0
     assert response.counts.loaded == 0
     assert len(response.warnings) == 1
-    assert "Hub configuration unavailable" in response.warnings[0]
+    assert "Hub manager unavailable" in response.warnings[0]
     assert response.controller_available is False
 
 
@@ -122,7 +122,7 @@ def test_hub_status_falls_back_to_cached_metadata(tmp_path: Path) -> None:
     assert response.counts.registered == 0
     assert response.counts.started == 0
     assert len(response.warnings) == 1
-    assert "Hub configuration unavailable" in response.warnings[0]
+    assert "Hub manager unavailable" in response.warnings[0]
     assert response.controller_available is False
 
 
