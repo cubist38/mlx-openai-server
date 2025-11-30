@@ -272,7 +272,16 @@ def _call_daemon_api(
             payload: object = resp.json()
         except ValueError:
             payload = resp.text
-        raise click.ClickException(f"Daemon responded {resp.status_code}: {payload}")
+
+        # Extract user-friendly error message from structured error responses
+        error_message = payload
+        if isinstance(payload, dict) and "error" in payload:
+            error_info = payload["error"]
+            if isinstance(error_info, dict) and "message" in error_info:
+                # Use the clean error message from the API response
+                error_message = error_info["message"]
+
+        raise click.ClickException(f"Daemon responded {resp.status_code}: {error_message}")
 
     if not resp.content:
         return None
@@ -555,7 +564,7 @@ def _perform_memory_action_request(
         return False, str(exc)
     raw_message = (payload or {}).get("message")
     if raw_message is None:
-        message = f"Memory {action} requested"
+        message = f"{action} requested"
     else:
         message = str(raw_message)
     return True, message
@@ -592,7 +601,7 @@ def _run_memory_actions(
         ok, message = _perform_memory_action_request(config, target, action)
         verb = action
         if ok:
-            _flash(f"{target}: memory {verb} requested ({message})", tone="success")
+            _flash(f"{target}: {verb} requested ({message})", tone="success")
         else:
             had_error = True
             _flash(f"{target}: {message}", tone="error")
@@ -1164,7 +1173,7 @@ def _auto_start_default_models(config: MLXHubConfig) -> None:
                                 "POST",
                                 f"/hub/models/{quote(str(name), safe='')}/load",
                             )
-                            _flash(f"{name}: memory load requested (fallback)", tone="success")
+                            _flash(f"{name}: load requested (fallback)", tone="success")
                         except click.ClickException as exc_load:
                             _flash(f"{name}: load failed ({exc_load})", tone="error")
                     else:
