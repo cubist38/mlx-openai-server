@@ -35,7 +35,13 @@ from ..const import (
     DEFAULT_PORT,
 )
 from ..core.model_registry import ModelRegistry
-from ..server import LazyHandlerManager, MLXHandler, configure_fastapi_app, configure_logging
+from ..server import (
+    CentralIdleAutoUnloadController,
+    LazyHandlerManager,
+    MLXHandler,
+    configure_fastapi_app,
+    configure_logging,
+)
 from ..utils.network import is_port_available
 from .config import MLXHubConfig, load_hub_config
 
@@ -174,6 +180,13 @@ class HubSupervisor:
                 # `record.model_path` here — registry updates intentionally
                 # prefer the original registered id (see `model_id_for_registry`
                 # selection below).
+                # Also emit the start event to the model-specific log sink
+                try:
+                    model_logger = getattr(record.manager, "_logger", None)
+                    if model_logger:
+                        model_logger.info(f"Started model {name} (JIT enabled, not loaded)")
+                except Exception:
+                    logger.debug(f"Failed to write model-specific start log for {name}")
 
             # Only load immediately if JIT is disabled
             if not record.manager.jit_enabled:
@@ -198,7 +211,6 @@ class HubSupervisor:
                     await self.registry.update_model_state(
                         model_id_for_registry, handler=record.manager
                     )
-                logger.info(f"Loaded model {name}")
                 # Also emit the load event to the model-specific log sink
                 try:
                     model_logger = getattr(record.manager, "_logger", None)
@@ -229,14 +241,6 @@ class HubSupervisor:
                 await self.registry.update_model_state(
                     model_id_for_registry, handler=record.manager
                 )
-            logger.info(f"Started model {name} (JIT enabled, not loaded)")
-            # Also emit the start event to the model-specific log sink
-            try:
-                model_logger = getattr(record.manager, "_logger", None)
-                if model_logger:
-                    model_logger.info(f"Started model {name} (JIT enabled, not loaded)")
-            except Exception:
-                logger.debug(f"Failed to write model-specific start log for {name}")
             return {"status": "started", "name": name}
 
     async def stop_model(self, name: str) -> dict[str, Any]:
@@ -266,7 +270,6 @@ class HubSupervisor:
 
             unloaded = await record.manager.unload("stop")
             if unloaded:
-                logger.info(f"Unloaded model {name}")
                 # Also emit the unload event to the model-specific log sink
                 try:
                     model_logger = getattr(record.manager, "_logger", None)
@@ -289,7 +292,6 @@ class HubSupervisor:
             # there was no loaded handler (JIT manager with no active process).
             # Treat a stop request as removing the manager in this case so the
             # supervisor and UI reflect the not-running state.
-            logger.info(f"Removing manager for {name} (no handler loaded)")
             # Also emit the removal to the model-specific log sink if possible
             try:
                 model_logger = getattr(record.manager, "_logger", None)
@@ -349,9 +351,10 @@ class HubSupervisor:
                     status_code=400,
                     detail="model manager not initialized; call start_model first",
                 )
+            if record.manager.is_vram_loaded():
+                return {"status": "already_loaded", "name": name}
             handler = await record.manager.ensure_loaded("load")
             if handler:
-                logger.info(f"Loaded model {name} handler")
                 # Also emit the handler-loaded event to the model-specific log sink
                 try:
                     model_logger = getattr(record.manager, "_logger", None)
@@ -386,7 +389,6 @@ class HubSupervisor:
                 return {"status": "not_loaded", "name": name}
             unloaded = await record.manager.unload("unload")
             if unloaded:
-                logger.info(f"Unloaded model {name} handler")
                 # Also emit the unload event to the model-specific log sink
                 try:
                     model_logger = getattr(record.manager, "_logger", None)
@@ -478,7 +480,7 @@ class HubSupervisor:
                     )
                 self._models[name] = record
 
-            logger.info(f"Reloaded hub config: started={started} stopped={stopped}")
+            logger.debug(f"Reloaded hub config: started={started} stopped={stopped}")
 
         return {"started": started, "stopped": stopped, "unchanged": unchanged}
 
@@ -624,10 +626,16 @@ def create_app(hub_config_path: str | None = None) -> FastAPI:
         # Auto-start models marked as default in configuration
         await _schedule_default_model_starts(supervisor)
 
+        # Start central auto-unload controller for hub models
+        central_controller = CentralIdleAutoUnloadController(registry)
+        registry.register_activity_notifier(central_controller.notify_activity)
+        central_controller.start()
+
         # Yield to start serving requests while background tasks proceed
         yield
         # Shutdown
         logger.info("Hub daemon shutting down")
+        await central_controller.stop()
         await supervisor.shutdown_all()
         # Remove transient CLI runtime state file if present so future CLI
         # invocations don't pick up a stale PID/port. The runtime file lives

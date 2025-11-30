@@ -483,14 +483,14 @@ class LazyHandlerManager(ManagerProtocol):
                 return None
 
             # Use the bound per-model logger so per-model sinks receive records
-            self._logger.info(self._format_log_message("Loading model", reason))
+            self._logger.debug(self._format_log_message("Loading model", reason))
             handler = await instantiate_handler(self.config_args)
             self._handler = handler
             self.record_activity()
             if self._on_change:
                 self._on_change(handler)
             self._schedule_memory_cleanup()
-            self._logger.info(self._format_log_message("Model loaded", reason))
+            self._logger.debug(self._format_log_message("Model loaded", reason))
             return handler
 
     async def unload(self, reason: str = "manual") -> bool:
@@ -520,9 +520,14 @@ class LazyHandlerManager(ManagerProtocol):
                 self._on_change(None)
 
         try:
-            self._logger.info(self._format_log_message("Unloading model", reason))
+            self._logger.debug(self._format_log_message("Unloading model", reason))
             await handler.cleanup()
-            self._logger.info(self._format_log_message("Model unloaded", reason))
+            self._logger.debug(self._format_log_message("Model unloaded", reason))
+            model_name = getattr(self.config_args, "name", None) or getattr(
+                self.config_args, "model_identifier", None
+            )
+            if model_name:
+                self._logger.info(f"Unloaded model {model_name} handler")
         finally:
             mx.clear_cache()
             gc.collect()
@@ -846,8 +851,10 @@ def create_lifespan(
         app : FastAPI
             The FastAPI application instance.
         """
-        registry = ModelRegistry()
-        app.state.model_registry = registry
+        registry = getattr(app.state, "model_registry", None)
+        if registry is None:
+            registry = ModelRegistry()
+            app.state.model_registry = registry
         registry_model_id = get_registry_model_id(config_args)
         base_registry_metadata = {
             "model_path": config_args.model_identifier,

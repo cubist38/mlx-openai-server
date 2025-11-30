@@ -402,7 +402,7 @@ def load_hub_config(
     for model in hub.models:
         model.enable_status_page = hub.enable_status_page
 
-    logger.info(
+    logger.debug(
         f"Loaded hub config from {path} with {len(hub.models)} model(s) and {len(hub.groups)} group(s)",
     )
     return hub

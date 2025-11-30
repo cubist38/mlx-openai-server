@@ -1038,7 +1038,7 @@ def _start_hub_daemon(config: MLXHubConfig) -> subprocess.Popen[bytes] | None:
         if proc.stdout:
             stdout_thread = threading.Thread(
                 target=_log_output,
-                args=(proc.stdout, "info", f"hub-daemon[{proc.pid}].stdout"),
+                args=(proc.stdout, "debug", f"hub-daemon[{proc.pid}].stdout"),
                 daemon=True,
             )
             stdout_thread.start()
@@ -1048,7 +1048,7 @@ def _start_hub_daemon(config: MLXHubConfig) -> subprocess.Popen[bytes] | None:
                 target=_log_output,
                 args=(
                     proc.stderr,
-                    "info",
+                    "debug",
                     f"hub-daemon[{proc.pid}].stderr",
                 ),  # MLX-LM outputs to stderr so treat as info
                 daemon=True,

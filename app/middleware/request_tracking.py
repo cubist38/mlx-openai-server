@@ -21,6 +21,9 @@ class RequestTrackingMiddleware(BaseHTTPMiddleware):
     - Logs request start/end with timing information
     """
 
+    # Paths to log at DEBUG level for successful requests
+    DEBUG_PATHS = frozenset(["/health", "/hub", "/favicon.ico", "/hub/status"])
+
     async def dispatch(
         self,
         request: Request,
@@ -48,7 +51,9 @@ class RequestTrackingMiddleware(BaseHTTPMiddleware):
 
         # Log request start
         start_time = time.time()
-        logger.info(
+        is_debug_path = request.url.path in self.DEBUG_PATHS
+        log_level = logger.debug if is_debug_path else logger.info
+        log_level(
             f"Request started: {request.method} {request.url.path} [request_id={request_id}]",
         )
 
@@ -63,11 +68,19 @@ class RequestTrackingMiddleware(BaseHTTPMiddleware):
             response.headers["X-Request-ID"] = request_id
 
             # Log request completion
-            logger.info(
-                f"Request completed: {request.method} {request.url.path} "
-                f"status={response.status_code} duration={duration:.3f}s "
-                f"[request_id={request_id}]",
-            )
+            is_debug_completion = is_debug_path and response.status_code == 200
+            if not is_debug_completion:
+                logger.info(
+                    f"Request completed: {request.method} {request.url.path} "
+                    f"status={response.status_code} duration={duration:.3f}s "
+                    f"[request_id={request_id}]",
+                )
+            else:
+                logger.debug(
+                    f"Request completed: {request.method} {request.url.path} "
+                    f"status={response.status_code} duration={duration:.3f}s "
+                    f"[request_id={request_id}]",
+                )
 
         except Exception:
             # Log error with request ID
