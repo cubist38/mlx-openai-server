@@ -2,35 +2,38 @@ import os
 import logging
 from PIL import Image
 from abc import ABC, abstractmethod
-from mflux.flux.flux import Flux1, Config
+from mflux.config.config import Config
 from mflux.config.model_config import ModelConfig
-from mflux.kontext.flux_kontext import Flux1Kontext
+from mflux.models.flux.variants.txt2img.flux import Flux1
+from mflux.models.qwen.variants.txt2img.qwen_image import QwenImage
+from mflux.models.flux.variants.kontext.flux_kontext import Flux1Kontext
+from mflux.models.qwen.variants.edit.qwen_image_edit import QwenImageEdit
 from typing import Dict, Type, Any, Optional, Union, List
 
 
 # Custom Exceptions
-class FluxModelError(Exception):
-    """Base exception for Flux model errors."""
+class ImageModelError(Exception):
+    """Base exception for image generation model errors."""
     pass
 
 
-class ModelLoadError(FluxModelError):
+class ModelLoadError(ImageModelError):
     """Raised when model loading fails."""
     pass
 
 
-class ModelGenerationError(FluxModelError):
+class ModelGenerationError(ImageModelError):
     """Raised when image generation fails."""
     pass
 
 
-class InvalidConfigurationError(FluxModelError):
+class InvalidConfigurationError(ImageModelError):
     """Raised when configuration is invalid."""
     pass
 
 
 class ModelConfiguration:
-    """Configuration class for Flux models."""
+    """Configuration class for image generation models."""
     
     def __init__(self, 
         model_type: str,
@@ -114,10 +117,11 @@ class ModelConfiguration:
             lora_paths=None,  # Kontext doesn't support LoRA
             lora_scales=None
         )
+    
 
 
-class BaseFluxModel(ABC):
-    """Abstract base class for Flux models with common functionality."""
+class BaseImageModel(ABC):
+    """Abstract base class for image generation models with common functionality."""
     
     def __init__(self, model_path: str, config: ModelConfiguration):
         self.model_path = model_path
@@ -139,7 +143,7 @@ class BaseFluxModel(ABC):
             return True
         
         # Check if it's a valid model name (for downloading)
-        valid_model_names = ["flux-dev", "flux-schnell", "flux-kontext-dev"]
+        valid_model_names = ["flux-dev", "flux-schnell", "flux-kontext-dev", "qwen-image", "qwen-image-edit"]
         return self.model_path in valid_model_names
     
     @abstractmethod
@@ -223,7 +227,7 @@ class BaseFluxModel(ABC):
         return Config(**config_params)
 
 
-class FluxStandardModel(BaseFluxModel):
+class FluxStandardModel(BaseImageModel):
     """Standard Flux model implementation for Dev and Schnell variants."""
     
     def _load_model(self):
@@ -268,7 +272,7 @@ class FluxStandardModel(BaseFluxModel):
             raise ModelGenerationError(f"Standard model generation failed: {e}") from e
 
 
-class FluxKontextModel(BaseFluxModel):
+class FluxKontextModel(BaseImageModel):
     """Flux Kontext model implementation."""
     
     def _load_model(self):
@@ -298,9 +302,75 @@ class FluxKontextModel(BaseFluxModel):
         except Exception as e:
             raise ModelGenerationError(f"Kontext model generation failed: {e}") from e
 
+class QwenImageModel(BaseImageModel):
+    """Qwen Image model implementation."""
+    
+    def _load_model(self):
+        """Load the Qwen Image model."""
+        try:
+            self.logger.info(f"Loading Qwen Image model from {self.model_path}")
+            self._model = QwenImage( 
+                model_config= ModelConfig(model_name = "qwen-image"),
+                quantize=self.config.quantize,
+                local_path=self.model_path,
+                lora_paths=self.config.lora_paths,
+                lora_scales=self.config.lora_scales,
+            )
+            self._is_loaded = True
+            self.logger.info("Qwen Image model loaded successfully")
+        except Exception as e:
+            error_msg = f"Failed to load Qwen Image model: {e}"
+            self.logger.error(error_msg)
+            raise ModelLoadError(error_msg) from e
+
+    def _generate_image(self, prompt: str, seed: int, config: Config) -> Image.Image:
+        """Generate image using Qwen Image model."""
+        try:
+            result = self._model.generate_image(
+                config=config,
+                prompt=prompt,
+                seed=seed,
+            )
+            return result.image
+        except Exception as e:
+            raise ModelGenerationError(f"Qwen Image model generation failed: {e}") from e
+
+class QwenImageEditModel(BaseImageModel):
+    """Qwen Image Edit model implementation."""
+    
+    def _load_model(self):
+        """Load the Qwen Image Edit model."""
+        try:
+            self.logger.info(f"Loading Qwen Image Edit model from {self.model_path}")
+            self._model = QwenImageEdit(
+                quantize=self.config.quantize,
+                local_path=self.model_path,
+                lora_paths=self.config.lora_paths,
+                lora_scales=self.config.lora_scales,
+            )
+            self._is_loaded = True
+            self.logger.info("Qwen Image Edit model loaded successfully")
+        except Exception as e:
+            error_msg = f"Failed to load Qwen Image Edit model: {e}"
+            self.logger.error(error_msg)
+            raise ModelLoadError(error_msg) from e
+    
+    def _generate_image(self, prompt: str, seed: int, config: Config) -> Image.Image:
+        """Generate image using Qwen Image Edit model."""
+        try:
+            result = self._model.generate_image(
+                config=config,
+                prompt=prompt,
+                seed=seed,
+            )
+            return result.image
+        except Exception as e:
+            raise ModelGenerationError(f"Qwen Image Edit model generation failed: {e}") from e
+            
+            
 
 class FluxModel:
-    """Factory class for creating and managing Flux models."""
+    """Factory class for creating and managing image generation models."""
     
     _MODEL_CONFIGS = {
         "flux-schnell": ModelConfiguration.schnell,
@@ -345,7 +415,7 @@ class FluxModel:
             
             # Create model instance
             model_class = self._MODEL_CLASSES[config_name]
-            self.flux = model_class(model_path, self.config)
+            self.model_instance = model_class(model_path, self.config)
             
             self.logger.info(f"FluxModel initialized successfully with config: {config_name}")
             if lora_paths:
@@ -358,7 +428,7 @@ class FluxModel:
     
     def __call__(self, prompt: str, seed: int = 42, **kwargs) -> Image.Image:
         """Generate an image using the configured model."""
-        return self.flux(prompt, seed, **kwargs)
+        return self.model_instance(prompt, seed, **kwargs)
     
     @classmethod
     def get_available_configs(cls) -> list[str]:
@@ -389,11 +459,11 @@ class FluxModel:
             "type": self.config.model_type,
             "default_steps": self.config.default_steps,
             "default_guidance": self.config.default_guidance,
-            "is_loaded": self.flux._is_loaded if hasattr(self.flux, '_is_loaded') else False,
+            "is_loaded": self.model_instance._is_loaded if hasattr(self.model_instance, '_is_loaded') else False,
             "lora_paths": self.config.lora_paths,
             "lora_scales": self.config.lora_scales,
         }
     
     def is_loaded(self) -> bool:
         """Check if the model is loaded and ready for inference."""
-        return hasattr(self.flux, '_is_loaded') and self.flux._is_loaded
+        return hasattr(self.model_instance, '_is_loaded') and self.model_instance._is_loaded
