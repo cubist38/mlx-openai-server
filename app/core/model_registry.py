@@ -338,7 +338,6 @@ class ModelRegistry:
             if model_id not in self._handlers:
                 raise KeyError(f"Model '{model_id}' not found in registry")
             manager = self._handlers[model_id]
-            entry = self._extra.setdefault(model_id, {})
 
         if manager is None:
             raise KeyError(f"No manager attached for model '{model_id}'")
@@ -378,7 +377,6 @@ class ModelRegistry:
             if model_id not in self._handlers:
                 raise KeyError(f"Model '{model_id}' not found in registry")
             manager = self._handlers[model_id]
-            entry = self._extra.setdefault(model_id, {})
 
         if manager is None:
             raise KeyError(f"No manager attached for model '{model_id}'")

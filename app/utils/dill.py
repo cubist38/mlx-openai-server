@@ -126,7 +126,7 @@ class Pickler(dill.Pickler):
     def memoize(self, obj: Any) -> None:
         """Memoize an object, skipping strings to avoid id issues."""
         # Don't memoize strings since two identical strings can have different Python ids
-        if type(obj) is not str:
+        if not isinstance(obj, str):
             dill.Pickler.memoize(self, obj)
 
 
