@@ -108,7 +108,7 @@ The server supports six types of MLX models:
 
 ### Flux-Series Image Models
 
-> **⚠️ Note:** Image generation and editing capabilities require manual installation of `mflux`: `pip install git+https://github.com/cubist38/mflux.git`
+> **⚠️ Note:** Image generation and editing capabilities require installation of `mflux`: `pip install mlx-openai-server[image-generation]` or `pip install git+https://github.com/cubist38/mflux.git`
 
 The server supports multiple Flux model configurations for advanced image generation and editing:
 
@@ -201,8 +201,8 @@ Follow these steps to set up the MLX-powered server:
     cd mlx-openai-server
     pip install -e .
     
-    # Optional: For image generation/editing support, also install mflux
-    pip install git+https://github.com/cubist38/mflux.git
+    # Optional: For image generation/editing support
+    pip install -e .[image-generation]
     ```
 
 ### Using Conda (Recommended)
@@ -238,8 +238,8 @@ For better environment management and to avoid architecture issues, we recommend
     cd mlx-openai-server
     pip install -e .
     
-    # Optional: For image generation/editing support, also install mflux
-    pip install git+https://github.com/cubist38/mflux.git
+    # Optional: For image generation/editing support
+    pip install -e .[image-generation]
     ```
 
 ### Optional Dependencies
@@ -257,8 +257,14 @@ pip install mlx-openai-server
 - All core API endpoints and functionality
 
 #### Image Generation & Editing Support
-For image generation and editing capabilities, you need to install `mflux` manually:
+For image generation and editing capabilities, install with the image-generation extra:
 
+```bash
+# Install with image generation support
+pip install mlx-openai-server[image-generation]
+```
+
+Or install manually:
 ```bash
 # First install the base server
 pip install mlx-openai-server
@@ -274,6 +280,21 @@ pip install git+https://github.com/cubist38/mflux.git
 - LoRA adapter support for fine-tuned generation
 
 > **Note:** If you try to use image generation or editing without `mflux` installed, you'll receive a clear error message directing you to install it manually.
+
+#### Enhanced Caching Support
+For enhanced caching and performance when working with complex ML models and objects, install with the enhanced-caching extra:
+
+```bash
+# Install with enhanced caching support
+pip install mlx-openai-server[enhanced-caching]
+```
+
+This enables better serialization and caching of objects from:
+- spaCy (NLP processing)
+- regex (regular expressions)
+- tiktoken (tokenization)
+- torch (PyTorch tensors and models)
+- transformers (Hugging Face models)
 
 #### Whisper Models Support
 For whisper models to work properly, you need to install ffmpeg:
