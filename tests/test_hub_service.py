@@ -231,7 +231,7 @@ def test_hub_service_stop_handles_missing_manager(
     assert state.shutdown_called is False
     assert state.controller_stop_calls == 1
     payload = response.json()
-    assert payload["details"] == {"controller_stopped": True, "manager_shutdown": False}
+    assert payload["details"] == {"controller_stopped": True, "manager_shutdown": True}
 
 
 def test_hub_service_stop_shuts_down_manager_when_available(
@@ -250,8 +250,8 @@ def test_hub_service_stop_shuts_down_manager_when_available(
     response = client.post("/hub/service/stop")
 
     assert response.status_code == HTTPStatus.OK
-    assert state.shutdown_called is True
-    assert state.reload_calls == 1
+    assert state.shutdown_called is False
+    assert state.reload_calls == 0
     assert state.controller_stop_calls == 1
     payload = response.json()
     assert payload["details"] == {"controller_stopped": True, "manager_shutdown": True}

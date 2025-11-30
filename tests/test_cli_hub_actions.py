@@ -204,7 +204,7 @@ def test_render_watch_table_formats_columns() -> None:
         },
     ]
 
-    table = _render_watch_table(models, now=2000.0)
+    table = _render_watch_table(models)
 
     assert "NAME" in table.splitlines()[0]
     assert "alpha" in table
@@ -219,7 +219,7 @@ def test_render_watch_table_formats_columns() -> None:
 
 def test_render_watch_table_handles_empty_payload() -> None:
     """The watch table helper should gracefully render empty snapshots."""
-    assert _render_watch_table([], now=0) == "  (no managed models)"
+    assert _render_watch_table([]) == "  (no managed models)"
 
 
 def test_hub_load_model_cli_calls_controller(

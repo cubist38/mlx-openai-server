@@ -189,6 +189,8 @@ class ModelRegistry:
                     # Handler detached
                     entry["vram_loaded"] = False
                     entry.pop("vram_last_load_ts", None)
+                    entry["status"] = "unloaded"
+                    entry["vram_last_unload_ts"] = int(time.time())
 
             if metadata_updates:
                 entry.update(metadata_updates)

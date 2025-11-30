@@ -27,6 +27,7 @@ from ..config import MLXServerConfig
 from ..const import (
     DEFAULT_API_HOST,
     DEFAULT_AUTO_UNLOAD_MINUTES,
+    DEFAULT_BIND_HOST,
     DEFAULT_GROUP,
     DEFAULT_HUB_LOG_PATH,
     DEFAULT_IS_DEFAULT_MODEL,
@@ -473,7 +474,33 @@ class HubSupervisor:
                         "is_default_model",
                         DEFAULT_IS_DEFAULT_MODEL,
                     )
+                    # Check if model_path is changing and update registry for stopped models
+                    old_model_path = existing_record.model_path
                     existing_record.model_path = new_model_path
+                    if (
+                        old_model_path != new_model_path
+                        and existing_record.manager is None
+                        and self.registry is not None
+                    ):
+                        if old_model_path is not None:
+                            try:
+                                await self.registry.unregister_model(old_model_path)
+                            except KeyError:
+                                logger.warning(
+                                    f"Failed to unregister old model path '{old_model_path}' from registry"
+                                )
+                        if new_model_path is not None:
+                            try:
+                                self.registry.register_model(
+                                    model_id=new_model_path,
+                                    handler=None,
+                                    model_type=getattr(model, "model_type", "unknown"),
+                                    context_length=getattr(model, "context_length", None),
+                                )
+                            except ValueError:
+                                logger.warning(
+                                    f"Failed to register new model path '{new_model_path}' in registry"
+                                )
                     existing_record.auto_unload_minutes = getattr(
                         model,
                         "auto_unload_minutes",
@@ -703,9 +730,10 @@ def create_app(hub_config_path: str | None = None) -> FastAPI:  # noqa: C901
 
         # Check if the configured port is available
         configured_port = getattr(hub_config, "port", DEFAULT_PORT)
-        if not is_port_available(port=configured_port):
+        configured_host = getattr(hub_config, "host", DEFAULT_BIND_HOST)
+        if not is_port_available(port=configured_port, host=configured_host):
             raise RuntimeError(
-                f"Port {configured_port} is already in use. Please stop the service using that port.",
+                f"Port {configured_port} is already in use on host {configured_host}. Please stop the service using that port.",
             )
 
         # Auto-start models marked as default in configuration

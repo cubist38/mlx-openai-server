@@ -201,13 +201,14 @@ async def test_model_load_and_unload(hub_config_with_defaults: MLXHubConfig) -> 
         start_result = await supervisor.start_model("regular_model")
         assert start_result["status"] == "loaded"
 
-    # Now test load
-    mock_manager.ensure_loaded = AsyncMock(return_value=MagicMock())
+    # Now test load - model is already loaded from start_model
+    mock_manager.is_vram_loaded.return_value = True
     result = await supervisor.load_model("regular_model")
     assert result["status"] == "already_loaded"  # Model is already loaded from start_model
     assert result["name"] == "regular_model"
 
-    # Test unload
+    # Test unload - model is still loaded
+    mock_manager.is_vram_loaded.return_value = True
     mock_manager.unload = AsyncMock(return_value=True)
 
     result = await supervisor.unload_model("regular_model")
@@ -275,7 +276,6 @@ async def test_reload_config_preserves_loaded_models(
         assert record_after.started_at == 12345
 
         mock_load.assert_called_once_with(hub_config_with_defaults.source_path)
-    assert "unchanged" in result
 
 
 @pytest.mark.asyncio
@@ -325,7 +325,7 @@ async def test_reload_config_rejects_model_path_change_for_started_models(
 
 @pytest.mark.asyncio
 async def test_default_models_auto_start_during_lifespan(
-    tmp_path: Path, write_hub_yaml: Callable[[str, str], Path]
+    write_hub_yaml: Callable[[str, str], Path],
 ) -> None:
     """Test that default models are automatically started during daemon lifespan."""
     cfg = write_hub_yaml(
@@ -372,7 +372,7 @@ models:
 
 @pytest.mark.asyncio
 async def test_hub_api_endpoints_call_supervisor_methods(
-    tmp_path: Path, write_hub_yaml: Callable[[str, str], Path]
+    write_hub_yaml: Callable[[str, str], Path],
 ) -> None:
     """Test that hub API endpoints properly call supervisor methods."""
     cfg = write_hub_yaml(

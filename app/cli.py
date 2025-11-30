@@ -350,7 +350,7 @@ def _print_hub_status(
             state_display = state
 
         # Loaded in memory: prefer explicit runtime flag when available,
-        # otherwise approximate with process state.
+        # based on the memory_state field from runtime metadata.
         memory_flag = metadata.get("memory_state") == "loaded"
         loaded_in_memory = "yes" if memory_flag else "no"
 
@@ -619,15 +619,13 @@ def _format_duration(seconds: float | None) -> str:
     return f"{secs}s"
 
 
-def _render_watch_table(models: Iterable[dict[str, Any]], *, now: float | None = None) -> str:
+def _render_watch_table(models: Iterable[dict[str, Any]]) -> str:
     """Return a formatted table describing hub-managed models, matching hub status format.
 
     Parameters
     ----------
     models : Iterable[dict[str, Any]]
         The model data.
-    now : float | None, optional
-        Reference time for uptime calculation, defaults to current time.
 
     Returns
     -------
@@ -752,18 +750,21 @@ def _print_watch_snapshot(snapshot: dict[str, Any]) -> None:
                 # Fallback for dict format (legacy)
                 models.append(model)
 
-    running = sum(1 for entry in models if str(entry.get("state")).lower() == "running")
-    stopped = sum(1 for entry in models if str(entry.get("state")).lower() == "stopped")
+    def _normalize_state(entry: dict[str, Any]) -> str:
+        return str(entry.get("state", "")).strip().lower()
+
+    running = sum(1 for entry in models if _normalize_state(entry).startswith("running"))
+    stopped = sum(1 for entry in models if _normalize_state(entry).startswith("stopped"))
     failed = sum(
         1
         for entry in models
-        if str(entry.get("state")).lower() == "failed" or entry.get("exit_code") not in (None, 0)
+        if _normalize_state(entry).startswith("failed") or entry.get("exit_code") not in (None, 0)
     )
 
     click.echo(
         f"[{formatted}] models={len(models)} running={running} stopped={stopped} failed={failed}",
     )
-    click.echo(_render_watch_table(models, now=reference))
+    click.echo(_render_watch_table(models))
 
 
 @cli.command(help="Start the MLX OpenAI Server with the supplied flags")
@@ -975,11 +976,6 @@ def launch(
             "--auto-unload-minutes requires --jit to be set.",
         )
 
-    # Validate model_path at runtime and provide a clear CLI error if missing.
-    if model_path is None:
-        logger.error("launch: missing required parameter 'model_path'")
-        raise click.ClickException("Missing required argument: --model-path")
-
     args = MLXServerConfig(
         model_path=model_path,
         model_type=model_type,
@@ -1108,7 +1104,7 @@ def _start_hub_daemon(config: MLXHubConfig) -> subprocess.Popen[bytes] | None:
                     proc.stderr,
                     "debug",
                     f"hub-daemon[{proc.pid}].stderr",
-                ),  # MLX-LM outputs to stderr so treat as info
+                ),  # MLX-LM outputs to stderr so treat as debug
                 daemon=True,
             )
             stderr_thread.start()
@@ -1263,7 +1259,7 @@ def hub_stop(ctx: click.Context) -> None:
     except click.ClickException as e:
         # If we can't contact the daemon it's likely not running; be friendly
         msg = str(e)
-        if "Failed to contact hub daemon" in msg or "Daemon responded" in msg:
+        if "Failed to contact hub daemon" in msg:
             _flash("Hub manager is not running; nothing to stop", tone="info")
             return
         raise click.ClickException(f"Config sync failed before shutdown: {e}") from e
