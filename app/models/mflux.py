@@ -202,10 +202,12 @@ class BaseImageModel(ABC):
         except Exception as e:
             raise ModelGenerationError(f"{self.__class__.__name__} generation failed: {e}") from e
     
-    def __call__(self, prompt: str, negative_prompt: Optional[str] = None, seed: int = 42, **kwargs) -> Image.Image:
+    def __call__(self, prompt: str, seed: int = 42, **kwargs) -> Image.Image:
         """Generate an image from a text prompt."""
         if not self._is_loaded:
             raise ModelLoadError("Model is not loaded. Cannot generate image.")
+        
+        negative_prompt = kwargs.pop('negative_prompt', None)
             
         # Validate inputs
         if not prompt or not prompt.strip():
@@ -428,7 +430,7 @@ class ImageGenerationModel:
     
     def __call__(self, prompt: str, seed: int = 42, **kwargs) -> Image.Image:
         """Generate an image using the configured model."""
-        return self.model_instance(prompt, seed, **kwargs)
+        return self.model_instance(prompt, seed=seed, **kwargs)
     
     @classmethod
     def get_available_configs(cls) -> list[str]:
