@@ -47,6 +47,8 @@ from ..schemas.openai import (
 )
 from ..utils.errors import create_error_response
 from .hub_routes import (
+    HubConfigError,
+    _load_hub_config_from_request,
     get_cached_model_metadata,
     get_configured_model_id,
     get_running_hub_models,
@@ -198,50 +200,75 @@ def _hub_model_required_error() -> JSONResponse:
     )
 
 
-def _resolve_model_name(
+def _resolve_model_for_openai_api(
     raw_request: Request,
     model_name: str | None,
     *,
     provided_explicitly: bool,
-) -> tuple[str | None, JSONResponse | None]:
-    """Normalize ``model_name`` and enforce hub requirements when needed.
+) -> tuple[str | None, str | None, JSONResponse | None]:
+    """Resolve model for OpenAI-compatible APIs in hub mode.
 
-    Parameters
-    ----------
-    raw_request : Request
-        The incoming FastAPI request.
-    model_name : str or None
-        The model name to resolve.
-    provided_explicitly : bool
-        Whether the model was explicitly provided in the request.
-
-    Returns
-    -------
-    tuple[str or None, JSONResponse or None]
-        A tuple of (resolved_model_name, error_response) where exactly one is None.
+    Returns a tuple of (api_model_id, handler_name, error_response) where
+    - `api_model_id` is the model identifier that should be exposed through
+      the OpenAI-compatible API (the registry `model_path`),
+    - `handler_name` is the hub controller name used to acquire handlers,
+    - `error_response` is a JSONResponse when resolution/validation failed.
     """
     normalized = (model_name or "").strip() or None
     controller = getattr(raw_request.app.state, "hub_controller", None)
+    # Non-hub mode: handler name and API id are the same
     if controller is None:
-        return normalized, None
+        return normalized, normalized, None
 
+    # Hub mode requires explicit model selection
     if not provided_explicitly or normalized is None:
-        return None, _hub_model_required_error()
+        return None, None, _hub_model_required_error()
 
+    # Try to load hub config to map between name and model_path
+    try:
+        config = _load_hub_config_from_request(raw_request)
+    except HubConfigError:
+        config = None
+
+    mapped_handler: str | None = None
+    mapped_api_id: str | None = None
+
+    if config is not None:
+        for m in getattr(config, "models", []):
+            # m.name may be None; use model_identifier as fallback
+            cfg_name = getattr(m, "name", None) or getattr(m, "model_identifier", None)
+            cfg_path = getattr(m, "model_path", None)
+            if normalized in {cfg_name, cfg_path, getattr(m, "model_identifier", None)}:
+                mapped_handler = cfg_name
+                mapped_api_id = cfg_path
+                break
+
+    # If we didn't map from config, assume the provided value might be a handler name
+    if mapped_handler is None:
+        mapped_handler = normalized
+    if mapped_api_id is None:
+        # If no mapping available, expose the normalized value as the API id
+        mapped_api_id = normalized
+
+    # Validate that the handler is running if we can query running models
     running_models = get_running_hub_models(raw_request)
-    if running_models is not None and normalized not in running_models:
-        return (
-            None,
-            JSONResponse(
-                content=create_error_response(
-                    f"Model '{normalized}' is not started. Start the process before sending requests.",
-                    "invalid_request_error",
-                    HTTPStatus.BAD_REQUEST,
+    if running_models is not None:
+        # running_models contains hub names; ensure mapped_handler is started
+        if mapped_handler not in running_models:
+            return (
+                None,
+                None,
+                JSONResponse(
+                    content=create_error_response(
+                        f"Model '{mapped_api_id}' is not started. Start the process before sending requests.",
+                        "invalid_request_error",
+                        HTTPStatus.BAD_REQUEST,
+                    ),
+                    status_code=HTTPStatus.BAD_REQUEST,
                 ),
-                status_code=HTTPStatus.BAD_REQUEST,
-            ),
-        )
-    return normalized, None
+            )
+
+    return mapped_api_id, mapped_handler, None
 
 
 def _model_field_was_provided(payload: Any) -> bool:
@@ -442,10 +469,8 @@ async def queue_stats(
     dict[str, Any] or JSONResponse
         Queue statistics or error response.
     """
-    resolved_model, validation_error = _resolve_model_name(
-        raw_request,
-        model,
-        provided_explicitly=model is not None,
+    api_model_id, handler_name, validation_error = _resolve_model_for_openai_api(
+        raw_request, model, provided_explicitly=model is not None
     )
     if validation_error is not None:
         return validation_error
@@ -453,7 +478,7 @@ async def queue_stats(
     handler, error = await _get_handler_or_error(
         raw_request,
         "queue_stats",
-        model_name=resolved_model,
+        model_name=handler_name,
     )
     if error is not None:
         return error
@@ -507,21 +532,19 @@ async def chat_completions(
     ChatCompletionResponse or StreamingResponse or JSONResponse
         Chat completion response, stream, or error response.
     """
-    resolved_model, validation_error = _resolve_model_name(
-        raw_request,
-        request.model,
-        provided_explicitly=_model_field_was_provided(request),
+    api_model_id, handler_name, validation_error = _resolve_model_for_openai_api(
+        raw_request, request.model, provided_explicitly=_model_field_was_provided(request)
     )
     if validation_error is not None:
         return validation_error
-    selected_model = resolved_model or request.model
-    if selected_model is not None:
-        request.model = selected_model
+    # Expose model_path (api_model_id) in OpenAI-compatible responses
+    if api_model_id is not None:
+        request.model = api_model_id
 
     handler, error = await _get_handler_or_error(
         raw_request,
         "chat_completions",
-        model_name=selected_model,
+        model_name=handler_name,
     )
     if error is not None:
         return error
@@ -580,21 +603,18 @@ async def embeddings(
     EmbeddingResponse or JSONResponse
         Embedding response or error response.
     """
-    resolved_model, validation_error = _resolve_model_name(
-        raw_request,
-        request.model,
-        provided_explicitly=_model_field_was_provided(request),
+    api_model_id, handler_name, validation_error = _resolve_model_for_openai_api(
+        raw_request, request.model, provided_explicitly=_model_field_was_provided(request)
     )
     if validation_error is not None:
         return validation_error
-    selected_model = resolved_model or request.model
-    if selected_model is not None:
-        request.model = selected_model
+    if api_model_id is not None:
+        request.model = api_model_id
 
     handler, error = await _get_handler_or_error(
         raw_request,
         "embeddings",
-        model_name=selected_model,
+        model_name=handler_name,
     )
     if error is not None:
         return error
@@ -654,21 +674,18 @@ async def image_generations(
     ImageGenerationResponse or JSONResponse
         Image generation response or error response.
     """
-    resolved_model, validation_error = _resolve_model_name(
-        raw_request,
-        request.model,
-        provided_explicitly=_model_field_was_provided(request),
+    api_model_id, handler_name, validation_error = _resolve_model_for_openai_api(
+        raw_request, request.model, provided_explicitly=_model_field_was_provided(request)
     )
     if validation_error is not None:
         return validation_error
-    selected_model = resolved_model or request.model
-    if selected_model is not None:
-        request.model = selected_model
+    if api_model_id is not None:
+        request.model = api_model_id
 
     handler, error = await _get_handler_or_error(
         raw_request,
         "image_generation",
-        model_name=selected_model,
+        model_name=handler_name,
     )
     if error is not None:
         return error
@@ -726,21 +743,18 @@ async def create_image_edit(
     ImageEditResponse or JSONResponse
         Image edit response or error response.
     """
-    resolved_model, validation_error = _resolve_model_name(
-        raw_request,
-        request.model,
-        provided_explicitly=_model_field_was_provided(request),
+    api_model_id, handler_name, validation_error = _resolve_model_for_openai_api(
+        raw_request, request.model, provided_explicitly=_model_field_was_provided(request)
     )
     if validation_error is not None:
         return validation_error
-    selected_model = resolved_model or request.model
-    if selected_model is not None:
-        request.model = selected_model
+    if api_model_id is not None:
+        request.model = api_model_id
 
     handler, error = await _get_handler_or_error(
         raw_request,
         "image_edit",
-        model_name=selected_model,
+        model_name=handler_name,
     )
     if error is not None:
         return error
@@ -797,21 +811,18 @@ async def create_audio_transcriptions(
     StreamingResponse or TranscriptionResponse or JSONResponse or str
         Transcription response, stream, or error response.
     """
-    resolved_model, validation_error = _resolve_model_name(
-        raw_request,
-        request.model,
-        provided_explicitly=_model_field_was_provided(request),
+    api_model_id, handler_name, validation_error = _resolve_model_for_openai_api(
+        raw_request, request.model, provided_explicitly=_model_field_was_provided(request)
     )
     if validation_error is not None:
         return validation_error
-    selected_model = resolved_model or request.model
-    if selected_model is not None:
-        request.model = selected_model
+    if api_model_id is not None:
+        request.model = api_model_id
 
     handler, error = await _get_handler_or_error(
         raw_request,
         "audio_transcriptions",
-        model_name=selected_model,
+        model_name=handler_name,
     )
     if error is not None:
         return error
