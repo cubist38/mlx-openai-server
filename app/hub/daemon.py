@@ -45,7 +45,7 @@ from ..server import (
     configure_logging,
 )
 from ..utils.network import is_port_available
-from .config import MLXHubConfig, load_hub_config
+from .config import MLXHubConfig, MLXHubGroupConfig, load_hub_config
 
 
 def create_app_with_config(config_path: str) -> FastAPI:
@@ -126,12 +126,7 @@ class HubSupervisor:
         record = self._models[model_name]
         group_name = record.group
 
-        # Find the group config
-        group_config = None
-        for group in getattr(self.hub_config, "groups", []):
-            if getattr(group, "name", None) == group_name:
-                group_config = group
-                break
+        group_config = self._get_group_config(group_name)
 
         if (
             not group_config
@@ -159,6 +154,101 @@ class HubSupervisor:
             return True
 
         return loaded_count < max_loaded
+
+    def _get_group_config(self, group_name: str | None) -> MLXHubGroupConfig | None:
+        """Return the configured group definition for ``group_name`` if present."""
+        if not group_name:
+            return None
+        for group in getattr(self.hub_config, "groups", []):
+            if getattr(group, "name", None) == group_name:
+                return cast("MLXHubGroupConfig", group)
+        return None
+
+    def _group_violation_error(self, model_name: str) -> HTTPException:
+        """Construct a standardized HTTPException for group capacity violations."""
+        return HTTPException(
+            status_code=409,
+            detail=f"Loading model '{model_name}' would violate group max_loaded constraint",
+        )
+
+    async def _ensure_group_capacity(self, model_name: str) -> None:
+        """Ensure there is group capacity for ``model_name`` or raise HTTPException."""
+        if self._check_group_constraints(model_name):
+            return
+
+        record = self._models[model_name]
+        group_config = self._get_group_config(record.group)
+        if not group_config or group_config.max_loaded is None:
+            raise self._group_violation_error(model_name)
+
+        idle_trigger = getattr(group_config, "idle_unload_trigger_min", None)
+        if idle_trigger is None:
+            raise self._group_violation_error(model_name)
+
+        evicted = await self._attempt_group_eviction(
+            group_name=group_config.name,
+            threshold_minutes=idle_trigger,
+            exclude=model_name,
+        )
+        if not evicted and not self._check_group_constraints(model_name):
+            raise self._group_violation_error(model_name)
+
+    async def _attempt_group_eviction(
+        self,
+        *,
+        group_name: str,
+        threshold_minutes: int,
+        exclude: str,
+    ) -> bool:
+        """Attempt to unload the longest-idle model meeting the threshold."""
+
+        threshold_seconds = max(threshold_minutes, 0) * 60
+        candidates: list[tuple[float, ModelRecord]] = []
+        for other_record in self._models.values():
+            if other_record.name == exclude or other_record.group != group_name:
+                continue
+            manager = other_record.manager
+            if not manager or not manager.is_vram_loaded():
+                continue
+            seconds_since: float | None
+            try:
+                seconds_since = float(manager.seconds_since_last_activity())
+            except Exception:
+                seconds_since = None
+            if seconds_since is None or seconds_since < threshold_seconds:
+                continue
+            candidates.append((seconds_since, other_record))
+
+        if not candidates:
+            logger.info(
+                f"Group '{group_name}' at capacity for '{exclude}'; no models idle >= {threshold_minutes} minute(s)",
+            )
+            return False
+
+        candidates.sort(key=lambda item: item[0], reverse=True)
+        for idle_seconds, other_record in candidates:
+            manager = other_record.manager
+            if manager is None:
+                continue
+            try:
+                unloaded = await manager.unload("group-capacity")
+            except Exception as exc:  # pragma: no cover - defensive
+                logger.warning(
+                    f"Failed to unload '{other_record.name}' while freeing group '{group_name}' capacity: {exc}",
+                )
+                continue
+            if unloaded:
+                idle_minutes = idle_seconds / 60
+                logger.info(
+                    f"Unloaded '{other_record.name}' after {idle_minutes:.1f} idle minute(s) to free group "
+                    f"'{group_name}' capacity for '{exclude}'",
+                )
+                return True
+
+        logger.warning(
+            f"Unable to free capacity in group '{group_name}' for '{exclude}' despite eligible candidates",
+        )
+        return False
 
     async def start_model(self, name: str) -> dict[str, Any]:
         """Load the model's handler.
@@ -234,12 +324,7 @@ class HubSupervisor:
 
             # Only load immediately if JIT is disabled
             if not record.manager.jit_enabled:
-                # Check group constraints before loading
-                if not self._check_group_constraints(name):
-                    raise HTTPException(
-                        status_code=409,
-                        detail=f"Loading model '{name}' would violate group max_loaded constraint",
-                    )
+                await self._ensure_group_capacity(name)
                 await record.manager.ensure_loaded("start")
                 if self.registry:
                     # Use the registered model_id (original_model_path) for update_model_state
@@ -372,6 +457,8 @@ class HubSupervisor:
             record = self._models.get(name)
             if record is None or record.manager is None:
                 return None
+            if not record.manager.is_vram_loaded():
+                await self._ensure_group_capacity(name)
             return await record.manager.ensure_loaded(reason)
 
     async def acquire_handler(self, name: str, reason: str = "request") -> MLXHandler | None:
@@ -398,13 +485,7 @@ class HubSupervisor:
             if record.manager.is_vram_loaded():
                 return {"status": "already_loaded", "name": name}
 
-            # Check group constraints before loading
-            if not self._check_group_constraints(name):
-                raise HTTPException(
-                    status_code=409,
-                    detail=f"Loading model '{name}' would violate group max_loaded constraint",
-                )
-
+            await self._ensure_group_capacity(name)
             handler = await record.manager.ensure_loaded("load")
             if handler:
                 # Also emit the handler-loaded event to the model-specific log sink
@@ -591,6 +672,13 @@ class HubSupervisor:
             "models": [],
         }
 
+        group_configs = {
+            cast("str", getattr(group, "name", None)): group
+            for group in getattr(self.hub_config, "groups", [])
+            if getattr(group, "name", None)
+        }
+        group_state: dict[str, dict[str, Any]] = {}
+
         # Take a brief, locked snapshot of the model records to avoid races
         # while allowing the lock to be held only for a short time.
         async with self._lock:
@@ -630,6 +718,45 @@ class HubSupervisor:
                     "auto_unload_minutes": rec.auto_unload_minutes,
                 },
             )
+
+            group_name = rec.group
+            if not group_name:
+                continue
+            cfg = group_configs.get(group_name)
+            entry = group_state.setdefault(
+                group_name,
+                {
+                    "name": group_name,
+                    "max_loaded": getattr(cfg, "max_loaded", None) if cfg else None,
+                    "idle_unload_trigger_min": getattr(
+                        cfg,
+                        "idle_unload_trigger_min",
+                        None,
+                    )
+                    if cfg
+                    else None,
+                    "loaded": 0,
+                    "models": [],
+                },
+            )
+            entry["models"].append(name)
+            if is_vram_loaded:
+                entry["loaded"] += 1
+
+        for group_name, cfg in group_configs.items():
+            group_state.setdefault(
+                group_name,
+                {
+                    "name": group_name,
+                    "max_loaded": getattr(cfg, "max_loaded", None),
+                    "idle_unload_trigger_min": getattr(cfg, "idle_unload_trigger_min", None),
+                    "loaded": 0,
+                    "models": [],
+                },
+            )
+
+        if group_state:
+            snapshot["groups"] = sorted(group_state.values(), key=lambda entry: entry["name"])
         return snapshot
 
     def add_background_task(self, task: asyncio.Task[None]) -> None:

@@ -8,7 +8,7 @@ import pytest
 
 from app.cli import _print_hub_status, _print_watch_snapshot
 from app.config import MLXServerConfig
-from app.hub.config import MLXHubConfig
+from app.hub.config import MLXHubConfig, MLXHubGroupConfig
 
 
 def test_print_hub_status_includes_live_state(
@@ -36,17 +36,30 @@ def test_print_hub_status_includes_live_state(
                 },
             },
         ],
+        "groups": [
+            {
+                "name": "tier",
+                "max_loaded": 1,
+                "idle_unload_trigger_min": 5,
+                "loaded": 1,
+                "models": ["alpha"],
+            },
+        ],
     }
     cfg = make_hub_config(
         models=[
             MLXServerConfig(model_path="/models/a", name="alpha", model_type="lm", group="tier")
         ]
     )
+    cfg.groups = [MLXHubGroupConfig(name="tier", max_loaded=1, idle_unload_trigger_min=5)]
     _print_hub_status(cfg, live_status=live)
     output = capsys.readouterr().out
     assert "running" in output
     assert "4321" in output
     assert "tier" in output
+    assert "Groups:" in output
+    assert "IDLE-UNLOAD" in output
+    assert "5min" in output
 
 
 def test_print_watch_snapshot_handles_empty(capsys: pytest.CaptureFixture[str]) -> None:
