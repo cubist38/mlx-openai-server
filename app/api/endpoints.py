@@ -391,19 +391,34 @@ async def models(raw_request: Request) -> ModelsResponse | JSONResponse:
 
             if running_models is not None:
                 models_data = registry.list_models()
-                # Update vram_loaded from supervisor status if available
+                # Update metadata from supervisor status if available
                 if supervisor_status is not None:
-                    memory_lookup = {
-                        model["model_path"]: model.get("memory_loaded", False)
+                    model_lookup = {
+                        model["model_path"]: model
                         for model in supervisor_status.get("models", [])
                         if model.get("model_path")
                     }
                     for model in models_data:
                         model_path = model.get("id")
-                        if model_path in memory_lookup:
-                            model.setdefault("metadata", {})["vram_loaded"] = memory_lookup[
-                                model_path
-                            ]
+                        if model_path in model_lookup:
+                            supervisor_model = model_lookup[model_path]
+                            metadata = model.setdefault("metadata", {})
+                            metadata["vram_loaded"] = supervisor_model.get("memory_loaded", False)
+                            # Update status based on state and memory_loaded
+                            state = supervisor_model.get("state", "stopped")
+                            memory_loaded = supervisor_model.get("memory_loaded", False)
+                            if memory_loaded:
+                                metadata["status"] = "loaded"
+                            elif state == "running":
+                                metadata["status"] = "initialized"
+                            else:
+                                metadata["status"] = "unloaded"
+                            # Update other VRAM fields if available
+                            if supervisor_model.get("unload_timestamp"):
+                                metadata["vram_last_unload_ts"] = supervisor_model[
+                                    "unload_timestamp"
+                                ]
+                            # Note: vram_last_request_ts would need to be tracked separately
                 models_data = [model for model in models_data if model.get("id") in running_models]
                 return ModelsResponse(object="list", data=[Model(**model) for model in models_data])
             # If running_models is None, fall through to handler fallback

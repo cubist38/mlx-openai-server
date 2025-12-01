@@ -544,13 +544,6 @@
             const table = tbody ? tbody.closest('table') : null;
             if (table && !table.hasAttribute('data-model-listener-attached')) {
                 table.addEventListener('click', onModelActionClick);
-                // Attach direct listeners to model buttons as a fallback (helps if delegated events are blocked)
-                table.querySelectorAll('[data-action]').forEach(btn => {
-                    if (!btn.hasAttribute('data-model-listener-attached')) {
-                        btn.addEventListener('click', onModelActionClick);
-                        btn.setAttribute('data-model-listener-attached', 'true');
-                    }
-                });
                 console.debug('attachModelActionListeners: listeners attached');
                 table.setAttribute('data-model-listener-attached', 'true');
             }
