@@ -863,7 +863,7 @@ async def _schedule_default_model_starts(supervisor: HubSupervisor) -> None:
         logger.exception(f"Error while scheduling default model starts: {e}")
 
 
-def create_app(hub_config_path: str | None = None) -> FastAPI:  # noqa: C901
+def create_app(hub_config_path: str | None = None) -> FastAPI:
     """Create and configure the FastAPI application for the hub daemon.
 
     Parameters
