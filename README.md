@@ -790,6 +790,12 @@ Groups
 | --- | --- | ---: | --- | --- |
 | `name` | string | ✅ | — | Group identifier referenced by per-model `group`. |
 | `max_loaded` | integer | — | — | Maximum number of models in this group that may be memory-loaded simultaneously. Exceeding the cap returns an OpenAI-style `429`. |
+| `idle_unload_trigger_min` | integer | — | — | Optional per-group idle threshold (in minutes). When set alongside `max_loaded`, a new load request will evict the longest-idle loaded member meeting this threshold before returning a `429`. |
+
+Group idle eviction vs. auto-unload timers
+- `idle_unload_trigger_min` never runs on a schedule; it only activates when another model in the same group needs to load and the group is at the `max_loaded` ceiling.
+- Models that have been idle longer than the configured threshold are candidates for eviction, but only one is unloaded per blocked load request and only if it frees room for the incoming model.
+- Per-model `auto_unload_minutes` remain unchanged and continue to unload handlers after their own idle timers expire, even if the group is not contended.
 
 Port allocation note
 - When a model omits the `port` field, the hub assigns sequential ports starting at `model_starting_port` (default `47850`). Busy ports are skipped automatically.
@@ -842,6 +848,7 @@ models:
 groups:
   - name: high_load
     max_loaded: 1
+    idle_unload_trigger_min: 15
 ```
 
 Per-model logs and telemetry
@@ -879,8 +886,11 @@ mlx-openai-server hub reload
 mlx-openai-server hub stop
 ```
 
+When `hub status` runs, its output now includes a `Groups` table beneath the per-model table. Each entry lists the group name, `max_loaded`, `idle_unload_trigger_min`, and the current count of loaded models so you can see which groups are at capacity without visiting the dashboard.
+
 Web status page
 - When `enable_status_page` is `true`, the HTML dashboard at `/hub` displays a live snapshot of registered models, process state, memory load status, and exposes Start/Stop and Load/Unload controls for operators.
+- Group names in the dashboard now expose a tooltip summarizing `max_loaded` and `idle_unload_trigger_min` whenever the metadata is present.
 - The dashboard polls `/hub/status` periodically and shows flash/toast messages for actions.
 
 ### Using the API

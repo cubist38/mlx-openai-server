@@ -51,12 +51,20 @@ class MLXHubGroupConfig:
 
     name: str
     max_loaded: int | None = None
+    idle_unload_trigger_min: int | None = None
 
     def __post_init__(self) -> None:
-        """Validate group names and ensure ``max_loaded`` when provided is sane."""
+        """Validate group names and ensure group constraints are sane."""
         self.name = _ensure_slug(self.name, field_name="group name")
         if self.max_loaded is not None and self.max_loaded < 1:
             raise HubConfigError("max_loaded must be a positive integer when provided")
+        if self.idle_unload_trigger_min is not None:
+            if self.idle_unload_trigger_min < 1:
+                raise HubConfigError("idle_unload_trigger_min must be a positive integer")
+            if self.max_loaded is None:
+                raise HubConfigError(
+                    "idle_unload_trigger_min requires max_loaded to be configured for the group",
+                )
 
 
 @dataclass(slots=True)
@@ -146,9 +154,18 @@ def _build_groups(raw_groups: list[dict[str, Any]] | None) -> list[MLXHubGroupCo
             except (TypeError, ValueError) as exc:
                 raise HubConfigError("max_loaded must be an integer") from exc
 
+        idle_trigger_value = group_data.get("idle_unload_trigger_min")
+        idle_trigger = None
+        if idle_trigger_value is not None:
+            try:
+                idle_trigger = int(idle_trigger_value)
+            except (TypeError, ValueError) as exc:
+                raise HubConfigError("idle_unload_trigger_min must be an integer") from exc
+
         group = MLXHubGroupConfig(
             name=str(group_data["name"]),
             max_loaded=max_loaded,
+            idle_unload_trigger_min=idle_trigger,
         )
         if group.name in seen:
             raise HubConfigError(f"Duplicate group name '{group.name}' detected")

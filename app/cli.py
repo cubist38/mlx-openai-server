@@ -332,11 +332,16 @@ def _print_hub_status(
         return
 
     live_lookup: dict[str, dict[str, Any]] = {}
+    group_live_lookup: dict[str, dict[str, Any]] = {}
     if live_status:
         for entry in live_status.get("models", []):
             name = entry.get("id")  # Model objects have "id"
             if isinstance(name, str):
                 live_lookup[name] = entry
+        for group_entry in live_status.get("groups", []):
+            group_name = group_entry.get("name")
+            if isinstance(group_name, str):
+                group_live_lookup[group_name] = group_entry
 
     click.echo("Models:")
     headers = ["NAME", "STATE", "LOADED", "AUTO-UNLOAD", "TYPE", "GROUP", "DEFAULT", "MODEL"]
@@ -414,6 +419,54 @@ def _print_hub_status(
     # Print rows
     for row in rows:
         row_line = "  " + " | ".join(row[header].ljust(widths[header]) for header in headers)
+        click.echo(row_line)
+
+    configured_groups = list(getattr(config, "groups", []) or [])
+    if not configured_groups:
+        return
+
+    click.echo("")
+    click.echo("Groups:")
+    group_headers = ["NAME", "MAX", "IDLE-UNLOAD", "LOADED", "MODELS"]
+    group_widths: dict[str, int] = {header: len(header) for header in group_headers}
+
+    membership: dict[str, list[str]] = {}
+    for model in config.models:
+        if not model.group:
+            continue
+        membership.setdefault(model.group, []).append(model.name or "<unnamed>")
+
+    group_rows: list[dict[str, str]] = []
+    for group_cfg in configured_groups:
+        name = getattr(group_cfg, "name", "<unnamed>")
+        live_entry = {}
+        if isinstance(group_live_lookup, dict):
+            live_entry = group_live_lookup.get(name, {})
+        max_loaded = getattr(group_cfg, "max_loaded", None)
+        idle_trigger = getattr(group_cfg, "idle_unload_trigger_min", None)
+        loaded_count = int(live_entry.get("loaded", 0) or 0)
+        members = membership.get(name, [])
+        row = {
+            "NAME": name,
+            "MAX": str(max_loaded) if max_loaded is not None else "-",
+            "IDLE-UNLOAD": f"{idle_trigger}min" if idle_trigger is not None else "-",
+            "LOADED": str(loaded_count),
+            "MODELS": ", ".join(members) if members else "-",
+        }
+        for header in group_headers:
+            group_widths[header] = max(group_widths[header], len(row[header]))
+        group_rows.append(row)
+
+    group_header_line = "  " + " | ".join(
+        header.ljust(group_widths[header]) for header in group_headers
+    )
+    click.echo(group_header_line)
+    group_divider = "  " + "-+-".join("-" * group_widths[header] for header in group_headers)
+    click.echo(group_divider)
+    for row in group_rows:
+        row_line = "  " + " | ".join(
+            row[header].ljust(group_widths[header]) for header in group_headers
+        )
         click.echo(row_line)
 
 

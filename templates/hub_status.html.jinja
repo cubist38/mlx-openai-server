@@ -393,11 +393,38 @@
             };
         }
 
-        function renderModels(models) {
+        function buildGroupCell(groupName, metadata) {
+            const label = groupName ?? '—';
+            if (!metadata || label === '—') {
+                return escapeHtml(label);
+            }
+            const details = [];
+            if (Number.isFinite(metadata.max_loaded)) {
+                details.push(`max_loaded: ${metadata.max_loaded}`);
+            }
+            if (Number.isFinite(metadata.idle_unload_trigger_min)) {
+                details.push(`idle_unload_trigger_min: ${metadata.idle_unload_trigger_min} min`);
+            }
+            if (!details.length) {
+                return escapeHtml(label);
+            }
+            const tooltip = escapeHtml(details.join('\n')).replace(/\n/g, '&#10;');
+            return `<span title="${tooltip}">${escapeHtml(label)}</span>`;
+        }
+
+        function renderModels(models, groups) {
             const body = document.getElementById('models-body');
             if (!models || models.length === 0) {
                 body.innerHTML = '<tr><td colspan="9" class="muted">No models registered.</td></tr>';
                 return;
+            }
+            const groupMap = new Map();
+            if (Array.isArray(groups)) {
+                groups.forEach((group) => {
+                    if (group && typeof group.name === 'string') {
+                        groupMap.set(group.name, group);
+                    }
+                });
             }
             body.innerHTML = models
                 .map((model) => {
@@ -434,7 +461,7 @@
                         </td>
                         <td>${escapeHtml(autoUnloadLabel)}</td>
                         <td>${escapeHtml(modelType)}</td>
-                        <td>${escapeHtml(group)}</td>
+                        <td>${buildGroupCell(group, groupMap.get(group))}</td>
                         <td>${escapeHtml(defaultFlag)}</td>
                         <td>${escapeHtml(modelPath)}</td>
                         <td>
@@ -681,7 +708,7 @@
                 document.getElementById('updated-at').textContent = formatTimestamp(data.timestamp);
                 document.getElementById('openai-url').textContent = formatOpenAiUrl(data.host, data.port);
                 renderWarnings(warningList);
-                renderModels(data.models ?? []);
+                renderModels(data.models ?? [], data.groups ?? []);
             } catch (error) {
                 showError(error.message ?? 'Failed to fetch hub status');
                 setStatusPill('error');

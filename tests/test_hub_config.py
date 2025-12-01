@@ -274,3 +274,61 @@ def test_auto_ports_reuse_persisted_assignment_when_busy(
         persisted_ports={"alpha": assigned_port},
     )
     assert reloaded_with_persist.models[0].port == assigned_port
+
+
+def test_group_idle_trigger_requires_max_loaded(tmp_path: Path) -> None:
+    """idle_unload_trigger_min cannot be set without max_loaded."""
+    hub_path = _write_yaml(
+        tmp_path / "hub.yaml",
+        """
+        groups:
+          - name: workers
+            idle_unload_trigger_min: 5
+        models:
+          - name: alpha
+            model_path: /models/a
+        """,
+    )
+
+    with pytest.raises(HubConfigError, match="requires max_loaded"):
+        load_hub_config(hub_path)
+
+
+def test_group_idle_trigger_must_be_positive_integer(tmp_path: Path) -> None:
+    """idle_unload_trigger_min must be a positive integer."""
+    hub_path = _write_yaml(
+        tmp_path / "hub.yaml",
+        """
+        groups:
+          - name: workers
+            max_loaded: 2
+            idle_unload_trigger_min: 0
+        models:
+          - name: alpha
+            model_path: /models/a
+        """,
+    )
+
+    with pytest.raises(HubConfigError, match="idle_unload_trigger_min"):
+        load_hub_config(hub_path)
+
+
+def test_group_idle_trigger_loads_successfully(tmp_path: Path) -> None:
+    """Valid idle_unload_trigger_min values should populate group configs."""
+    hub_path = _write_yaml(
+        tmp_path / "hub.yaml",
+        """
+        groups:
+          - name: workers
+            max_loaded: 2
+            idle_unload_trigger_min: 15
+        models:
+          - name: alpha
+            model_path: /models/a
+            group: workers
+        """,
+    )
+
+    config = load_hub_config(hub_path)
+
+    assert config.groups[0].idle_unload_trigger_min == 15

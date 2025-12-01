@@ -27,6 +27,7 @@ from ..const import (
 )
 from ..hub.config import HubConfigError, MLXHubConfig, load_hub_config
 from ..schemas.openai import (
+    HubGroupStatus,
     HubModelActionRequest,
     HubModelActionResponse,
     HubServiceActionResponse,
@@ -651,6 +652,53 @@ def _build_models_from_config(
     return rendered, counts
 
 
+def _build_groups_from_config(
+    config: MLXHubConfig,
+    live_snapshot: dict[str, Any] | None,
+) -> list[HubGroupStatus]:
+    """Build group summaries combining config metadata and live status."""
+
+    configured_groups = list(getattr(config, "groups", []) or [])
+    if not configured_groups:
+        return []
+
+    live_lookup: dict[str, dict[str, Any]] = {}
+    if live_snapshot is not None:
+        groups = live_snapshot.get("groups")
+        if isinstance(groups, list):
+            for entry in groups:
+                name = entry.get("name")
+                if isinstance(name, str):
+                    live_lookup[name] = entry
+
+    members_by_group: dict[str, list[str]] = {}
+    for server_cfg in getattr(config, "models", []):
+        group_name = getattr(server_cfg, "group", None)
+        if not group_name:
+            continue
+        members_by_group.setdefault(group_name, []).append(server_cfg.name or "<unnamed>")
+
+    summaries: list[HubGroupStatus] = []
+    for cfg_group in configured_groups:
+        name = cfg_group.name
+        live = live_lookup.get(name, {})
+        live_members = live.get("models")
+        configured_members = members_by_group.get(name, [])
+        member_list = configured_members
+        if isinstance(live_members, list) and live_members:
+            member_list = [str(entry) for entry in live_members]
+        summaries.append(
+            HubGroupStatus(
+                name=name,
+                max_loaded=cfg_group.max_loaded,
+                idle_unload_trigger_min=getattr(cfg_group, "idle_unload_trigger_min", None),
+                loaded=int(live.get("loaded", 0) or 0),
+                models=member_list,
+            ),
+        )
+    return summaries
+
+
 def get_running_hub_models(raw_request: Request) -> set[str] | None:
     """Return the set of model names whose processes are currently running.
 
@@ -801,6 +849,7 @@ async def hub_status(raw_request: Request) -> HubStatusResponse:
         )
 
     models, counts = _build_models_from_config(config, snapshot)
+    groups = _build_groups_from_config(config, snapshot)
     response_timestamp = int(time.time())
     if snapshot is not None:
         timestamp_value = snapshot.get("timestamp")
@@ -818,6 +867,7 @@ async def hub_status(raw_request: Request) -> HubStatusResponse:
         counts=counts,
         warnings=warnings,
         controller_available=controller_available,
+        groups=groups,
     )
 
 

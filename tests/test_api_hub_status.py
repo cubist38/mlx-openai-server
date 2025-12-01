@@ -6,8 +6,8 @@ from collections.abc import Callable
 
 import pytest
 
-from app.api.hub_routes import _build_models_from_config
-from app.hub.config import MLXHubConfig
+from app.api.hub_routes import _build_groups_from_config, _build_models_from_config
+from app.hub.config import MLXHubConfig, MLXHubGroupConfig
 
 
 def test_build_models_defaults_to_process_state(
@@ -64,3 +64,41 @@ def test_build_models_memory_state_variants(
     assert metadata["memory_state"] == expected_memory_state
     # loaded count corresponds to whether memory is considered loaded
     assert counts.loaded == expected_loaded
+
+
+def test_build_groups_merges_live_snapshot(
+    make_config: Callable[[], MLXHubConfig],
+) -> None:
+    """Group summaries should honor live loaded counts when present."""
+    config = make_config()
+    config.groups = [MLXHubGroupConfig(name="tier", max_loaded=1, idle_unload_trigger_min=10)]
+    config.models[0].group = "tier"
+
+    snapshot = {
+        "groups": [
+            {
+                "name": "tier",
+                "max_loaded": 1,
+                "idle_unload_trigger_min": 10,
+                "loaded": 1,
+                "models": ["foo"],
+            },
+        ],
+    }
+
+    groups = _build_groups_from_config(config, snapshot)
+    assert groups[0].loaded == 1
+    assert groups[0].models == ["foo"]
+
+
+def test_build_groups_defaults_to_config_members(
+    make_config: Callable[[], MLXHubConfig],
+) -> None:
+    """When live data is missing, configured members should still be listed."""
+    config = make_config()
+    config.groups = [MLXHubGroupConfig(name="tier", max_loaded=1, idle_unload_trigger_min=10)]
+    config.models[0].group = "tier"
+
+    groups = _build_groups_from_config(config, None)
+    assert groups[0].loaded == 0
+    assert groups[0].models == ["foo"]

@@ -17,7 +17,7 @@ from fastapi.testclient import TestClient
 import pytest
 
 from app.config import MLXServerConfig
-from app.hub.config import MLXHubConfig
+from app.hub.config import MLXHubConfig, MLXHubGroupConfig
 from app.hub.daemon import HubSupervisor, create_app
 from app.server import LazyHandlerManager
 
@@ -217,6 +217,75 @@ async def test_model_load_and_unload(hub_config_with_defaults: MLXHubConfig) -> 
 
     # Verify unload was called
     mock_manager.unload.assert_called_once_with("unload")
+
+
+@pytest.mark.asyncio
+async def test_group_idle_trigger_unloads_longest_idle_model(tmp_path: Path) -> None:
+    """Longest-idle group member should be unloaded to free capacity."""
+    config = MLXHubConfig(log_path=tmp_path / "logs")
+    config.groups = [MLXHubGroupConfig(name="tier", max_loaded=1, idle_unload_trigger_min=5)]
+    config.models = [
+        MLXServerConfig(name="resident_a", model_path="/models/a", model_type="lm", group="tier"),
+        MLXServerConfig(name="resident_b", model_path="/models/b", model_type="lm", group="tier"),
+        MLXServerConfig(name="incoming", model_path="/models/c", model_type="lm", group="tier"),
+    ]
+    supervisor = HubSupervisor(config)
+
+    resident_a = supervisor._models["resident_a"]
+    resident_b = supervisor._models["resident_b"]
+    incoming = supervisor._models["incoming"]
+
+    manager_a = MagicMock(spec=LazyHandlerManager)
+    manager_a.is_vram_loaded.return_value = True
+    manager_a.seconds_since_last_activity.return_value = 600  # 10 minutes
+    manager_a.unload = AsyncMock(return_value=True)
+
+    manager_b = MagicMock(spec=LazyHandlerManager)
+    manager_b.is_vram_loaded.return_value = True
+    manager_b.seconds_since_last_activity.return_value = 1200  # 20 minutes
+    manager_b.unload = AsyncMock(return_value=True)
+
+    incoming_manager = MagicMock(spec=LazyHandlerManager)
+    incoming_manager.is_vram_loaded.return_value = False
+
+    resident_a.manager = manager_a
+    resident_b.manager = manager_b
+    incoming.manager = incoming_manager
+
+    await supervisor._ensure_group_capacity("incoming")
+
+    manager_b.unload.assert_awaited_once_with("group-capacity")
+    manager_a.unload.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_group_idle_trigger_raises_when_no_candidate(tmp_path: Path) -> None:
+    """An error is raised when no group members meet the idle threshold."""
+    config = MLXHubConfig(log_path=tmp_path / "logs")
+    config.groups = [MLXHubGroupConfig(name="tier", max_loaded=1, idle_unload_trigger_min=15)]
+    config.models = [
+        MLXServerConfig(name="resident", model_path="/models/a", model_type="lm", group="tier"),
+        MLXServerConfig(name="incoming", model_path="/models/b", model_type="lm", group="tier"),
+    ]
+    supervisor = HubSupervisor(config)
+
+    resident = supervisor._models["resident"]
+    resident_manager = MagicMock(spec=LazyHandlerManager)
+    resident_manager.is_vram_loaded.return_value = True
+    resident_manager.seconds_since_last_activity.return_value = 300  # 5 minutes < threshold
+    resident_manager.unload = AsyncMock(return_value=True)
+    resident.manager = resident_manager
+
+    incoming = supervisor._models["incoming"]
+    incoming_manager = MagicMock(spec=LazyHandlerManager)
+    incoming_manager.is_vram_loaded.return_value = False
+    incoming.manager = incoming_manager
+
+    with pytest.raises(HTTPException) as exc:
+        await supervisor._ensure_group_capacity("incoming")
+
+    assert exc.value.status_code == 409
+    resident_manager.unload.assert_not_called()
 
 
 @pytest.mark.asyncio

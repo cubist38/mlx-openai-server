@@ -473,6 +473,27 @@ class HubStatusCounts(OpenAIBaseModel):
     )
 
 
+class HubGroupStatus(OpenAIBaseModel):
+    """Group-level summary for hub-managed models."""
+
+    name: str = Field(..., description="Slug name of the group.")
+    max_loaded: int | None = Field(
+        None,
+        description="Maximum number of concurrently loaded models for this group.",
+    )
+    idle_unload_trigger_min: int | None = Field(
+        None,
+        description=(
+            "Idle minute threshold that triggers an unload when the group is at capacity."
+        ),
+    )
+    loaded: int = Field(0, description="Number of models currently loaded within the group.")
+    models: list[str] = Field(
+        default_factory=list,
+        description="Configured models assigned to this group.",
+    )
+
+
 class HubStatusResponse(OpenAIBaseModel):
     """Response payload for the hub status surface."""
 
@@ -513,6 +534,10 @@ class HubStatusResponse(OpenAIBaseModel):
             "True when this FastAPI instance hosts the hub controller, which enables dashboard "
             "memory controls and CLI load/unload commands."
         ),
+    )
+    groups: list[HubGroupStatus] = Field(
+        default_factory=list,
+        description="Configuration and runtime summaries for defined hub groups.",
     )
 
 
