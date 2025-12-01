@@ -74,9 +74,15 @@ class HubSupervisor:
     This manages handler lifecycle with optional JIT loading and unloading.
     """
 
-    def __init__(self, hub_config: MLXHubConfig, registry: ModelRegistry | None = None) -> None:
+    def __init__(
+        self,
+        hub_config: MLXHubConfig,
+        registry: ModelRegistry | None = None,
+        idle_controller: Any = None,
+    ) -> None:
         self.hub_config = hub_config
         self.registry = registry
+        self.idle_controller = idle_controller
         self._models: dict[str, ModelRecord] = {}
         self._lock = asyncio.Lock()
         self._bg_tasks: list[asyncio.Task[None]] = []
@@ -636,6 +642,7 @@ class HubSupervisor:
                         "auto_unload_minutes",
                         DEFAULT_AUTO_UNLOAD_MINUTES,
                     )
+                    # If auto_unload_minutes changed and model is loaded, recalculate unload_timestamp
                     record = existing_record
                 else:
                     record = ModelRecord(
@@ -650,6 +657,22 @@ class HubSupervisor:
                             DEFAULT_AUTO_UNLOAD_MINUTES,
                         ),
                     )
+                    # Register new model with registry if available
+                    if self.registry is not None:
+                        model_id = getattr(model, "model_path", None)
+                        if model_id is None:
+                            raise ValueError(f"Model {model} has no model_path")
+                        try:
+                            self.registry.register_model(
+                                model_id=model_id,
+                                handler=None,
+                                model_type=getattr(model, "model_type", "unknown"),
+                                context_length=getattr(model, "context_length", None),
+                            )
+                        except ValueError:
+                            logger.warning(
+                                f"Failed to register new model path '{model_id}' in registry"
+                            )
                 self._models[name] = record
 
             logger.debug(f"Reloaded hub config: started={started} stopped={stopped}")
@@ -702,6 +725,16 @@ class HubSupervisor:
             manager = cast("LazyHandlerManager | None", item["manager"])
             is_vram_loaded = cast("bool", item["is_vram_loaded"])
 
+            unload_timestamp = None
+            if is_vram_loaded and rec.auto_unload_minutes:
+                # Get unload timestamp from the idle controller if available
+                if self.idle_controller and hasattr(
+                    self.idle_controller, "get_expected_unload_timestamp"
+                ):
+                    # Use model_path as the registry model_id, fallback to name if not available
+                    model_id = rec.model_path or name
+                    unload_timestamp = self.idle_controller.get_expected_unload_timestamp(model_id)
+
             state = "running" if manager else "stopped"
             snapshot["models"].append(
                 {
@@ -716,6 +749,7 @@ class HubSupervisor:
                     "is_default_model": rec.is_default,
                     "model_path": rec.model_path,
                     "auto_unload_minutes": rec.auto_unload_minutes,
+                    "unload_timestamp": unload_timestamp,
                 },
             )
 
@@ -919,6 +953,9 @@ def create_app(hub_config_path: str | None = None) -> FastAPI:  # noqa: C901
         central_controller = CentralIdleAutoUnloadController(registry)
         registry.register_activity_notifier(central_controller.notify_activity)
         central_controller.start()
+
+        # Give the supervisor access to the controller for unload timestamp calculations
+        supervisor.idle_controller = central_controller
 
         # Yield to start serving requests while background tasks proceed
         yield

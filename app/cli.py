@@ -298,6 +298,88 @@ def _call_daemon_api(
     return {"raw": resp.text}
 
 
+def _format_model_row(
+    model: Any,
+    live: dict[str, Any] | None,
+) -> dict[str, str]:
+    """Format a single model row for the hub status table.
+
+    Parameters
+    ----------
+    model : Any
+        The model configuration object.
+    live : dict[str, Any] | None
+        Live status data for the model.
+
+    Returns
+    -------
+    dict[str, str]
+        Formatted row data.
+    """
+    name = model.name or "<unnamed>"
+
+    # Use OpenAI-compatible metadata format
+    if live:
+        metadata = live.get("metadata", {})
+        state = metadata.get("process_state", "inactive")
+        pid = metadata.get("pid")
+        port = metadata.get("port") or model.port
+        memory_flag = metadata.get("memory_state") == "loaded"
+        unload_timestamp = metadata.get("unload_timestamp")
+    else:
+        state = "inactive"
+        pid = None
+        port = model.port
+        memory_flag = False
+        unload_timestamp = None
+
+    # Format state with pid and port if running
+    if state == "running" and pid is not None:
+        state_display = f"{state} (pid={pid}"
+        if port is not None:
+            state_display += f", port={port}"
+        state_display += ")"
+    else:
+        state_display = state
+
+    # Loaded in memory: prefer explicit runtime flag when available,
+    # based on the memory_state field from runtime metadata.
+    if memory_flag and model.auto_unload_minutes:
+        if unload_timestamp is not None:
+            unload_time = datetime.datetime.fromtimestamp(unload_timestamp)
+            loaded_in_memory = f"yes (unload {unload_time.strftime('%Y-%m-%d %H:%M:%S')})"
+        else:
+            loaded_in_memory = "yes"
+    else:
+        loaded_in_memory = "yes" if memory_flag else "no"
+
+    # Auto-unload
+    auto_unload = f"{model.auto_unload_minutes}min" if model.auto_unload_minutes else "-"
+
+    # Model type
+    model_type = model.model_type
+
+    # Group
+    group = model.group or "-"
+
+    # Default
+    default = "✓" if model.is_default_model else "-"
+
+    # Model path
+    model_path = model.model_path
+
+    return {
+        "NAME": name,
+        "STATE": state_display,
+        "LOADED": loaded_in_memory,
+        "AUTO-UNLOAD": auto_unload,
+        "TYPE": model_type,
+        "GROUP": group,
+        "DEFAULT": default,
+        "MODEL": model_path,
+    }
+
+
 def _print_hub_status(
     config: MLXHubConfig,
     *,
@@ -335,7 +417,7 @@ def _print_hub_status(
     group_live_lookup: dict[str, dict[str, Any]] = {}
     if live_status:
         for entry in live_status.get("models", []):
-            name = entry.get("id")  # Model objects have "id"
+            name = entry.get("id")
             if isinstance(name, str):
                 live_lookup[name] = entry
         for group_entry in live_status.get("groups", []):
@@ -347,60 +429,8 @@ def _print_hub_status(
     headers = ["NAME", "STATE", "LOADED", "AUTO-UNLOAD", "TYPE", "GROUP", "DEFAULT", "MODEL"]
     rows: list[dict[str, str]] = []
     for model in configured:
-        name = model.name or "<unnamed>"
-        live = live_lookup.get(name)
-        metadata = (live or {}).get("metadata", {})
-        state = metadata.get("process_state", "inactive")
-        pid = metadata.get("pid")
-        port = metadata.get("port") or model.port
-
-        # Format state with pid and port if running
-        if state == "running" and pid is not None:
-            state_display = f"{state} (pid={pid}"
-            if port is not None:
-                state_display += f", port={port}"
-            state_display += ")"
-        else:
-            state_display = state
-
-        # Loaded in memory: prefer explicit runtime flag when available,
-        # based on the memory_state field from runtime metadata.
-        memory_flag = metadata.get("memory_state") == "loaded"
-        if memory_flag and model.auto_unload_minutes:
-            unload_time = datetime.datetime.now() + datetime.timedelta(
-                minutes=model.auto_unload_minutes
-            )
-            loaded_in_memory = f"yes (unload {unload_time.strftime('%Y-%m-%d %H:%M:%S')})"
-        else:
-            loaded_in_memory = "yes" if memory_flag else "no"
-
-        # Auto-unload
-        auto_unload = f"{model.auto_unload_minutes}min" if model.auto_unload_minutes else "-"
-
-        # Model type
-        model_type = model.model_type
-
-        # Group
-        group = model.group or "-"
-
-        # Default
-        default = "✓" if model.is_default_model else "-"
-
-        # Model path
-        model_path = model.model_path
-
-        rows.append(
-            {
-                "NAME": name,
-                "STATE": state_display,
-                "LOADED": loaded_in_memory,
-                "AUTO-UNLOAD": auto_unload,
-                "TYPE": model_type,
-                "GROUP": group,
-                "DEFAULT": default,
-                "MODEL": model_path,
-            },
-        )
+        live = live_lookup.get(model.name or "<unnamed>")
+        rows.append(_format_model_row(model, live))
 
     # Calculate column widths
     widths: dict[str, int] = {header: len(header) for header in headers}
@@ -814,9 +844,6 @@ def _print_watch_snapshot(snapshot: dict[str, Any]) -> None:
                         "model": model_path,
                     }
                 )
-            elif isinstance(model, dict):
-                # Fallback for dict format (legacy)
-                models.append(model)
 
     def _normalize_state(entry: dict[str, Any]) -> str:
         return str(entry.get("state", "")).strip().lower()
