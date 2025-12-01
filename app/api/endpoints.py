@@ -48,6 +48,7 @@ from ..schemas.openai import (
 from ..utils.errors import create_error_response
 from .hub_routes import (
     HubConfigError,
+    _call_daemon_api_async,
     _load_hub_config_from_request,
     get_cached_model_metadata,
     get_configured_model_id,
@@ -385,9 +386,20 @@ async def models(raw_request: Request) -> ModelsResponse | JSONResponse:
                     if model.get("state") == "running" and model.get("model_path")
                 ]
             else:
-                # Separate server: get running models from hub daemon
-                temp = get_running_hub_models(raw_request)
-                running_models = list(temp) if temp is not None else None
+                # Separate server: get running models and status from hub daemon
+                running_models_set = get_running_hub_models(raw_request)
+                running_models = (
+                    list(running_models_set) if running_models_set is not None else None
+                )
+                # Also get the full supervisor status for metadata updates
+                if running_models_set is not None:
+                    try:
+                        config = _load_hub_config_from_request(raw_request)
+                        supervisor_status = await _call_daemon_api_async(
+                            config, "GET", "/hub/status", timeout=1.0
+                        )
+                    except Exception:
+                        supervisor_status = None
 
             if running_models is not None:
                 models_data = registry.list_models()

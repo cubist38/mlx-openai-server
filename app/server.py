@@ -213,6 +213,8 @@ async def instantiate_handler(config_args: MLXServerConfig) -> MLXHandler:
     models, MLXVLMHandler for multimodal, etc.) and initializes it with
     the provided settings.
 
+    Model loading is performed in a thread pool to avoid blocking the event loop.
+
     Parameters
     ----------
     config_args : MLXServerConfig
@@ -239,75 +241,10 @@ async def instantiate_handler(config_args: MLXServerConfig) -> MLXHandler:
         logger.info(f"Initializing MLX handler with model path: {model_identifier}")
 
     try:
-        handler: MLXHandler
-        if config_args.model_type == "multimodal":
-            handler = MLXVLMHandler(
-                model_path=model_identifier,
-                context_length=config_args.context_length,
-                max_concurrency=config_args.max_concurrency,
-                disable_auto_resize=config_args.disable_auto_resize,
-                enable_auto_tool_choice=config_args.enable_auto_tool_choice,
-                tool_call_parser=config_args.tool_call_parser,
-                reasoning_parser=config_args.reasoning_parser,
-                trust_remote_code=config_args.trust_remote_code,
-            )
-        elif config_args.model_type == "image-generation":
-            if config_args.config_name is None:
-                raise ValueError("config_name is required for image-generation models")
-            validate_mflux_config(
-                config_args.config_name,
-                ALLOWED_IMAGE_GENERATION_CONFIGS,
-                "Image generation",
-            )
-            handler = MLXFluxHandler(
-                model_path=model_identifier,
-                max_concurrency=config_args.max_concurrency,
-                quantize=config_args.quantize,
-                config_name=config_args.config_name,
-                lora_paths=config_args.lora_paths,
-                lora_scales=config_args.lora_scales,
-            )
-        elif config_args.model_type == "embeddings":
-            handler = MLXEmbeddingsHandler(
-                model_path=model_identifier,
-                max_concurrency=config_args.max_concurrency,
-            )
-        elif config_args.model_type == "image-edit":
-            if config_args.config_name is None:
-                raise ValueError("config_name is required for image-edit models")
-            validate_mflux_config(
-                config_args.config_name,
-                ALLOWED_IMAGE_EDIT_CONFIGS,
-                "Image editing",
-            )
-            handler = MLXFluxHandler(
-                model_path=model_identifier,
-                max_concurrency=config_args.max_concurrency,
-                quantize=config_args.quantize,
-                config_name=config_args.config_name,
-                lora_paths=config_args.lora_paths,
-                lora_scales=config_args.lora_scales,
-            )
-        elif config_args.model_type == "whisper":
-            handler = MLXWhisperHandler(
-                model_path=model_identifier,
-                max_concurrency=config_args.max_concurrency,
-            )
-        elif config_args.model_type == "lm":
-            handler = MLXLMHandler(
-                model_path=model_identifier,
-                context_length=config_args.context_length,
-                max_concurrency=config_args.max_concurrency,
-                enable_auto_tool_choice=config_args.enable_auto_tool_choice,
-                tool_call_parser=config_args.tool_call_parser,
-                reasoning_parser=config_args.reasoning_parser,
-                trust_remote_code=config_args.trust_remote_code,
-            )
-        else:
-            raise ValueError(
-                f"Invalid model_type: {config_args.model_type!r}. "
-                f"Supported types are: lm, multimodal, image-generation, image-edit, embeddings, whisper",
-            )
+        # Run handler creation in thread pool to avoid blocking event loop
+        handler = await asyncio.get_event_loop().run_in_executor(
+            None, _create_handler_sync, config_args, model_identifier
+        )
 
         await handler.initialize(
             {
@@ -322,6 +259,80 @@ async def instantiate_handler(config_args: MLXServerConfig) -> MLXHandler:
         raise
     else:
         return handler
+
+
+def _create_handler_sync(config_args: MLXServerConfig, model_identifier: str) -> MLXHandler:
+    """Create handler synchronously (runs in thread pool)."""
+    handler: MLXHandler
+    if config_args.model_type == "multimodal":
+        handler = MLXVLMHandler(
+            model_path=model_identifier,
+            context_length=config_args.context_length,
+            max_concurrency=config_args.max_concurrency,
+            disable_auto_resize=config_args.disable_auto_resize,
+            enable_auto_tool_choice=config_args.enable_auto_tool_choice,
+            tool_call_parser=config_args.tool_call_parser,
+            reasoning_parser=config_args.reasoning_parser,
+            trust_remote_code=config_args.trust_remote_code,
+        )
+    elif config_args.model_type == "image-generation":
+        if config_args.config_name is None:
+            raise ValueError("config_name is required for image-generation models")
+        validate_mflux_config(
+            config_args.config_name,
+            ALLOWED_IMAGE_GENERATION_CONFIGS,
+            "Image generation",
+        )
+        handler = MLXFluxHandler(
+            model_path=model_identifier,
+            max_concurrency=config_args.max_concurrency,
+            quantize=config_args.quantize,
+            config_name=config_args.config_name,
+            lora_paths=config_args.lora_paths,
+            lora_scales=config_args.lora_scales,
+        )
+    elif config_args.model_type == "embeddings":
+        handler = MLXEmbeddingsHandler(
+            model_path=model_identifier,
+            max_concurrency=config_args.max_concurrency,
+        )
+    elif config_args.model_type == "image-edit":
+        if config_args.config_name is None:
+            raise ValueError("config_name is required for image-edit models")
+        validate_mflux_config(
+            config_args.config_name,
+            ALLOWED_IMAGE_EDIT_CONFIGS,
+            "Image editing",
+        )
+        handler = MLXFluxHandler(
+            model_path=model_identifier,
+            max_concurrency=config_args.max_concurrency,
+            quantize=config_args.quantize,
+            config_name=config_args.config_name,
+            lora_paths=config_args.lora_paths,
+            lora_scales=config_args.lora_scales,
+        )
+    elif config_args.model_type == "whisper":
+        handler = MLXWhisperHandler(
+            model_path=model_identifier,
+            max_concurrency=config_args.max_concurrency,
+        )
+    elif config_args.model_type == "lm":
+        handler = MLXLMHandler(
+            model_path=model_identifier,
+            context_length=config_args.context_length,
+            max_concurrency=config_args.max_concurrency,
+            enable_auto_tool_choice=config_args.enable_auto_tool_choice,
+            tool_call_parser=config_args.tool_call_parser,
+            reasoning_parser=config_args.reasoning_parser,
+            trust_remote_code=config_args.trust_remote_code,
+        )
+    else:
+        raise ValueError(
+            f"Invalid model_type: {config_args.model_type!r}. "
+            f"Supported types are: lm, multimodal, image-generation, image-edit, embeddings, whisper",
+        )
+    return handler
 
 
 class LazyHandlerManager(ManagerProtocol):
