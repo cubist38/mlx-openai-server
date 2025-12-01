@@ -632,6 +632,7 @@ def _build_models_from_config(
             "stopped_at": live.get("stopped_at"),
             "exit_code": live.get("exit_code"),
             "auto_unload_minutes": server_cfg.auto_unload_minutes,
+            "unload_timestamp": live.get("unload_timestamp"),
         }
         rendered.append(
             Model(

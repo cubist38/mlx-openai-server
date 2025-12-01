@@ -51,6 +51,7 @@ class _TestHubSupervisor(HubSupervisor):
         # Don't call super().__init__ to avoid registry setup
         self.hub_config = hub_config
         self.registry = None
+        self.idle_controller = None
         self._models = {}
         self._lock = asyncio.Lock()
         self._bg_tasks = []

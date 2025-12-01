@@ -381,8 +381,9 @@
             const error = meta.memory_last_error ? `Error: ${escapeHtml(meta.memory_last_error)}` : null;
             const pieces = [state.toUpperCase()];
             if (state === 'loaded' && meta.auto_unload_minutes > 0) {
-                const unloadTs = Date.now() / 1000 + meta.auto_unload_minutes * 60;
-                pieces.push(`Unload ${formatTimestamp(unloadTs)}`);
+                if (meta.unload_timestamp) {
+                    pieces.push(`Unload ${formatTimestamp(meta.unload_timestamp)}`);
+                }
             }
             if (transition) {
                 pieces.push(`${transition}`);

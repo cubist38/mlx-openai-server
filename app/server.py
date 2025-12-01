@@ -436,7 +436,7 @@ class LazyHandlerManager(ManagerProtocol):
         self._on_activity = callback
 
     def seconds_since_last_activity(self) -> float:
-        """Return the number of seconds since the last recorded activity.
+        """Get the number of seconds since the last activity occurred.
 
         Returns
         -------
@@ -710,6 +710,82 @@ class CentralIdleAutoUnloadController:
         # Wake the loop; controller will query registry for current state
         if self._active:
             self._event.set()
+
+    def get_expected_unload_timestamp(self, model_id: str) -> float | None:
+        """Get the expected timestamp when a model will be unloaded, or None if not applicable.
+
+        Returns
+        -------
+        float or None
+            Expected unload timestamp based on current idle time, or None if model
+            is not loaded, has no auto-unload configured, or has active requests.
+        """
+        try:
+            status = self.registry.get_vram_status(model_id)
+        except KeyError:
+            return None
+
+        # Can't unload if there are active requests
+        if status.get("active_requests", 0) > 0:
+            return None
+
+        # Must be loaded
+        if not status.get("vram_loaded", False):
+            return None
+
+        handler = None
+        try:
+            handler = self.registry.get_handler(model_id)
+        except KeyError:
+            return None
+
+        # Get auto-unload timeout from handler or metadata
+        minutes = None
+        if handler is not None:
+            minutes = getattr(handler, "auto_unload_minutes", None)
+        if minutes is None:
+            # Fall back to metadata extras
+            try:
+                entries = self.registry.list_models()
+                meta: dict[str, Any] = next(
+                    (e.get("metadata", {}) for e in entries if e.get("id") == model_id),
+                    {},
+                )
+                minutes = meta.get("auto_unload_minutes")
+            except Exception:
+                minutes = None
+
+        if minutes is None:
+            return None
+
+        timeout_secs = int(minutes) * 60
+        now = time.time()
+
+        # Get idle time using the same logic as _watch_loop
+        idle_elapsed = None
+        if handler is not None and hasattr(handler, "seconds_since_last_activity"):
+            try:
+                idle_elapsed = handler.seconds_since_last_activity()
+            except Exception:
+                idle_elapsed = None
+
+        # If we don't have per-handler idle metric, derive from vram timestamps
+        if idle_elapsed is None:
+            last_request = status.get("vram_last_request_ts")
+            if last_request is not None:
+                last_activity_ts = float(last_request)
+            else:
+                last_unload = status.get("vram_last_unload_ts") or 0
+                last_load = status.get("vram_last_load_ts") or 0
+                last_activity_ts = max(last_load, last_unload)
+            idle_elapsed = max(0, now - last_activity_ts)
+
+        # If already past timeout, it should unload soon
+        if idle_elapsed >= timeout_secs:
+            return now
+
+        # Otherwise, return when it will reach the timeout
+        return now + (timeout_secs - idle_elapsed)
 
     async def _watch_loop(self) -> None:
         try:
