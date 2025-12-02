@@ -194,7 +194,100 @@ def test_hub_model_start_surfaces_capacity_errors(
 
     assert response.status_code == HTTPStatus.TOO_MANY_REQUESTS
     body = response.json()
-    assert body["error"]["message"] == "429: group full"
+    assert (
+        body["error"]["message"]
+        == "429: Group capacity exceeded. Unload another model or wait for auto-unload."
+    )
+
+
+def test_hub_model_start_blocked_when_registry_denies(
+    hub_service_app: tuple[TestClient, Any, Any],
+) -> None:
+    """Start requests should fail fast when the registry rejects the model."""
+
+    client, state, controller = hub_service_app
+    state.available = True
+
+    async def _seed_registry() -> None:
+        registry = ModelRegistry()
+        registry.register_model(
+            model_id="/models/alpha",
+            handler=None,
+            model_type="lm",
+            metadata_extras={"group": "shared"},
+        )
+        registry.register_model(
+            model_id="/models/beta",
+            handler=None,
+            model_type="lm",
+            metadata_extras={"group": "shared"},
+        )
+        await registry.update_model_state(
+            "/models/beta",
+            metadata_updates={"vram_loaded": True},
+        )
+        registry.set_group_policies({"shared": {"max_loaded": 1}})
+        client.app.state.model_registry = registry
+
+    asyncio.run(_seed_registry())
+
+    response = client.post("/hub/models/alpha/start", json={})
+
+    assert response.status_code == HTTPStatus.TOO_MANY_REQUESTS
+    assert controller.started == []
+
+
+def test_hub_vram_load_blocked_when_registry_denies(
+    hub_service_app: tuple[TestClient, Any, Any],
+) -> None:
+    """VRAM load requests should reuse the cached availability guard."""
+
+    client, state, _controller = hub_service_app
+    state.available = True
+
+    class GuardedRegistry(ModelRegistry):
+        def __init__(self) -> None:
+            super().__init__()
+            self.vram_load_called = False
+
+        async def request_vram_load(
+            self,
+            model_id: str,
+            *,
+            force: bool = False,
+            timeout: float | None = None,
+        ) -> None:
+            self.vram_load_called = True
+            raise AssertionError(f"request_vram_load should not run for {model_id}")
+
+    async def _seed_registry() -> GuardedRegistry:
+        registry = GuardedRegistry()
+        registry.register_model(
+            model_id="/models/alpha",
+            handler=None,
+            model_type="lm",
+            metadata_extras={"group": "shared"},
+        )
+        registry.register_model(
+            model_id="/models/beta",
+            handler=None,
+            model_type="lm",
+            metadata_extras={"group": "shared"},
+        )
+        await registry.update_model_state(
+            "/models/beta",
+            metadata_updates={"vram_loaded": True},
+        )
+        registry.set_group_policies({"shared": {"max_loaded": 1}})
+        return registry
+
+    guarded_registry = asyncio.run(_seed_registry())
+    client.app.state.model_registry = guarded_registry
+
+    response = client.post("/hub/models/alpha/vram/load", json={})
+
+    assert response.status_code == HTTPStatus.TOO_MANY_REQUESTS
+    assert guarded_registry.vram_load_called is False
 
 
 def test_hub_service_start_spawns_process_when_missing(

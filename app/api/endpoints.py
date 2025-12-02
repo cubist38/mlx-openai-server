@@ -46,6 +46,7 @@ from ..schemas.openai import (
     UsageInfo,
 )
 from ..utils.errors import create_error_response
+from .availability import get_model_registry, guard_model_availability
 from .hub_routes import (
     HubConfigError,
     _call_daemon_api_async,
@@ -86,6 +87,7 @@ async def _get_handler_or_error(
     reason: str,
     *,
     model_name: str | None = None,
+    api_model_id: str | None = None,
 ) -> tuple[MLXHandlerType | None, JSONResponse | None]:
     """Return a loaded handler or an error response if unavailable.
 
@@ -96,13 +98,19 @@ async def _get_handler_or_error(
     reason : str
         Context string used for logging and load tracking.
     model_name : str | None, optional
-        Explicit model identifier supplied by the caller.
+        Controller-facing model identifier supplied by the caller.
+    api_model_id : str | None, optional
+        OpenAI-visible model identifier used for availability enforcement.
 
     Returns
     -------
     tuple[MLXHandlerType | None, JSONResponse | None]
         A handler/error tuple where exactly one entry is ``None``.
     """
+    availability_error = guard_model_availability(raw_request, api_model_id or model_name)
+    if availability_error is not None:
+        return None, availability_error
+
     controller = getattr(raw_request.app.state, "hub_controller", None)
     if controller is not None and model_name is not None:
         target = model_name.strip()
@@ -371,7 +379,7 @@ async def models(raw_request: Request) -> ModelsResponse | JSONResponse:
         List of available models or error response.
     """
     # Try registry first (Phase 1+), fall back to handler for backward compat
-    registry = getattr(raw_request.app.state, "model_registry", None)
+    registry = get_model_registry(raw_request)
     supervisor = getattr(raw_request.app.state, "supervisor", None)
     if registry is not None:
         try:
@@ -401,39 +409,42 @@ async def models(raw_request: Request) -> ModelsResponse | JSONResponse:
                     except Exception:
                         supervisor_status = None
 
+            models_data = registry.list_models()
+            # Update metadata from supervisor status if available
+            if supervisor_status is not None:
+                model_lookup = {
+                    model["model_path"]: model
+                    for model in supervisor_status.get("models", [])
+                    if model.get("model_path")
+                }
+                for model in models_data:
+                    model_path = model.get("id")
+                    if model_path in model_lookup:
+                        supervisor_model = model_lookup[model_path]
+                        metadata = model.setdefault("metadata", {})
+                        metadata["vram_loaded"] = supervisor_model.get("memory_loaded", False)
+                        # Update status based on state and memory_loaded
+                        state = supervisor_model.get("state", "stopped")
+                        memory_loaded = supervisor_model.get("memory_loaded", False)
+                        if memory_loaded:
+                            metadata["status"] = "loaded"
+                        elif state == "running":
+                            metadata["status"] = "initialized"
+                        else:
+                            metadata["status"] = "unloaded"
+                        # Update other VRAM fields if available
+                        if supervisor_model.get("unload_timestamp"):
+                            metadata["vram_last_unload_ts"] = supervisor_model["unload_timestamp"]
+                        # Note: vram_last_request_ts would need to be tracked separately
+
+            available_ids = registry.get_available_model_ids()
+            models_data = [model for model in models_data if model.get("id") in available_ids]
+
             if running_models is not None:
-                models_data = registry.list_models()
-                # Update metadata from supervisor status if available
-                if supervisor_status is not None:
-                    model_lookup = {
-                        model["model_path"]: model
-                        for model in supervisor_status.get("models", [])
-                        if model.get("model_path")
-                    }
-                    for model in models_data:
-                        model_path = model.get("id")
-                        if model_path in model_lookup:
-                            supervisor_model = model_lookup[model_path]
-                            metadata = model.setdefault("metadata", {})
-                            metadata["vram_loaded"] = supervisor_model.get("memory_loaded", False)
-                            # Update status based on state and memory_loaded
-                            state = supervisor_model.get("state", "stopped")
-                            memory_loaded = supervisor_model.get("memory_loaded", False)
-                            if memory_loaded:
-                                metadata["status"] = "loaded"
-                            elif state == "running":
-                                metadata["status"] = "initialized"
-                            else:
-                                metadata["status"] = "unloaded"
-                            # Update other VRAM fields if available
-                            if supervisor_model.get("unload_timestamp"):
-                                metadata["vram_last_unload_ts"] = supervisor_model[
-                                    "unload_timestamp"
-                                ]
-                            # Note: vram_last_request_ts would need to be tracked separately
-                models_data = [model for model in models_data if model.get("id") in running_models]
-                return ModelsResponse(object="list", data=[Model(**model) for model in models_data])
-            # If running_models is None, fall through to handler fallback
+                running_filter = {mid for mid in running_models if mid}
+                models_data = [model for model in models_data if model.get("id") in running_filter]
+
+            return ModelsResponse(object="list", data=[Model(**model) for model in models_data])
         except Exception as e:
             logger.error(f"Error retrieving models from registry. {type(e).__name__}: {e}")
             return JSONResponse(
@@ -496,7 +507,7 @@ async def queue_stats(
     dict[str, Any] or JSONResponse
         Queue statistics or error response.
     """
-    _api_model_id, handler_name, validation_error = _resolve_model_for_openai_api(
+    api_model_id, handler_name, validation_error = _resolve_model_for_openai_api(
         raw_request, model, provided_explicitly=model is not None
     )
     if validation_error is not None:
@@ -506,6 +517,7 @@ async def queue_stats(
         raw_request,
         "queue_stats",
         model_name=handler_name,
+        api_model_id=api_model_id,
     )
     if error is not None:
         return error
@@ -572,6 +584,7 @@ async def chat_completions(
         raw_request,
         "chat_completions",
         model_name=handler_name,
+        api_model_id=api_model_id,
     )
     if error is not None:
         return error
@@ -642,6 +655,7 @@ async def embeddings(
         raw_request,
         "embeddings",
         model_name=handler_name,
+        api_model_id=api_model_id,
     )
     if error is not None:
         return error
@@ -713,6 +727,7 @@ async def image_generations(
         raw_request,
         "image_generation",
         model_name=handler_name,
+        api_model_id=api_model_id,
     )
     if error is not None:
         return error
@@ -782,6 +797,7 @@ async def create_image_edit(
         raw_request,
         "image_edit",
         model_name=handler_name,
+        api_model_id=api_model_id,
     )
     if error is not None:
         return error
@@ -850,6 +866,7 @@ async def create_audio_transcriptions(
         raw_request,
         "audio_transcriptions",
         model_name=handler_name,
+        api_model_id=api_model_id,
     )
     if error is not None:
         return error

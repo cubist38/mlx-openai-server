@@ -67,6 +67,35 @@ def test_print_hub_status_includes_live_state(
     assert "5min" in output
 
 
+def test_print_hub_status_prefers_live_group_members(
+    capsys: pytest.CaptureFixture[str],
+    make_hub_config: Callable[..., MLXHubConfig],
+) -> None:
+    """Group summaries should reflect live loaded counts when provided."""
+
+    live = {
+        "models": [],
+        "groups": [
+            {
+                "name": "tier",
+                "loaded": 2,
+                "models": ["gamma", "omega"],
+            }
+        ],
+    }
+    cfg = make_hub_config(
+        models=[
+            MLXServerConfig(model_path="/models/a", name="alpha", model_type="lm", group="tier")
+        ]
+    )
+    cfg.groups = [MLXHubGroupConfig(name="tier", max_loaded=1, idle_unload_trigger_min=5)]
+
+    _print_hub_status(cfg, live_status=live)
+    output = capsys.readouterr().out
+    assert "LOADED" in output
+    assert "tier | 1   | 5min        | 2" in output
+
+
 def test_print_watch_snapshot_handles_empty(capsys: pytest.CaptureFixture[str]) -> None:
     """_print_watch_snapshot should handle empty payloads gracefully."""
     _print_watch_snapshot({"timestamp": 0, "models": []})

@@ -36,7 +36,7 @@ from ..const import (
     DEFAULT_MODEL_TYPE,
     DEFAULT_PORT,
 )
-from ..core.model_registry import ModelRegistry
+from ..core.model_registry import ModelRegistry, build_group_policy_payload
 from ..server import (
     CentralIdleAutoUnloadController,
     LazyHandlerManager,
@@ -632,11 +632,25 @@ class HubSupervisor:
                                     handler=None,
                                     model_type=getattr(model, "model_type", "unknown"),
                                     context_length=getattr(model, "context_length", None),
+                                    metadata_extras={
+                                        "group": getattr(model, "group", None),
+                                        "model_path": new_model_path,
+                                    },
                                 )
                             except ValueError:
                                 logger.warning(
                                     f"Failed to register new model path '{new_model_path}' in registry"
                                 )
+                    if self.registry is not None and existing_record.model_path is not None:
+                        try:
+                            await self.registry.update_model_state(
+                                existing_record.model_path,
+                                metadata_updates={"group": existing_record.group},
+                            )
+                        except Exception as exc:
+                            logger.warning(
+                                f"Failed to update registry group metadata for '{existing_record.model_path}': {exc}"
+                            )
                     existing_record.auto_unload_minutes = getattr(
                         model,
                         "auto_unload_minutes",
@@ -668,6 +682,10 @@ class HubSupervisor:
                                 handler=None,
                                 model_type=getattr(model, "model_type", "unknown"),
                                 context_length=getattr(model, "context_length", None),
+                                metadata_extras={
+                                    "group": getattr(model, "group", None),
+                                    "model_path": model_id,
+                                },
                             )
                         except ValueError:
                             logger.warning(
@@ -676,6 +694,11 @@ class HubSupervisor:
                 self._models[name] = record
 
             logger.debug(f"Reloaded hub config: started={started} stopped={stopped}")
+
+        if self.registry is not None:
+            self.registry.set_group_policies(
+                build_group_policy_payload(getattr(self.hub_config, "groups", None))
+            )
 
         return {"started": started, "stopped": stopped, "unchanged": unchanged}
 
@@ -927,7 +950,13 @@ def create_app(hub_config_path: str | None = None) -> FastAPI:
             handler=None,  # Will be set when started
             model_type=getattr(model, "model_type", "unknown"),
             context_length=getattr(model, "context_length", None),
+            metadata_extras={
+                "group": getattr(model, "group", None),
+                "model_path": model_id,
+            },
         )
+
+    registry.set_group_policies(build_group_policy_payload(getattr(hub_config, "groups", None)))
 
     supervisor = HubSupervisor(hub_config, registry)
     app.state.supervisor = supervisor

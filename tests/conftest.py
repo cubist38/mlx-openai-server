@@ -228,7 +228,10 @@ class _StubController:
     async def start_model(self, name: str) -> None:
         self.started.append(name)
         if name == "saturated":
-            raise HTTPException(status_code=HTTPStatus.TOO_MANY_REQUESTS, detail="group full")
+            raise HTTPException(
+                status_code=HTTPStatus.TOO_MANY_REQUESTS,
+                detail="Group capacity exceeded. Unload another model or wait for auto-unload.",
+            )
 
     async def stop_model(self, name: str) -> None:
         self.stopped.append(name)

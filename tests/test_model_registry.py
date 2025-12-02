@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from contextlib import AbstractAsyncContextManager
+import time
 from types import TracebackType
 from typing import Any
 
@@ -289,5 +290,73 @@ def test_handler_session_counts_and_ensure() -> None:
         # After exit, active_requests returns to zero
         status2 = registry.get_vram_status("sess")
         assert status2["active_requests"] == 0
+
+    asyncio.run(_test())
+
+
+def test_group_availability_limits_and_idle_override() -> None:
+    """Group policies should gate availability and honor idle thresholds."""
+
+    async def _test() -> None:
+        registry = ModelRegistry()
+        for name in ("alpha", "beta"):
+            registry.register_model(
+                model_id=name,
+                handler=None,
+                model_type="lm",
+                metadata_extras={"group": "shared"},
+            )
+
+        now = time.time()
+        await registry.update_model_state(
+            "alpha",
+            metadata_updates={"vram_loaded": True, "vram_last_request_ts": int(now)},
+        )
+        await registry.update_model_state("beta", metadata_updates={"vram_loaded": False})
+
+        registry.set_group_policies({"shared": {"max_loaded": 1}})
+        assert registry.is_model_available("alpha") is True
+        assert registry.is_model_available("beta") is False
+        snapshots = registry.get_group_snapshots()
+        assert snapshots["shared"]["mode"] == "loaded-only"
+
+        registry.set_group_policies({"shared": {"max_loaded": 1, "idle_unload_trigger_min": 1}})
+        await registry.update_model_state(
+            "alpha",
+            metadata_updates={"vram_loaded": True, "vram_last_request_ts": int(now - 120)},
+        )
+        assert registry.is_model_available("beta") is True
+        refreshed = registry.get_group_snapshots()["shared"]
+        assert "alpha" in refreshed["idle_eligible"]
+
+    asyncio.run(_test())
+
+
+def test_available_model_ids_return_cached_snapshot_copy() -> None:
+    """`get_available_model_ids` should return a copy of the cached set."""
+
+    async def _test() -> None:
+        registry = ModelRegistry()
+        registry.register_model(
+            model_id="alpha",
+            handler=None,
+            model_type="lm",
+            metadata_extras={"group": "shared"},
+        )
+        registry.register_model(
+            model_id="beta",
+            handler=None,
+            model_type="lm",
+            metadata_extras={"group": "shared"},
+        )
+        await registry.update_model_state("alpha", metadata_updates={"vram_loaded": True})
+
+        registry.set_group_policies({"shared": {"max_loaded": 1}})
+
+        snapshot = registry.get_available_model_ids()
+        assert snapshot == {"alpha"}
+
+        snapshot.add("beta")
+        assert registry.is_model_available("beta") is False
 
     asyncio.run(_test())

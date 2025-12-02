@@ -44,6 +44,7 @@ This repository hosts a high-performance API server that provides OpenAI-compati
 - ⚡ **Configurable quantization** (4-bit, 8-bit, 16-bit) for optimal performance
 - 🧠 **Customizable context length** for memory optimization and performance tuning
 - ♻️ **JIT loading with idle auto-unload** to reclaim VRAM when the server is idle
+- 🧮 **Group-aware availability cache** so OpenAI APIs and hub actions honor VRAM group limits even when telemetry is degraded
 
 ---
 
@@ -796,6 +797,13 @@ Group idle eviction vs. auto-unload timers
 - `idle_unload_trigger_min` never runs on a schedule; it only activates when another model in the same group needs to load and the group is at the `max_loaded` ceiling.
 - Models that have been idle longer than the configured threshold are candidates for eviction, but only one is unloaded per blocked load request and only if it frees room for the incoming model.
 - Per-model `auto_unload_minutes` remain unchanged and continue to unload handlers after their own idle timers expire, even if the group is not contended.
+
+#### Group availability enforcement & caching
+
+- The shared `ModelRegistry` recomputes group availability every time hub metadata changes (handler load/unload, controller telemetry, `hub reload`). The resulting filtered set is cached in-memory as `available_model_ids`.
+- OpenAI-compatible endpoints (e.g., `/v1/models`, `chat.completions`) only expose or acquire models that appear in the cached set. If the hub daemon temporarily goes offline, the server continues serving the last known filtered list until telemetry resumes.
+- Hub admin actions (`/hub/models/{model}/start`, `/hub/models/{model}/load`, `/hub/models/{model}/vram/load`, and the matching CLI commands) reuse the same cache. When a request would exceed the configured group capacity, the server returns the existing OpenAI-style `429: Group capacity exceeded. Unload another model or wait for auto-unload.` response before touching the controller or daemon.
+- Because everything funnels through the same cache, operators see consistent behavior across the dashboard, CLI, and OpenAI APIs—even during degraded telemetry windows.
 
 Port allocation note
 - When a model omits the `port` field, the hub assigns sequential ports starting at `model_starting_port` (default `47850`). Busy ports are skipped automatically.
