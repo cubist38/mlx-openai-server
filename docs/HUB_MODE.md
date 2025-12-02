@@ -68,6 +68,13 @@ Validation highlights:
 
 Flash helper tones (`info`, `success`, `warning`, `error`) mirror the HTML dashboard styles so operators see consistent feedback across surfaces.
 
+## Availability Cache & Degraded Telemetry
+
+- The FastAPI controller keeps a shared `ModelRegistry` in sync with hub group policies. Every handler attach/detach, `/hub reload`, or daemon status poll recomputes the allowed set and caches it as `available_model_ids`.
+- OpenAI-compatible endpoints honor this cache when listing models or acquiring handlers. During a daemon outage the controller reuses the last successful snapshot so `/v1/models` keeps returning a consistent filtered list instead of exposing stale entries.
+- Hub-facing actions (`hub start-model`, `hub load-model`, `hub vram load`, `/hub/models/{model}/start`, etc.) call the same guard helper. If a group is already at its `max_loaded` ceiling and no member satisfies the optional `idle_unload_trigger_min`, the request fails fast with the existing OpenAI-style `429: Group capacity exceeded. Unload another model or wait for auto-unload.` response instead of invoking the controller/daemon.
+- Because the CLI, dashboard, and OpenAI APIs all reference the same cache, operators see identical availability decisions no matter which surface they use.
+
 ## HTML Dashboard Details
 
 - Polls `/hub/status` every five seconds by default and renders the same data used by the CLI.

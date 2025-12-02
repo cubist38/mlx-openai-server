@@ -10,7 +10,7 @@ that increments/decrements an active request counter.
 from __future__ import annotations
 
 import asyncio
-from collections.abc import AsyncIterator, Awaitable, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable, Iterable
 from contextlib import AbstractAsyncContextManager, asynccontextmanager
 import time
 from typing import Any, TypedDict, cast
@@ -21,6 +21,37 @@ from ..schemas.model import ModelMetadata
 from .manager_protocol import ManagerProtocol
 
 _UNSET = object()
+
+
+def build_group_policy_payload(groups: Iterable[Any] | None) -> dict[str, dict[str, Any]]:
+    """Return normalized policy metadata for use with ``set_group_policies``.
+
+    Parameters
+    ----------
+    groups : Iterable[Any] or None
+        Sequence of config objects exposing ``name``, ``max_loaded``, and
+        ``idle_unload_trigger_min`` attributes.
+
+    Returns
+    -------
+    dict[str, dict[str, Any]]
+        Mapping of group name to constraint metadata recognized by the registry.
+    """
+
+    policies: dict[str, dict[str, Any]] = {}
+    if not groups:
+        return policies
+
+    for group in groups:
+        name = getattr(group, "name", None)
+        if not name:
+            continue
+        policies[name] = {
+            "max_loaded": getattr(group, "max_loaded", None),
+            "idle_unload_trigger_min": getattr(group, "idle_unload_trigger_min", None),
+        }
+
+    return policies
 
 
 class VRAMStatus(TypedDict, total=False):
@@ -74,7 +105,63 @@ class ModelRegistry:
         self._lock = asyncio.Lock()
         # Optional notifier for activity changes. Callable receives model_id.
         self._activity_notifier: Callable[[str], None] | None = None
+        # Group policy + availability tracking
+        self._group_policies: dict[str, dict[str, Any]] = {}
+        self._group_snapshots: dict[str, dict[str, Any]] = {}
+        self._available_model_ids: set[str] | None = None
+        self._availability_snapshot_ts: float | None = None
         logger.info("Model registry initialized")
+
+    # ------------------------------------------------------------------
+    # Group policy helpers
+    # ------------------------------------------------------------------
+
+    def set_group_policies(self, policies: dict[str, dict[str, Any]]) -> None:
+        """Apply group policies used for availability decisions.
+
+        Parameters
+        ----------
+        policies : dict[str, dict[str, Any]]
+            Mapping of group name to policy metadata containing optional
+            ``max_loaded`` and ``idle_unload_trigger_min`` keys.
+        """
+
+        normalized: dict[str, dict[str, Any]] = {}
+        for name, policy in policies.items():
+            if not name:
+                continue
+            max_loaded = self._coerce_positive_int(policy.get("max_loaded"))
+            idle_trigger = self._coerce_positive_int(policy.get("idle_unload_trigger_min"))
+            entry: dict[str, Any] = {
+                "max_loaded": max_loaded,
+                "idle_unload_trigger_min": idle_trigger,
+            }
+            normalized[name] = entry
+
+        self._group_policies = normalized
+        if normalized:
+            self._recompute_group_availability()
+        else:
+            self._available_model_ids = None
+            self._group_snapshots = {}
+            self._availability_snapshot_ts = None
+
+    def get_available_model_ids(self) -> set[str]:
+        """Return the most recently computed set of API-visible model ids."""
+
+        if self._available_model_ids is None:
+            return set(self._handlers.keys())
+        return set(self._available_model_ids)
+
+    def is_model_available(self, model_id: str) -> bool:
+        """Return True when ``model_id`` is currently exposed to clients."""
+
+        return model_id in self.get_available_model_ids()
+
+    def get_group_snapshots(self) -> dict[str, dict[str, Any]]:
+        """Return the latest computed per-group availability snapshot."""
+
+        return {name: dict(data) for name, data in self._group_snapshots.items()}
 
     def register_activity_notifier(self, notifier: Callable[[str], None]) -> None:
         """Register a synchronous notifier called when active request counts change.
@@ -138,6 +225,8 @@ class ModelRegistry:
         self._handlers[model_id] = handler
         self._metadata[model_id] = metadata
         self._extra[model_id] = base_metadata
+        if self._group_policies:
+            self._recompute_group_availability()
 
     async def update_model_state(
         self,
@@ -197,6 +286,9 @@ class ModelRegistry:
             if status is not None:
                 entry["status"] = status
 
+        if self._group_policies:
+            self._recompute_group_availability()
+
     async def unregister_model(self, model_id: str) -> None:
         """Remove a model from the registry."""
         async with self._lock:
@@ -207,6 +299,9 @@ class ModelRegistry:
             del self._metadata[model_id]
             self._extra.pop(model_id, None)
             logger.info(f"Unregistered model: {model_id}")
+
+        if self._group_policies:
+            self._recompute_group_availability()
 
     def get_handler(self, model_id: str) -> ManagerProtocol | None:
         """Return the handler bound to ``model_id`` (may be ``None``)."""
@@ -356,6 +451,9 @@ class ModelRegistry:
             entry["status"] = "loaded"
             entry.pop("vram_load_error", None)
 
+        if self._group_policies:
+            self._recompute_group_availability()
+
     async def request_vram_unload(self, model_id: str, *, timeout: float | None = None) -> None:
         """Request that the attached manager release VRAM resources (unload).
 
@@ -394,6 +492,9 @@ class ModelRegistry:
             # Keep human-readable status in sync with VRAM residency
             entry["status"] = "unloaded"
             entry.pop("vram_load_error", None)
+
+        if self._group_policies:
+            self._recompute_group_availability()
 
     def handler_session(
         self,
@@ -506,3 +607,114 @@ class ModelRegistry:
     def get_model_count(self) -> int:
         """Return how many models are registered."""
         return len(self._handlers)
+
+    # ------------------------------------------------------------------
+    # Internal helpers
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _coerce_positive_int(value: Any) -> int | None:
+        """Return ``value`` as a positive int or ``None`` when invalid."""
+
+        if value is None:
+            return None
+        try:
+            candidate = int(value)
+        except (TypeError, ValueError):
+            return None
+        return candidate if candidate > 0 else None
+
+    def _build_group_membership(self) -> dict[str, list[str]]:
+        """Return mapping of group -> model ids for configured policies."""
+
+        membership: dict[str, list[str]] = {}
+        if not self._group_policies:
+            return membership
+        for model_id, entry in self._extra.items():
+            group_name = entry.get("group")
+            if not group_name or group_name not in self._group_policies:
+                continue
+            membership.setdefault(group_name, []).append(model_id)
+        return membership
+
+    def _estimate_idle_seconds(self, model_id: str, *, now: float | None = None) -> float | None:
+        """Best-effort idle duration using request/load timestamps."""
+
+        entry = self._extra.get(model_id)
+        if not entry:
+            return None
+        reference = entry.get("vram_last_request_ts")
+        if reference is None:
+            last_unload = entry.get("vram_last_unload_ts")
+            last_load = entry.get("vram_last_load_ts")
+            if last_unload is None and last_load is None:
+                return None
+            reference = max(last_load or 0, last_unload or 0)
+        try:
+            reference = float(reference)
+        except (TypeError, ValueError):
+            return None
+        current = time.time() if now is None else now
+        return max(0.0, current - reference)
+
+    def _recompute_group_availability(self) -> None:
+        """Recalculate which models are available based on group policies."""
+
+        if not self._group_policies:
+            self._available_model_ids = None
+            self._group_snapshots = {}
+            self._availability_snapshot_ts = None
+            return
+
+        now = time.time()
+        membership = self._build_group_membership()
+        available: set[str] = set(self._handlers.keys())
+        snapshots: dict[str, dict[str, Any]] = {}
+
+        for group_name, members in membership.items():
+            policy = self._group_policies.get(group_name) or {}
+            max_loaded = self._coerce_positive_int(policy.get("max_loaded"))
+            idle_trigger = self._coerce_positive_int(policy.get("idle_unload_trigger_min"))
+            loaded_members = [
+                mid for mid in members if bool(self._extra.get(mid, {}).get("vram_loaded"))
+            ]
+            idle_seconds_map: dict[str, float] = {}
+            idle_eligible: list[str] = []
+            if loaded_members:
+                for mid in loaded_members:
+                    idle_seconds = self._estimate_idle_seconds(mid, now=now)
+                    if idle_seconds is not None:
+                        idle_seconds_map[mid] = idle_seconds
+
+            if idle_trigger is not None and loaded_members:
+                threshold_seconds = idle_trigger * 60
+                for mid, idle_seconds in idle_seconds_map.items():
+                    if idle_seconds >= threshold_seconds:
+                        idle_eligible.append(mid)
+
+            allow_unloaded = True
+            if max_loaded is not None and len(loaded_members) >= max_loaded:
+                if idle_trigger is None or not idle_eligible:
+                    allow_unloaded = False
+
+            if not allow_unloaded:
+                for mid in members:
+                    if mid not in loaded_members:
+                        available.discard(mid)
+
+            snapshots[group_name] = {
+                "name": group_name,
+                "members": list(members),
+                "loaded_members": list(loaded_members),
+                "loaded": len(loaded_members),
+                "max_loaded": max_loaded,
+                "idle_unload_trigger_min": idle_trigger,
+                "idle_eligible": idle_eligible,
+                "idle_seconds": idle_seconds_map,
+                "mode": "all" if allow_unloaded else "loaded-only",
+                "timestamp": now,
+            }
+
+        self._available_model_ids = available
+        self._group_snapshots = snapshots
+        self._availability_snapshot_ts = now

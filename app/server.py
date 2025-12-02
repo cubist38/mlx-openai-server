@@ -49,7 +49,7 @@ from .api.hub_routes import HubConfigError, _call_daemon_api_async, _load_hub_co
 from .config import MLXServerConfig
 from .const import HUB_POLL_INTERVAL_SECONDS
 from .core.manager_protocol import ManagerProtocol
-from .core.model_registry import ModelRegistry
+from .core.model_registry import ModelRegistry, build_group_policy_payload
 from .handler import MFLUX_AVAILABLE, MLXFluxHandler
 from .handler.mlx_embeddings import MLXEmbeddingsHandler
 from .handler.mlx_lm import MLXLMHandler
@@ -1275,6 +1275,9 @@ async def _hub_sync_once(app: FastAPI) -> None:
         # No hub config available for this server
         return
 
+    registry.set_group_policies(build_group_policy_payload(getattr(hub_config, "groups", None)))
+    await _sync_registry_models_from_config(registry, hub_config)
+
     try:
         snapshot = await _call_daemon_api_async(hub_config, "GET", "/hub/status", timeout=2.0)
     except Exception as e:
@@ -1332,3 +1335,47 @@ async def _hub_sync_once(app: FastAPI) -> None:
                 logger.warning(f"Failed to update registry for {model_path}: {e}")
         except Exception:
             logger.exception("Unexpected error while syncing model entry")
+
+
+async def _sync_registry_models_from_config(registry: ModelRegistry, hub_config: Any) -> None:
+    """Ensure registry entries exist for configured hub models with group metadata.
+
+    Parameters
+    ----------
+    registry : ModelRegistry
+        Registry shared with the FastAPI application.
+    hub_config : Any
+        Hub configuration containing model definitions.
+
+    Returns
+    -------
+    None
+        This helper mutates the registry in place and returns ``None``.
+    """
+
+    models = getattr(hub_config, "models", []) or []
+    for model_cfg in models:
+        model_id = getattr(model_cfg, "model_path", None)
+        if not isinstance(model_id, str):
+            continue
+
+        metadata_extras = {
+            "group": getattr(model_cfg, "group", None),
+            "model_path": model_id,
+            "model_type": getattr(model_cfg, "model_type", None),
+            "context_length": getattr(model_cfg, "context_length", None),
+        }
+
+        if registry.has_model(model_id):
+            await registry.update_model_state(
+                model_id, metadata_updates={"group": metadata_extras["group"]}
+            )
+            continue
+
+        registry.register_model(
+            model_id=model_id,
+            handler=None,
+            model_type=getattr(model_cfg, "model_type", "unknown"),
+            context_length=getattr(model_cfg, "context_length", None),
+            metadata_extras=metadata_extras,
+        )

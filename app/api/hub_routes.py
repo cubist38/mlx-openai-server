@@ -36,6 +36,7 @@ from ..schemas.openai import (
     Model,
 )
 from ..utils.errors import create_error_response
+from .availability import guard_model_availability
 
 # `is_port_available` is intentionally not used here; the daemon will perform
 # its own availability checks when starting. Keep import removed to avoid
@@ -239,8 +240,91 @@ def _stop_controller_process(
     return True
 
 
+def _resolve_registry_model_id(config: MLXHubConfig | None, model_name: str) -> str | None:
+    """Return the registry model identifier associated with ``model_name``.
+
+    Parameters
+    ----------
+    config : MLXHubConfig or None
+        Hub configuration containing model definitions.
+    model_name : str
+        Slug or identifier provided by the hub endpoint.
+
+    Returns
+    -------
+    str or None
+        The corresponding registry ``model_path`` or ``None`` when unknown.
+    """
+
+    if config is None:
+        return None
+
+    target = model_name.strip()
+    if not target:
+        return None
+
+    for server_cfg in getattr(config, "models", []) or []:
+        candidates = [
+            getattr(server_cfg, "name", None),
+            getattr(server_cfg, "model_identifier", None),
+            getattr(server_cfg, "model_path", None),
+        ]
+        if target in {value for value in candidates if isinstance(value, str)}:
+            return getattr(server_cfg, "model_path", None)
+    return None
+
+
+def _guard_hub_action_availability(
+    raw_request: Request,
+    config: MLXHubConfig | None,
+    model_name: str,
+    *,
+    deny_detail: str,
+    log_context: str,
+) -> JSONResponse | None:
+    """Return an error when a hub action violates cached availability policies.
+
+    Parameters
+    ----------
+    raw_request : Request
+        Incoming FastAPI request referencing the shared registry.
+    config : MLXHubConfig or None
+        Hub configuration used to map hub names to registry identifiers.
+    model_name : str
+        Name supplied by the admin endpoint.
+    deny_detail : str
+        Detail string included in the rate limit response.
+    log_context : str
+        Human-friendly label emitted in structured logs.
+
+    Returns
+    -------
+    JSONResponse or None
+        ``JSONResponse`` when the model is currently unavailable, otherwise ``None``.
+    """
+
+    registry_id = _resolve_registry_model_id(config, model_name) or model_name
+    return guard_model_availability(
+        raw_request,
+        registry_id,
+        deny_detail=deny_detail,
+        log_context=log_context,
+    )
+
+
+def _get_cached_hub_config(raw_request: Request) -> MLXHubConfig | None:
+    """Return the cached hub configuration, loading it if absent."""
+
+    config = getattr(raw_request.app.state, "hub_config", None)
+    if isinstance(config, MLXHubConfig):
+        return config
+    with contextlib.suppress(HubConfigError):
+        return _load_hub_config_from_request(raw_request)
+    return None
+
+
 def _load_hub_config_from_request(raw_request: Request) -> MLXHubConfig:
-    """Load hub configuration from the resolved config path.
+    """Load hub configuration from disk and cache it on ``app.state``.
 
     Parameters
     ----------
@@ -252,7 +336,10 @@ def _load_hub_config_from_request(raw_request: Request) -> MLXHubConfig:
     MLXHubConfig
         Loaded hub configuration.
     """
-    return load_hub_config(_resolve_hub_config_path(raw_request))
+
+    config = load_hub_config(_resolve_hub_config_path(raw_request))
+    setattr(raw_request.app.state, "hub_config", config)
+    return config
 
 
 def _daemon_base_url(config: MLXHubConfig) -> str:
@@ -1241,6 +1328,16 @@ async def hub_vram_load(
     if registry is None:
         return _registry_unavailable_response()
 
+    availability_error = _guard_hub_action_availability(
+        raw_request,
+        _get_cached_hub_config(raw_request),
+        target,
+        deny_detail="Group capacity exceeded. Unload another model or wait for auto-unload.",
+        log_context="Hub VRAM load",
+    )
+    if availability_error is not None:
+        return availability_error
+
     try:
         await registry.request_vram_load(
             target,
@@ -1369,6 +1466,17 @@ async def _hub_model_service_action(
     except HubConfigError as exc:
         return _hub_config_error_response(str(exc))
 
+    if action == "start":
+        availability_error = _guard_hub_action_availability(
+            raw_request,
+            config,
+            target,
+            deny_detail="Group capacity exceeded. Unload another model or wait for auto-unload.",
+            log_context="Hub start",
+        )
+        if availability_error is not None:
+            return availability_error
+
     controller = getattr(raw_request.app.state, "hub_controller", None)
     if controller is None:
         controller = getattr(raw_request.app.state, "supervisor", None)
@@ -1439,6 +1547,19 @@ async def _hub_memory_controller_action(
             ),
             status_code=HTTPStatus.BAD_REQUEST,
         )
+
+    config = _get_cached_hub_config(raw_request)
+
+    if action == "load":
+        availability_error = _guard_hub_action_availability(
+            raw_request,
+            config,
+            target,
+            deny_detail="Group capacity exceeded. Unload another model or wait for auto-unload.",
+            log_context="Hub load",
+        )
+        if availability_error is not None:
+            return availability_error
 
     controller = getattr(raw_request.app.state, "hub_controller", None)
     if controller is None:
