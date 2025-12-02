@@ -45,7 +45,12 @@ from starlette.responses import Response
 import uvicorn
 
 from .api.endpoints import router
-from .api.hub_routes import HubConfigError, _call_daemon_api_async, _load_hub_config_from_request
+from .api.hub_routes import (
+    HubConfigError,
+    _call_daemon_api_async,
+    _load_hub_config_from_request,
+    hub_router,
+)
 from .config import MLXServerConfig
 from .const import HUB_POLL_INTERVAL_SECONDS
 from .core.manager_protocol import ManagerProtocol
@@ -1110,7 +1115,7 @@ def setup_server(config_args: MLXServerConfig) -> uvicorn.Config:
         },
     ]
 
-    configure_fastapi_app(app)
+    configure_fastapi_app(app, include_hub_routes=False)
 
     logger.info(f"Starting server on {config_args.host}:{config_args.port}")
     return uvicorn.Config(
@@ -1122,7 +1127,7 @@ def setup_server(config_args: MLXServerConfig) -> uvicorn.Config:
     )
 
 
-def configure_fastapi_app(app: FastAPI) -> None:
+def configure_fastapi_app(app: FastAPI, *, include_hub_routes: bool = False) -> None:
     """Register routers, middleware, and global handlers on ``app``.
 
     This helper centralizes FastAPI configuration that is shared between the
@@ -1130,6 +1135,12 @@ def configure_fastapi_app(app: FastAPI) -> None:
     expose identical middleware, routing, and error handling behavior.
     """
     app.include_router(router)
+    # The hub admin routes are mounted only when requested by the caller
+    # (the daemon app should pass `include_hub_routes=True`). This ensures
+    # that the launch-mode server exposes only the `/v1/...` surface while
+    # the hub daemon exposes both `/v1/...` and `/hub/...`.
+    if include_hub_routes:
+        app.include_router(hub_router)
     # Ensure a ModelRegistry is available on the application state so
     # hub-aware endpoints and admin routes can access model metadata
     # and request VRAM operations without requiring explicit wiring.
