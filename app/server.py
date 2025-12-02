@@ -103,14 +103,6 @@ def configure_logging(
     """
     logger.remove()  # Remove default handler
 
-    # Ensure log directory exists when a file path is specified (or default)
-    if log_file:
-        with suppress(Exception):
-            Path(log_file).parent.mkdir(parents=True, exist_ok=True)
-    else:
-        with suppress(Exception):
-            Path("logs").mkdir(parents=True, exist_ok=True)
-
     # Add console handler. Exclude records that are specific to a model
     # (they will be written to per-model log files instead).
     def _global_filter(record: dict[str, Any]) -> bool:  # pragma: no cover - tiny helper

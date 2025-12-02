@@ -249,6 +249,16 @@ class HubSupervisor:
                     f"Unloaded '{other_record.name}' after {idle_minutes:.1f} idle minute(s) to free group "
                     f"'{group_name}' capacity for '{exclude}'",
                 )
+                # Update registry to reflect the unloaded state
+                if self.registry and other_record.model_path is not None:
+                    try:
+                        await self.registry.update_model_state(
+                            other_record.model_path, handler=None
+                        )
+                    except Exception as e:
+                        logger.warning(
+                            f"Failed to update registry after evicting model {other_record.name}: {e}"
+                        )
                 return True
 
         logger.warning(

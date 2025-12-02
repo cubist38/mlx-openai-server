@@ -552,13 +552,6 @@
         function attachServiceActionListeners() {
             if (!serviceListenerAttached) {
                 document.addEventListener('click', onServiceActionClick);
-                // Attach direct listeners to service buttons as a fallback
-                document.querySelectorAll('[data-service-action]').forEach(btn => {
-                    if (!btn.hasAttribute('data-service-listener-attached')) {
-                        btn.addEventListener('click', onServiceActionClick);
-                        btn.setAttribute('data-service-listener-attached', 'true');
-                    }
-                });
                 console.debug('attachServiceActionListeners: listeners attached');
                 serviceListenerAttached = true;
             }
