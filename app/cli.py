@@ -1349,14 +1349,21 @@ def hub_stop(ctx: click.Context) -> None:
         Click context.
     """
     config = _load_hub_config_or_fail(ctx.obj.get("hub_config_path"))
+    # Quick health check before attempting reload to avoid races or hitting
+    # a non-hub server that doesn't implement the admin endpoints.
+    try:
+        _call_daemon_api(config, "GET", "/health", timeout=1.0)
+    except click.ClickException as e:
+        msg = str(e)
+        # If daemon is unreachable or health not present, treat as not running.
+        if "Failed to contact hub daemon" in msg or "404" in msg or "Not Found" in msg:
+            _flash("Hub manager is not running; nothing to stop", tone="info")
+            return
+        raise click.ClickException(f"Config sync failed before shutdown: {e}") from e
+
     try:
         _call_daemon_api(config, "POST", "/hub/reload")
     except click.ClickException as e:
-        # If we can't contact the daemon it's likely not running; be friendly
-        msg = str(e)
-        if "Failed to contact hub daemon" in msg:
-            _flash("Hub manager is not running; nothing to stop", tone="info")
-            return
         raise click.ClickException(f"Config sync failed before shutdown: {e}") from e
 
     try:

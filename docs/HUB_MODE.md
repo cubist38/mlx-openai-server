@@ -17,6 +17,8 @@ This document expands on the **Hub Mode** section in the project README and desc
 4. **FastAPI `/hub` surface**
    - Exposes JSON APIs plus the HTML dashboard. Operators can trigger the same start/reload/stop/load/unload actions directly from the browser while receiving flash/toast feedback.
 
+   **Routing note:** The `/hub` admin surface is implemented in `app/api/hub_routes.py` and is intended to be mounted only by the hub daemon. The single-model launch process exposes only the OpenAI-compatible `/v1/...` endpoints. This ensures a single canonical implementation for `/hub` and prevents duplicate handlers across processes.
+
 ## Hub YAML Quick Reference
 
 ```yaml

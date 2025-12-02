@@ -959,6 +959,44 @@ async def hub_status(raw_request: Request) -> HubStatusResponse:
     )
 
 
+@hub_router.get("/health")
+async def health(raw_request: Request) -> dict[str, str]:
+    """Lightweight health check for the hub daemon.
+
+    Returns a simple 200 OK when the daemon process is running so callers
+    (including CLI helpers) can detect availability quickly.
+    """
+    return {"status": "ok"}
+
+
+@hub_router.post("/hub/reload", response_model=None)
+async def hub_reload(raw_request: Request) -> dict[str, Any] | JSONResponse:
+    """Reload the hub configuration inside the running daemon.
+
+    This endpoint is the canonical implementation for `/hub/reload` and
+    will call the in-process controller when the daemon runs in unified
+    mode. When no controller is present the endpoint reports that the
+    manager is unavailable.
+    """
+    try:
+        _load_hub_config_from_request(raw_request)
+    except HubConfigError as exc:
+        return _hub_config_error_response(str(exc))
+
+    controller = getattr(raw_request.app.state, "hub_controller", None)
+    if controller is None:
+        controller = getattr(raw_request.app.state, "supervisor", None)
+
+    if controller is not None:
+        try:
+            result: dict[str, Any] = await controller.reload_config()
+        except Exception as exc:
+            return _service_error_response("reload hub configuration", HubServiceError(str(exc)))
+        return result
+
+    return _manager_unavailable_response()
+
+
 @hub_router.get("/hub", response_class=HTMLResponse)
 async def hub_status_page(raw_request: Request) -> HTMLResponse:
     """Serve a lightweight HTML dashboard for hub operators.

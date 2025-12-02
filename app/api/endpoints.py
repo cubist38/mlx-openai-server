@@ -55,7 +55,6 @@ from .hub_routes import (
     get_configured_model_id,
     get_running_hub_models,
     hub_load_model,
-    hub_router,
     hub_start_model,
     hub_status,
     hub_status_page,
@@ -64,7 +63,7 @@ from .hub_routes import (
 )
 
 router = APIRouter()
-router.include_router(hub_router)
+router = APIRouter()
 
 __all__ = [
     "hub_load_model",

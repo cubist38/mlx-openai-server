@@ -18,9 +18,7 @@ from pathlib import Path
 import time
 from typing import Any, cast
 
-from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import HTMLResponse
-from fastapi.templating import Jinja2Templates
+from fastapi import FastAPI, HTTPException
 from loguru import logger
 
 from ..config import MLXServerConfig
@@ -918,7 +916,6 @@ def create_app(hub_config_path: str | None = None) -> FastAPI:
 
     # Configure templates directory (fall back to inline rendering if missing)
     # Templates folder lives at the repository root `templates/`
-    templates = Jinja2Templates(directory=Path(__file__).parent.parent.parent / "templates")
 
     # Use environment variable if no path provided
     if hub_config_path is None:
@@ -1022,87 +1019,10 @@ def create_app(hub_config_path: str | None = None) -> FastAPI:
     # Set the lifespan on the FastAPI app now that hub_config and supervisor are available
     app.router.lifespan_context = lifespan
 
-    # Configure OpenAI API routes and middleware
-    configure_fastapi_app(app)
-
-    @app.get("/health")
-    async def health() -> dict[str, str]:
-        return {"status": "ok"}
-
-    @app.get("/hub/status")
-    async def hub_status() -> dict[str, Any]:
-        status = await supervisor.get_status()
-        status["controller_available"] = True
-        return status
-
-    @app.post("/hub/reload")
-    async def hub_reload() -> dict[str, Any]:
-        return await supervisor.reload_config()
-
-    @app.post("/hub/shutdown")
-    async def hub_shutdown() -> dict[str, Any]:
-        """Shutdown all supervised models."""
-        await supervisor.shutdown_all()
-        return {
-            "status": "ok",
-            "action": "stop",
-            "message": "Shutdown requested",
-            "details": {},
-        }
-
-    @app.post("/hub/models/{name}/start")
-    async def model_start(name: str, request: Request) -> dict[str, Any]:
-        supervisor = cast("HubSupervisor", request.app.state.supervisor)
-        return await supervisor.start_model(name)
-
-    @app.post("/hub/models/{name}/stop")
-    async def model_stop(name: str, request: Request) -> dict[str, Any]:
-        supervisor = cast("HubSupervisor", request.app.state.supervisor)
-        return await supervisor.stop_model(name)
-
-    @app.post("/hub/models/{name}/load")
-    async def model_load(name: str, request: Request) -> dict[str, Any]:
-        supervisor = cast("HubSupervisor", request.app.state.supervisor)
-        return await supervisor.load_model(name)
-
-    @app.post("/hub/models/{name}/unload")
-    async def model_unload(name: str, request: Request) -> dict[str, Any]:
-        supervisor = cast("HubSupervisor", request.app.state.supervisor)
-        return await supervisor.unload_model(name)
-
-    @app.get("/hub", response_class=HTMLResponse)
-    async def hub_status_page(request: Request) -> HTMLResponse:
-        """Render the hub status page using Jinja templates.
-
-        We pre-format timestamps and model fields to avoid relying on custom
-        Jinja filters (keeps template simple and safe).
-        """
-        supervisor = cast("HubSupervisor", request.app.state.supervisor)
-        status = await supervisor.get_status()
-        hub_cfg = supervisor.hub_config
-
-        timestamp = status.get("timestamp")
-        ts_str = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(timestamp)) if timestamp else "-"
-
-        models = [
-            {
-                "name": m.get("name", "-"),
-                "state": m.get("state", "-"),
-                "pid": m.get("pid"),
-                "port": m.get("port"),
-                "loaded": bool(m.get("memory_loaded")),
-                "model_path": m.get("model_path"),
-                "auto_unload_minutes": m.get("auto_unload_minutes"),
-            }
-            for m in status.get("models", [])
-        ]
-
-        context = {
-            "request": request,
-            "hub_config": hub_cfg,
-            "models": models,
-            "timestamp": ts_str,
-        }
-        return templates.TemplateResponse("hub_status.html.jinja", context)
+    # Configure OpenAI API routes, middleware, and hub admin routes
+    # The daemon mounts the canonical `hub_router` so there is a single
+    # implementation for all `/hub/...` endpoints. This avoids duplicate
+    # handlers and ensures consistent behavior between in-process and daemon modes.
+    configure_fastapi_app(app, include_hub_routes=True)
 
     return app
