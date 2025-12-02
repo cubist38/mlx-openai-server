@@ -34,7 +34,25 @@ _slug_pattern = re.compile(r"^[a-z0-9]+(?:[-_][a-z0-9]+)*$", re.IGNORECASE)
 
 
 def _ensure_slug(value: str, *, field_name: str) -> str:
-    """Validate that ``value`` is already a compliant slug without altering it."""
+    """Validate that ``value`` is already a compliant slug without altering it.
+
+    Parameters
+    ----------
+    value : str
+        Candidate string to validate as a slug.
+    field_name : str
+        Human-readable name of the field used in error messages.
+
+    Returns
+    -------
+    str
+        The stripped, validated slug (equal to ``value.strip()``).
+
+    Raises
+    ------
+    HubConfigError
+        If the value is empty or does not match the slug pattern.
+    """
     candidate = value.strip()
     if not candidate:
         raise HubConfigError(f"{field_name} cannot be empty")
@@ -54,7 +72,19 @@ class MLXHubGroupConfig:
     idle_unload_trigger_min: int | None = None
 
     def __post_init__(self) -> None:
-        """Validate group names and ensure group constraints are sane."""
+        """Validate group names and ensure group constraints are sane.
+
+        Parameters
+        ----------
+        self : MLXHubGroupConfig
+            The instance being validated. This method operates on ``self`` and
+            takes no additional parameters.
+
+        Raises
+        ------
+        HubConfigError
+            If the group name is invalid or constraints are inconsistent.
+        """
         self.name = _ensure_slug(self.name, field_name="group name")
         if self.max_loaded is not None and self.max_loaded < 1:
             raise HubConfigError("max_loaded must be a positive integer when provided")
@@ -82,7 +112,15 @@ class MLXHubConfig:
     source_path: Path | None = None
 
     def __post_init__(self) -> None:
-        """Normalize hub defaults."""
+        """Normalize hub defaults.
+
+        Parameters
+        ----------
+        self : MLXHubConfig
+            The instance being normalized. This method operates on ``self`` and
+            mutates fields in-place (upper-cases ``log_level`` and expands
+            ``log_path``).
+        """
         self.log_level = self.log_level.upper()
         self.log_path = self.log_path.expanduser()
 
@@ -426,6 +464,25 @@ def load_hub_config(
 
 
 def _coerce_port_value(name: str, port_value: Any) -> int:
+    """Coerce a port-like value to an integer and validate its range.
+
+    Parameters
+    ----------
+    name : str
+        Model name used to construct error messages.
+    port_value : Any
+        Raw port value to coerce (may be int, str, etc.).
+
+    Returns
+    -------
+    int
+        The coerced port number.
+
+    Raises
+    ------
+    HubConfigError
+        If the value cannot be converted to an int or is outside the allowed range.
+    """
     try:
         candidate_port = int(port_value)
     except (TypeError, ValueError) as exc:
@@ -443,6 +500,33 @@ def _allocate_port(
     starting_port: int,
     reserved_ports: set[int],
 ) -> tuple[int, int]:
+    """Allocate an available TCP port for a model on the given host.
+
+    This scans upward from ``starting_port`` until it finds a port that is
+    not in ``reserved_ports`` and appears available on ``host``.
+
+    Parameters
+    ----------
+    name : str
+        Model name used for error messages.
+    host : str
+        Hostname or IP to bind-check for availability.
+    starting_port : int
+        Port number to start scanning from.
+    reserved_ports : set[int]
+        Ports that must not be allocated.
+
+    Returns
+    -------
+    tuple[int, int]
+        A tuple of ``(allocated_port, next_candidate_port)`` where
+        ``next_candidate_port`` is the integer to use for subsequent searches.
+
+    Raises
+    ------
+    HubConfigError
+        If no available port is found in the valid range.
+    """
     port = max(starting_port, PORT_MIN)
     while port <= PORT_MAX:
         if port not in reserved_ports and is_port_available(host, port):

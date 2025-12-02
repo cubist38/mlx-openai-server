@@ -63,7 +63,6 @@ from .hub_routes import (
 )
 
 router = APIRouter()
-router = APIRouter()
 
 __all__ = [
     "hub_load_model",
@@ -216,11 +215,26 @@ def _resolve_model_for_openai_api(
 ) -> tuple[str | None, str | None, JSONResponse | None]:
     """Resolve model for OpenAI-compatible APIs in hub mode.
 
-    Returns a tuple of (api_model_id, handler_name, error_response) where
-    - `api_model_id` is the model identifier that should be exposed through
-      the OpenAI-compatible API (the registry `model_path`),
-    - `handler_name` is the hub controller name used to acquire handlers,
-    - `error_response` is a JSONResponse when resolution/validation failed.
+    Parameters
+    ----------
+    raw_request : Request
+        The incoming FastAPI request used to access application state.
+    model_name : str or None
+        The model name supplied by the caller (may be a hub name or a
+        registry ``model_path``).
+    provided_explicitly : bool
+        Whether the caller explicitly provided the ``model`` field. In
+        hub mode an explicit selection is required.
+
+    Returns
+    -------
+    tuple[str | None, str | None, JSONResponse | None]
+        A 3-tuple of ``(api_model_id, handler_name, error_response)`` where
+        ``api_model_id`` is the OpenAI-visible model identifier (registry
+        ``model_path``) or ``None`` on error, ``handler_name`` is the hub
+        controller name used to acquire handlers (or ``None`` on error),
+        and ``error_response`` is a ``JSONResponse`` when validation or
+        availability checks failed (otherwise ``None``).
     """
     normalized = (model_name or "").strip() or None
     controller = getattr(raw_request.app.state, "hub_controller", None)

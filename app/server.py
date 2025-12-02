@@ -165,7 +165,19 @@ def get_model_identifier(config_args: MLXServerConfig) -> str:
 
 
 def get_registry_model_id(config_args: MLXServerConfig) -> str:
-    """Return the identifier used when registering models with the registry."""
+    """Return the identifier used when registering models with the registry.
+
+    Parameters
+    ----------
+    config_args : MLXServerConfig
+        Server configuration object containing registration identifiers.
+
+    Returns
+    -------
+    str
+        The registry identifier to use (explicit ``name`` or the
+        configured ``model_identifier``).
+    """
     return config_args.name or config_args.model_identifier
 
 
@@ -259,7 +271,29 @@ async def instantiate_handler(config_args: MLXServerConfig) -> MLXHandler:
 
 
 def _create_handler_sync(config_args: MLXServerConfig, model_identifier: str) -> MLXHandler:
-    """Create handler synchronously (runs in thread pool)."""
+    """Create the MLX handler synchronously.
+
+    This is a synchronous helper intended to be executed in a thread pool
+    so handler construction does not block the event loop.
+
+    Parameters
+    ----------
+    config_args : MLXServerConfig
+        Configuration describing the model type and handler options.
+    model_identifier : str
+        Resolved model identifier or path passed to the handler.
+
+    Returns
+    -------
+    MLXHandler
+        A newly created handler instance matching the requested model type.
+
+    Raises
+    ------
+    ValueError
+        When the provided ``model_type`` is unsupported or required options
+        are missing (for example, missing ``config_name`` for image modes).
+    """
     handler: MLXHandler
     if config_args.model_type == "multimodal":
         handler = MLXVLMHandler(
@@ -623,6 +657,16 @@ class LazyHandlerManager(ManagerProtocol):
 
         This is intentionally best-effort: failures to remove the sink are
         logged but do not raise.
+
+        Parameters
+        ----------
+        None
+            No parameters.
+
+        Returns
+        -------
+        None
+            This function performs cleanup and does not return a value.
         """
         if self._log_sink_id is None:
             return
@@ -652,7 +696,22 @@ class LazyHandlerManager(ManagerProtocol):
         return f"[{identifier}] {action} ({reason})"
 
     def _schedule_memory_cleanup(self) -> None:
-        """Run cache clearing in the background to avoid blocking requests."""
+        """Run cache clearing in the background to avoid blocking requests.
+
+        This schedules an asyncio task which runs ``mx.clear_cache`` and
+        ``gc.collect`` off the main request path. Any exceptions are
+        logged but do not propagate.
+
+        Parameters
+        ----------
+        None
+            No parameters.
+
+        Returns
+        -------
+        None
+            This function schedules work and returns immediately.
+        """
 
         async def _run() -> None:
             try:
@@ -1133,6 +1192,20 @@ def configure_fastapi_app(app: FastAPI, *, include_hub_routes: bool = False) -> 
     This helper centralizes FastAPI configuration that is shared between the
     standard single-model server and the hub-aware server so both surfaces
     expose identical middleware, routing, and error handling behavior.
+
+    Parameters
+    ----------
+    app : FastAPI
+        FastAPI application instance to configure.
+    include_hub_routes : bool, optional
+        When True the canonical hub admin routes will be mounted on the
+        application (the daemon should pass ``True``). Defaults to ``False``
+        for single-model launch mode.
+
+    Returns
+    -------
+    None
+        This function configures the application in-place and returns None.
     """
     app.include_router(router)
     # The hub admin routes are mounted only when requested by the caller
@@ -1261,10 +1334,21 @@ def configure_fastapi_app(app: FastAPI, *, include_hub_routes: bool = False) -> 
 
 
 async def _hub_sync_once(app: FastAPI) -> None:
-    """Perform one hub status poll and reconcile the `ModelRegistry`.
+    """Perform one hub status poll and reconcile the ``ModelRegistry``.
 
     This helper contains the core logic for a single iteration so unit
     tests can call it directly without starting the background loop.
+
+    Parameters
+    ----------
+    app : FastAPI
+        FastAPI application instance whose ``model_registry`` will be
+        synchronized with the configured hub daemon.
+
+    Returns
+    -------
+    None
+        This function mutates the provided registry and returns None.
     """
     registry: ModelRegistry | None = getattr(app.state, "model_registry", None)
     if registry is None:

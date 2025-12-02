@@ -15,6 +15,26 @@ class _SuppressMlxVlmFilter(_std_logging.Filter):
     """
 
     def filter(self, record: _std_logging.LogRecord) -> bool:
+        """Decide whether a LogRecord should be emitted or suppressed.
+
+        Parameters
+        ----------
+        record : logging.LogRecord
+            The log record to inspect.
+
+        Returns
+        -------
+        bool
+            ``False`` to suppress the record (when it matches the known
+            noisy banner from ``mlx_vlm``), otherwise ``True`` to allow it.
+
+        Notes
+        -----
+        The filter suppresses records whose logger name starts with
+        ``"mlx_vlm"`` and whose formatted message contains the known banner
+        text. If any error occurs while inspecting the record the method
+        returns ``True`` to avoid accidentally suppressing unrelated logs.
+        """
         try:
             name = getattr(record, "name", "")
             msg = record.getMessage() if hasattr(record, "getMessage") else str(record.msg)

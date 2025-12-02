@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from typing import Any
 
 import pytest
 
@@ -12,12 +13,12 @@ from app.hub.config import MLXHubConfig, MLXHubGroupConfig
 
 def test_build_models_defaults_to_process_state(
     make_config: Callable[[], MLXHubConfig],
-    live_snapshot: Callable[[int], dict],
+    live_snapshot: Callable[[int], dict[str, Any]],
 ) -> None:
     """Models default to process state when runtime context is absent."""
     config = make_config()
 
-    models, counts = _build_models_from_config(config, live_snapshot())
+    models, counts = _build_models_from_config(config, live_snapshot(1))
     metadata = models[0].metadata
     assert metadata is not None
 
@@ -45,7 +46,7 @@ def test_build_models_defaults_to_process_state(
 )
 def test_build_models_memory_state_variants(
     make_config: Callable[[], MLXHubConfig],
-    live_entry: dict,
+    live_entry: dict[str, Any],
     expected_status: str,
     expected_memory_state: str | None,
     expected_loaded: int,

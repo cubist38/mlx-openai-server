@@ -142,10 +142,22 @@ _background_tasks: set[asyncio.Task[Any]] = set()
 
 
 def _retain_task(task: asyncio.Task[Any]) -> None:
-    """Add `task` to the module-level set and register a callback to remove it when complete.
+    """Retain a background task until completion.
 
-    This ensures background tasks created here are retained until they
-    finish and avoids silent cancellation via GC.
+    Adds ``task`` to a module-level set and registers a done-callback
+    which removes the task from the set when it finishes. This ensures
+    background tasks created here are not garbage-collected and thus
+    are not silently cancelled.
+
+    Parameters
+    ----------
+    task : asyncio.Task[Any]
+        Task to retain until completion.
+
+    Returns
+    -------
+    None
+        This function does not return a value.
     """
     _background_tasks.add(task)
 
@@ -313,7 +325,19 @@ def _guard_hub_action_availability(
 
 
 def _get_cached_hub_config(raw_request: Request) -> MLXHubConfig | None:
-    """Return the cached hub configuration, loading it if absent."""
+    """Return the cached hub configuration, loading it if absent.
+
+    Parameters
+    ----------
+    raw_request : Request
+        The incoming FastAPI request used to access application state.
+
+    Returns
+    -------
+    MLXHubConfig or None
+        The cached ``MLXHubConfig`` if present or successfully loaded,
+        otherwise ``None`` when the configuration cannot be loaded.
+    """
 
     config = getattr(raw_request.app.state, "hub_config", None)
     if isinstance(config, MLXHubConfig):
@@ -366,7 +390,30 @@ async def _call_daemon_api_async(
 ) -> dict[str, object] | None:
     """Async call to the hub daemon HTTP API and return parsed JSON.
 
-    Raises HubServiceError on non-2xx responses.
+    Parameters
+    ----------
+    config : MLXHubConfig
+        Hub configuration describing the daemon host and port.
+    method : str
+        HTTP method to use (e.g. ``"GET"``, ``"POST"``).
+    path : str
+        Path on the daemon to call (must begin with ``/``).
+    json : object or None, optional
+        JSON body to send with the request, by default ``None``.
+    timeout : float, optional
+        Request timeout in seconds, by default ``5.0``.
+
+    Returns
+    -------
+    dict[str, object] or None
+        Parsed JSON response as a dictionary, or ``None`` when the
+        response body is empty.
+
+    Raises
+    ------
+    HubServiceError
+        If the request fails due to connectivity or the daemon returns
+        a non-2xx status code.
     """
     base = _daemon_base_url(config)
     url = f"{base.rstrip('/')}{path}"
@@ -410,10 +457,30 @@ def _call_daemon_api_sync(
 ) -> dict[str, object] | None:
     """Synchronous HTTP call to the hub daemon used by sync code paths.
 
+    Parameters
+    ----------
+    config : MLXHubConfig
+        Hub configuration describing the daemon host and port.
+    method : str
+        HTTP method to use (e.g. ``"GET"``, ``"POST"``).
+    path : str
+        Path on the daemon to call (must begin with ``/``).
+    json : object or None, optional
+        JSON body to send with the request, by default ``None``.
+    timeout : float, optional
+        Request timeout in seconds, by default ``1.0``.
+
+    Returns
+    -------
+    dict[str, object] or None
+        Parsed JSON response as a dictionary, or ``None`` when the
+        response body is empty.
+
     Raises
     ------
     HubServiceError
-        On connectivity failures or non-2xx responses.
+        On connectivity failures or when the daemon returns a non-2xx
+        HTTP response.
     """
     base = _daemon_base_url(config)
     url = f"{base.rstrip('/')}{path}"
@@ -661,15 +728,16 @@ def _build_models_from_config(
     ----------
     config : MLXHubConfig
         The hub configuration.
-    live_snapshot : dict[str, Any] or None
-        Live status snapshot from the service.
-    runtime : HubRuntime, optional
-        Runtime reference used to enrich metadata with memory lifecycle states.
+    live_snapshot : dict[str, Any] | None
+        Live status snapshot from the service; may be ``None`` when the
+        manager is unavailable.
 
     Returns
     -------
     tuple[list[Model], HubStatusCounts]
-        Models list and status counts.
+        A tuple containing the rendered list of ``Model`` objects and a
+        ``HubStatusCounts`` instance summarizing registered, started, and
+        loaded counts.
     """
     live_entries = {}
     if live_snapshot is not None:
@@ -965,6 +1033,17 @@ async def health(raw_request: Request) -> dict[str, str]:
 
     Returns a simple 200 OK when the daemon process is running so callers
     (including CLI helpers) can detect availability quickly.
+
+    Parameters
+    ----------
+    raw_request : Request
+        The incoming FastAPI request (unused but kept for handler
+        signature compatibility).
+
+    Returns
+    -------
+    dict[str, str]
+        A simple mapping containing ``{"status": "ok"}`` when healthy.
     """
     return {"status": "ok"}
 
@@ -973,10 +1052,23 @@ async def health(raw_request: Request) -> dict[str, str]:
 async def hub_reload(raw_request: Request) -> dict[str, Any] | JSONResponse:
     """Reload the hub configuration inside the running daemon.
 
-    This endpoint is the canonical implementation for `/hub/reload` and
+    This endpoint is the canonical implementation for ``/hub/reload`` and
     will call the in-process controller when the daemon runs in unified
     mode. When no controller is present the endpoint reports that the
     manager is unavailable.
+
+    Parameters
+    ----------
+    raw_request : Request
+        The incoming FastAPI request used to access application state
+        and configuration.
+
+    Returns
+    -------
+    dict[str, Any] or JSONResponse
+        A dictionary describing the reload diff when successful, or a
+        ``JSONResponse`` containing a structured error payload when the
+        operation fails.
     """
     try:
         _load_hub_config_from_request(raw_request)
