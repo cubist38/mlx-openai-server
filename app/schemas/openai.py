@@ -23,7 +23,22 @@ class OpenAIBaseModel(BaseModel):
     @model_validator(mode="wrap")
     @classmethod
     def __log_extra_fields__(cls, data: Any, handler: Any) -> Any:
-        """Log any extra fields present in the request data."""
+        """Log any extra fields present in the request data.
+
+        Parameters
+        ----------
+        cls : type
+            The Pydantic model class being validated.
+        data : Any
+            Raw input data passed to the validator.
+        handler : Any
+            The next handler in the validator chain.
+
+        Returns
+        -------
+        Any
+            The validated data returned by the handler.
+        """
         result = handler(data)
         if not isinstance(data, dict):
             return result
@@ -253,7 +268,25 @@ class ChatCompletionRequestBase(OpenAIBaseModel):
     @field_validator("messages")
     @classmethod
     def check_messages_not_empty(cls, v: list[Message]) -> list[Message]:
-        """Ensure that the messages list is not empty and validate message structure."""
+        """Ensure that the messages list is not empty and validate message structure.
+
+        Parameters
+        ----------
+        cls : type
+            The Pydantic model class performing validation.
+        v : list[Message]
+            The messages list from the request.
+
+        Returns
+        -------
+        list[Message]
+            The validated messages list.
+
+        Raises
+        ------
+        ValueError
+            If the messages list is empty, too long, or contains invalid roles.
+        """
         if not v:
             raise ValueError("messages cannot be empty")
 
@@ -272,7 +305,25 @@ class ChatCompletionRequestBase(OpenAIBaseModel):
     @field_validator("temperature")
     @classmethod
     def check_temperature(cls, v: float | None) -> float | None:
-        """Validate temperature is between 0 and 2."""
+        """Validate temperature is between 0 and 2.
+
+        Parameters
+        ----------
+        cls : type
+            The Pydantic model class performing validation.
+        v : float | None
+            Temperature value to validate.
+
+        Returns
+        -------
+        float | None
+            The validated temperature value.
+
+        Raises
+        ------
+        ValueError
+            If the temperature is outside the allowed range.
+        """
         if v is not None and (v < 0 or v > 2):
             raise ValueError("temperature must be between 0 and 2")
         return v
@@ -280,7 +331,25 @@ class ChatCompletionRequestBase(OpenAIBaseModel):
     @field_validator("max_tokens")
     @classmethod
     def check_max_tokens(cls, v: int | None) -> int | None:
-        """Validate max_tokens is positive and within reasonable limits."""
+        """Validate max_tokens is positive and within reasonable limits.
+
+        Parameters
+        ----------
+        cls : type
+            The Pydantic model class performing validation.
+        v : int | None
+            The max_tokens value to validate.
+
+        Returns
+        -------
+        int | None
+            The validated max_tokens value.
+
+        Raises
+        ------
+        ValueError
+            If max_tokens is non-positive.
+        """
         if v is not None:
             if v <= 0:
                 raise ValueError("max_tokens must be positive")

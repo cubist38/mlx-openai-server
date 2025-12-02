@@ -137,6 +137,16 @@ def _controller_base_url(config: MLXHubConfig) -> str:
 
     The daemon host/port values are read from the hub config. This helper
     centralizes where the CLI constructs the daemon base URL.
+
+    Parameters
+    ----------
+    config : MLXHubConfig
+        Hub configuration used to determine host/port values.
+
+    Returns
+    -------
+    str
+        Base HTTP URL (e.g., ``"http://host:port"``).
     """
     # Prefer runtime state file (written by `hub start`) when available
     runtime = _read_hub_runtime_state(config)
@@ -160,7 +170,18 @@ def _controller_base_url(config: MLXHubConfig) -> str:
 
 
 def _runtime_state_path(config: MLXHubConfig) -> Path:
-    """Return path for the transient runtime state file under the configured log path."""
+    """Return path for the transient runtime state file under the configured log path.
+
+    Parameters
+    ----------
+    config : MLXHubConfig
+        Hub configuration that may specify a log path.
+
+    Returns
+    -------
+    Path
+        Filesystem path where the hub runtime state JSON is stored.
+    """
     try:
         log_dir = (
             Path(config.log_path) if getattr(config, "log_path", None) else Path.cwd() / "logs"
@@ -174,6 +195,18 @@ def _write_hub_runtime_state(config: MLXHubConfig, pid: int) -> None:
     """Persist transient runtime info so other CLI commands can find the running daemon.
 
     The file is intentionally lightweight and not used for durable configuration.
+
+    Parameters
+    ----------
+    config : MLXHubConfig
+        Hub configuration used to determine log path and host/port defaults.
+    pid : int
+        Process id of the started daemon.
+
+    Raises
+    ------
+    Exception
+        Any filesystem-related errors propagated when writing the runtime file.
     """
     path = _runtime_state_path(config)
     try:
@@ -191,7 +224,19 @@ def _write_hub_runtime_state(config: MLXHubConfig, pid: int) -> None:
 
 
 def _read_hub_runtime_state(config: MLXHubConfig) -> dict[str, object] | None:
-    """Return runtime state dict if valid and the process appears alive, otherwise None."""
+    """Return runtime state dict if valid and the process appears alive, otherwise None.
+
+    Parameters
+    ----------
+    config : MLXHubConfig
+        Hub configuration used to determine fallback port values.
+
+    Returns
+    -------
+    dict[str, object] | None
+        Parsed runtime state with keys ``pid``, ``host``, and ``port`` if present
+        and the referenced process appears to be running; otherwise ``None``.
+    """
     path = _runtime_state_path(config)
     try:
         if not path.exists():
@@ -1121,8 +1166,27 @@ def hub(
 def _start_hub_daemon(config: MLXHubConfig) -> subprocess.Popen[bytes] | None:
     """Start the hub daemon subprocess if not already running.
 
-    Returns the subprocess.Popen object if started, None if already running.
-    Raises click.ClickException on failure.
+    This will attempt a health check first; if the daemon is already running
+    the function returns ``None``. When starting a new process it launches
+    a background Uvicorn process and tails its stdout/stderr in background
+    threads.
+
+    Parameters
+    ----------
+    config : MLXHubConfig
+        Hub configuration used to determine host, port and source path.
+
+    Returns
+    -------
+    subprocess.Popen[bytes] | None
+        The started subprocess object if a new daemon was launched, or ``None``
+        if a daemon is already running.
+
+    Raises
+    ------
+    click.ClickException
+        If the daemon could not be started or did not become healthy within the
+        startup timeout.
     """
     # Check daemon availability
     try:
@@ -1169,7 +1233,17 @@ def _start_hub_daemon(config: MLXHubConfig) -> subprocess.Popen[bytes] | None:
 
         # Start background threads to log subprocess output
         def _log_output(stream: IO[bytes], level: str, prefix: str) -> None:
-            """Log output from subprocess stream."""
+            """Log output from subprocess stream.
+
+            Parameters
+            ----------
+            stream : IO[bytes]
+                Byte stream (stdout or stderr) from the subprocess.
+            level : str
+                Logging level to use for lines ('info', 'error', 'debug').
+            prefix : str
+                Prefix to prepend to each logged line (typically includes the PID).
+            """
             try:
                 for line in iter(stream.readline, b""):
                     line_str = line.decode("utf-8", errors="replace").rstrip()
@@ -1224,7 +1298,17 @@ def _start_hub_daemon(config: MLXHubConfig) -> subprocess.Popen[bytes] | None:
 
 
 def _auto_start_default_models(config: MLXHubConfig) -> None:
-    """Auto-start any models marked as default in the configuration."""
+    """Auto-start any models marked as default in the configuration.
+
+    The function requests a controller reload then iterates configured models
+    and requests process starts (or falls back to memory load for non-JIT
+    models) for those flagged as default.
+
+    Parameters
+    ----------
+    config : MLXHubConfig
+        Hub configuration containing model entries and defaults.
+    """
     try:
         # Refresh the controller state so it sees the latest config
         _call_daemon_api(config, "POST", "/hub/reload")

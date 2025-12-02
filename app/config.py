@@ -85,8 +85,8 @@ class MLXServerConfig:
         """Normalize certain CLI fields after instantiation.
 
         This method processes comma-separated LoRA paths and scales into lists,
-        applies model-type-specific defaults for config_name, validates auto-unload
-        settings, and normalizes log_level.
+        applies model-type-specific defaults for ``config_name``, validates
+        auto-unload settings, and normalizes logging level.
 
         Notes
         -----
@@ -97,6 +97,16 @@ class MLXServerConfig:
         - Validate that ``auto_unload_minutes`` requires ``jit_enabled`` to be True.
         - Validate that ``auto_unload_minutes`` is positive when set.
         - Normalize ``log_level`` to uppercase.
+
+        Parameters
+        ----------
+        None
+            This method operates on ``self`` and takes no parameters.
+
+        Returns
+        -------
+        None
+            This method mutates the instance in-place and does not return a value.
         """
         # Process comma-separated LoRA paths and scales into lists (or None)
         if self.lora_paths_str:
@@ -156,6 +166,16 @@ class MLXServerConfig:
     def model_identifier(self) -> str:
         """Get the appropriate model identifier based on model type.
 
-        For Flux models, we always use model_path (local directory path).
+        For Flux models, we always use ``model_path`` (local directory path).
+
+        Parameters
+        ----------
+        None
+            Property getter uses internal state and takes no arguments.
+
+        Returns
+        -------
+        str
+            The resolved model identifier to use for handler initialization.
         """
         return self.model_path

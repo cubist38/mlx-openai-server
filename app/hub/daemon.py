@@ -47,7 +47,19 @@ from .config import MLXHubConfig, MLXHubGroupConfig, load_hub_config
 
 
 def create_app_with_config(config_path: str) -> FastAPI:
-    """Create FastAPI app with specific config path (for uvicorn factory)."""
+    """Create FastAPI app with specific config path (for uvicorn factory).
+
+    Parameters
+    ----------
+    config_path : str
+        Path to the hub configuration YAML to pass to :func:`create_app`.
+
+    Returns
+    -------
+    FastAPI
+        Configured FastAPI application instance.
+    """
+
     return create_app(config_path)
 
 
@@ -78,6 +90,22 @@ class HubSupervisor:
         registry: ModelRegistry | None = None,
         idle_controller: Any = None,
     ) -> None:
+        """Initialize the HubSupervisor and populate model records.
+
+        Parameters
+        ----------
+        hub_config : MLXHubConfig
+            Parsed hub configuration containing model entries and group settings.
+        registry : ModelRegistry | None, optional
+            Optional model registry used to register and update model state.
+        idle_controller : Any, optional
+            Optional controller used to compute expected unload timestamps.
+
+        Notes
+        -----
+        The constructor validates duplicate model names and builds an initial
+        ``_models`` mapping of `ModelRecord` instances keyed by slug name.
+        """
         self.hub_config = hub_config
         self.registry = registry
         self.idle_controller = idle_controller
@@ -113,8 +141,17 @@ class HubSupervisor:
     def _remove_log_sink(self, record: ModelRecord, name: str) -> None:
         """Safely remove a per-model log sink if the manager exposes it.
 
-        The operation is best-effort and failures are logged at debug
-        level to avoid disturbing the shutdown flow.
+        Parameters
+        ----------
+        record : ModelRecord
+            The model record whose manager may expose a log sink removal API.
+        name : str
+            Slug name of the model (used for debug logging).
+
+        Notes
+        -----
+        This is a best-effort operation; failures are logged at debug level
+        and not propagated to callers to avoid disturbing shutdown flows.
         """
         try:
             if record.manager and hasattr(record.manager, "remove_log_sink"):
@@ -125,7 +162,15 @@ class HubSupervisor:
     def _check_group_constraints(self, model_name: str) -> bool:
         """Check if loading the given model would violate group max_loaded constraints.
 
-        Returns True if loading is allowed, False if it would violate constraints.
+        Parameters
+        ----------
+        model_name : str
+            Slug name of the target model to evaluate.
+
+        Returns
+        -------
+        bool
+            True if loading is allowed, False if it would violate group limits.
         """
         record = self._models[model_name]
         group_name = record.group
@@ -160,7 +205,18 @@ class HubSupervisor:
         return loaded_count < max_loaded
 
     def _get_group_config(self, group_name: str | None) -> MLXHubGroupConfig | None:
-        """Return the configured group definition for ``group_name`` if present."""
+        """Return the configured group definition for ``group_name`` if present.
+
+        Parameters
+        ----------
+        group_name : str | None
+            Name of the group to lookup. If ``None`` returns ``None``.
+
+        Returns
+        -------
+        MLXHubGroupConfig | None
+            The corresponding group config or ``None`` if not found.
+        """
         if not group_name:
             return None
         for group in getattr(self.hub_config, "groups", []):
@@ -169,14 +225,37 @@ class HubSupervisor:
         return None
 
     def _group_violation_error(self, model_name: str) -> HTTPException:
-        """Construct a standardized HTTPException for group capacity violations."""
+        """Construct a standardized HTTPException for group capacity violations.
+
+        Parameters
+        ----------
+        model_name : str
+            The model name for which capacity was requested.
+
+        Returns
+        -------
+        HTTPException
+            An exception configured with HTTP 409 and an explanatory detail.
+        """
         return HTTPException(
             status_code=409,
             detail=f"Loading model '{model_name}' would violate group max_loaded constraint",
         )
 
     async def _ensure_group_capacity(self, model_name: str) -> None:
-        """Ensure there is group capacity for ``model_name`` or raise HTTPException."""
+        """Ensure there is group capacity for ``model_name`` or raise HTTPException.
+
+        Parameters
+        ----------
+        model_name : str
+            Name of the model being requested for loading.
+
+        Raises
+        ------
+        HTTPException
+            If loading the model would violate group capacity and eviction
+            cannot free sufficient capacity.
+        """
         if self._check_group_constraints(model_name):
             return
 
@@ -204,7 +283,22 @@ class HubSupervisor:
         threshold_minutes: int,
         exclude: str,
     ) -> bool:
-        """Attempt to unload the longest-idle model meeting the threshold."""
+        """Attempt to unload the longest-idle model meeting the threshold.
+
+        Parameters
+        ----------
+        group_name : str
+            Group slug to evict from.
+        threshold_minutes : int
+            Minimum idle time in minutes a model must exceed to be considered.
+        exclude : str
+            Model name to exclude from eviction consideration.
+
+        Returns
+        -------
+        bool
+            True if an eviction occurred, False otherwise.
+        """
 
         threshold_seconds = max(threshold_minutes, 0) * 60
         candidates: list[tuple[float, ModelRecord]] = []
@@ -268,6 +362,24 @@ class HubSupervisor:
         """Load the model's handler.
 
         The supervisor will attempt to load the handler for the named model.
+
+        Parameters
+        ----------
+        name : str
+            Slug name of the model to start.
+
+        Returns
+        -------
+        dict[str, Any]
+            A status dictionary indicating the resulting action (e.g.,
+            ``{"status": "loaded"}`` or ``{"status": "started"}``).
+
+        Raises
+        ------
+        HTTPException
+            If the model is not defined in the supervisor or registry updates fail.
+        RuntimeError
+            If registry updates cannot be performed due to missing model id.
         """
         async with self._lock:
             if name not in self._models:
@@ -478,7 +590,20 @@ class HubSupervisor:
     async def acquire_handler(self, name: str, reason: str = "request") -> MLXHandler | None:
         """Acquire a handler for the given model name.
 
-        This is an alias for get_handler for compatibility with hub controller interface.
+        This is an alias for :meth:`get_handler` for compatibility with the hub
+        controller interface.
+
+        Parameters
+        ----------
+        name : str
+            The model name to acquire a handler for.
+        reason : str, default "request"
+            Context string passed to :meth:`get_handler`.
+
+        Returns
+        -------
+        MLXHandler | None
+            The acquired handler or ``None`` if unavailable.
         """
         return await self.get_handler(name, reason)
 
@@ -486,6 +611,21 @@ class HubSupervisor:
         """Ensure a model's handler is loaded into memory.
 
         This loads the handler if not already loaded.
+
+        Parameters
+        ----------
+        name : str
+            Slug name of the model to load.
+
+        Returns
+        -------
+        dict[str, Any]
+            Status dict indicating the load outcome.
+
+        Raises
+        ------
+        HTTPException
+            If the model is not found or manager is uninitialized.
         """
         async with self._lock:
             if name not in self._models:
@@ -535,6 +675,16 @@ class HubSupervisor:
         """Unload a model's handler from memory.
 
         This unloads the handler if loaded.
+
+        Parameters
+        ----------
+        name : str
+            Slug name of the model to unload.
+
+        Returns
+        -------
+        dict[str, Any]
+            Status dict indicating the unload outcome.
         """
         async with self._lock:
             if name not in self._models:
@@ -567,7 +717,13 @@ class HubSupervisor:
         """Reload the hub configuration and reconcile models.
 
         This implementation performs a best-effort reload: it replaces the
-        in-memory hub_config and returns a simple diff.
+        in-memory ``hub_config`` and returns a simple diff describing started,
+        stopped, and unchanged models.
+
+        Returns
+        -------
+        dict[str, Any]
+            A dictionary with keys ``started``, ``stopped``, and ``unchanged``.
         """
         new_hub = load_hub_config(self.hub_config.source_path)
         old_names = set(self._models.keys())
@@ -713,13 +869,13 @@ class HubSupervisor:
     async def get_status(self) -> dict[str, Any]:
         """Return a serializable snapshot of supervisor state.
 
-        The returned dict includes a `timestamp` and a `models` list where
+        The returned dict includes a ``timestamp`` and a ``models`` list where
         each model object contains keys used by the CLI and status UI.
 
-        This method briefly acquires ``self._lock`` to take a shallow copy of
-        the internal ``_models`` mapping (snapshot semantics). The lock is
-        released immediately so callers build the returned dict from the
-        copy without holding the lock for the duration of formatting.
+        Returns
+        -------
+        dict[str, Any]
+            Snapshot payload containing model runtime summaries and group info.
         """
         snapshot: dict[str, Any] = {
             "timestamp": time.time(),
@@ -825,11 +981,23 @@ class HubSupervisor:
         return snapshot
 
     def add_background_task(self, task: asyncio.Task[None]) -> None:
-        """Add a background task to be tracked by the supervisor."""
+        """Add a background task to be tracked by the supervisor.
+
+        Parameters
+        ----------
+        task : asyncio.Task[None]
+            Task to track; it will be removed when completed via callbacks.
+        """
         self._bg_tasks.append(task)
 
     def remove_background_task(self, task: asyncio.Task[None]) -> None:
-        """Remove a background task from tracking."""
+        """Remove a background task from tracking.
+
+        Parameters
+        ----------
+        task : asyncio.Task[None]
+            Task previously added with :meth:`add_background_task`.
+        """
         self._bg_tasks.remove(task)
 
     async def shutdown_all(self) -> None:
@@ -849,7 +1017,27 @@ class HubSupervisor:
 
 
 async def _schedule_default_model_starts(supervisor: HubSupervisor) -> None:
-    """Schedule auto-start tasks for default models."""
+    """Schedule auto-start tasks for default models.
+
+    Parameters
+    ----------
+    supervisor : HubSupervisor
+        Supervisor instance used to start model handlers and track background
+        tasks.
+
+    Returns
+    -------
+    None
+        This function schedules asynchronous background tasks and does not
+        return a value.
+
+    Notes
+    -----
+    The function iterates configured models and schedules an auto-start task
+    for each model marked as a default. Errors during scheduling or during
+    individual auto-start attempts are logged and do not interrupt other
+    scheduling operations.
+    """
     try:
         # Iterate the configured models so we can read their JIT flag
         for model in getattr(supervisor.hub_config, "models", []):
