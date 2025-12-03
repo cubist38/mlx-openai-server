@@ -14,7 +14,7 @@ def test_launch_mode_exposes_only_v1_routes() -> None:
 
     # `/v1/models` should exist and respond (list of models endpoint)
     resp = client.get("/v1/models")
-    assert resp.status_code in (200, 404) or resp.status_code // 100 == 2
+    assert resp.status_code // 100 == 2, f"Expected 2xx for /v1/models, got {resp.status_code}"
 
     # `/hub/status` must NOT be present in launch mode
     resp = client.get("/hub/status")
@@ -34,4 +34,4 @@ def test_hub_mode_exposes_hub_and_v1_routes() -> None:
     # `/hub/status` should be registered; since supervisor isn't set in this test
     # the canonical handler may return 500 or 422, but it should not be 404 (not found).
     resp = client.get("/hub/status")
-    assert resp.status_code != 404
+    assert resp.status_code // 100 == 2, f"Expected 2xx for /v1/models, got {resp.status_code}"

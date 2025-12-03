@@ -162,8 +162,30 @@ def _retain_task(task: asyncio.Task[Any]) -> None:
     _background_tasks.add(task)
 
     def _on_done(t: asyncio.Task[Any]) -> None:
+        # Always remove the finished task from the tracking set. Use a
+        # suppress block to avoid cascading errors during cleanup.
         with contextlib.suppress(Exception):
             _background_tasks.discard(t)
+
+        # Surface cancellations and exceptions so failures are visible in logs.
+        # Use narrow handling and suppress any errors from the logger itself
+        # to avoid causing further failures in the done-callback.
+        if t.cancelled():
+            with contextlib.suppress(Exception):
+                logger.warning(f"Background task cancelled: {t!r}")
+            return
+
+        try:
+            exc = t.exception()
+        except asyncio.CancelledError:
+            # Already handled by t.cancelled() above; nothing further to do.
+            return
+
+        if exc is not None:
+            with contextlib.suppress(Exception):
+                logger.warning(
+                    f"Background task raised exception: {t!r} -> {type(exc).__name__}: {exc}"
+                )
 
     task.add_done_callback(_on_done)
 

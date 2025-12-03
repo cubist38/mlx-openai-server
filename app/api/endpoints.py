@@ -235,6 +235,14 @@ def _resolve_model_for_openai_api(
         controller name used to acquire handlers (or ``None`` on error),
         and ``error_response`` is a ``JSONResponse`` when validation or
         availability checks failed (otherwise ``None``).
+
+    Notes
+    -----
+    The runtime set returned by ``get_running_hub_models(raw_request)`` may
+    contain either controller-facing handler names (slugs) or registry
+    model IDs/paths depending on mode (in-process daemon vs remote-server).
+    To avoid rejecting valid started models we accept a match against either
+    the resolved handler name or the resolved API model id.
     """
     normalized = (model_name or "").strip() or None
     controller = getattr(raw_request.app.state, "hub_controller", None)
@@ -275,8 +283,19 @@ def _resolve_model_for_openai_api(
     # Validate that the handler is running if we can query running models
     running_models = get_running_hub_models(raw_request)
     if running_models is not None:
-        # running_models contains hub names; ensure mapped_handler is started
-        if mapped_handler not in running_models:
+        # running_models may contain either handler names (slugs) or registry ids/paths.
+        # Accept a match against either the resolved handler name or the api model id
+        # to be tolerant across daemon vs remote-server identifier spaces.
+        matches_running = False
+        try:
+            if mapped_handler and mapped_handler in running_models:
+                matches_running = True
+            if not matches_running and mapped_api_id and mapped_api_id in running_models:
+                matches_running = True
+        except Exception:  # pragma: no cover - defensive in case running_models is non-iterable
+            matches_running = False
+
+        if not matches_running:
             return (
                 None,
                 None,

@@ -1111,6 +1111,27 @@ def create_app(hub_config_path: str | None = None) -> FastAPI:
 
     hub_config = load_hub_config(hub_config_path)
 
+    # Cache the loaded hub configuration on the FastAPI app state so
+    # in-process endpoints resolve the same hub config path that the
+    # daemon started with. This prevents mismatches when the daemon
+    # and the in-process API use different resolution heuristics.
+    try:
+        app.state.server_config = hub_config
+        # Also store the resolved path when available for compatibility with
+        # other resolution helpers that prefer a Path on ``app.state``.
+        try:
+            resolved_path = getattr(hub_config, "source_path", None) or hub_config_path
+            if resolved_path is not None:
+                app.state.hub_config_path = Path(resolved_path)
+        except Exception:
+            # Best-effort: do not fail startup due to state caching issues
+            pass
+    except Exception:
+        # Avoid letting state caching errors stop the daemon; log at debug
+        # level and continue with the loaded config.
+        with suppress(Exception):
+            logger.debug("Failed to cache hub config on app.state")
+
     # Ensure hub log path exists and configure logging for hub-level logs
     # Prefer the configured hub log path; fall back to DEFAULT_HUB_LOG_PATH
     try:
