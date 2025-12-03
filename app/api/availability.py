@@ -95,9 +95,16 @@ def guard_model_availability(
             return None
         if registry.is_model_available(model_id):
             return None
-    except Exception as exc:  # pragma: no cover - defensive logging
-        logger.debug(
-            f"Availability check failed for '{model_id}'. {type(exc).__name__}: {exc}",
+    except (
+        KeyError,
+        AttributeError,
+    ) as exc:  # Expected when model is not present or registry stub lacks methods
+        # Log at warning level to surface registry lookup issues. We intentionally
+        # fall back to "allow" semantics when registry lookups fail so that
+        # transient registry problems do not block requests; unexpected
+        # exceptions should propagate to surface real bugs.
+        logger.warning(
+            f"Availability check could not complete for '{model_id}': {type(exc).__name__}: {exc}",
         )
         return None
 

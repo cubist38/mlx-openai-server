@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+import re
 
 import pytest
 
@@ -93,7 +94,8 @@ def test_print_hub_status_prefers_live_group_members(
     _print_hub_status(cfg, live_status=live)
     output = capsys.readouterr().out
     assert "LOADED" in output
-    assert "tier | 1   | 5min        | 2" in output
+    # Use a regex to match the group summary row allowing flexible whitespace
+    assert re.search(r"tier\s*\|\s*1\s*\|\s*5min\s*\|\s*2", output)
 
 
 def test_print_watch_snapshot_handles_empty(capsys: pytest.CaptureFixture[str]) -> None:

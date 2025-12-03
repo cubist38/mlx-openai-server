@@ -113,4 +113,5 @@ For more implementation details, inspect:
 - `app/hub/manager.py` – Process orchestration, group accounting, observability events.
 - `app/hub/daemon.py` – FastAPI-based hub daemon, process supervision, and HTTP control plane.
 - `app/hub/service.py` – (removed) legacy IPC service. The daemon replaces this component; do not rely on the IPC shim.
+- `app/hub/service.py` – removed (legacy IPC service; replaced by the hub daemon).
 - `app/api/hub_routes.py` – FastAPI endpoints powering `/hub`, `/hub/status`, and service/model controls.

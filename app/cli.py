@@ -158,7 +158,7 @@ def _controller_base_url(config: MLXHubConfig) -> str:
         if isinstance(rt_port, (int, str)):
             try:
                 port = int(rt_port)
-            except Exception:
+            except (TypeError, ValueError):
                 port = int(config.port or DEFAULT_PORT)
         else:
             port = int(config.port or DEFAULT_PORT)
@@ -186,7 +186,7 @@ def _runtime_state_path(config: MLXHubConfig) -> Path:
         log_dir = (
             Path(config.log_path) if getattr(config, "log_path", None) else Path.cwd() / "logs"
         )
-    except Exception:
+    except (TypeError, ValueError, OSError):
         log_dir = Path.cwd() / "logs"
     return log_dir / "hub_runtime.json"
 
@@ -219,7 +219,7 @@ def _write_hub_runtime_state(config: MLXHubConfig, pid: int) -> None:
         }
         path.write_text(json.dumps(payload))
         logger.debug(f"Wrote hub runtime state to {path}")
-    except Exception as e:  # pragma: no cover - best-effort logging
+    except (OSError, TypeError, ValueError) as e:  # pragma: no cover - best-effort logging
         logger.warning(f"Failed to write hub runtime state to {path}. {type(e).__name__}: {e}")
 
 
@@ -250,9 +250,9 @@ def _read_hub_runtime_state(config: MLXHubConfig) -> dict[str, object] | None:
         else:
             try:
                 port = int(raw_port)
-            except Exception:
+            except (TypeError, ValueError):
                 port = int(config.port or DEFAULT_PORT)
-    except Exception:
+    except (OSError, json.JSONDecodeError, TypeError, ValueError):
         return None
 
     # Check PID alive (best-effort)
@@ -261,7 +261,7 @@ def _read_hub_runtime_state(config: MLXHubConfig) -> dict[str, object] | None:
         # os.kill with signal 0 raises OSError if process does not exist
         os.kill(pid, 0)
         pid_alive = True
-    except Exception:
+    except OSError:
         pid_alive = False
 
     if not pid_alive:
@@ -391,7 +391,7 @@ def _format_model_row(
     # based on the memory_state field from runtime metadata.
     if memory_flag and model.auto_unload_minutes:
         if unload_timestamp is not None:
-            unload_time = datetime.datetime.fromtimestamp(unload_timestamp)
+            unload_time = datetime.datetime.fromtimestamp(unload_timestamp, datetime.UTC)
             loaded_in_memory = f"yes (unload {unload_time.strftime('%Y-%m-%d %H:%M:%S')})"
         else:
             loaded_in_memory = "yes"
@@ -1254,7 +1254,7 @@ def _start_hub_daemon(config: MLXHubConfig) -> subprocess.Popen[bytes] | None:
                             logger.error(f"{prefix}: {line_str}")
                         else:
                             logger.debug(f"{prefix}: {line_str}")
-            except Exception as e:
+            except (OSError, UnicodeDecodeError) as e:
                 logger.warning(f"Error reading subprocess {prefix} output: {e}")
 
         # Start threads to read stdout and stderr
@@ -1279,7 +1279,7 @@ def _start_hub_daemon(config: MLXHubConfig) -> subprocess.Popen[bytes] | None:
             stderr_thread.start()
 
         click.echo(f"Hub manager process started (PID: {proc.pid})")
-    except Exception as e:
+    except (OSError, ValueError, subprocess.SubprocessError) as e:
         raise click.ClickException(f"Failed to start hub manager: {e}") from e
 
     # Wait for daemon to become available
@@ -1363,7 +1363,7 @@ def hub_start(ctx: click.Context, model_names: tuple[str, ...]) -> None:
         # Persist runtime state for other CLI invocations to find this daemon
         try:
             _write_hub_runtime_state(config, proc.pid)
-        except Exception:
+        except (OSError, TypeError, ValueError):
             # Best-effort; do not fail start if writing runtime state fails
             logger.debug("Failed to write hub runtime state after start")
 

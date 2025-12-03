@@ -112,9 +112,18 @@ def configure_logging(
     # (they will be written to per-model log files instead).
     def _global_filter(record: dict[str, Any]) -> bool:  # pragma: no cover - tiny helper
         try:
-            return record.get("extra", {}).get("model") is None
-        except Exception:
-            return True
+            extra = record.get("extra", {})
+            # If the extra payload is not a dict, be conservative and
+            # exclude the record from global sinks to avoid leaking
+            # model-specific logs.
+            if not isinstance(extra, dict):
+                return False
+            return extra.get("model") is None
+        except (KeyError, TypeError):
+            # Narrow exception handling: on unexpected shapes, default to
+            # False to avoid sending potentially model-tagged logs to the
+            # global sinks.
+            return False
 
     logger.add(
         sys.stdout,
@@ -251,7 +260,8 @@ async def instantiate_handler(config_args: MLXServerConfig) -> MLXHandler:
 
     try:
         # Run handler creation in thread pool to avoid blocking event loop
-        handler = await asyncio.get_event_loop().run_in_executor(
+        loop = asyncio.get_running_loop()
+        handler = await loop.run_in_executor(
             None, _create_handler_sync, config_args, model_identifier
         )
 

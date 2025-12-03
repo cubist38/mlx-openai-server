@@ -289,9 +289,11 @@ brew install ffmpeg
 **Issue:** My OS and Python versions meet the requirements, but `pip` cannot find a matching distribution.
 
 **Cause:** You might be using a non-native Python version. Run the following command to check:
+
 ```bash
 python -c "import platform; print(platform.processor())"
 ```
+
 If the output is `i386` (on an M-series machine), you are using a non-native Python. Switch to a native Python version. A good approach is to use [Conda](https://stackoverflow.com/questions/65415996/how-to-specify-the-architecture-or-platform-for-a-new-conda-environment-apple).
 
 ## Usage
@@ -299,13 +301,14 @@ If the output is `i386` (on an M-series machine), you are using a non-native Pyt
 ### Hub vs Launch Modes
 
 - **Launch mode (single-model)**: When you start the server in the normal/launch mode it exposes only the OpenAI-compatible API surface under `/v1/...` (chat, embeddings, images, etc.). This keeps the single-model process focused on inference and doesn't expose the hub admin controls.
-- **Hub (daemon) mode**: When running the hub daemon (the supervisor/process manager), the server exposes both the `/v1/...` inference endpoints and the `/hub/...` admin/control endpoints. 
+- **Hub (daemon) mode**: When running the hub daemon (the supervisor/process manager), the server exposes both the `/v1/...` inference endpoints and the `/hub/...` admin/control endpoints.
 
 ### Starting the Server
 
 You can start the MLX server using either the Python module or the CLI command. Both methods support the same parameters, including logging configuration options.
 
 #### Method 1: Python Module
+
 ```bash
 # For text-only or multimodal models
 python -m app.main \
@@ -366,6 +369,7 @@ python -m app.main \
 ```
 
 #### Method 2: CLI Command
+
 ```bash
 # For text-only or multimodal models
 mlx-openai-server launch \
@@ -405,7 +409,6 @@ mlx-openai-server launch \
   --config-name flux-dev \
   --lora-paths "/path/to/lora1.safetensors,/path/to/lora2.safetensors" \
   --lora-scales "0.8,0.6" \
-
 ```
 
 #### Enabling JIT Loading & Auto-Unload
@@ -482,6 +485,7 @@ The following parsers are available for both tool call and reasoning parsing:
 #### Usage Examples
 
 **Basic usage without parsers (default):**
+
 ```bash
 mlx-openai-server launch \
   --model-path /path/to/model \
@@ -489,6 +493,7 @@ mlx-openai-server launch \
 ```
 
 **With tool call parser only:**
+
 ```bash
 mlx-openai-server launch \
   --model-path /path/to/model \
@@ -497,6 +502,7 @@ mlx-openai-server launch \
 ```
 
 **With both parsers:**
+
 ```bash
 mlx-openai-server launch \
   --model-path /path/to/model \
@@ -506,6 +512,7 @@ mlx-openai-server launch \
 ```
 
 **With auto tool choice enabled:**
+
 ```bash
 mlx-openai-server launch \
   --model-path /path/to/model \
@@ -516,6 +523,7 @@ mlx-openai-server launch \
 ```
 
 **Using Harmony parser (unified parser):**
+
 ```bash
 mlx-openai-server launch \
   --model-path /path/to/model \
@@ -529,6 +537,7 @@ mlx-openai-server launch \
 #### Example Configurations
 
 **Text-only model:**
+
 ```bash
 python -m app.main \
   --model-path mlx-community/gemma-3-4b-it-4bit \
@@ -540,6 +549,7 @@ python -m app.main \
 ```
 
 **Multimodal model:**
+
 ```bash
 python -m app.main \
   --model-path mlx-community/llava-phi-3-vision-4bit \
@@ -551,6 +561,7 @@ python -m app.main \
 ```
 
 **Model with trust_remote_code enabled:**
+
 ```bash
 python -m app.main \
   --model-path <path-to-model-requiring-custom-code> \
@@ -564,6 +575,7 @@ python -m app.main \
 **Image generation models:**
 
 *Fast generation with Schnell:*
+
 ```bash
 python -m app.main \
   --model-type image-generation \
@@ -576,6 +588,7 @@ python -m app.main \
 ```
 
 *High-quality generation with Dev:*
+
 ```bash
 python -m app.main \
   --model-type image-generation \
@@ -588,6 +601,7 @@ python -m app.main \
 ```
 
 *Premium quality with Krea-Dev:*
+
 ```bash
 python -m app.main \
   --model-type image-generation \
@@ -600,6 +614,7 @@ python -m app.main \
 ```
 
 *Image editing with Kontext:*
+
 ```bash
 python -m app.main \
   --model-type image-edit \
@@ -612,6 +627,7 @@ python -m app.main \
 ```
 
 *With LoRA adapters (image generation only):*
+
 ```bash
 python -m app.main \
   --model-type image-generation \
@@ -628,6 +644,7 @@ python -m app.main \
 **Whisper models:**
 
 *Audio transcription with Whisper:*
+
 ```bash
 python -m app.main \
   --model-type whisper \
@@ -642,6 +659,7 @@ python -m app.main \
 The server provides a convenient CLI interface for easy startup and management:
 
 **Check version and help:**
+
 ```bash
 mlx-openai-server --version
 mlx-openai-server --help
@@ -649,6 +667,7 @@ mlx-openai-server launch --help
 ```
 
 **Launch the server:**
+
 ```bash
 # For text-only or multimodal models
 mlx-openai-server launch --model-path <path-to-mlx-model> --model-type <lm|multimodal> --context-length 8192
@@ -814,6 +833,7 @@ Port allocation note
 - When a model omits the `port` field, the hub assigns sequential ports starting at `model_starting_port` (default `47850`). Busy ports are skipped automatically.
 
 Example `hub.yaml`
+
 ```yaml
 host: 0.0.0.0
 port: 5005
@@ -882,6 +902,7 @@ endpoints listed above (`/hub/models/{model}/start`, `/hub/models/{model}/stop`,
 `/hub/models/{model}/unload`).
 
 CLI usage
+
 ```bash
 # Show hub status (reads hub.yaml by default unless --config is provided)
 mlx-openai-server hub status
@@ -911,6 +932,7 @@ Web status page
 The server provides OpenAI-compatible endpoints that you can use with standard OpenAI client libraries. Here are some examples:
 
 #### Text Completion
+
 ```python
 import openai
 
@@ -930,6 +952,7 @@ print(response.choices[0].message.content)
 ```
 
 #### Multimodal Model (Vision + Audio)
+
 ```python
 import openai
 import base64
@@ -964,6 +987,7 @@ print(response.choices[0].message.content)
 ```
 
 #### Audio Input Support
+
 ```python
 import openai
 import base64
@@ -1032,6 +1056,7 @@ image.show()
 ```
 
 #### Advanced Image Generation with Custom Parameters
+
 ```python
 import requests
 
@@ -1102,6 +1127,7 @@ image.show()
 ```
 
 #### Advanced Image Editing with Custom Parameters
+
 ```python
 import requests
 
@@ -1148,6 +1174,7 @@ if response.status_code == 200:
 > **Note:** Image editing requires running the server with `--model-type image-edit` and manual installation of `mflux`: `pip install git+https://github.com/cubist38/mflux.git`. The server uses MLX Flux-series models for high-quality image editing with configurable quality/speed trade-offs.
 
 #### Function Calling
+
 ```python
 import openai
 
@@ -1291,6 +1318,7 @@ print(json.dumps(parsed_address, indent=2))
   - `schema`: The actual JSON schema definition with properties, types, and requirements
 
 **Example Response:**
+
 ```json
 {
   "address": {
@@ -1307,6 +1335,7 @@ print(json.dumps(parsed_address, indent=2))
 #### Embeddings
 
 1. Text-only model embeddings:
+
 ```python
 import openai
 
@@ -1335,6 +1364,7 @@ print(f"Number of embeddings: {len(batch_response.data)}")
 ```
 
 2. Multimodal model embeddings:
+
 ```python
 import openai
 import base64
@@ -1407,6 +1437,7 @@ curl http://localhost:8000/v1/queue/stats
 ```
 
 Example response:
+
 ```json
 {
   "status": "ok",
@@ -1425,6 +1456,7 @@ Example response:
 The queue system handles various error conditions:
 
 1. **Queue Full (429)**: When the queue reaches its maximum size
+
 ```json
 {
   "detail": "Too many requests. Service is at capacity."
@@ -1432,6 +1464,7 @@ The queue system handles various error conditions:
 ```
 
 2. **Request Timeout**: When a request exceeds the configured timeout
+
 ```json
 {
   "detail": "Request processing timed out after 300 seconds"
@@ -1439,6 +1472,7 @@ The queue system handles various error conditions:
 ```
 
 3. **Model Errors**: When the model encounters an error during inference
+
 ```json
 {
   "detail": "Failed to generate response: <error message>"
@@ -1448,6 +1482,7 @@ The queue system handles various error conditions:
 ### Streaming Responses
 
 The server supports streaming responses with proper chunk formatting:
+
 ```python
 {
     "id": "chatcmpl-1234567890",
@@ -1771,6 +1806,7 @@ When using models that are large relative to your system's available RAM, perfor
 If you see the following warning message:
 > [WARNING] Generating with a model that requires ...
 it means the model may run slowly on your machine. If the model fits in RAM, you can often improve performance by raising the system's wired memory limit. To do this, run:
+
 ```bash
 bash configure_mlx.sh
 ```
@@ -1782,25 +1818,33 @@ We welcome contributions to improve this project! Whether you're fixing bugs, ad
 ### 🚀 Quick Start
 1. **Fork** the repository to your GitHub account
 2. **Clone** your fork locally:
+
     ```bash
     git clone https://github.com/YOUR_USERNAME/mlx-openai-server.git
     cd mlx-openai-server
     ```
+
 3. **Create** a new branch for your changes:
+
     ```bash
     git checkout -b feature/your-feature-name
     ```
+
 4. **Make** your changes and test them thoroughly
 5. **Commit** with clear, descriptive messages:
+
     ```bash
     git commit -m "feat: add new model support"
     git commit -m "fix: resolve audio processing issue"
     git commit -m "docs: update installation guide"
     ```
+
 6. **Push** to your fork:
+
     ```bash
     git push origin feature/your-feature-name
     ```
+    
 7. **Open** a pull request with a detailed description
 
 ### 📋 Contribution Guidelines
