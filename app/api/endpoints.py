@@ -1,5 +1,6 @@
 """API endpoints for the MLX OpenAI server."""
 
+import asyncio
 import base64
 from collections.abc import AsyncGenerator
 from http import HTTPStatus
@@ -467,7 +468,25 @@ async def models(raw_request: Request) -> ModelsResponse | JSONResponse:
                         # Update other VRAM fields if available
                         if supervisor_model.get("unload_timestamp"):
                             metadata["vram_last_unload_ts"] = supervisor_model["unload_timestamp"]
-                        # Note: vram_last_request_ts would need to be tracked separately
+                        if supervisor_model.get("last_activity_ts"):
+                            metadata["vram_last_request_ts"] = supervisor_model["last_activity_ts"]
+                            # Also update the registry metadata for availability calculations
+                            if model_path is not None:
+                                registry_metadata_updates = {
+                                    "vram_last_request_ts": int(
+                                        supervisor_model["last_activity_ts"]
+                                    )
+                                }
+                                if supervisor_model.get("unload_timestamp"):
+                                    registry_metadata_updates["vram_last_unload_ts"] = int(
+                                        supervisor_model["unload_timestamp"]
+                                    )
+                                # Update registry asynchronously (don't wait for it)
+                                asyncio.create_task(
+                                    registry.update_model_state(
+                                        model_path, metadata_updates=registry_metadata_updates
+                                    )
+                                )
 
             available_ids = registry.get_available_model_ids()
             models_data = [model for model in models_data if model.get("id") in available_ids]

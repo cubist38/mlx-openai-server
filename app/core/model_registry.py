@@ -151,6 +151,14 @@ class ModelRegistry:
 
         if self._available_model_ids is None:
             return set(self._handlers.keys())
+
+        # Check if the availability snapshot is stale (older than 10 seconds)
+        # This ensures idle time-based availability is updated periodically
+        if self._availability_snapshot_ts is not None:
+            now = time.time()
+            if now - self._availability_snapshot_ts > 10.0:
+                self._recompute_group_availability()
+
         return set(self._available_model_ids)
 
     def is_model_available(self, model_id: str) -> bool:

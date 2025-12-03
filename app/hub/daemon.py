@@ -913,6 +913,7 @@ class HubSupervisor:
             is_vram_loaded = cast("bool", item["is_vram_loaded"])
 
             unload_timestamp = None
+            last_activity_ts = None
             if is_vram_loaded and rec.auto_unload_minutes:
                 # Get unload timestamp from the idle controller if available
                 if self.idle_controller and hasattr(
@@ -921,6 +922,14 @@ class HubSupervisor:
                     # Use model_path as the registry model_id, fallback to name if not available
                     model_id = rec.model_path or name
                     unload_timestamp = self.idle_controller.get_expected_unload_timestamp(model_id)
+
+            # Get last activity timestamp from the manager
+            if manager and hasattr(manager, "seconds_since_last_activity"):
+                try:
+                    seconds_since_activity = manager.seconds_since_last_activity()
+                    last_activity_ts = time.time() - seconds_since_activity
+                except Exception:
+                    last_activity_ts = None
 
             state = "running" if manager else "stopped"
             snapshot["models"].append(
@@ -937,6 +946,7 @@ class HubSupervisor:
                     "model_path": rec.model_path,
                     "auto_unload_minutes": rec.auto_unload_minutes,
                     "unload_timestamp": unload_timestamp,
+                    "last_activity_ts": last_activity_ts,
                 },
             )
 
