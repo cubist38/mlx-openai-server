@@ -22,15 +22,6 @@ echo "Found the following processes:"
 echo "$matches"
 echo
 
-# Collect PIDs (space-separated)
-# Build an array of PIDs from the matches to avoid word-splitting issues
-read -r -a pid_array <<< "$(echo "$matches" | awk '{print $1}')"
-if [ ${#pid_array[@]} -eq 0 ]; then
-  echo "No PIDs found. Exiting."
-  exit 0
-fi
-
-echo "PIDs: ${pid_array[*]}"
 read -r -p "Kill these processes? [y/N]: " confirm
 case "$confirm" in
   [Yy]) ;;
@@ -41,28 +32,16 @@ case "$confirm" in
 esac
 
 # Try graceful shutdown first
-echo "Sending SIGTERM to: ${pid_array[*]}"
-for pid in "${pid_array[@]}"; do
-  if kill -0 "$pid" 2>/dev/null; then
-    kill -TERM "$pid" 2>/dev/null || echo "Failed to SIGTERM $pid"
-  else
-    echo "Process $pid not running"
-  fi
-done
+echo "Sending SIGTERM to processes matching: $PATTERN"
+pkill -TERM -f "$PATTERN" 2>/dev/null || echo "Failed to SIGTERM some processes"
 
 # Wait up to TIMEOUT seconds for processes to exit
 TIMEOUT=10
 echo "Waiting up to $TIMEOUT seconds for processes to exit..."
 count=$TIMEOUT
 while [ $count -gt 0 ]; do
-  alive=false
-  for pid in "${pid_array[@]}"; do
-    if kill -0 "$pid" 2>/dev/null; then
-      alive=true
-      break
-    fi
-  done
-  if [ "$alive" = false ]; then
+  remaining=$(pgrep -af -- "$PATTERN" 2>/dev/null || true)
+  if [ -z "$remaining" ]; then
     echo "All processes exited cleanly."
     exit 0
   fi
@@ -71,12 +50,7 @@ while [ $count -gt 0 ]; do
 done
 
 # Escalate to SIGKILL for any remaining
-echo "Timed out waiting for graceful exit; sending SIGKILL to remaining PIDs"
-for pid in "${pid_array[@]}"; do
-  if kill -0 "$pid" 2>/dev/null; then
-    echo "KILL $pid"
-    kill -KILL "$pid" 2>/dev/null || echo "Failed to KILL $pid"
-  fi
-done
+echo "Timed out waiting for graceful exit; sending SIGKILL to remaining processes"
+pkill -KILL -f "$PATTERN" 2>/dev/null || echo "Failed to KILL some processes"
 
 echo "Done. Re-run the script or use 'pgrep -af \"$PATTERN\"' to verify no matching processes remain."
