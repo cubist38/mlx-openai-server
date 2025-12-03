@@ -511,15 +511,26 @@
             flash.textContent = message;
             flash.className = `flash flash--${tone}`;
             flash.hidden = false;
+            if (flashTimeoutId) {
+                clearTimeout(flashTimeoutId);
+            }
+            flashTimeoutId = setTimeout(() => {
+                flash.hidden = true;
+            }, 4000);
         }
 
         function clearFlash() {
             const flash = document.getElementById('flash-banner');
             flash.hidden = true;
             flash.textContent = '';
+            if (flashTimeoutId) {
+                clearTimeout(flashTimeoutId);
+                flashTimeoutId = null;
+            }
         }
 
         let toastTimeoutId;
+        let flashTimeoutId;
         let serviceListenerAttached = false;
         function showToast(message, tone = 'success') {
             const toast = document.getElementById('toast');

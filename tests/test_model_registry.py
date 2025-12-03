@@ -360,3 +360,52 @@ def test_available_model_ids_return_cached_snapshot_copy() -> None:
         assert registry.is_model_available("beta") is False
 
     asyncio.run(_test())
+
+
+def test_idle_trigger_shows_models_after_stale_snapshot() -> None:
+    """Models should be listed when idle time exceeds threshold, even after snapshot staleness."""
+
+    async def _test() -> None:
+        registry = ModelRegistry()
+        for name in ("alpha", "beta"):
+            registry.register_model(
+                model_id=name,
+                handler=None,
+                model_type="lm",
+                metadata_extras={"group": "shared"},
+            )
+
+        # Set up group policy with idle trigger
+        registry.set_group_policies({"shared": {"max_loaded": 1, "idle_unload_trigger_min": 1}})
+
+        now = time.time()
+        # Load alpha and set recent activity (not idle)
+        await registry.update_model_state(
+            "alpha",
+            metadata_updates={"vram_loaded": True, "vram_last_request_ts": int(now)},
+        )
+        await registry.update_model_state("beta", metadata_updates={"vram_loaded": False})
+
+        # Initially, only loaded models should be available
+        assert registry.is_model_available("alpha") is True
+        assert registry.is_model_available("beta") is False
+
+        # Simulate alpha becoming idle by updating its last request time
+        await registry.update_model_state(
+            "alpha",
+            metadata_updates={"vram_last_request_ts": int(now - 120)},  # 2 minutes ago
+        )
+
+        # Force recomputation by making snapshot stale
+        # Set the snapshot timestamp to be old
+        registry._availability_snapshot_ts = now - 15  # 15 seconds ago, > 10 second threshold
+
+        # Now calling get_available_model_ids should recompute and show beta as available
+        assert registry.is_model_available("beta") is True
+
+        # Verify the snapshot was updated
+        snapshots = registry.get_group_snapshots()
+        assert "alpha" in snapshots["shared"]["idle_eligible"]
+        assert snapshots["shared"]["mode"] == "all"
+
+    asyncio.run(_test())
