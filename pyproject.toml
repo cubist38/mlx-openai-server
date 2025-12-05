@@ -70,8 +70,8 @@ enhanced-caching = ["spacy", "regex", "tiktoken", "torch", "transformers"]
 where = ["."]
 include = ["app*"]
 
-[tool.setuptools.package-dir]
-mlx_openai_server = "app"
+[tool.setuptools.package-data]
+app = ["py.typed"]
 
 [tool.setuptools.dynamic]
 version = { attr = "app.version.__version__" }
@@ -80,7 +80,7 @@ version = { attr = "app.version.__version__" }
 Homepage = "https://github.com/cubist38/mlx-openai-server"
 
 [project.scripts]
-mlx-openai-server = "mlx_openai_server.cli:cli"
+mlx-openai-server = "app.cli:cli"
 
 [build-system]
 requires = ["setuptools>=77.0"]
