@@ -363,7 +363,7 @@ class ImageGenerationRequest(OpenAIBaseModel):
     model: Optional[str] = Field(default=Config.IMAGE_GENERATION_MODEL, description="The model to use for image generation")
     size: Optional[ImageSize] = Field(default=ImageSize.LARGE, description="The size of the generated images")
     guidance_scale: Optional[float] = Field(default=4.5, description="The guidance scale for the image generation")
-    steps: Optional[int] = Field(default=28, ge=1, le=50, description="The number of inference steps (1-50)")
+    steps: Optional[int] = Field(default=4, ge=1, le=50, description="The number of inference steps (1-50)")
     seed: Optional[int] = Field(42, description="Seed for reproducible generation")
     response_format: Optional[ImageResponseFormat] = Field(default=ImageResponseFormat.B64_JSON, description="The format in which the generated images are returned")
 
