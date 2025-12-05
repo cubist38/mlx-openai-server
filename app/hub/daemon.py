@@ -8,6 +8,12 @@ may mock the supervisor where appropriate.
 
 from __future__ import annotations
 
+import os
+
+# Disable Hugging Face progress bars to prevent BrokenPipeError in daemon environments
+os.environ["HF_HUB_DISABLE_PROGRESS_BARS"] = "1"
+os.environ["TQDM_DISABLE"] = "1"
+
 import asyncio
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager, suppress
@@ -41,6 +47,7 @@ from ..server import (
     MLXHandler,
     configure_fastapi_app,
     configure_logging,
+    redirect_fds_to_devnull,
 )
 from ..utils.network import is_port_available
 from .config import MLXHubConfig, MLXHubGroupConfig, load_hub_config
@@ -627,49 +634,58 @@ class HubSupervisor:
         HTTPException
             If the model is not found or manager is uninitialized.
         """
-        async with self._lock:
-            if name not in self._models:
-                raise HTTPException(status_code=404, detail="model not found")
-            record = self._models[name]
-            if record.manager is None:
-                raise HTTPException(
-                    status_code=400,
-                    detail="model manager not initialized; call start_model first",
-                )
-            if record.manager.is_vram_loaded():
-                return {"status": "already_loaded", "name": name}
+        # Suppress direct stdout/stderr writes during the load operation.
+        # Some third-party libraries may write directly to the OS-level
+        # stdout/stderr file descriptors (e.g. Rust-backed tokenizers). Use
+        # an FD-level redirect to /dev/null for the duration of the load so
+        # native writes don't raise BrokenPipeError when the parent's pipe
+        # is closed.
+        with redirect_fds_to_devnull():
+            async with self._lock:
+                if name not in self._models:
+                    raise HTTPException(status_code=404, detail="model not found")
+                record = self._models[name]
+                if record.manager is None:
+                    raise HTTPException(
+                        status_code=400,
+                        detail="model manager not initialized; call start_model first",
+                    )
+                if record.manager.is_vram_loaded():
+                    return {"status": "already_loaded", "name": name}
 
-            await self._ensure_group_capacity(name)
-            handler = await record.manager.ensure_loaded("load")
-            if handler:
-                # Also emit the handler-loaded event to the model-specific log sink
-                try:
-                    model_logger = getattr(record.manager, "_logger", None)
-                    if model_logger:
-                        model_logger.info(f"Loaded model {name} handler")
-                except Exception:
-                    logger.debug(f"Failed to write model-specific handler load log for {name}")
-                # Update registry to reflect the loaded state
-                if self.registry and record.model_path is not None:
+                await self._ensure_group_capacity(name)
+                handler = await record.manager.ensure_loaded("load")
+                if handler:
+                    # Also emit the handler-loaded event to the model-specific log sink
                     try:
-                        await self.registry.update_model_state(
-                            record.model_path, handler=record.manager
-                        )
-                    except Exception as e:
-                        logger.warning(f"Failed to update registry for loaded model {name}: {e}")
-                return {"status": "loaded", "name": name}
-            # Handler loading failed - log details and raise appropriate exception
-            manager_state = "unknown"
-            with suppress(Exception):
-                manager_state = "loaded" if record.manager.is_vram_loaded() else "not_loaded"
-            logger.warning(
-                f"Failed to load model handler for {name}: ensure_loaded returned None, "
-                f"manager exists with state '{manager_state}'"
-            )
-            raise HTTPException(
-                status_code=HTTPStatus.INTERNAL_SERVER_ERROR,
-                detail="failed to load model handler; check logs for details",
-            )
+                        model_logger = getattr(record.manager, "_logger", None)
+                        if model_logger:
+                            model_logger.info(f"Loaded model {name} handler")
+                    except Exception:
+                        logger.debug(f"Failed to write model-specific handler load log for {name}")
+                    # Update registry to reflect the loaded state
+                    if self.registry and record.model_path is not None:
+                        try:
+                            await self.registry.update_model_state(
+                                record.model_path, handler=record.manager
+                            )
+                        except Exception as e:
+                            logger.warning(
+                                f"Failed to update registry for loaded model {name}: {e}"
+                            )
+                    return {"status": "loaded", "name": name}
+                # Handler loading failed - log details and raise appropriate exception
+                manager_state = "unknown"
+                with suppress(Exception):
+                    manager_state = "loaded" if record.manager.is_vram_loaded() else "not_loaded"
+                logger.warning(
+                    f"Failed to load model handler for {name}: ensure_loaded returned None, "
+                    f"manager exists with state '{manager_state}'"
+                )
+                raise HTTPException(
+                    status_code=HTTPStatus.INTERNAL_SERVER_ERROR,
+                    detail="failed to load model handler; check logs for details",
+                )
 
     async def unload_model(self, name: str) -> dict[str, Any]:
         """Unload a model's handler from memory.

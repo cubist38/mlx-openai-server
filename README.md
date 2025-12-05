@@ -110,7 +110,7 @@ The server supports six types of MLX models:
 
 ### Flux-Series Image Models
 
-> **⚠️ Note:** Image generation and editing capabilities require installation of `mflux`: `pip install mlx-openai-server[image-generation]` or `pip install git+https://github.com/cubist38/mflux.git`
+> **⚠️ Note:** Image generation and editing capabilities require installation of `mflux`: `pip install mlx-openai-server[image-generation]` or `pip install mflux`
 
 The server supports multiple Flux model configurations for advanced image generation and editing:
 
@@ -244,7 +244,7 @@ Or install manually:
 pip install mlx-openai-server
 
 # Then install mflux for image generation/editing support
-pip install git+https://github.com/cubist38/mflux.git
+pip install mflux
 ```
 
 **Additional features with mflux:**
@@ -1028,7 +1028,7 @@ print(response.choices[0].message.content)
 
 #### Advanced Image Generation with Flux-Series Models
 
-> **⚠️ Note:** Image generation requires manual installation of `mflux`: `pip install git+https://github.com/cubist38/mflux.git`
+> **⚠️ Note:** Image generation requires manual installation of `mflux`: `pip install mflux`
 
 ```python
 import openai
