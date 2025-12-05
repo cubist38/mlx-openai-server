@@ -25,7 +25,7 @@ from loguru import logger
 
 from .api.endpoints import router
 from .config import MLXServerConfig
-from .handler import MFLUX_AVAILABLE, MLXFluxHandler
+from .handler import MLXFluxHandler
 from .handler.mlx_embeddings import MLXEmbeddingsHandler
 from .handler.mlx_lm import MLXLMHandler
 from .handler.mlx_vlm import MLXVLMHandler
@@ -161,13 +161,9 @@ def create_lifespan(config_args: MLXServerConfig):
                     chat_template_file=config_args.chat_template_file,
                 )
             elif config_args.model_type == "image-generation":
-                if not MFLUX_AVAILABLE:
+                if config_args.config_name not in ["flux-schnell", "flux-dev", "flux-krea-dev", "qwen-image", "z-image-turbo", "fibo"]:
                     raise ValueError(
-                        "Image generation requires mflux. Install with: pip install git+https://github.com/cubist38/mflux.git"
-                    )
-                if config_args.config_name not in ["flux-schnell", "flux-dev", "flux-krea-dev", "qwen-image"]:
-                    raise ValueError(
-                        f"Invalid config name: {config_args.config_name}. Only flux-schnell, flux-dev, flux-krea-dev, and qwen-image are supported for image generation."
+                        f"Invalid config name: {config_args.config_name}. Only flux-schnell, flux-dev, flux-krea-dev, qwen-image, z-image-turbo, and fibo are supported for image generation."
                     )
                 handler = MLXFluxHandler(
                     model_path=model_identifier,
@@ -182,10 +178,6 @@ def create_lifespan(config_args: MLXServerConfig):
                     model_path=model_identifier, max_concurrency=config_args.max_concurrency
                 )
             elif config_args.model_type == "image-edit":
-                if not MFLUX_AVAILABLE:
-                    raise ValueError(
-                        "Image editing requires mflux. Install with: pip install git+https://github.com/cubist38/mflux.git"
-                    )
                 if config_args.config_name not in ["flux-kontext-dev", "qwen-image-edit"]:
                     raise ValueError(
                         f"Invalid config name: {config_args.config_name}. Only flux-kontext-dev and qwen-image-edit are supported for image edit."
