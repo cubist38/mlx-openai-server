@@ -26,10 +26,18 @@ protocols for proper resource management.
 from __future__ import annotations
 
 import asyncio
-from collections.abc import AsyncGenerator, Awaitable, Callable
-from contextlib import AbstractAsyncContextManager, asynccontextmanager, suppress
+from collections.abc import AsyncGenerator, Awaitable, Callable, Iterator
+from contextlib import (
+    AbstractAsyncContextManager,
+    asynccontextmanager,
+    contextmanager,
+    redirect_stderr,
+    redirect_stdout,
+    suppress,
+)
 import gc
 from http import HTTPStatus
+import os
 from pathlib import Path
 import sys
 import time
@@ -62,6 +70,37 @@ from .handler.mlx_vlm import MLXVLMHandler
 from .handler.mlx_whisper import MLXWhisperHandler
 from .middleware import RequestTrackingMiddleware
 from .version import __version__
+
+
+# Temporarily redirect the OS-level stdout/stderr file descriptors to /dev/null.
+# This helper is defined after imports so static checkers and linters do not
+# complain about module-level import ordering.
+@contextmanager
+def redirect_fds_to_devnull() -> Iterator[None]:
+    """Temporarily redirect the OS-level stdout/stderr file descriptors to /dev/null.
+
+    This is necessary to guard against native extensions (Rust/C libraries)
+    that write directly to file descriptor 1/2 and are not affected by
+    Python-level ``sys.stdout`` redirection.
+    """
+    devnull_fd = os.open(os.devnull, os.O_WRONLY)
+    # Duplicate the original fds so we can restore them later
+    saved_stdout = os.dup(1)
+    saved_stderr = os.dup(2)
+    try:
+        os.dup2(devnull_fd, 1)
+        os.dup2(devnull_fd, 2)
+        yield
+    finally:
+        # Restore original fds
+        try:
+            os.dup2(saved_stdout, 1)
+            os.dup2(saved_stderr, 2)
+        finally:
+            os.close(saved_stdout)
+            os.close(saved_stderr)
+            os.close(devnull_fd)
+
 
 # Type alias for MLX handlers
 MLXHandler: TypeAlias = (
@@ -125,8 +164,10 @@ def configure_logging(
             # global sinks.
             return False
 
+    # Write console logs to stderr to avoid BrokenPipeError when stdout
+    # is closed (e.g. background processes or redirected stdout pipes).
     logger.add(
-        sys.stdout,
+        sys.stderr,
         level=log_level,
         format="<green>{time:YYYY-MM-DD HH:mm:ss}</green> | "
         "<level>{level: <8}</level> | "
@@ -213,7 +254,8 @@ def validate_mflux_config(
     """
     if not MFLUX_AVAILABLE:
         raise ValueError(
-            f"{feature_name} requires mflux. Install with: pip install git+https://github.com/cubist38/mflux.git",
+            f"{feature_name} requires mflux. "
+            "Install with: pip install mlx-openai-server[image-generation]",
         )
 
     if config_name not in allowed_configs:
@@ -259,19 +301,38 @@ async def instantiate_handler(config_args: MLXServerConfig) -> MLXHandler:
         logger.info(f"Initializing MLX handler with model path: {model_identifier}")
 
     try:
-        # Run handler creation in thread pool to avoid blocking event loop
+        # Run handler creation in thread pool to avoid blocking event loop.
+        # Redirect stdout/stderr to devnull during both construction and
+        # initialization to guard against third-party libraries that write
+        # directly to stdout (which may be closed in daemon/background
+        # contexts and raise BrokenPipeError).
         loop = asyncio.get_running_loop()
-        handler = await loop.run_in_executor(
-            None, _create_handler_sync, config_args, model_identifier
-        )
 
-        await handler.initialize(
-            {
-                "max_concurrency": config_args.max_concurrency,
-                "timeout": config_args.queue_timeout,
-                "queue_size": config_args.queue_size,
-            },
-        )
+        def _create_with_redirect() -> MLXHandler:
+            # Redirect at the OS-level inside the thread so native writes
+            # (from Rust/C extensions) go to /dev/null. Also redirect
+            # Python-level sys.stdout/sys.stderr in the same context.
+            with (
+                redirect_fds_to_devnull(),
+                Path(os.devnull).open("w") as _devnull,
+                redirect_stdout(_devnull),
+                redirect_stderr(_devnull),
+            ):
+                return _create_handler_sync(config_args, model_identifier)
+
+        handler = await loop.run_in_executor(None, _create_with_redirect)
+
+        # Suppress OS-level stdout/stderr during async initialization; Python-level
+        # redirection is unnecessary here because we've already redirected file
+        # descriptors at the OS level for the current thread.
+        with redirect_fds_to_devnull():
+            await handler.initialize(
+                {
+                    "max_concurrency": config_args.max_concurrency,
+                    "timeout": config_args.queue_timeout,
+                    "queue_size": config_args.queue_size,
+                },
+            )
         logger.info("MLX handler initialized successfully")
     except Exception as e:
         logger.error(f"Failed to initialize MLX handler. {type(e).__name__}: {e}")

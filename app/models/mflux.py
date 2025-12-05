@@ -52,10 +52,23 @@ class ModelConfiguration:
         lora_paths: list[str] | None = None,
         lora_scales: list[float] | None = None,
     ) -> None:
-        # Validate quantization level
-        if quantize not in [4, 8, 16]:
+        # Validate quantization level. The underlying MLX/mflux
+        # quantization implementation supports 2, 3, 4, 5, 6 and 8 bits.
+        # Historically this project allowed 16 (full precision) as a
+        # default in some places; however mflux does not accept 16 when
+        # attempting to quantize weights. If 16 is requested we fall
+        # back to 8 with a warning to preserve compatibility.
+        allowed_bits = {2, 3, 4, 5, 6, 8}
+        if quantize == 16:
+            # Map 16 -> 8 to avoid runtime quantization errors while
+            # keeping behavior close to user's intent.
+            logger.warning(
+                "Requested quantize=16 is unsupported by the quantizer; falling back to 8-bit.",
+            )
+            quantize = 8
+        if quantize not in allowed_bits:
             raise InvalidConfigurationError(
-                f"Invalid quantization level: {quantize}. Must be 4, 8, or 16.",
+                f"Invalid quantization level: {quantize}. Supported values: {sorted(allowed_bits)}.",
             )
 
         # Validate LoRA parameters: both must be provided together and have matching lengths
@@ -241,6 +254,7 @@ class BaseFluxModel(ABC):
             raise ModelGenerationError("Guidance must be a non-negative number.")
 
         config_params = {
+            "model_config": self.config.model_config,
             "num_inference_steps": steps,
             "guidance": guidance,
             "width": width,
@@ -275,6 +289,27 @@ class FluxStandardModel(BaseFluxModel):
                 if lora_scales:
                     logger.info(f"LoRA scales: {lora_scales}")
 
+            # If this is the third-party Freepik flux-lite model, explicitly
+            # set the base model to 'schnell' per mflux third-party guidance
+            # (see mflux README: --base-model schnell). This helps the
+            # initializer select the appropriate variant when the repo name
+            # doesn't include an obvious alias.
+            if self.model_path == "Freepik/flux.1-lite-8B" and self.config.model_config is not None:
+                # Prefer 'schnell' for lite/distilled variants as recommended
+                # by the mflux project. Use a defensive try/except to avoid
+                # failing model initialization if the underlying ModelConfig
+                # structure does not expose `base_model` in some versions.
+                try:
+                    self.config.model_config.base_model = "schnell"
+                    logger.info(
+                        "Set ModelConfig.base_model='schnell' for Freepik/flux.1-lite-8B to ensure correct variant selection",
+                    )
+                except Exception:
+                    logger.warning(
+                        "Could not set ModelConfig.base_model for %s; continuing without override",
+                        self.model_path,
+                    )
+
             self._model = Flux1(
                 model_config=self.config.model_config,
                 model_path=self.model_path,
@@ -305,10 +340,34 @@ class FluxStandardModel(BaseFluxModel):
         if self._model is None:
             raise ModelLoadError("Model not loaded")
         try:
+            # mflux Flux1.generate_image expects positional args and explicit
+            # generation parameters rather than a `config=` keyword. Extract
+            # the values from the Config object and pass them through.
+            # mflux expects `scheduler` to be a scheduler identifier (string)
+            # not a scheduler object. Some Config instances expose a
+            # `_scheduler_str` attribute containing the original string; if
+            # `config.scheduler` is an object (e.g., LinearScheduler) using it
+            # directly can cause `argument of type 'LinearScheduler' is not
+            # iterable` errors when the mflux code checks for substring
+            # membership. Prefer the string when available and fall back to
+            # the literal "linear".
+            scheduler_attr = getattr(config, "scheduler", None)
+            if isinstance(scheduler_attr, str):
+                scheduler_param = scheduler_attr
+            else:
+                scheduler_param = getattr(config, "_scheduler_str", "linear")
+
             result = self._model.generate_image(
-                config=config,
-                prompt=prompt,
-                seed=seed,
+                seed,
+                prompt,
+                num_inference_steps=config.num_inference_steps,
+                height=config.height,
+                width=config.width,
+                guidance=config.guidance,
+                image_path=getattr(config, "image_path", None),
+                image_strength=getattr(config, "image_strength", None),
+                scheduler=scheduler_param,
+                negative_prompt=getattr(config, "negative_prompt", None),
             )
         except Exception as e:
             raise ModelGenerationError(f"Standard model generation failed: {e}") from e
@@ -336,10 +395,23 @@ class FluxKontextModel(BaseFluxModel):
         if self._model is None:
             raise ModelLoadError("Model not loaded")
         try:
+            scheduler_attr = getattr(config, "scheduler", None)
+            if isinstance(scheduler_attr, str):
+                scheduler_param = scheduler_attr
+            else:
+                scheduler_param = getattr(config, "_scheduler_str", "linear")
+
             result = self._model.generate_image(
-                config=config,
-                prompt=prompt,
-                seed=seed,
+                seed,
+                prompt,
+                num_inference_steps=config.num_inference_steps,
+                height=config.height,
+                width=config.width,
+                guidance=config.guidance,
+                image_path=getattr(config, "image_path", None),
+                image_strength=getattr(config, "image_strength", None),
+                scheduler=scheduler_param,
+                negative_prompt=getattr(config, "negative_prompt", None),
             )
         except Exception as e:
             raise ModelGenerationError(f"Kontext model generation failed: {e}") from e

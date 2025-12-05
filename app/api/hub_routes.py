@@ -11,6 +11,7 @@ import subprocess
 import sys
 import threading
 import time
+import traceback
 from typing import IO, Any, Literal, cast
 
 from fastapi import APIRouter, BackgroundTasks, HTTPException, Request
@@ -182,10 +183,22 @@ def _retain_task(task: asyncio.Task[Any]) -> None:
             return
 
         if exc is not None:
+            # Capture and log the full traceback for easier diagnosis of
+            # background task failures (e.g., BrokenPipeError originating
+            # in third-party native code). Keep logging in a suppress block
+            # to avoid raising from the done-callback itself.
+            tb_str = ""
+            try:
+                tb_str = "".join(traceback.format_exception(type(exc), exc, exc.__traceback__))
+            except Exception:
+                tb_str = f"(failed to format traceback for {type(exc).__name__})"
+
             with contextlib.suppress(Exception):
                 logger.warning(
                     f"Background task raised exception: {t!r} -> {type(exc).__name__}: {exc}"
                 )
+                # Log the detailed traceback at debug level to avoid noise
+                logger.debug(f"Background task exception traceback:\n{tb_str}")
 
     task.add_done_callback(_on_done)
 
@@ -1418,6 +1431,7 @@ async def hub_stop_model(
 async def hub_load_model(
     model_name: str,
     raw_request: Request,
+    blocking: bool = False,
 ) -> HubModelActionResponse | JSONResponse:
     """Request that the in-process controller load ``model_name`` into memory.
 
@@ -1433,6 +1447,48 @@ async def hub_load_model(
     HubModelActionResponse or JSONResponse
         Response indicating the result of the load action.
     """
+    # Normalize target name and load cached config for availability checks
+    target = _normalize_model_name(model_name)
+    if not target:
+        return JSONResponse(
+            content=create_error_response(
+                "Model name cannot be empty",
+                "invalid_request_error",
+                HTTPStatus.BAD_REQUEST,
+            ),
+            status_code=HTTPStatus.BAD_REQUEST,
+        )
+
+    config = _get_cached_hub_config(raw_request)
+
+    availability_error = _guard_hub_action_availability(
+        raw_request,
+        config,
+        target,
+        deny_detail="Group capacity exceeded. Unload another model or wait for auto-unload.",
+        log_context="Hub load",
+    )
+    if availability_error is not None:
+        return availability_error
+
+    controller = getattr(raw_request.app.state, "hub_controller", None)
+    if controller is None:
+        return _controller_unavailable_response()
+
+    # If a caller explicitly requests non-blocking behavior, schedule
+    # the load in the background and return immediately. Otherwise use
+    # the blocking path which surfaces controller errors to the client.
+    if not blocking:
+        try:
+            task = asyncio.create_task(controller.load_model(target))
+            _retain_task(task)
+            message = f"Model '{target}' load requested (running in background)"
+            return HubModelActionResponse(status="ok", action="load", model=target, message=message)
+        except Exception as exc:
+            logger.exception(f"Failed to schedule background load for {target}: {exc}")
+            return _controller_error_response(exc)
+
+    # Blocking path: preserve previous behavior (shielded load)
     return await _hub_memory_controller_action(raw_request, model_name, "load")
 
 

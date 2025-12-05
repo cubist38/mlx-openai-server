@@ -1,10 +1,12 @@
 """Request tracking middleware for correlation IDs and request logging."""
 
+import asyncio
 from collections.abc import Awaitable, Callable
 import time
 import uuid
 
 from fastapi import Request, Response
+from fastapi.responses import JSONResponse
 from loguru import logger
 from starlette.middleware.base import BaseHTTPMiddleware
 
@@ -59,7 +61,80 @@ class RequestTrackingMiddleware(BaseHTTPMiddleware):
 
         try:
             # Process request
-            response: Response = await call_next(request)
+            try:
+                response: Response | None = await call_next(request)
+            except asyncio.CancelledError:
+                # Client disconnected / request cancelled. Log and return a
+                # clear status to aid diagnostics. In many cases the client
+                # will have closed the socket and the response won't be
+                # delivered, but returning a JSONResponse here ensures the
+                # server-side logs and tests observe a consistent outcome.
+                duration = time.time() - start_time
+                logger.warning(
+                    f"Request cancelled by client: {request.method} {request.url.path} "
+                    f"duration={duration:.3f}s [request_id={request_id}]",
+                )
+
+                return JSONResponse(
+                    content={"error": "request cancelled by client"},
+                    status_code=499,
+                    headers={"X-Request-ID": request_id},
+                )
+            except RuntimeError as e:
+                # Starlette raises RuntimeError("No response returned.") when
+                # the ASGI app did not produce a response (often due to an
+                # EndOfStream / client disconnect inside the receive stream).
+                # Log the cause and return a clear JSON error so the server
+                # surface is easier to diagnose.
+                duration = time.time() - start_time
+                cause = getattr(e, "__cause__", None)
+                try:
+                    headers = dict(request.headers)
+                except Exception:
+                    headers = {}
+                headers_preview = dict(list(headers.items())[:10])
+                logger.exception(
+                    "No response returned for request: %s %s duration=%.3fs [request_id=%s] headers=%s cause=%s",
+                    request.method,
+                    request.url.path,
+                    duration,
+                    request_id,
+                    headers_preview,
+                    repr(cause),
+                )
+
+                return JSONResponse(
+                    content={
+                        "error": "internal server error: no response returned",
+                        "detail": str(e),
+                        "cause": repr(cause),
+                    },
+                    status_code=500,
+                    headers={"X-Request-ID": request_id},
+                )
+
+            # Defensive: some ASGI apps/middlewares may return None in
+            # unusual error cases. Convert that into a 500 JSON response
+            # and log context to make debugging easier than the generic
+            # "No response returned." runtime error originating in
+            # Starlette internals.
+            if response is None:
+                duration = time.time() - start_time
+                try:
+                    headers = dict(request.headers)
+                except Exception:
+                    headers = {}
+                headers_preview = dict(list(headers.items())[:10])
+                logger.error(
+                    f"call_next returned None for request: {request.method} {request.url.path} "
+                    f"duration={duration:.3f}s [request_id={request_id}] headers={headers_preview}"
+                )
+
+                return JSONResponse(
+                    content={"error": "internal server error: no response returned"},
+                    status_code=500,
+                    headers={"X-Request-ID": request_id},
+                )
 
             # Calculate duration
             duration = time.time() - start_time
