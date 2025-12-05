@@ -13,9 +13,10 @@ from pathlib import Path
 from typing import Any, ClassVar
 
 from loguru import logger
-from mflux.config.model_config import ModelConfig
-from mflux.flux.flux import Config, Flux1
-from mflux.kontext.flux_kontext import Flux1Kontext
+from mflux.models.common.config.config import Config
+from mflux.models.common.config.model_config import ModelConfig
+from mflux.models.flux.variants.kontext.flux_kontext import Flux1Kontext
+from mflux.models.flux.variants.txt2img.flux import Flux1
 from PIL import Image
 
 from ..const import DEFAULT_QUANTIZE
@@ -276,13 +277,24 @@ class FluxStandardModel(BaseFluxModel):
 
             self._model = Flux1(
                 model_config=self.config.model_config,
-                local_path=self.model_path,
+                model_path=self.model_path,
                 quantize=self.config.quantize,
                 lora_paths=lora_paths,
                 lora_scales=lora_scales,
             )
             self._is_loaded = True
             logger.info(f"{self.config.model_type} model loaded successfully")
+        except TypeError as e:
+            if "list indices must be integers or slices, not str" in str(e):
+                error_msg = (
+                    f"Failed to load {self.config.model_type} model: The model weights appear to be in an incompatible format. "
+                    "This may indicate the model is not a standard Flux model or the mflux library version is incompatible with this model. "
+                    f"Model path: {self.model_path}"
+                )
+            else:
+                error_msg = f"Failed to load {self.config.model_type} model: {e}"
+            logger.error(error_msg)
+            raise ModelLoadError(error_msg) from e
         except Exception as e:
             error_msg = f"Failed to load {self.config.model_type} model: {e}"
             logger.error(error_msg)
@@ -311,7 +323,7 @@ class FluxKontextModel(BaseFluxModel):
         """Load the Flux Kontext model."""
         try:
             logger.info(f"Loading Kontext model from {self.model_path}")
-            self._model = Flux1Kontext(quantize=self.config.quantize, local_path=self.model_path)
+            self._model = Flux1Kontext(quantize=self.config.quantize, model_path=self.model_path)
             self._is_loaded = True
             logger.info("Kontext model loaded successfully")
         except Exception as e:
