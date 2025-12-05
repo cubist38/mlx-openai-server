@@ -66,7 +66,7 @@ dev = [
   "types-requests",
   "types-setuptools",
 ]
-image-generation = ["mflux @ git+https://github.com/cubist38/mflux.git"]
+image-generation = ["mflux>=0.12"]
 enhanced-caching = ["spacy", "regex", "tiktoken", "torch", "transformers"]
 
 [tool.setuptools]
