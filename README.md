@@ -115,6 +115,8 @@ The server supports multiple Flux and Qwen model configurations for advanced ima
 - **`flux-dev`** - High-quality generation with 25 default steps, 3.5 guidance (balanced quality/speed)
 - **`flux-krea-dev`** - Premium quality with 28 default steps, 4.5 guidance (highest quality)
 - **`qwen-image`** - Qwen image generation model with 50 default steps, 4.0 guidance (high-quality Qwen-based generation)
+- **`z-image-turbo`** - Z-Image Turbo model for fast image generation
+- **`fibo`** - Fibo model for image generation
 
 #### Image Editing Models
 - **`flux-kontext-dev`** - Context-aware editing with 28 default steps, 2.5 guidance (specialized for contextual image editing)
@@ -300,11 +302,11 @@ python -m app.main \
   --queue-timeout 300 \
   --queue-size 100
 
-# For image generation models (Flux-series or Qwen)
+# For image generation models (Flux-series, Qwen, Z-Image Turbo, or Fibo)
 python -m app.main \
   --model-type image-generation \
   --model-path <path-to-local-model> \
-  --config-name <flux-schnell|flux-dev|flux-krea-dev|qwen-image> \
+  --config-name <flux-schnell|flux-dev|flux-krea-dev|qwen-image|z-image-turbo|fibo> \
   --quantize <4|8|16> \
   --max-concurrency 1 \
   --queue-timeout 300 \
@@ -358,11 +360,11 @@ mlx-openai-server launch \
   --model-type <lm|multimodal> \
 
 
-# For image generation models (Flux-series or Qwen)
+# For image generation models (Flux-series, Qwen, Z-Image Turbo, or Fibo)
 mlx-openai-server launch \
   --model-type image-generation \
   --model-path <path-to-local-model> \
-  --config-name <flux-schnell|flux-dev|flux-krea-dev|qwen-image> \
+  --config-name <flux-schnell|flux-dev|flux-krea-dev|qwen-image|z-image-turbo|fibo> \
   --quantize 8 \
 
 
@@ -405,7 +407,7 @@ mlx-openai-server launch \
   - Default: `lm`
 - `--context-length`: Context length for language models. Controls the maximum sequence length for text processing and memory usage optimization. Default: `None` (uses model's default context length).
 - `--config-name`: Model configuration to use. Only used for `image-generation` and `image-edit` model types:
-  - For `image-generation`: `flux-schnell`, `flux-dev`, `flux-krea-dev`, `qwen-image`
+  - For `image-generation`: `flux-schnell`, `flux-dev`, `flux-krea-dev`, `qwen-image`, `z-image-turbo`, `fibo`
   - For `image-edit`: `flux-kontext-dev`, `qwen-image-edit`
   - Default: `flux-schnell` for image-generation, `flux-kontext-dev` for image-edit
 - `--quantize`: Quantization level for Flux models. Available options: `4`, `8`, `16`. Default: `8`
@@ -591,6 +593,16 @@ python -m app.main \
   --queue-size 100
 ```
 
+*Fast generation with Z-Image Turbo:*
+```bash
+mlx-openai-server launch --model-path z-image-turbo --model-type image-generation --config-name z-image-turbo
+```
+
+*Generation with Fibo:*
+```bash
+mlx-openai-server launch --model-path fibo --model-type image-generation --config-name fibo
+```
+
 *Image editing with Kontext:*
 ```bash
 python -m app.main \
@@ -671,8 +683,8 @@ mlx-openai-server launch --help
 # For text-only or multimodal models
 mlx-openai-server launch --model-path <path-to-mlx-model> --model-type <lm|multimodal> --context-length 8192
 
-# For image generation models (Flux-series or Qwen)
-mlx-openai-server launch --model-type image-generation --model-path <path-to-local-model> --config-name <flux-schnell|flux-dev|flux-krea-dev|qwen-image>
+# For image generation models (Flux-series, Qwen, Z-Image Turbo, or Fibo)
+mlx-openai-server launch --model-type image-generation --model-path <path-to-local-model> --config-name <flux-schnell|flux-dev|flux-krea-dev|qwen-image|z-image-turbo|fibo>
 
 # For image editing models (Flux-series or Qwen)
 mlx-openai-server launch --model-type image-edit --model-path <path-to-local-model> --config-name <flux-kontext-dev|qwen-image-edit>
@@ -936,7 +948,7 @@ if response.status_code == 200:
 - `priority`: Task priority - "low", "normal", "high" (default: "normal")
 - `async_mode`: Whether to process asynchronously (default: false)
 
-> **Note:** Image generation requires running the server with `--model-type image-generation`. The server supports MLX Flux-series models (flux-schnell, flux-dev, flux-krea-dev) and Qwen Image models (qwen-image) for high-quality image generation with configurable quality/speed trade-offs.
+> **Note:** Image generation requires running the server with `--model-type image-generation`. The server supports MLX Flux-series models (flux-schnell, flux-dev, flux-krea-dev), Qwen Image models (qwen-image), Z-Image Turbo (z-image-turbo), and Fibo (fibo) models for high-quality image generation with configurable quality/speed trade-offs.
 
 #### Image Editing with Flux-Series Models
 
