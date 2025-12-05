@@ -67,7 +67,7 @@ dev = [
 enhanced-caching = ["spacy", "regex", "tiktoken", "torch", "transformers"]
 
 [tool.setuptools]
-packages = ["mlx_openai_server"]
+packages = {find = {}}
 
 [tool.setuptools.package-dir]
 mlx_openai_server = "app"
