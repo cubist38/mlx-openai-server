@@ -32,7 +32,7 @@ dependencies = [
   "mflux>=0.13.2,<0.14",
   "loguru>=0.7.3,<0.8",
   "mlx-embeddings>=0.0.4,<0.1",
-  "mlx-lm==0.28.3",
+  "mlx-lm>=0.28.4,<0.29",
   "mlx-vlm>=0.3.8,<0.4",
   "mlx-whisper>=0.4.3,<0.5",
   "mlx>=0.30",                        # Needed due to a typing issue in <0.30
@@ -64,7 +64,6 @@ dev = [
   "types-requests",
   "types-setuptools",
 ]
-image-generation = ["mflux @ git+https://github.com/cubist38/mflux.git"]
 enhanced-caching = ["spacy", "regex", "tiktoken", "torch", "transformers"]
 
 [tool.setuptools]
