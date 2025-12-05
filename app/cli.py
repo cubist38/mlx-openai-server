@@ -120,7 +120,7 @@ def cli():
 @click.option(
     "--config-name",
     default=None,
-    type=click.Choice(["flux-schnell", "flux-dev", "flux-krea-dev", "flux-kontext-dev", "qwen-image", "qwen-image-edit"]),
+    type=click.Choice(["flux-schnell", "flux-dev", "flux-krea-dev", "flux-kontext-dev", "qwen-image", "qwen-image-edit", "z-image-turbo", "fibo"]),
     help="Config name of the model. Only used for image-generation and image-edit models.",
 )
 @click.option(

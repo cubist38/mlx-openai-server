@@ -1,17 +1,20 @@
 import os
 import logging
+import inspect
+from pyexpat import model
 from PIL import Image
 from abc import ABC, abstractmethod
-from mflux.config.config import Config
-from mflux.config.model_config import ModelConfig
+from mflux.models.common.config import ModelConfig
 from mflux.models.flux.variants.txt2img.flux import Flux1
 from mflux.models.qwen.variants.txt2img.qwen_image import QwenImage
 from mflux.models.flux.variants.kontext.flux_kontext import Flux1Kontext
 from mflux.models.qwen.variants.edit.qwen_image_edit import QwenImageEdit
+from mflux.models.z_image.variants.turbo import ZImageTurbo
+from mflux.models.fibo.variants.txt2img.fibo import FIBO
 from typing import Dict, Type, Any, Optional, Union, List
 
 
-# Custom Exceptions
+# # Custom Exceptions
 class ImageModelError(Exception):
     """Base exception for image generation model errors."""
     pass
@@ -37,12 +40,11 @@ class ModelConfiguration:
     
     def __init__(self, 
         model_type: str,
-        model_config: Optional[ModelConfig] = None,
+        model_config: ModelConfig,
         quantize: int = 8,
-        default_steps: int = 20,
-        default_guidance: float = 2.5,
         lora_paths: Optional[List[str]] = None,
-        lora_scales: Optional[List[float]] = None):
+        lora_scales: Optional[List[float]] = None
+    ):
         
         # Validate quantization level
         if quantize not in [4, 8, 16]:
@@ -61,8 +63,6 @@ class ModelConfiguration:
         self.model_type = model_type
         self.model_config = model_config
         self.quantize = quantize
-        self.default_steps = default_steps
-        self.default_guidance = default_guidance
         self.lora_paths = lora_paths
         self.lora_scales = lora_scales
     
@@ -73,8 +73,6 @@ class ModelConfiguration:
             model_type="schnell",
             model_config=ModelConfig.schnell(),
             quantize=quantize,
-            default_steps=4,
-            default_guidance=0.0,
             lora_paths=lora_paths,
             lora_scales=lora_scales
         )
@@ -86,8 +84,6 @@ class ModelConfiguration:
             model_type="dev",
             model_config=ModelConfig.dev(),
             quantize=quantize,
-            default_steps=25,
-            default_guidance=3.5,
             lora_paths=lora_paths,
             lora_scales=lora_scales
         )
@@ -99,8 +95,6 @@ class ModelConfiguration:
             model_type="krea-dev",
             model_config=ModelConfig.krea_dev(),
             quantize=quantize,
-            default_steps=28,
-            default_guidance=4.5,
             lora_paths=lora_paths,
             lora_scales=lora_scales
         )
@@ -110,10 +104,8 @@ class ModelConfiguration:
         """Create configuration for Flux Kontext model."""
         return cls(
             model_type="kontext",
-            model_config=None,  # Kontext doesn't use ModelConfig
+            model_config=ModelConfig.kontext(),
             quantize=quantize,
-            default_steps=28,
-            default_guidance=2.5,
             lora_paths=lora_paths,
             lora_scales=lora_scales
         )
@@ -125,8 +117,6 @@ class ModelConfiguration:
             model_type="qwen-image",
             model_config=ModelConfig.qwen_image(),
             quantize=quantize,
-            default_steps=50,
-            default_guidance=4.0,
             lora_paths=lora_paths,
             lora_scales=lora_scales
         )
@@ -136,14 +126,33 @@ class ModelConfiguration:
         """Create configuration for Qwen Image Edit model."""
         return cls(
             model_type="qwen-image-edit",
-            model_config=None,  # Qwen Image Edit doesn't use ModelConfig
+            model_config=ModelConfig.qwen_image_edit(),
             quantize=quantize,
-            default_steps=50,
-            default_guidance=4.0,
             lora_paths=lora_paths,
             lora_scales=lora_scales
         )
 
+    @classmethod
+    def fibo(cls, quantize: int = 8, lora_paths: Optional[List[str]] = None, lora_scales: Optional[List[float]] = None) -> 'ModelConfiguration':
+        """Create configuration for Fibo model."""
+        return cls(
+            model_type="fibo",
+            model_config=ModelConfig.fibo(),
+            quantize=quantize,
+            lora_paths=lora_paths,
+            lora_scales=lora_scales
+        )
+
+    @classmethod
+    def z_image_turbo(cls, quantize: int = 8, lora_paths: Optional[List[str]] = None, lora_scales: Optional[List[float]] = None) -> 'ModelConfiguration':
+        """Create configuration for Z Image Turbo model."""
+        return cls(
+            model_type="z-image-turbo",
+            model_config=ModelConfig.z_image_turbo(),
+            quantize=quantize,
+            lora_paths=lora_paths,
+            lora_scales=lora_scales
+        )
 
 class BaseImageModel(ABC):
     """Abstract base class for image generation models with common functionality."""
@@ -175,7 +184,9 @@ class BaseImageModel(ABC):
             "flux-krea-dev",
             "flux-kontext-dev", 
             "qwen-image", 
-            "qwen-image-edit"
+            "qwen-image-edit",
+            "fibo",
+            "z-image-turbo",
         ]
         return self.model_path in valid_model_names
     
@@ -184,18 +195,25 @@ class BaseImageModel(ABC):
         """Load the specific model implementation."""
         pass
     
-    def _generate_image(self, prompt: str, negative_prompt: Optional[str], seed: int, config: Config) -> Image.Image:
+    def _generate_image(self, prompt: str, seed: int = 42, **kwargs) -> Image.Image:
         """Generate image using the specific model implementation."""
         try:
+            # Get the signature of the generate_image method to filter kwargs
+            sig = inspect.signature(self._model.generate_image)
+            valid_params = set(sig.parameters.keys())
+            
+            # Filter kwargs to only include parameters that the method actually accepts
+            filtered_kwargs = {
+                key: value for key, value in kwargs.items()
+                if key in valid_params
+            }
+            
             # Build kwargs for generate_image call
             generate_kwargs = {
-                "config": config,
                 "prompt": prompt,
                 "seed": seed,
+                **filtered_kwargs
             }
-            # Add negative_prompt if provided (some models support this)
-            if negative_prompt is not None:
-                generate_kwargs["negative_prompt"] = negative_prompt
             
             result = self._model.generate_image(**generate_kwargs)
             return result.image
@@ -206,30 +224,16 @@ class BaseImageModel(ABC):
         """Generate an image from a text prompt."""
         if not self._is_loaded:
             raise ModelLoadError("Model is not loaded. Cannot generate image.")
-        
-        negative_prompt = kwargs.pop('negative_prompt', None)
-            
+                        
         # Validate inputs
         if not prompt or not prompt.strip():
             raise ModelGenerationError("Prompt cannot be empty.")
             
         if not isinstance(seed, int) or seed < 0:
             raise ModelGenerationError("Seed must be a non-negative integer.")
-        
-        # Merge default config values with provided kwargs
+
         try:
-            generation_config = self._prepare_config(**kwargs)
-        except Exception as e:
-            raise ModelGenerationError(f"Failed to prepare configuration: {e}")
-        
-        log_msg = f"Generating image with prompt: '{prompt[:50]}...' "
-        if negative_prompt:
-            log_msg += f"negative_prompt: '{negative_prompt[:50]}...' "
-        log_msg += f"(steps: {generation_config.num_inference_steps}, seed: {seed})"
-        self.logger.info(log_msg)
-        
-        try:
-            result = self._generate_image(prompt, negative_prompt, seed, generation_config)
+            result = self._generate_image(prompt, seed, **kwargs)
             if result is None:
                 raise ModelGenerationError("Model returned None instead of an image.")
                 
@@ -239,44 +243,6 @@ class BaseImageModel(ABC):
             error_msg = f"Error generating image: {e}"
             self.logger.error(error_msg)
             raise ModelGenerationError(error_msg) from e
-    
-    def _prepare_config(self, **kwargs) -> Config:
-        """Prepare configuration for image generation."""
-        # Validate dimensions
-        width = kwargs.get('width', 1024)
-        height = kwargs.get('height', 1024)
-        
-        if not isinstance(width, int) or width <= 0:
-            raise ModelGenerationError("Width must be a positive integer.")
-        if not isinstance(height, int) or height <= 0:
-            raise ModelGenerationError("Height must be a positive integer.")
-        
-        # Validate steps
-        steps = kwargs.get('num_inference_steps', self.config.default_steps)
-        if not isinstance(steps, int) or steps <= 0:
-            raise ModelGenerationError("Number of inference steps must be a positive integer.")
-        
-        # Validate guidance
-        guidance = kwargs.get('guidance', self.config.default_guidance)
-        if not isinstance(guidance, (int, float)) or guidance < 0:
-            raise ModelGenerationError("Guidance must be a non-negative number.")
-        
-        config_params = {
-            'num_inference_steps': steps,
-            'guidance': guidance,
-            'width': width,
-            'height': height
-        }
-        
-        # Add image_path if provided (for inpainting/editing)
-        if 'image_path' in kwargs:
-            image_path = kwargs['image_path']
-            if not os.path.exists(image_path):
-                raise ModelGenerationError(f"Image path does not exist: {image_path}")
-            config_params['image_path'] = image_path
-            
-        return Config(**config_params)
-
 
 class FluxStandardModel(BaseImageModel):
     """Standard Flux model implementation for Dev and Schnell variants."""
@@ -297,11 +263,11 @@ class FluxStandardModel(BaseImageModel):
                     self.logger.info(f"LoRA scales: {lora_scales}")
             
             self._model = Flux1(
-                model_config=self.config.model_config,
-                local_path=self.model_path,
                 quantize=self.config.quantize,
+                model_path=self.model_path,
                 lora_paths=lora_paths,
                 lora_scales=lora_scales,
+                model_config=self.config.model_config,
             )
             self._is_loaded = True
             self.logger.info(f"{self.config.model_type} model loaded successfully")
@@ -320,7 +286,9 @@ class FluxKontextModel(BaseImageModel):
             self.logger.info(f"Loading Kontext model from {self.model_path}")
             self._model = Flux1Kontext(
                 quantize=self.config.quantize,
-                local_path=self.model_path
+                model_path=self.model_path,
+                lora_paths=self.config.lora_paths,
+                lora_scales=self.config.lora_scales,
             )
             self._is_loaded = True
             self.logger.info("Kontext model loaded successfully")
@@ -337,9 +305,8 @@ class QwenImageModel(BaseImageModel):
         try:
             self.logger.info(f"Loading Qwen Image model from {self.model_path}")
             self._model = QwenImage( 
-                model_config = self.config.model_config,
                 quantize=self.config.quantize,
-                local_path=self.model_path,
+                model_path=self.model_path,
                 lora_paths=self.config.lora_paths,
                 lora_scales=self.config.lora_scales,
             )
@@ -359,7 +326,7 @@ class QwenImageEditModel(BaseImageModel):
             self.logger.info(f"Loading Qwen Image Edit model from {self.model_path}")
             self._model = QwenImageEdit(
                 quantize=self.config.quantize,
-                local_path=self.model_path,
+                model_path=self.model_path,
                 lora_paths=self.config.lora_paths,
                 lora_scales=self.config.lora_scales,
             )
@@ -369,8 +336,46 @@ class QwenImageEditModel(BaseImageModel):
             error_msg = f"Failed to load Qwen Image Edit model: {e}"
             self.logger.error(error_msg)
             raise ModelLoadError(error_msg) from e
-            
-            
+
+class ZImageTurboModel(BaseImageModel):
+    """Z Image Turbo model implementation."""
+    
+    def _load_model(self):
+        """Load the Z Image Turbo model."""
+        try:
+            self.logger.info(f"Loading Z Image Turbo model from {self.model_path}")
+            self._model = ZImageTurbo(
+                quantize=self.config.quantize,
+                model_path=self.model_path,
+                lora_paths=self.config.lora_paths,
+                lora_scales=self.config.lora_scales,
+            )
+            self._is_loaded = True
+            self.logger.info("Z Image Turbo model loaded successfully")
+        except Exception as e:
+            error_msg = f"Failed to load Z Image Turbo model: {e}"
+            self.logger.error(error_msg)
+            raise ModelLoadError(error_msg) from e
+
+class FIBOModel(BaseImageModel):
+    """FIBO model implementation."""
+    
+    def _load_model(self):
+        """Load the FIBO model."""
+        try:
+            self.logger.info(f"Loading FIBO model from {self.model_path}")
+            self._model = FIBO(
+                quantize=self.config.quantize,
+                model_path=self.model_path,
+                lora_paths=self.config.lora_paths,
+                lora_scales=self.config.lora_scales,
+            )
+            self._is_loaded = True
+            self.logger.info("FIBO model loaded successfully")
+        except Exception as e:
+            error_msg = f"Failed to load FIBO model: {e}"
+            self.logger.error(error_msg)
+            raise ModelLoadError(error_msg) from e
 
 class ImageGenerationModel:
     """Factory class for creating and managing image generation models."""
@@ -382,6 +387,8 @@ class ImageGenerationModel:
         "flux-kontext-dev": ModelConfiguration.kontext,
         "qwen-image": ModelConfiguration.qwen_image,
         "qwen-image-edit": ModelConfiguration.qwen_image_edit,
+        "fibo": ModelConfiguration.fibo,
+        "z-image-turbo": ModelConfiguration.z_image_turbo,
     }
     
     _MODEL_CLASSES = {
@@ -391,22 +398,24 @@ class ImageGenerationModel:
         "flux-kontext-dev": FluxKontextModel,
         "qwen-image": QwenImageModel,
         "qwen-image-edit": QwenImageEditModel,
+        "fibo": FIBOModel,
+        "z-image-turbo": ZImageTurboModel,
     }
     
     def __init__(self, model_path: str, config_name: str, quantize: int = 8, 
                  lora_paths: Optional[List[str]] = None, lora_scales: Optional[List[float]] = None):
        
-        self.config_name = config_name
         self.model_path = model_path
+        self.config_name = config_name
         self.quantize = quantize
         self.lora_paths = lora_paths
         self.lora_scales = lora_scales
         self.logger = logging.getLogger(self.__class__.__name__)
         
         # Validate configuration
-        if config_name not in self._MODEL_CONFIGS:
+        if self.config_name not in self._MODEL_CONFIGS:
             available_configs = ", ".join(self._MODEL_CONFIGS.keys())
-            raise InvalidConfigurationError(f"Invalid config name: {config_name}. Available options: {available_configs}")
+            raise InvalidConfigurationError(f"Invalid config name: {self.config_name}. Available options: {available_configs}")
    
         
         try:
@@ -432,24 +441,12 @@ class ImageGenerationModel:
         """Generate an image using the configured model."""
         return self.model_instance(prompt, seed=seed, **kwargs)
     
-    @classmethod
-    def get_available_configs(cls) -> list[str]:
-        """Get list of available model configurations."""
-        return list(cls._MODEL_CONFIGS.keys())
-    
-    @classmethod
-    def get_model_info(cls, config_name: str) -> Dict[str, Any]:
+    def get_model_info(self) -> Dict[str, Any]:
         """Get information about a specific model configuration."""
-        if config_name not in cls._MODEL_CONFIGS:
-            raise InvalidConfigurationError(f"Unknown config: {config_name}")
-        
-        config = cls._MODEL_CONFIGS[config_name]()
         return {
-            "name": config_name,
-            "type": config.model_type,
-            "default_steps": config.default_steps,
-            "default_guidance": config.default_guidance,
-            "model_class": cls._MODEL_CLASSES[config_name].__name__
+            "model_path": self.model_path,
+            "type": self.config.model_type,
+            "model_class": self.model_instance.__class__.__name__
         }
     
     def get_current_config(self) -> Dict[str, Any]:
@@ -459,9 +456,7 @@ class ImageGenerationModel:
             "model_path": self.model_path,
             "quantize": self.quantize,
             "type": self.config.model_type,
-            "default_steps": self.config.default_steps,
-            "default_guidance": self.config.default_guidance,
-            "is_loaded": self.model_instance._is_loaded if hasattr(self.model_instance, '_is_loaded') else False,
+            "is_loaded": self.model_instance.is_loaded(),
             "lora_paths": self.config.lora_paths,
             "lora_scales": self.config.lora_scales,
         }
@@ -472,10 +467,12 @@ class ImageGenerationModel:
 
 if __name__ == "__main__":
     model = ImageGenerationModel(
-        model_path="qwen-image",
-        config_name="qwen-image",
+        model_path="z-image",
+        config_name="z-image-turbo",
         quantize=8,
         lora_paths=None,
         lora_scales=None,
     )
-    print(model.get_model_info("qwen-image"))
+    prompt = "A beautiful sunset over a calm ocean, with a small boat in the distance."
+    image = model(prompt)
+    image.save("test.png")
