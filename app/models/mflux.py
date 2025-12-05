@@ -1,6 +1,6 @@
 import os
-import random
 import logging
+import inspect
 from pyexpat import model
 from PIL import Image
 from abc import ABC, abstractmethod
@@ -198,11 +198,21 @@ class BaseImageModel(ABC):
     def _generate_image(self, prompt: str, seed: int = 42, **kwargs) -> Image.Image:
         """Generate image using the specific model implementation."""
         try:
+            # Get the signature of the generate_image method to filter kwargs
+            sig = inspect.signature(self._model.generate_image)
+            valid_params = set(sig.parameters.keys())
+            
+            # Filter kwargs to only include parameters that the method actually accepts
+            filtered_kwargs = {
+                key: value for key, value in kwargs.items()
+                if key in valid_params
+            }
+            
             # Build kwargs for generate_image call
             generate_kwargs = {
                 "prompt": prompt,
                 "seed": seed,
-                **kwargs
+                **filtered_kwargs
             }
             
             result = self._model.generate_image(**generate_kwargs)
