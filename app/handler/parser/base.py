@@ -99,9 +99,9 @@ class ParseToolState:
     FOUND_PREFIX = 1
   
 class BaseToolParser:
-    def __init__(self, tool_open: str, tool_close: str):
+    def __init__(self, tool_open: str, tool_close: Optional[str] = None):
         self.tool_open = tool_open
-        self.tool_close = tool_close
+        self.tool_close = tool_close 
         self.buffer = ""
         self.state = ParseToolState.NORMAL
 
@@ -175,57 +175,50 @@ class BaseToolParser:
         remaining_content = " ".join(filter(None, remaining_parts))
         return tool_calls, remaining_content
     
-    def parse_stream(self, chunk: Optional[str] = None) -> Tuple[Optional[Any], bool]:
+    def parse_stream(self, chunk: Optional[str] = None) -> Tuple[Optional[Dict[str, Any]], bool]:
         """
         Parse streaming chunks for tool calls.
-        
+        Args:
+            chunk: The text chunk to parse, or None for empty chunks
         Returns:
             Tuple[parsed_content, is_complete]: 
-                - parsed_content: The parsed chunk (could be str, dict, or None)
+                - parsed_content: The parsed chunk (could be str, dict)
                 - is_complete: True if tool call is complete
         """
+        res = {
+            "tool_calls": None,
+            "content": None,
+        }
         if chunk is None:
             return None, True
-        
+
         if self.tool_open in chunk:
             self.state = ParseToolState.FOUND_PREFIX
             start_tool_index = chunk.find(self.tool_open)
-            end_tool_index = chunk.find(self.tool_close)
-            if end_tool_index != -1:
-                self.buffer = chunk[start_tool_index + len(self.tool_open):end_tool_index]
-                self.state = ParseToolState.NORMAL
-                try:
-                    json_output = self._parse_tool_content(self.buffer)
-                except json.JSONDecodeError:
-                    print("Error parsing tool call: ", self.buffer)
-                    return None, True
-                return {
-                    "name": json_output["name"],
-                    "arguments": json.dumps(json_output["arguments"])
-                }, True
-
+            res["content"] = chunk[:start_tool_index]
             self.buffer += chunk[start_tool_index + len(self.tool_open):]
-            
-            return chunk[:start_tool_index], False
+            return res, False
+        
 
         if self.state == ParseToolState.FOUND_PREFIX:
             end_tool_index = chunk.find(self.tool_close)
             if end_tool_index != -1:
-                self.buffer += chunk[:end_tool_index]
+                tool_call_content = self.buffer +  chunk[:end_tool_index]
                 try:
-                    json_output = self._parse_tool_content(self.buffer)
+                    json_output = self._parse_tool_content(tool_call_content)
                 except json.JSONDecodeError:
-                    print("Error parsing tool call: ", self.buffer)
-                    return None, False
-                return {
-                    "name": json_output["name"],
-                    "arguments": json.dumps(json_output["arguments"])
-                }, True
+                    print("Error parsing tool call: ", tool_call_content)
+                    return res, False
+                res["tool_calls"] = [json_output]
+                self.buffer = chunk[end_tool_index + len(self.tool_close):]
+                res["content"] = chunk[end_tool_index + len(self.tool_close):]
+                return res, True
             else:
                 self.buffer += chunk
-                return None, False
+                return res, False
             
-        return chunk, False
+        res["content"] = chunk
+        return res, False
 
 """
 Base Message Converter
