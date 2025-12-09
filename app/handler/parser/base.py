@@ -222,8 +222,8 @@ class BaseToolParser:
                 except json.JSONDecodeError:
                     logger.error("Error parsing tool call: %s", tool_call_content)
                     return res, False
-                res["name"] = json_output["name"]
-                res["arguments"] = json_output["arguments"]
+                res["name"] = str(json_output["name"])
+                res["arguments"] = str(json_output["arguments"])
                 # Calculate remaining content once and reset state
                 remaining = chunk[end_tool_index + self._tool_close_len:]
                 self.buffer = remaining
