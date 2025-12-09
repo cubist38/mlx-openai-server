@@ -105,12 +105,14 @@ class MLX_VLM:
 
         if images:
             model_params["pixel_values"] = mx.array(inputs["pixel_values"])
-            if inputs.get("image_grid_thw", None) is not None:
+            if "image_grid_thw" in inputs:
                 model_params["image_grid_thw"] = mx.array(inputs["image_grid_thw"])
+            if "image_sizes" in inputs:
+                model_params["image_sizes"] = mx.array(inputs["image_sizes"])
 
         if videos:
             model_params["pixel_values"] = mx.array(inputs["pixel_values_videos"])
-            if inputs.get("video_grid_thw", None) is not None:
+            if "video_grid_thw" in inputs:
                 model_params["video_grid_thw"] = mx.array(inputs["video_grid_thw"])
 
         prompt_cache = make_prompt_cache(self.model.language_model, self.max_kv_size)
@@ -138,10 +140,9 @@ class MLX_VLM:
 if __name__ == "__main__":
     image_path = "examples/images/attention.png"
     video_path = "examples/videos/demo.mp4"
-    model_path = "mlx-community/Llama-4-Scout-17B-16E-Instruct-8bit"
-    chat_template_file = "examples/chat_templates/llama4.jinja"
+    model_path = "mlx-community/Ministral-3-3B-Reasoning-2512-8bit"
 
-    model = MLX_VLM(model_path, chat_template_file=chat_template_file)
+    model = MLX_VLM(model_path)
     print("MODEL TYPE: ", model.get_model_type())
 
     tools = [{
@@ -184,7 +185,45 @@ if __name__ == "__main__":
                     "image": image_path
                 }
             ]
+            # "content": "What is the weather in Tokyo?"
         }
     ]
-    response = model(messages, stream=False, **kwargs)
-    print(response)
+    from app.handler.parser.ministral3 import Ministral3ThinkingParser, Ministral3ToolParser
+    thinking_parser = Ministral3ThinkingParser()
+    tool_parser = Ministral3ToolParser()
+
+    # response = model(messages, stream=False, **kwargs)
+    # response = response[0].text
+    # thinking_content, remaining_content = thinking_parser.parse(response)
+    # print("THINKING CONTENT: ", thinking_content)
+    # parsed_tool_content, remaining_content = tool_parser.parse(remaining_content)
+    # print("TOOL CONTENT: ", parsed_tool_content)
+
+    after_thinking_close_content = None
+
+    streaming_response, _ = model(messages, stream=True, **kwargs)
+    for chunk in streaming_response:
+        if not chunk or not chunk.text:
+            continue
+        text = chunk.text
+        if thinking_parser:
+            parsed_content, is_complete = thinking_parser.parse_stream(chunk.text)
+            after_thinking_close_content = None
+            if parsed_content:
+                if isinstance(parsed_content, dict):
+                    after_thinking_close_content = parsed_content.pop("content", None)
+                print(f"Parsed content: {parsed_content}")
+                
+            if is_complete:
+                thinking_parser = None
+            if after_thinking_close_content:
+                text = after_thinking_close_content
+            else:
+                continue       
+        
+        if tool_parser:
+            parsed_content, is_complete = tool_parser.parse_stream(text)
+            if parsed_content:
+                print(f"Parsed content: {parsed_content}")
+            if is_complete:
+                tool_parser = None

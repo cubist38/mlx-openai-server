@@ -26,6 +26,8 @@ from . import (
     HermesThinkingParser,
     HermesToolParser,
     Llama4PythonicToolParser,
+    Ministral3ThinkingParser,
+    Ministral3ToolParser,
 )
 from .glm4_moe import Glm4MoEMessageConverter
 from .minimax import MiniMaxMessageConverter
@@ -66,6 +68,10 @@ PARSER_REGISTRY: Dict[str, Dict[str, Callable]] = {
     },
     "llama4_pythonic": {
         "tool": Llama4PythonicToolParser,
+    },
+    "ministral3": {
+        "thinking": Ministral3ThinkingParser,
+        "tool": Ministral3ToolParser,
     },
 }
 
