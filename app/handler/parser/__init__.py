@@ -8,6 +8,7 @@ from .base import BaseToolParser, BaseThinkingParser, BaseMessageConverter
 from .minimax import MinimaxToolParser, MinimaxThinkingParser, MiniMaxMessageConverter
 from .hermes import HermesToolParser, HermesThinkingParser
 from .llama4_pythonic import Llama4PythonicToolParser
+from .ministral3 import Ministral3ToolParser, Ministral3ThinkingParser
 from .factory import ParserFactory
 
 __all__ = [
@@ -29,5 +30,7 @@ __all__ = [
     'HermesThinkingParser',
     'HermesToolParser',
     'Llama4PythonicToolParser',
+    'Ministral3ThinkingParser',
+    'Ministral3ToolParser',
     'ParserFactory',
 ]
