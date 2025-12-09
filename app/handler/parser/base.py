@@ -1,6 +1,9 @@
 import json
+import logging
 from json_repair import repair_json
 from typing import Any, Dict, List, Optional, Tuple
+
+logger = logging.getLogger(__name__)
 
 
 class BaseThinkingParser:
@@ -104,12 +107,19 @@ class BaseToolParser:
         self.tool_close = tool_close 
         self.buffer = ""
         self.state = ParseToolState.NORMAL
+        # Pre-calculate lengths for performance
+        self._tool_open_len = len(tool_open)
+        self._tool_close_len = len(tool_close) if tool_close else 0
 
     def get_tool_open(self):
         return self.tool_open
     
     def get_tool_close(self):
         return self.tool_close
+    
+    def _set_content(self, res: Dict[str, Any], content: str) -> None:
+        """Helper to set content only if non-empty."""
+        res["content"] = content if content else None
     
     def _parse_tool_content(self, tool_content: str) -> Optional[Dict[str, Any]]:
         """
@@ -192,33 +202,38 @@ class BaseToolParser:
         if chunk is None:
             return None, True
 
-        if self.tool_open in chunk:
+        start_tool_index = chunk.find(self.tool_open)
+
+        if start_tool_index != -1:
+            # Reset state and buffer when entering FOUND_PREFIX
             self.state = ParseToolState.FOUND_PREFIX
-            start_tool_index = chunk.find(self.tool_open)
-            res["content"] = chunk[:start_tool_index]
-            self.buffer += chunk[start_tool_index + len(self.tool_open):]
+            self.buffer = ""
+            self._set_content(res, chunk[:start_tool_index])
+            self.buffer += chunk[start_tool_index + self._tool_open_len:]
             return res, False
-        
 
         if self.state == ParseToolState.FOUND_PREFIX:
             end_tool_index = chunk.find(self.tool_close)
             if end_tool_index != -1:
-                tool_call_content = self.buffer +  chunk[:end_tool_index]
+                tool_call_content = self.buffer + chunk[:end_tool_index]
                 try:
                     json_output = self._parse_tool_content(tool_call_content)
                 except json.JSONDecodeError:
-                    print("Error parsing tool call: ", tool_call_content)
+                    logger.error("Error parsing tool call: %s", tool_call_content)
                     return res, False
                 res["tool_calls"] = [json_output]
-                self.buffer = chunk[end_tool_index + len(self.tool_close):]
-                res["content"] = chunk[end_tool_index + len(self.tool_close):]
+                # Calculate remaining content once and reset state
+                remaining = chunk[end_tool_index + self._tool_close_len:]
+                self.buffer = remaining
+                self._set_content(res, remaining)
+                self.state = ParseToolState.NORMAL
                 return res, True
             else:
                 self.buffer += chunk
                 return res, False
             
-        res["content"] = chunk
-        return res, False
+        self._set_content(res, chunk)
+        return res, True
 
 """
 Base Message Converter

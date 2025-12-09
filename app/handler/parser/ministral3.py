@@ -1,4 +1,9 @@
+import json
+import logging
+from typing import Any, Dict, Optional, Tuple
 from .base import BaseToolParser, BaseThinkingParser
+
+logger = logging.getLogger(__name__)
 
 THINKING_OPEN = "[THINK]"
 THINKING_CLOSE = "[/THINK]"
@@ -18,7 +23,21 @@ class Ministral3ToolParser(BaseToolParser):
         super().__init__(tool_open=TOOL_OPEN, tool_close=TOOL_CLOSE)
         self.argument_open = ARGUMENT_OPEN
         self.ministral3_tool_state = Ministral3ToolState.NORMAL
+        self.mistral_tool_name = ""
+        self.mistral_tool_arguments = ""
+        # Pre-calculate lengths for performance
+        self._argument_open_len = len(ARGUMENT_OPEN)
 
+    def _set_content(self, res: Dict[str, Any], content: str) -> None:
+        """Helper to set content only if non-empty."""
+        res["content"] = content if content else None
+    
+    def _reset_tool_state(self) -> None:
+        """Reset all tool parsing state variables."""
+        self.ministral3_tool_state = Ministral3ToolState.NORMAL
+        self.mistral_tool_name = ""
+        self.mistral_tool_arguments = ""
+        self.buffer = ""
     def parse(self, content: str) -> Tuple[Optional[Dict[str, Any]], str]:
         tool_calls = []
         remaining_parts = []
@@ -85,16 +104,54 @@ class Ministral3ToolParser(BaseToolParser):
         if chunk is None:
             return None, True
 
-        if self.tool_open in chunk:
-            self.ministral3_tool_state = Ministral3ToolState.FOUND_PREFIX
-            start_tool_index = chunk.find(self.tool_open)
+        res = {
+            "tool_calls": None,
+            "content": None,
+        }
 
-            return chunk[:start_tool_index], False
+        start_tool_index = chunk.find(self.tool_open)
+        if start_tool_index != -1:
+            self.ministral3_tool_state = Ministral3ToolState.FOUND_PREFIX
+            # Reset tool_name when entering FOUND_PREFIX state
+            self.mistral_tool_name = ""
+            self._set_content(res, chunk[:start_tool_index])
+            self.mistral_tool_name += chunk[start_tool_index + self._tool_open_len:]
+            return res, False
 
         if self.ministral3_tool_state == Ministral3ToolState.FOUND_PREFIX:
-
-            if self.argument_open in chunk:
+            start_argument_index = chunk.find(self.argument_open)
+            if start_argument_index != -1:
                 self.ministral3_tool_state = Ministral3ToolState.FOUND_ARGUMENTS
+                self._set_content(res, chunk[:start_argument_index])
+                self.mistral_tool_arguments += chunk[start_argument_index + self._argument_open_len:]
+                return res, False     
+            else:
+                self.mistral_tool_name += chunk
+                return res, False
+
+        if self.ministral3_tool_state == Ministral3ToolState.FOUND_ARGUMENTS:
+            # NOTE: Hardcoded "}" search may fail with nested JSON objects in arguments
+            # Consider using a JSON streaming parser for more robust handling
+            end_tool_index = chunk.find("}")
+            if end_tool_index != -1:
+                self.mistral_tool_arguments += chunk[:end_tool_index + 1]
+                self.buffer = f'{{"name": "{self.mistral_tool_name}", "arguments": {self.mistral_tool_arguments}}}'
+                self._set_content(res, chunk[end_tool_index + 1:])
+                try:
+                    json_output = self._parse_tool_content(self.buffer)
+                except json.JSONDecodeError:
+                    logger.error("Error parsing tool call: %s", self.buffer)
+                    return res, False
+                res["tool_calls"] = [json_output]
+                # Reset all state variables after successful completion
+                self._reset_tool_state()
+                return res, True
+            else:
+                self.mistral_tool_arguments += chunk
+                return res, False
+
+        self._set_content(res, chunk)
+        return res, True       
             
 
 class Ministral3ThinkingParser(BaseThinkingParser):
