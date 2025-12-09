@@ -196,7 +196,8 @@ class BaseToolParser:
                 - is_complete: True if tool call is complete
         """
         res = {
-            "tool_calls": None,
+            "name": None,
+            "arguments": None,
             "content": None,
         }
         if chunk is None:
@@ -221,7 +222,8 @@ class BaseToolParser:
                 except json.JSONDecodeError:
                     logger.error("Error parsing tool call: %s", tool_call_content)
                     return res, False
-                res["tool_calls"] = [json_output]
+                res["name"] = json_output["name"]
+                res["arguments"] = json_output["arguments"]
                 # Calculate remaining content once and reset state
                 remaining = chunk[end_tool_index + self._tool_close_len:]
                 self.buffer = remaining

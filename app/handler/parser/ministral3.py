@@ -105,7 +105,8 @@ class Ministral3ToolParser(BaseToolParser):
             return None, True
 
         res = {
-            "tool_calls": None,
+            "name": None,
+            "arguments": None,
             "content": None,
         }
 
@@ -142,7 +143,8 @@ class Ministral3ToolParser(BaseToolParser):
                 except json.JSONDecodeError:
                     logger.error("Error parsing tool call: %s", self.buffer)
                     return res, False
-                res["tool_calls"] = [json_output]
+                res["name"] = json_output["name"]
+                res["arguments"] = json_output["arguments"]
                 # Reset all state variables after successful completion
                 self._reset_tool_state()
                 return res, True
