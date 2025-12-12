@@ -445,6 +445,246 @@ class MLXVLMHandler:
 
             return {"response": parsed_response, "usage": usage}
 
+    async def generate_text_response(self, request: ChatCompletionRequest) -> dict[str, Any]:
+        """
+        Generate a complete response for text-only chat completion requests.
+
+        Uses the request queue for handling concurrent requests.
+
+        Parameters
+        ----------
+        request : ChatCompletionRequest
+            ChatCompletionRequest object containing the messages.
+
+        Returns
+        -------
+        dict
+            Response content and usage info.
+        """
+        request_id = f"text-{uuid.uuid4()}"
+
+        try:
+            chat_messages, model_params = await self._prepare_text_request(request)
+
+            # Count prompt tokens
+            chat_template_kwargs = model_params.get("chat_template_kwargs", {})
+            prompt_tokens = self._count_message_tokens(chat_messages, **chat_template_kwargs)
+
+            request_data = {
+                **model_params,
+                "messages": chat_messages,
+                "stream": False,
+                "prompt_tokens": prompt_tokens,
+            }
+            response, _prompt_tokens_returned = await self.request_queue.submit(
+                request_id,
+                request_data,
+            )
+        except asyncio.QueueFull:
+            logger.error("Too many requests. Service is at capacity.")
+            content = create_error_response(
+                "Too many requests. Service is at capacity.",
+                "rate_limit_exceeded",
+                HTTPStatus.TOO_MANY_REQUESTS,
+            )
+            raise HTTPException(status_code=HTTPStatus.TOO_MANY_REQUESTS, detail=content) from None
+        except HTTPException:
+            # Preserve existing HTTP error semantics from request preparation
+            raise
+        except Exception as e:
+            logger.error(f"Error in text response generation. {type(e).__name__}: {e}")
+            content = create_error_response(
+                f"Failed to generate text response: {e}",
+                "server_error",
+                HTTPStatus.INTERNAL_SERVER_ERROR,
+            )
+            raise HTTPException(status_code=HTTPStatus.INTERNAL_SERVER_ERROR, detail=content) from e
+        else:
+            # Count completion tokens
+            completion_tokens = self._count_tokens(
+                response.text if hasattr(response, "text") else str(response)
+            )
+            total_tokens = prompt_tokens + completion_tokens
+
+            # Create usage info
+            usage = UsageInfo(
+                prompt_tokens=prompt_tokens,
+                completion_tokens=completion_tokens,
+                total_tokens=total_tokens,
+            )
+
+            # Create appropriate parsers for this model type
+            thinking_parser, tool_parser = self._create_parsers()
+
+            enable_thinking = chat_template_kwargs.get("enable_thinking", True)
+
+            if ParserFactory.respects_enable_thinking(self.reasoning_parser):
+                if not enable_thinking:
+                    thinking_parser = None
+
+            if not thinking_parser and not tool_parser:
+                return {
+                    "response": response.text if hasattr(response, "text") else str(response),
+                    "usage": usage,
+                }
+
+            response_text = response.text if hasattr(response, "text") else str(response)
+
+            if thinking_parser and ParserFactory.needs_redacted_reasoning_prefix(
+                self.reasoning_parser,
+            ):
+                response_text = thinking_parser.get_thinking_open() + response_text
+
+            parsed_response: dict[str, Any] = {
+                "reasoning_content": None,
+                "tool_calls": None,
+                "content": None,
+            }
+
+            if thinking_parser:
+                thinking_response, response_text = thinking_parser.parse(response_text)
+                parsed_response["reasoning_content"] = thinking_response
+            if tool_parser:
+                tool_response, response_text = tool_parser.parse(response_text)
+                parsed_response["tool_calls"] = tool_response
+            parsed_response["content"] = response_text
+
+            return {"response": parsed_response, "usage": usage}
+
+    async def generate_text_stream(
+        self, request: ChatCompletionRequest
+    ) -> AsyncGenerator[str | dict[str, Any], None]:
+        """
+        Generate a streaming response for text-only chat completion requests.
+
+        Uses the request queue for handling concurrent requests.
+
+        Parameters
+        ----------
+        request : ChatCompletionRequest
+            ChatCompletionRequest object containing the messages.
+
+        Yields
+        ------
+        str or dict[str, Any]
+            Response chunks.
+        """
+        try:
+            # Enforce streaming mode for queued text requests to ensure
+            # the underlying model returns a generator instead of a full string.
+            request.stream = True
+
+            # Create a unique request ID
+            request_id = f"text-{uuid.uuid4()}"
+
+            chat_messages, model_params = await self._prepare_text_request(request)
+
+            # Count prompt tokens
+            chat_template_kwargs = model_params.get("chat_template_kwargs", {})
+            prompt_tokens = self._count_message_tokens(chat_messages, **chat_template_kwargs)
+
+            request_data = {
+                **model_params,
+                "messages": chat_messages,
+                "stream": True,
+                "prompt_tokens": prompt_tokens,
+            }
+
+            # Submit to the text queue and get the generator
+            response_generator, _prompt_tokens_returned = await self.request_queue.submit(
+                request_id,
+                request_data,
+            )
+
+            # Create appropriate parsers for this model type
+            thinking_parser, tool_parser = self._create_parsers()
+
+            enable_thinking = chat_template_kwargs.get("enable_thinking", True)
+
+            if ParserFactory.respects_enable_thinking(self.reasoning_parser):
+                if not enable_thinking:
+                    thinking_parser = None
+
+            is_first_chunk = True
+            completion_chunks = []  # Accumulate completion for token counting
+            after_thinking_close_content = None
+
+            # Process and yield each chunk asynchronously
+            for chunk in response_generator:
+                # Handle both string chunks and object chunks with .text attribute
+                if isinstance(chunk, str):
+                    text = chunk
+                elif hasattr(chunk, "text") and chunk.text:
+                    text = chunk.text
+                else:
+                    # Skip invalid/empty chunks
+                    continue
+
+                completion_chunks.append(text)
+                if is_first_chunk:
+                    if thinking_parser and ParserFactory.needs_redacted_reasoning_prefix(
+                        self.reasoning_parser,
+                    ):
+                        text = thinking_parser.get_thinking_open() + text
+                    is_first_chunk = False
+
+                if thinking_parser:
+                    parsed_content, is_complete = thinking_parser.parse_stream(text)
+                    after_thinking_close_content = None
+                    if parsed_content:
+                        if isinstance(parsed_content, dict):
+                            after_thinking_close_content = parsed_content.pop("content", None)
+                        yield parsed_content
+                    if is_complete:
+                        thinking_parser = None
+                    if after_thinking_close_content:
+                        text = after_thinking_close_content
+                    else:
+                        continue
+
+                if tool_parser:
+                    parsed_content, _ = tool_parser.parse_stream(text)
+                    if parsed_content:
+                        yield parsed_content
+                    continue
+
+                yield {"content": text}
+
+            # Count completion tokens and yield usage info at the end
+            completion_text = "".join(completion_chunks)
+            completion_tokens = self._count_tokens(completion_text)
+            total_tokens = prompt_tokens + completion_tokens
+
+            yield {
+                "__usage__": UsageInfo(
+                    prompt_tokens=prompt_tokens,
+                    completion_tokens=completion_tokens,
+                    total_tokens=total_tokens,
+                ),
+            }
+
+        except asyncio.QueueFull:
+            logger.error("Too many requests. Service is at capacity.")
+            content = create_error_response(
+                "Too many requests. Service is at capacity.",
+                "rate_limit_exceeded",
+                HTTPStatus.TOO_MANY_REQUESTS,
+            )
+            raise HTTPException(status_code=HTTPStatus.TOO_MANY_REQUESTS, detail=content) from None
+        except HTTPException:
+            # Preserve existing HTTP error semantics from request prep
+            raise
+        except Exception as e:
+            logger.error(
+                f"Error in text stream generation for request {request_id}. {type(e).__name__}: {e}",
+            )
+            content = create_error_response(
+                f"Failed to generate text stream: {e}",
+                "server_error",
+                HTTPStatus.INTERNAL_SERVER_ERROR,
+            )
+            raise HTTPException(status_code=HTTPStatus.INTERNAL_SERVER_ERROR, detail=content) from e
+
     async def generate_embeddings_response(self, _request: EmbeddingRequest) -> NoReturn:
         """
         Generate embeddings for a given text input.
@@ -723,6 +963,82 @@ class MLXVLMHandler:
             raise HTTPException(status_code=HTTPStatus.BAD_REQUEST, detail=content) from e
         else:
             return request_dict
+
+    async def _prepare_text_request(
+        self, request: ChatCompletionRequest
+    ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+        """
+        Prepare the text request by processing messages for text-only chat completion.
+
+        This is a simplified version of _prepare_multimodal_request for text-only requests.
+
+        Args:
+            request (ChatCompletionRequest): The incoming request containing messages.
+
+        Returns
+        -------
+            tuple[list[dict[str, Any]], dict[str, Any]]: A tuple of (chat_messages, model_params)
+        """
+        chat_messages = []
+
+        try:
+            # Process each message in the request
+            for message in request.messages:
+                # Handle system and assistant messages (simple text content)
+                if message.role in ["system", "assistant"]:
+                    chat_messages.append({"role": message.role, "content": message.content})
+                    continue
+
+                # Handle user messages
+                if message.role == "user":
+                    # For text-only, content should be string
+                    if isinstance(message.content, str):
+                        chat_messages.append({"role": "user", "content": message.content})
+                    else:
+                        content = create_error_response(
+                            "Invalid message content format for text-only request",
+                            "invalid_request_error",
+                            HTTPStatus.BAD_REQUEST,
+                        )
+                        raise HTTPException(status_code=HTTPStatus.BAD_REQUEST, detail=content)
+                elif message.role == "tool":
+                    chat_messages.append({"role": "tool", "content": message.content})
+                    continue
+
+            chat_template_kwargs = request.chat_template_kwargs.model_dump()
+            model_params = {
+                "temperature": request.temperature,
+                "top_p": request.top_p,
+                "frequency_penalty": request.frequency_penalty,
+                "presence_penalty": request.presence_penalty,
+                "max_tokens": request.max_tokens,
+                "chat_template_kwargs": chat_template_kwargs,
+                "stream": request.stream,
+            }
+
+            tools = request.tools or None
+            tool_choice = request.tool_choice or None
+
+            if tools:
+                # Enable auto tool choice if requested via CLI flag
+                if self.enable_auto_tool_choice and tool_choice == "auto":
+                    chat_template_kwargs["tool_choice"] = "auto"
+                elif tool_choice:
+                    logger.warning("Tool choice has not supported yet, will be ignored.")
+                chat_template_kwargs["tools"] = tools
+
+        except HTTPException:
+            raise
+        except Exception as e:
+            logger.error(f"Failed to prepare text request. {type(e).__name__}: {e}")
+            content = create_error_response(
+                f"Failed to process request: {e}",
+                "bad_request",
+                HTTPStatus.BAD_REQUEST,
+            )
+            raise HTTPException(status_code=HTTPStatus.BAD_REQUEST, detail=content) from e
+        else:
+            return chat_messages, model_params
 
     def _validate_image_url(self, url: str) -> None:
         """

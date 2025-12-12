@@ -916,7 +916,7 @@ def get_running_hub_models(raw_request: Request) -> set[str] | None:
     try:
         snapshot = _call_daemon_api_sync(config, "GET", "/hub/status", timeout=1.0)
     except HubServiceError as e:
-        logger.debug(
+        logger.warning(
             f"Hub manager status unavailable; skipping running model filter. {type(e).__name__}: {e}",
         )
         return None

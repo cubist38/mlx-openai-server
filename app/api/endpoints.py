@@ -21,6 +21,9 @@ from ..handler.mlx_vlm import MLXVLMHandler
 from ..handler.mlx_whisper import MLXWhisperHandler
 from ..schemas.openai import (
     ChatCompletionChunk,
+    ChatCompletionContentPartImage,
+    ChatCompletionContentPartInputAudio,
+    ChatCompletionContentPartVideo,
     ChatCompletionMessageToolCall,
     ChatCompletionRequest,
     ChatCompletionResponse,
@@ -74,6 +77,34 @@ __all__ = [
     "hub_unload_model",
     "router",
 ]
+
+
+def _has_multimodal_content(request: ChatCompletionRequest) -> bool:
+    """Check if a chat completion request contains multimodal content (images, audio, video).
+
+    Parameters
+    ----------
+    request : ChatCompletionRequest
+        The chat completion request to check.
+
+    Returns
+    -------
+    bool
+        True if the request contains multimodal content, False otherwise.
+    """
+    for message in request.messages:
+        if hasattr(message, "content") and isinstance(message.content, list):
+            for content_part in message.content:
+                if isinstance(
+                    content_part,
+                    (
+                        ChatCompletionContentPartImage,
+                        ChatCompletionContentPartInputAudio,
+                        ChatCompletionContentPartVideo,
+                    ),
+                ):
+                    return True
+    return False
 
 
 MLXHandlerType: TypeAlias = (
@@ -668,9 +699,18 @@ async def chat_completions(
     request_id = getattr(raw_request.state, "request_id", None)
 
     try:
-        if isinstance(handler, MLXVLMHandler):
+        if isinstance(handler, MLXVLMHandler) and _has_multimodal_content(request):
             return await process_multimodal_request(handler, request, request_id)
-        return await process_text_request(handler, request, request_id)
+        if isinstance(handler, (MLXVLMHandler, MLXLMHandler)):
+            return await process_text_request(handler, request, request_id)
+        return JSONResponse(
+            content=create_error_response(
+                "Unsupported model type",
+                "unsupported_request",
+                HTTPStatus.BAD_REQUEST,
+            ),
+            status_code=HTTPStatus.BAD_REQUEST,
+        )
     except HTTPException:
         raise
     except Exception as e:  # pragma: no cover - defensive logging
@@ -1393,7 +1433,7 @@ async def process_text_request(
     if request.stream:
         return StreamingResponse(
             handle_stream_response(
-                handler.generate_text_stream(request),  # type: ignore[union-attr]
+                handler.generate_text_stream(request),
                 request.model,
                 request_id,
             ),
@@ -1406,7 +1446,7 @@ async def process_text_request(
         )
 
     # Extract response and usage from handler
-    result = await handler.generate_text_response(request)  # type: ignore[union-attr]
+    result = await handler.generate_text_response(request)
     response_data = result.get("response")
     usage = result.get("usage")
     return format_final_response(response_data, request.model, request_id, usage)  # type: ignore[arg-type]
