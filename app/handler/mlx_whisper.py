@@ -42,6 +42,8 @@ class MLXWhisperHandler:
     Provides request queuing, metrics tracking, and robust error handling for audio transcription.
     """
 
+    request_queue: RequestQueue
+
     def __init__(self, model_path: str, max_concurrency: int = 1) -> None:
         """
         Initialize the handler with the specified model path.

@@ -35,6 +35,8 @@ class MLXLMHandler:
     Provides request queuing, metrics tracking, and robust error handling.
     """
 
+    request_queue: RequestQueue
+
     def __init__(
         self,
         model_path: str,

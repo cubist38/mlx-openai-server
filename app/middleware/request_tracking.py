@@ -26,6 +26,9 @@ class RequestTrackingMiddleware(BaseHTTPMiddleware):
     # Paths to log at DEBUG level for successful requests
     DEBUG_PATHS = frozenset(["/health", "/hub", "/favicon.ico", "/hub/status"])
 
+    # Paths to skip logging entirely (logged elsewhere, e.g., model-specific logs)
+    NO_LOG_PATHS = frozenset(["/v1/chat/completions"])
+
     async def dispatch(
         self,
         request: Request,
@@ -51,13 +54,15 @@ class RequestTrackingMiddleware(BaseHTTPMiddleware):
         # Store in request state for handler access
         request.state.request_id = request_id
 
-        # Log request start
+        # Log request start (skip for paths logged elsewhere)
         start_time = time.time()
         is_debug_path = request.url.path in self.DEBUG_PATHS
-        log_level = logger.debug if is_debug_path else logger.info
-        log_level(
-            f"Request started: {request.method} {request.url.path} [request_id={request_id}]",
-        )
+        is_no_log_path = request.url.path in self.NO_LOG_PATHS
+        if not is_no_log_path:
+            log_level = logger.debug if is_debug_path else logger.info
+            log_level(
+                f"Request started: {request.method} {request.url.path} [request_id={request_id}]",
+            )
 
         try:
             # Process request
@@ -70,10 +75,11 @@ class RequestTrackingMiddleware(BaseHTTPMiddleware):
                 # delivered, but returning a JSONResponse here ensures the
                 # server-side logs and tests observe a consistent outcome.
                 duration = time.time() - start_time
-                logger.warning(
-                    f"Request cancelled by client: {request.method} {request.url.path} "
-                    f"duration={duration:.3f}s [request_id={request_id}]",
-                )
+                if not is_no_log_path:
+                    logger.warning(
+                        f"Request cancelled by client: {request.method} {request.url.path} "
+                        f"duration={duration:.3f}s [request_id={request_id}]",
+                    )
 
                 return JSONResponse(
                     content={"error": "request cancelled by client"},
@@ -93,15 +99,16 @@ class RequestTrackingMiddleware(BaseHTTPMiddleware):
                 except Exception:
                     headers = {}
                 headers_preview = dict(list(headers.items())[:10])
-                logger.exception(
-                    "No response returned for request: %s %s duration=%.3fs [request_id=%s] headers=%s cause=%s",
-                    request.method,
-                    request.url.path,
-                    duration,
-                    request_id,
-                    headers_preview,
-                    repr(cause),
-                )
+                if not is_no_log_path:
+                    logger.exception(
+                        "No response returned for request: %s %s duration=%.3fs [request_id=%s] headers=%s cause=%s",
+                        request.method,
+                        request.url.path,
+                        duration,
+                        request_id,
+                        headers_preview,
+                        repr(cause),
+                    )
 
                 return JSONResponse(
                     content={
@@ -144,13 +151,13 @@ class RequestTrackingMiddleware(BaseHTTPMiddleware):
 
             # Log request completion
             is_debug_completion = is_debug_path and response.status_code == 200
-            if not is_debug_completion:
+            if not is_no_log_path and not is_debug_completion:
                 logger.info(
                     f"Request completed: {request.method} {request.url.path} "
                     f"status={response.status_code} duration={duration:.3f}s "
                     f"[request_id={request_id}]",
                 )
-            else:
+            elif not is_no_log_path and is_debug_completion:
                 logger.debug(
                     f"Request completed: {request.method} {request.url.path} "
                     f"status={response.status_code} duration={duration:.3f}s "
@@ -160,9 +167,10 @@ class RequestTrackingMiddleware(BaseHTTPMiddleware):
         except Exception:
             # Log error with request ID
             duration = time.time() - start_time
-            logger.exception(
-                f"Request failed: {request.method} {request.url.path} "
-                f"duration={duration:.3f}s [request_id={request_id}]",
-            )
+            if not is_no_log_path:
+                logger.exception(
+                    f"Request failed: {request.method} {request.url.path} "
+                    f"duration={duration:.3f}s [request_id={request_id}]",
+                )
             raise
         return response

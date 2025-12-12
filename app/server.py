@@ -183,7 +183,7 @@ def configure_logging(
             Path(file_path).parent.mkdir(parents=True, exist_ok=True)
         logger.add(
             file_path,
-            rotation="500 MB",
+            rotation="1 MB",
             retention="10 days",
             level=log_level,
             format="{time:YYYY-MM-DD HH:mm:ss} | {level} | {message}",

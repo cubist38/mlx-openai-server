@@ -649,6 +649,12 @@ async def chat_completions(
             status_code=HTTPStatus.SERVICE_UNAVAILABLE,
         )
 
+    # Log request start with model-specific logger
+    request_id = getattr(raw_request.state, "request_id", None)
+    handler.request_queue.logger.info(
+        f"Request started: POST /v1/chat/completions [request_id={request_id}]",
+    )
+
     if not isinstance(handler, MLXVLMHandler) and not isinstance(handler, MLXLMHandler):
         return JSONResponse(
             content=create_error_response(

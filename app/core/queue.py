@@ -76,6 +76,11 @@ class RequestQueue:
         # Per-queue logger (allow passing a bound logger for model-specific logs)
         self._logger = logger if logger is not None else _root_logger
 
+    @property
+    def logger(self) -> Any:
+        """Get the logger for this queue."""
+        return self._logger
+
     async def start(self, processor: Callable[[Any], Awaitable[Any]]) -> None:
         """
         Start the queue worker.

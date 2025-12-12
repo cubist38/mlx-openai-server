@@ -47,6 +47,8 @@ class MLXVLMHandler:
     Provides caching, concurrent image processing, audio processing, and robust error handling.
     """
 
+    request_queue: RequestQueue
+
     def __init__(
         self,
         model_path: str,
