@@ -165,8 +165,13 @@ def _controller_base_url(config: MLXHubConfig) -> str:
         return f"http://{host}:{port}"
 
     host = config.host or DEFAULT_BIND_HOST
+    # Convert 0.0.0.0 to a connectable address for API calls
+    if host in {"0.0.0.0", "::", "[::]"}:
+        host = "127.0.0.1"  # Use localhost IP directly
     port = config.port
-    return f"http://{host}:{port}"
+    url = f"http://{host}:{port}"
+    logger.debug(f"Controller base URL: {url}")
+    return url
 
 
 def _runtime_state_path(config: MLXHubConfig) -> Path:
@@ -211,9 +216,13 @@ def _write_hub_runtime_state(config: MLXHubConfig, pid: int) -> None:
     path = _runtime_state_path(config)
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
+        host = config.host or DEFAULT_BIND_HOST
+        # Convert 0.0.0.0 to a connectable address for API calls
+        if host in {"0.0.0.0", "::", "[::]"}:
+            host = "127.0.0.1"  # Use localhost IP directly
         payload = {
             "pid": int(pid),
-            "host": config.host or DEFAULT_BIND_HOST,
+            "host": host,
             "port": int(config.port or DEFAULT_PORT),
             "started_at": datetime.datetime.now(datetime.UTC).isoformat(),
         }
@@ -305,10 +314,12 @@ def _call_daemon_api(
     """
     base = _controller_base_url(config)
     url = f"{base.rstrip('/')}{path}"
+    logger.debug(f"Calling daemon API: {method} {url}")
     try:
         with httpx.Client(timeout=timeout) as client:
             resp = client.request(method, url, json=json)
     except httpx.HTTPError as e:  # pragma: no cover - network error handling
+        logger.debug(f"HTTP error contacting {url}: {e}")
         raise click.ClickException(f"Failed to contact hub daemon at {base}: {e}") from e
 
     if resp.status_code >= 400:
@@ -1222,13 +1233,17 @@ def _start_hub_daemon(config: MLXHubConfig) -> subprocess.Popen[bytes] | None:
         port_val,
     ]
 
+    logger.debug(f"Starting daemon with command: {' '.join(cmd)}")
+    logger.debug(f"Working directory: {Path(__file__).parent.parent}")
+    logger.debug(f"Environment MLX_HUB_CONFIG_PATH: {env.get('MLX_HUB_CONFIG_PATH')}")
+
     try:
         proc = subprocess.Popen(
             cmd,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             env=env,
-            cwd=Path.cwd(),
+            cwd=Path(__file__).parent.parent,  # Use project root directory
         )
 
         # Start background threads to log subprocess output
@@ -1282,17 +1297,42 @@ def _start_hub_daemon(config: MLXHubConfig) -> subprocess.Popen[bytes] | None:
     except (OSError, ValueError, subprocess.SubprocessError) as e:
         raise click.ClickException(f"Failed to start hub manager: {e}") from e
 
+    # Give the daemon a moment to start up
+    time.sleep(2.0)
+
     # Wait for daemon to become available
-    deadline = time.time() + 20.0
+    deadline = time.time() + 30.0
     while time.time() < deadline:
-        try:
-            _call_daemon_api(config, "GET", "/health", timeout=1.0)
+        # Check if process is still alive
+        if proc.poll() is not None:
+            logger.error(f"Daemon process exited prematurely with code {proc.poll()}")
+            raise click.ClickException(f"Hub daemon exited prematurely with code {proc.poll()}")
+
+        # Try multiple possible addresses for the health check
+        health_success = False
+        for host_candidate in ["127.0.0.1", "localhost"]:
+            try:
+                # Temporarily modify the config to use this host
+                original_host = config.host
+                config.host = host_candidate
+                _call_daemon_api(config, "GET", "/health", timeout=1.0)
+                config.host = original_host
+                health_success = True
+                logger.debug(f"Health check succeeded with host {host_candidate}")
+                break
+            except click.ClickException as e:
+                config.host = original_host
+                logger.debug(f"Health check failed with host {host_candidate}: {e}")
+                continue
+
+        if health_success:
             click.echo("Hub manager is now running.")
             break
-        except click.ClickException:
-            time.sleep(0.5)
+
+        time.sleep(0.5)
     else:
-        raise click.ClickException("Hub manager failed to start within 20 seconds.")
+        logger.error("Hub manager failed to start within 30 seconds.")
+        raise click.ClickException("Hub manager failed to start within 30 seconds.")
 
     return proc
 

@@ -409,7 +409,7 @@ class MLXVLMHandler:
             raise HTTPException(status_code=HTTPStatus.INTERNAL_SERVER_ERROR, detail=content) from e
         else:
             # Count completion tokens
-            completion_tokens = self._count_tokens(response)
+            completion_tokens = self._count_tokens(response.text)
             total_tokens = prompt_tokens + completion_tokens
 
             # Create usage info
@@ -423,10 +423,10 @@ class MLXVLMHandler:
             thinking_parser, tool_parser = self._create_parsers()
 
             if not thinking_parser and not tool_parser:
-                return {"response": response, "usage": usage}
+                return {"response": response.text, "usage": usage}
 
             parsed_response = {"reasoning_content": None, "tool_calls": None, "content": None}
-            response_text = response
+            response_text = response.text
 
             if thinking_parser and ParserFactory.needs_redacted_reasoning_prefix(
                 self.reasoning_parser,

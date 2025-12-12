@@ -23,6 +23,7 @@ from loguru import logger
 from ..const import (
     DEFAULT_API_HOST,
     DEFAULT_BIND_HOST,
+    DEFAULT_ENABLE_STATUS_PAGE,
     DEFAULT_HUB_CONFIG_PATH,
     DEFAULT_MODEL_STARTING_PORT,
 )
@@ -1152,7 +1153,7 @@ async def hub_status_page(raw_request: Request) -> HTMLResponse:
             detail="Hub status page is disabled in configuration.",
         ) from e
 
-    enabled = bool(getattr(config, "enable_status_page", False))
+    enabled = bool(getattr(config, "enable_status_page", DEFAULT_ENABLE_STATUS_PAGE))
     if not enabled:
         raise HTTPException(
             status_code=HTTPStatus.NOT_FOUND,

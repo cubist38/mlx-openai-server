@@ -134,6 +134,20 @@ class BaseProcessor(ABC):
                 logger.debug(f"Using cached {self._get_media_type_name()}: {cached_path}")
                 return cached_path
 
+            if media_url.startswith("data:"):
+                _, encoded = media_url.split(",", 1)
+                estimated_size = len(encoded) * 3 / 4
+                if estimated_size > self._get_max_file_size():
+                    raise ValueError(
+                        f"Base64-encoded {self._get_media_type_name()} exceeds size limit",
+                    )
+                data = base64.b64decode(encoded)
+
+                if not self._validate_media_data(data):
+                    raise ValueError(f"Invalid {self._get_media_type_name()} file format")
+
+                return self._process_media_data(data, cached_path, **kwargs)
+
             if Path(media_url).exists():
                 # Check file size before opening
                 file_size = Path(media_url).stat().st_size
@@ -150,20 +164,6 @@ class BaseProcessor(ABC):
                     raise ValueError(
                         f"Read {self._get_media_type_name()} data exceeds size limit: {len(data)} > {self._get_max_file_size()}",
                     )
-
-                if not self._validate_media_data(data):
-                    raise ValueError(f"Invalid {self._get_media_type_name()} file format")
-
-                return self._process_media_data(data, cached_path, **kwargs)
-
-            if media_url.startswith("data:"):
-                _, encoded = media_url.split(",", 1)
-                estimated_size = len(encoded) * 3 / 4
-                if estimated_size > self._get_max_file_size():
-                    raise ValueError(
-                        f"Base64-encoded {self._get_media_type_name()} exceeds size limit",
-                    )
-                data = base64.b64decode(encoded)
 
                 if not self._validate_media_data(data):
                     raise ValueError(f"Invalid {self._get_media_type_name()} file format")
