@@ -10,6 +10,15 @@ from app.config import MLXServerConfig
 from app.core.model_registry import ModelRegistry
 from app.hub.config import MLXHubConfig
 from app.hub.daemon import HubSupervisor
+from app.hub.worker import SidecarWorker
+
+
+class MockProcess:
+    """Mock process for testing."""
+
+    def __init__(self) -> None:
+        self.pid = 12345
+        self.returncode = 0
 
 
 class StubManager:
@@ -44,8 +53,16 @@ class StubManager:
 
 
 @pytest.mark.asyncio
-async def test_registry_updates_on_start_stop_load_unload() -> None:
+async def test_registry_updates_on_start_stop_load_unload(monkeypatch: pytest.MonkeyPatch) -> None:
     """Ensure registry handler attachment is updated after lifecycle actions."""
+
+    # Mock SidecarWorker.start to avoid actually starting processes in tests
+    async def mock_start(self: SidecarWorker) -> None:
+        self.config.port = 8000  # Set a dummy port on config
+        self._process = MockProcess()  # Mock process
+        self._ready = True  # Mark as ready
+
+    monkeypatch.setattr(SidecarWorker, "start", mock_start)
 
     cfg = MLXServerConfig(model_path="modelA", name="modelA", jit_enabled=True)
     hub_cfg = MLXHubConfig(models=[cfg])

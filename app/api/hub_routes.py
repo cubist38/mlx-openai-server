@@ -3,32 +3,27 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Callable
 import contextlib
 from http import HTTPStatus
-import os
 from pathlib import Path
-import subprocess
 import sys
-import threading
 import time
 import traceback
-from typing import IO, Any, Literal, cast
+from typing import Any, Literal, cast
 
 from fastapi import APIRouter, BackgroundTasks, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.templating import Jinja2Templates
-import httpx
 from loguru import logger
 
-from ..const import (
-    DEFAULT_API_HOST,
-    DEFAULT_BIND_HOST,
-    DEFAULT_ENABLE_STATUS_PAGE,
-    DEFAULT_HUB_CONFIG_PATH,
-    DEFAULT_MODEL_STARTING_PORT,
-)
+from ..const import DEFAULT_ENABLE_STATUS_PAGE, DEFAULT_HUB_CONFIG_PATH
 from ..hub.config import HubConfigError, MLXHubConfig, load_hub_config
 from ..schemas.openai import (
+    HubControlActionResponse,
+    HubControlLoadRequest,
+    HubControlStatusResponse,
+    HubControlUnloadRequest,
     HubGroupStatus,
     HubModelActionRequest,
     HubModelActionResponse,
@@ -43,96 +38,6 @@ from .availability import guard_model_availability
 # `is_port_available` is intentionally not used here; the daemon will perform
 # its own availability checks when starting. Keep import removed to avoid
 # accidental local scanning.
-
-
-class HubServiceError(RuntimeError):
-    """Raised when the daemon reports a service-level failure.
-
-    Parameters
-    ----------
-    message : str
-        Human-friendly error message.
-    status_code : int | None
-        Optional HTTP status code associated with the error.
-    """
-
-    def __init__(self, message: str, *, status_code: int | None = None) -> None:
-        super().__init__(message)
-        self.status_code = status_code
-
-
-def start_hub_service_process(
-    config_path: str,
-    *,
-    host: str | None = None,
-    port: int | None = None,
-) -> int:
-    """Start the hub daemon process (development helper).
-
-    This helper launches a uvicorn process in the background using the same
-    Python interpreter. It returns the spawned PID. It is intended as a
-    development convenience for the API's `/hub/service/start` endpoint.
-    """
-    host_val = host or DEFAULT_BIND_HOST
-    # Use the configured port directly. If the port is unavailable the
-    # daemon's own startup checks (`create_app` / is_port_available) will
-    # raise a clear error; avoiding local scanning prevents the CLI from
-    # starting the daemon on a different port than the configuration.
-    starting_port = port or DEFAULT_MODEL_STARTING_PORT
-    port_val = starting_port
-
-    cmd = [
-        sys.executable,
-        "-m",
-        "uvicorn",
-        "app.hub.daemon:create_app",
-        "--factory",
-        "--host",
-        host_val,
-        "--port",
-        str(port_val),
-    ]
-
-    # Set environment variable for the hub daemon to use the specified config
-    env = os.environ.copy()
-    env["MLX_HUB_CONFIG_PATH"] = config_path
-
-    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env)
-
-    # Start background threads to log subprocess output
-    def _log_output(stream: IO[bytes], level: str, prefix: str) -> None:
-        """Log output from subprocess stream."""
-        try:
-            for line in iter(stream.readline, b""):
-                line_str = line.decode("utf-8", errors="replace").rstrip()
-                if line_str:
-                    if level == "info":
-                        logger.info(f"{prefix}: {line_str}")
-                    elif level == "error":
-                        logger.error(f"{prefix}: {line_str}")
-                    else:
-                        logger.debug(f"{prefix}: {line_str}")
-        except Exception as e:
-            logger.warning(f"Error reading subprocess {prefix} output: {e}")
-
-    # Start threads to read stdout and stderr
-    if proc.stdout:
-        stdout_thread = threading.Thread(
-            target=_log_output,
-            args=(proc.stdout, "info", f"hub-daemon[{proc.pid}].stdout"),
-            daemon=True,
-        )
-        stdout_thread.start()
-
-    if proc.stderr:
-        stderr_thread = threading.Thread(
-            target=_log_output,
-            args=(proc.stderr, "error", f"hub-daemon[{proc.pid}].stderr"),
-            daemon=True,
-        )
-        stderr_thread.start()
-
-    return proc.pid
 
 
 hub_router = APIRouter()
@@ -288,6 +193,15 @@ def _stop_controller_process(
     return True
 
 
+def _get_controller(raw_request: Request) -> Any | None:
+    """Return the in-process hub controller or supervisor when available."""
+
+    controller = getattr(raw_request.app.state, "hub_controller", None)
+    if controller is None:
+        controller = getattr(raw_request.app.state, "supervisor", None)
+    return controller
+
+
 def _resolve_registry_model_id(config: MLXHubConfig | None, model_name: str) -> str | None:
     """Return the registry model identifier associated with ``model_name``.
 
@@ -402,185 +316,6 @@ def _load_hub_config_from_request(raw_request: Request) -> MLXHubConfig:
     return config
 
 
-def _daemon_base_url(config: MLXHubConfig) -> str:
-    """Return the base HTTP URL for the hub daemon for the given config."""
-    host = (config.host or DEFAULT_BIND_HOST).strip()
-    if host in {"0.0.0.0", "::", "[::]"}:
-        host = DEFAULT_API_HOST
-    # Normalize IPv6: trim any surrounding brackets if present, then add brackets once if IPv6
-    while host.startswith("[") and host.endswith("]"):
-        host = host[1:-1]
-    if ":" in host:
-        host = f"[{host}]"
-    port = config.port
-    return f"http://{host}:{port}"
-
-
-async def _call_daemon_api_async(
-    config: MLXHubConfig,
-    method: str,
-    path: str,
-    *,
-    json: object | None = None,
-    timeout: float = 5.0,
-) -> dict[str, object] | None:
-    """Async call to the hub daemon HTTP API and return parsed JSON.
-
-    Parameters
-    ----------
-    config : MLXHubConfig
-        Hub configuration describing the daemon host and port.
-    method : str
-        HTTP method to use (e.g. ``"GET"``, ``"POST"``).
-    path : str
-        Path on the daemon to call (must begin with ``/``).
-    json : object or None, optional
-        JSON body to send with the request, by default ``None``.
-    timeout : float, optional
-        Request timeout in seconds, by default ``5.0``.
-
-    Returns
-    -------
-    dict[str, object] or None
-        Parsed JSON response as a dictionary, or ``None`` when the
-        response body is empty.
-
-    Raises
-    ------
-    HubServiceError
-        If the request fails due to connectivity or the daemon returns
-        a non-2xx status code.
-    """
-    base = _daemon_base_url(config)
-    url = f"{base.rstrip('/')}{path}"
-    try:
-        async with httpx.AsyncClient(timeout=timeout) as client:
-            resp = await client.request(method, url, json=json)
-    except Exception as e:  # pragma: no cover - network error handling
-        raise HubServiceError(f"Failed to contact hub daemon at {base}: {e}") from e
-
-    if resp.status_code >= 400:
-        # Try to parse JSON error
-        payload: object | None
-        try:
-            payload = resp.json()
-        except Exception:
-            payload = resp.text
-        raise HubServiceError(
-            f"Daemon responded {resp.status_code}: {payload}",
-            status_code=resp.status_code,
-        )
-
-    if resp.content:
-        try:
-            payload = resp.json()
-        except Exception:
-            return {"raw": resp.text}
-        if isinstance(payload, dict):
-            return payload
-        # Wrap non-dict payloads in a dict to maintain the declared return type
-        return {"raw": payload}
-    return None
-
-
-def _call_daemon_api_sync(
-    config: MLXHubConfig,
-    method: str,
-    path: str,
-    *,
-    json: object | None = None,
-    timeout: float = 1.0,
-) -> dict[str, object] | None:
-    """Synchronous HTTP call to the hub daemon used by sync code paths.
-
-    Parameters
-    ----------
-    config : MLXHubConfig
-        Hub configuration describing the daemon host and port.
-    method : str
-        HTTP method to use (e.g. ``"GET"``, ``"POST"``).
-    path : str
-        Path on the daemon to call (must begin with ``/``).
-    json : object or None, optional
-        JSON body to send with the request, by default ``None``.
-    timeout : float, optional
-        Request timeout in seconds, by default ``1.0``.
-
-    Returns
-    -------
-    dict[str, object] or None
-        Parsed JSON response as a dictionary, or ``None`` when the
-        response body is empty.
-
-    Raises
-    ------
-    HubServiceError
-        On connectivity failures or when the daemon returns a non-2xx
-        HTTP response.
-    """
-    base = _daemon_base_url(config)
-    url = f"{base.rstrip('/')}{path}"
-    try:
-        with httpx.Client(timeout=timeout) as client:
-            resp = client.request(method, url, json=json)
-    except Exception as e:  # pragma: no cover - network error handling
-        raise HubServiceError(f"Failed to contact hub daemon at {base}: {e}") from e
-
-    if resp.status_code >= 400:
-        try:
-            payload = resp.json()
-        except Exception:
-            payload = resp.text
-        raise HubServiceError(
-            f"Daemon responded {resp.status_code}: {payload}",
-            status_code=resp.status_code,
-        )
-
-    if resp.content:
-        try:
-            payload = resp.json()
-        except Exception:
-            return {"raw": resp.text}
-        if isinstance(payload, dict):
-            return payload
-        # Wrap non-dict payloads in a dict to maintain the declared return type
-        return {"raw": payload}
-    return None
-
-
-def _service_error_response(action: str, exc: HubServiceError) -> JSONResponse:
-    """Create a JSON error response for hub service errors.
-
-    Parameters
-    ----------
-    action : str
-        The action that failed.
-    exc : HubServiceError
-        The service error exception.
-
-    Returns
-    -------
-    JSONResponse
-        Formatted error response.
-    """
-    status = exc.status_code or HTTPStatus.SERVICE_UNAVAILABLE
-    error_type = (
-        "rate_limit_error" if status == HTTPStatus.TOO_MANY_REQUESTS else "service_unavailable"
-    )
-    # Log the full exception for diagnostics but avoid exposing low-level
-    # transport errors (e.g. BrokenPipeError) directly to the UI.
-    logger.debug(f"Hub service error while attempting {action}: {exc}")
-    friendly_message = f"Failed to {action} via hub manager. See server logs for details."
-    return JSONResponse(
-        content=create_error_response(
-            friendly_message,
-            error_type,
-            status,
-        ),
-        status_code=status,
-    )
-
-
 def _hub_config_error_response(reason: str) -> JSONResponse:
     """Create a JSON error response for hub configuration errors.
 
@@ -601,24 +336,6 @@ def _hub_config_error_response(reason: str) -> JSONResponse:
             HTTPStatus.BAD_REQUEST,
         ),
         status_code=HTTPStatus.BAD_REQUEST,
-    )
-
-
-def _manager_unavailable_response() -> JSONResponse:
-    """Create a JSON error response for unavailable hub manager.
-
-    Returns
-    -------
-    JSONResponse
-        Formatted error response.
-    """
-    return JSONResponse(
-        content=create_error_response(
-            "Hub manager is not running. Start it via /hub/service/start or the CLI before issuing actions.",
-            "service_unavailable",
-            HTTPStatus.SERVICE_UNAVAILABLE,
-        ),
-        status_code=HTTPStatus.SERVICE_UNAVAILABLE,
     )
 
 
@@ -712,8 +429,7 @@ def _registry_error_response(exc: Exception) -> JSONResponse:
     )
 
 
-# Manager availability is determined by proxying to the hub daemon's
-# `/health` endpoint using `_call_daemon_api_async` where appropriate.
+# Manager availability is determined directly from the in-process controller.
 
 
 def _normalize_model_name(model_name: str) -> str:
@@ -891,34 +607,19 @@ def _build_groups_from_config(
     return summaries
 
 
-def get_running_hub_models(raw_request: Request) -> set[str] | None:
-    """Return the set of model names whose processes are currently running.
+async def get_running_hub_models(raw_request: Request) -> set[str] | None:
+    """Return the set of model names whose handlers are currently running."""
 
-    Parameters
-    ----------
-    raw_request : Request
-        FastAPI request containing hub server state.
-
-    Returns
-    -------
-    set[str] | None
-        Names of running models, or ``None`` when the service is unavailable.
-    """
-    server_config = getattr(raw_request.app.state, "server_config", None)
-    if not isinstance(server_config, MLXHubConfig):
+    controller = getattr(raw_request.app.state, "hub_controller", None)
+    if controller is None:
+        controller = getattr(raw_request.app.state, "supervisor", None)
+    if controller is None:
         return None
 
     try:
-        config = _load_hub_config_from_request(raw_request)
-    except HubConfigError:
-        return None
-
-    try:
-        snapshot = _call_daemon_api_sync(config, "GET", "/hub/status", timeout=1.0)
-    except HubServiceError as e:
-        logger.warning(
-            f"Hub manager status unavailable; skipping running model filter. {type(e).__name__}: {e}",
-        )
+        snapshot = await controller.get_status()
+    except Exception as exc:  # pragma: no cover - controller failures surface elsewhere
+        logger.debug(f"Failed to read controller status: {exc}")
         return None
 
     running: set[str] = set()
@@ -986,47 +687,34 @@ def get_configured_model_id(raw_request: Request) -> str | None:
 
 @hub_router.get("/hub/status", response_model=HubStatusResponse)
 async def hub_status(raw_request: Request) -> HubStatusResponse:
-    """Return hub status derived from the hub manager service when available.
+    """Return hub controller status."""
 
-    Returns
-    -------
-    HubStatusResponse
-        The hub status response.
-    """
     warnings: list[str] = []
     snapshot: dict[str, Any] | None = None
-    config: MLXHubConfig | None = None
 
-    # Check if controller is available directly (unified daemon mode)
     controller = getattr(raw_request.app.state, "hub_controller", None)
     if controller is None:
         controller = getattr(raw_request.app.state, "supervisor", None)
 
-    if controller is not None:
-        # Use controller directly in unified daemon mode
-        try:
-            # Ensure config is up to date
-            with contextlib.suppress(Exception):
-                await controller.reload_config()
-            config = controller.hub_config
-            snapshot = await controller.get_status()
-        except Exception as e:
-            warnings.append(f"Failed to get status from controller: {e}")
-            # Fallback: try to load config manually
-            try:
-                config = _load_hub_config_from_request(raw_request)
-            except HubConfigError as e2:
-                warnings.append(f"Hub configuration unavailable: {e2}")
+    if controller is None:
+        warnings.append("Hub controller is not available.")
+        controller_available = False
+        config: MLXHubConfig | None = None
     else:
-        # Fall back to daemon API calls (legacy mode)
+        controller_available = True
+        with contextlib.suppress(Exception):
+            await controller.reload_config()
+        try:
+            snapshot = await controller.get_status()
+        except Exception as exc:  # pragma: no cover - controller diagnostics
+            warnings.append(f"Failed to read controller status: {exc}")
+        config = getattr(controller, "hub_config", None)
+
+    if config is None:
         try:
             config = _load_hub_config_from_request(raw_request)
-            # Try to reconcile via daemon then fetch status snapshot
-            with contextlib.suppress(HubServiceError):
-                await _call_daemon_api_async(config, "POST", "/hub/reload")
-            snapshot = await _call_daemon_api_async(config, "GET", "/hub/status")
-        except (HubConfigError, HubServiceError) as e:
-            warnings.append(f"Hub manager unavailable: {e}")
+        except HubConfigError as exc:
+            warnings.append(f"Hub configuration unavailable: {exc}")
 
     if config is None:
         return HubStatusResponse(
@@ -1037,7 +725,7 @@ async def hub_status(raw_request: Request) -> HubStatusResponse:
             models=[],
             counts=HubStatusCounts(registered=0, started=0, loaded=0),
             warnings=warnings,
-            controller_available=controller is not None,
+            controller_available=controller_available,
         )
 
     models, counts = _build_models_from_config(config, snapshot)
@@ -1047,8 +735,6 @@ async def hub_status(raw_request: Request) -> HubStatusResponse:
         timestamp_value = snapshot.get("timestamp")
         if isinstance(timestamp_value, (int, float)):
             response_timestamp = int(timestamp_value)
-
-    controller_available = controller is not None
 
     return HubStatusResponse(
         status="ok" if snapshot is not None else "degraded",
@@ -1114,15 +800,14 @@ async def hub_reload(raw_request: Request) -> dict[str, Any] | JSONResponse:
     controller = getattr(raw_request.app.state, "hub_controller", None)
     if controller is None:
         controller = getattr(raw_request.app.state, "supervisor", None)
+    if controller is None:
+        return _controller_unavailable_response()
 
-    if controller is not None:
-        try:
-            result: dict[str, Any] = await controller.reload_config()
-        except Exception as exc:
-            return _service_error_response("reload hub configuration", HubServiceError(str(exc)))
-        return result
-
-    return _manager_unavailable_response()
+    try:
+        result: dict[str, Any] = await controller.reload_config()
+    except Exception as exc:
+        return _controller_error_response(exc)
+    return result
 
 
 @hub_router.get("/hub", response_class=HTMLResponse)
@@ -1188,69 +873,30 @@ async def hub_service_start(raw_request: Request) -> HubServiceActionResponse | 
         If the hub configuration cannot be loaded.
     """
     try:
-        config = _load_hub_config_from_request(raw_request)
+        _load_hub_config_from_request(raw_request)
     except HubConfigError as exc:
         return _hub_config_error_response(str(exc))
 
-    # If daemon is already responding, return early
+    controller = _get_controller(raw_request)
+    if controller is None:
+        return _controller_unavailable_response()
+
+    snapshot: dict[str, Any] | None = None
     try:
-        await _call_daemon_api_async(config, "GET", "/health", timeout=1.0)
-        return HubServiceActionResponse(
-            status="ok",
-            action="start",
-            message="Hub manager already running.",
-        )
-    except HubServiceError:
-        pass
+        with contextlib.suppress(Exception):
+            await controller.reload_config()
+        snapshot = await controller.get_status()
+    except Exception as exc:
+        return _controller_error_response(exc)
 
-    if config.source_path is None:
-        return _hub_config_error_response(
-            "Hub configuration must be saved to disk before starting the manager.",
-        )
-
-    pid = start_hub_service_process(str(config.source_path), host=config.host, port=config.port)
-
-    # Wait for daemon to become available
-    deadline = time.time() + 10.0
-    available = False
-    attempts = 0
-    while time.time() < deadline:
-        attempts += 1
-        try:
-            await _call_daemon_api_async(config, "GET", "/health", timeout=1.0)
-            available = True
-            break
-        except HubServiceError:
-            remaining_seconds = deadline - time.time()
-            logger.info(
-                f"Waiting for hub daemon to start... attempt {attempts}, {remaining_seconds:.1f}s remaining",
-            )
-            await asyncio.sleep(0.25)
-
-    if not available:
-        return JSONResponse(
-            content=create_error_response(
-                "Hub manager failed to start within 10 seconds.",
-                "service_unavailable",
-                HTTPStatus.SERVICE_UNAVAILABLE,
-            ),
-            status_code=HTTPStatus.SERVICE_UNAVAILABLE,
-        )
-
-    try:
-        await _call_daemon_api_async(config, "POST", "/hub/reload")
-        snapshot = await _call_daemon_api_async(config, "GET", "/hub/status")
-    except HubServiceError as e:
-        snapshot = None
-        logger.warning(f"Hub manager started (pid={pid}) but status fetch failed: {e}")
-
-    details: dict[str, Any] = {"pid": pid}
-    if snapshot is not None:
+    details: dict[str, Any] = {}
+    if isinstance(snapshot, dict):
         details["models"] = snapshot.get("models", [])
+
     return HubServiceActionResponse(
         status="ok",
         action="start",
-        message="Hub manager started",
+        message="Hub controller is already running.",
         details=details,
     )
 
@@ -1271,49 +917,21 @@ async def hub_service_stop(
     HubServiceActionResponse | JSONResponse
         Response indicating the result of the stop operation.
 
-    Raises
-    ------
-    HubConfigError
-        If the hub configuration cannot be loaded.
-    HubServiceError
-        If there is an error communicating with the hub service.
     """
-    try:
-        config = _load_hub_config_from_request(raw_request)
-    except HubConfigError as exc:
-        return _hub_config_error_response(str(exc))
+    controller = _get_controller(raw_request)
+    if controller is None:
+        return _controller_unavailable_response()
 
-    # Stop any in-process controller (schedules shutdown via BackgroundTasks
-    # so response can be returned before shutdown proceeds). This mirrors the
-    # behavior of the `/hub/shutdown` endpoint.
     controller_stopped = _stop_controller_process(raw_request, background_tasks)
-    manager_shutdown = controller_stopped  # In unified mode, controller is the manager
-
-    if not controller_stopped:
-        # Only attempt daemon calls in legacy mode (no in-process controller)
-        try:
-            # Ask daemon to reload before shutdown; if unavailable we still proceed
-            with contextlib.suppress(HubServiceError):
-                await _call_daemon_api_async(config, "POST", "/hub/reload")
-
-            await _call_daemon_api_async(config, "POST", "/hub/shutdown")
-            manager_shutdown = True
-        except HubServiceError:
-            # If daemon unreachable, treat as not running
-            manager_shutdown = False
-
-    message_parts = [
-        "Hub controller stop requested" if controller_stopped else "Hub controller was not running",
-        "Hub manager shutdown requested" if manager_shutdown else "Hub manager was not running",
-    ]
 
     return HubServiceActionResponse(
         status="ok",
         action="stop",
-        message=". ".join(message_parts),
+        message="Hub controller shutdown requested"
+        if controller_stopped
+        else "Hub controller was not running",
         details={
             "controller_stopped": controller_stopped,
-            "manager_shutdown": manager_shutdown,
         },
     )
 
@@ -1332,47 +950,16 @@ async def hub_service_reload(raw_request: Request) -> HubServiceActionResponse |
     HubServiceActionResponse or JSONResponse
         Response indicating the result of the reload action.
 
-    Raises
-    ------
-    HubConfigError
-        If the hub configuration cannot be loaded.
-    HubServiceError
-        If there is an error communicating with the hub service.
     """
-    try:
-        config = _load_hub_config_from_request(raw_request)
-    except HubConfigError as exc:
-        return _hub_config_error_response(str(exc))
-
-    # Check if controller is available directly (unified daemon mode)
-    controller = getattr(raw_request.app.state, "hub_controller", None)
-    if controller is None:
-        controller = getattr(raw_request.app.state, "supervisor", None)
-
-    if controller is not None:
-        # Use controller directly in unified daemon mode
-        try:
-            diff = await controller.reload_config()
-        except Exception as exc:
-            return _service_error_response("reload hub configuration", HubServiceError(str(exc)))
-    else:
-        # Fall back to daemon API calls (legacy mode)
-        try:
-            # Ensure daemon responds to health check
-            await _call_daemon_api_async(config, "GET", "/health")
-        except HubServiceError:
-            return _manager_unavailable_response()
-
-        try:
-            diff = await _call_daemon_api_async(config, "POST", "/hub/reload") or {}
-        except HubServiceError as exc:
-            return _service_error_response("reload hub configuration", exc)
+    reload_result = await hub_reload(raw_request)
+    if isinstance(reload_result, JSONResponse):
+        return reload_result
 
     return HubServiceActionResponse(
         status="ok",
         action="reload",
         message="Hub configuration reloaded",
-        details=diff,
+        details=reload_result,
     )
 
 
@@ -1387,7 +974,7 @@ async def hub_start_model(
     Parameters
     ----------
     model_name : str
-        The name of the model to load.
+        The name of the model to start.
     raw_request : Request
         The incoming request.
     payload : HubModelActionRequest, optional
@@ -1396,10 +983,107 @@ async def hub_start_model(
     Returns
     -------
     HubModelActionResponse or JSONResponse
-        Response indicating the result of the load action.
+        Response indicating the result of the start action.
     """
     _ = payload  # reserved for future compatibility
-    return await _hub_model_service_action(raw_request, model_name, "start")
+    target = _normalize_model_name(model_name)
+    if not target:
+        return JSONResponse(
+            content=create_error_response(
+                "Model name cannot be empty",
+                "invalid_request_error",
+                HTTPStatus.BAD_REQUEST,
+            ),
+            status_code=HTTPStatus.BAD_REQUEST,
+        )
+
+    # Check availability against the registry before attempting to start
+    config = _get_cached_hub_config(raw_request)
+    availability_error = _guard_hub_action_availability(
+        raw_request,
+        config,
+        model_name,
+        deny_detail="Model is currently unavailable",
+        log_context="start",
+    )
+    if availability_error is not None:
+        return availability_error
+
+    controller = getattr(raw_request.app.state, "hub_controller", None)
+    if controller is None:
+        controller = getattr(raw_request.app.state, "supervisor", None)
+
+    if controller is None:
+        return _controller_unavailable_response()
+
+    try:
+        result = await controller.start_model(target)
+        # For service-backed controllers the concrete start operation may
+        # be a no-op or simply mark the model run state; ensure we also
+        # trigger a VRAM load when the controller exposes that API so the
+        # model becomes available to clients.
+        # Only trigger schedule_vram_load for service-backed controllers
+        # (i.e., not the in-process HubSupervisor) to avoid duplicating
+        # behavior when the local supervisor is used in-process.
+        # Do not call schedule_vram_load on an in-process HubSupervisor
+        # (avoids circular import at module load time); use a name-based
+        # check to detect the native supervisor implementation.
+        if (
+            hasattr(controller, "schedule_vram_load")
+            and getattr(getattr(controller, "__class__", None), "__name__", "") != "HubSupervisor"
+        ):
+            # Ensure the attribute is actually an async callable (not a
+            # plain MagicMock attribute created lazily) before attempting
+            # to await it.
+            schedule_fn = getattr(controller, "schedule_vram_load")
+            is_async_callable = asyncio.iscoroutinefunction(
+                schedule_fn
+            ) or asyncio.iscoroutinefunction(getattr(schedule_fn, "__call__", None))
+            if not is_async_callable:
+                schedule_fn = None
+        else:
+            schedule_fn = None
+
+        if schedule_fn is not None:
+            try:
+                sv_result = await schedule_fn(target, settings=None)
+                # Merge fields when available (e.g., action_id/worker_port)
+                if isinstance(sv_result, dict):
+                    # Prefer schedule_vram_load payload when present
+                    result = sv_result
+            except HTTPException as exc:
+                # Propagate controller surface errors as HTTP responses
+                return _controller_error_response(exc)
+        # Support controller implementations that return either a
+        # dict-like action summary or ``None`` when the operation has
+        # been accepted without additional payload (e.g., service client
+        # stubs). Safely extract known keys when present.
+        safe = result or {}
+        status = safe.get("status", "started")
+        message = f"Model {target} {status}"
+        return HubModelActionResponse(
+            status="ok",
+            action="start",
+            model=target,
+            message=message,
+            state=safe.get("state", "ready"),
+            action_id=safe.get("action_id"),
+            progress=safe.get("progress"),
+            worker_port=safe.get("worker_port"),
+            error=None,
+        )
+    except HTTPException as exc:
+        return _controller_error_response(exc)
+    except Exception as exc:
+        logger.exception(f"Unexpected error starting model {target}: {exc}")
+        return JSONResponse(
+            content=create_error_response(
+                f"Failed to start model: {exc}",
+                "internal_error",
+                HTTPStatus.INTERNAL_SERVER_ERROR,
+            ),
+            status_code=HTTPStatus.INTERNAL_SERVER_ERROR,
+        )
 
 
 @hub_router.post("/hub/models/{model_name}/stop", response_model=HubModelActionResponse)
@@ -1425,14 +1109,20 @@ async def hub_stop_model(
         Response indicating the result of the unload action.
     """
     _ = payload  # reserved for future compatibility
-    return await _hub_model_service_action(raw_request, model_name, "stop")
+    return await _hub_memory_controller_action(
+        raw_request,
+        model_name,
+        "unload",
+        log_context="Hub stop",
+        message_builder=_stop_action_message,
+        response_action="stop",
+    )
 
 
 @hub_router.post("/hub/models/{model_name}/load", response_model=HubModelActionResponse)
 async def hub_load_model(
     model_name: str,
     raw_request: Request,
-    blocking: bool = False,
 ) -> HubModelActionResponse | JSONResponse:
     """Request that the in-process controller load ``model_name`` into memory.
 
@@ -1448,49 +1138,12 @@ async def hub_load_model(
     HubModelActionResponse or JSONResponse
         Response indicating the result of the load action.
     """
-    # Normalize target name and load cached config for availability checks
-    target = _normalize_model_name(model_name)
-    if not target:
-        return JSONResponse(
-            content=create_error_response(
-                "Model name cannot be empty",
-                "invalid_request_error",
-                HTTPStatus.BAD_REQUEST,
-            ),
-            status_code=HTTPStatus.BAD_REQUEST,
-        )
-
-    config = _get_cached_hub_config(raw_request)
-
-    availability_error = _guard_hub_action_availability(
+    return await _hub_memory_controller_action(
         raw_request,
-        config,
-        target,
-        deny_detail="Group capacity exceeded. Unload another model or wait for auto-unload.",
+        model_name,
+        "load",
         log_context="Hub load",
     )
-    if availability_error is not None:
-        return availability_error
-
-    controller = getattr(raw_request.app.state, "hub_controller", None)
-    if controller is None:
-        return _controller_unavailable_response()
-
-    # If a caller explicitly requests non-blocking behavior, schedule
-    # the load in the background and return immediately. Otherwise use
-    # the blocking path which surfaces controller errors to the client.
-    if not blocking:
-        try:
-            task = asyncio.create_task(controller.load_model(target))
-            _retain_task(task)
-            message = f"Model '{target}' load requested (running in background)"
-            return HubModelActionResponse(status="ok", action="load", model=target, message=message)
-        except Exception as exc:
-            logger.exception(f"Failed to schedule background load for {target}: {exc}")
-            return _controller_error_response(exc)
-
-    # Blocking path: preserve previous behavior (shielded load)
-    return await _hub_memory_controller_action(raw_request, model_name, "load")
 
 
 @hub_router.post("/hub/models/{model_name}/unload", response_model=HubModelActionResponse)
@@ -1512,7 +1165,12 @@ async def hub_unload_model(
     HubModelActionResponse or JSONResponse
         Response indicating the result of the unload action.
     """
-    return await _hub_memory_controller_action(raw_request, model_name, "unload")
+    return await _hub_memory_controller_action(
+        raw_request,
+        model_name,
+        "unload",
+        log_context="Hub unload",
+    )
 
 
 @hub_router.post("/hub/models/{model_name}/vram/load", response_model=HubModelActionResponse)
@@ -1521,43 +1179,14 @@ async def hub_vram_load(
     raw_request: Request,
     payload: HubModelActionRequest | None = None,
 ) -> HubModelActionResponse | JSONResponse:
-    """Admin endpoint to request VRAM residency for a registered model via the registry."""
-    target = _normalize_model_name(model_name)
-    if not target:
-        return JSONResponse(
-            content=create_error_response(
-                "Model name cannot be empty",
-                "invalid_request_error",
-                HTTPStatus.BAD_REQUEST,
-            ),
-            status_code=HTTPStatus.BAD_REQUEST,
-        )
-
-    registry = getattr(raw_request.app.state, "model_registry", None)
-    if registry is None:
-        return _registry_unavailable_response()
-
-    availability_error = _guard_hub_action_availability(
+    _ = payload  # reserved for future compatibility
+    return await _hub_memory_controller_action(
         raw_request,
-        _get_cached_hub_config(raw_request),
-        target,
-        deny_detail="Group capacity exceeded. Unload another model or wait for auto-unload.",
+        model_name,
+        "load",
         log_context="Hub VRAM load",
+        message_builder=_vram_action_message,
     )
-    if availability_error is not None:
-        return availability_error
-
-    try:
-        await registry.request_vram_load(
-            target,
-            force=bool(getattr(payload, "force", False)),
-            timeout=getattr(payload, "timeout", None),
-        )
-        message = f"VRAM load requested for '{target}'"
-    except Exception as exc:
-        return _registry_error_response(exc)
-
-    return HubModelActionResponse(status="ok", action="load", model=target, message=message)
 
 
 @hub_router.post("/hub/models/{model_name}/vram/unload", response_model=HubModelActionResponse)
@@ -1566,12 +1195,148 @@ async def hub_vram_unload(
     raw_request: Request,
     payload: HubModelActionRequest | None = None,
 ) -> HubModelActionResponse | JSONResponse:
-    """Admin endpoint to request VRAM release for a registered model via the registry."""
-    target = _normalize_model_name(model_name)
-    if not target:
+    _ = payload  # reserved for future compatibility
+    return await _hub_memory_controller_action(
+        raw_request,
+        model_name,
+        "unload",
+        log_context="Hub VRAM unload",
+        message_builder=_vram_action_message,
+    )
+
+
+@hub_router.post("/control/load", response_model=HubControlActionResponse)
+async def hub_control_load(
+    payload: HubControlLoadRequest,
+    raw_request: Request,
+) -> HubControlActionResponse | JSONResponse:
+    """Schedule VRAM load via the control plane without blocking the hub."""
+
+    model_id = _normalize_model_name(payload.model_id)
+    if not model_id:
         return JSONResponse(
             content=create_error_response(
-                "Model name cannot be empty",
+                "Model id cannot be empty",
+                "invalid_request_error",
+                HTTPStatus.BAD_REQUEST,
+            ),
+            status_code=HTTPStatus.BAD_REQUEST,
+        )
+
+    controller = getattr(raw_request.app.state, "hub_controller", None)
+    if controller is None:
+        controller = getattr(raw_request.app.state, "supervisor", None)
+    if controller is None or not hasattr(controller, "schedule_vram_load"):
+        return _controller_unavailable_response()
+
+    registry = getattr(raw_request.app.state, "model_registry", None)
+
+    try:
+        result = await controller.schedule_vram_load(model_id, settings=payload.settings)
+    except HTTPException:
+        raise
+    except Exception as exc:  # pragma: no cover - defensive
+        return _controller_error_response(exc)
+
+    action_id = cast("str | None", result.get("action_id"))
+    state = cast("str | None", result.get("state"))
+    progress = cast("float | None", result.get("progress"))
+    worker_port: int | None = None
+    error: str | None = None
+
+    if registry is not None:
+        with contextlib.suppress(Exception):
+            _, action = registry.get_vram_action_status(action_id=action_id, model_id=model_id)
+            state = cast("str | None", action.get("vram_action_state", state))
+            progress = cast("float | None", action.get("vram_action_progress", progress))
+            worker_port = cast("int | None", action.get("worker_port"))
+            error = cast("str | None", action.get("vram_action_error"))
+
+    return HubControlActionResponse(
+        status="accepted",
+        action="vram_load",
+        model=model_id,
+        action_id=action_id,
+        state=state,
+        progress=progress,
+        worker_port=worker_port,
+        message=cast("str | None", result.get("message")),
+        error=error,
+    )
+
+
+@hub_router.post("/control/unload", response_model=HubControlActionResponse)
+async def hub_control_unload(
+    payload: HubControlUnloadRequest,
+    raw_request: Request,
+) -> HubControlActionResponse | JSONResponse:
+    """Schedule VRAM unload via the control plane without blocking the hub."""
+
+    model_id = _normalize_model_name(payload.model_id)
+    if not model_id:
+        return JSONResponse(
+            content=create_error_response(
+                "Model id cannot be empty",
+                "invalid_request_error",
+                HTTPStatus.BAD_REQUEST,
+            ),
+            status_code=HTTPStatus.BAD_REQUEST,
+        )
+
+    controller = getattr(raw_request.app.state, "hub_controller", None)
+    if controller is None:
+        controller = getattr(raw_request.app.state, "supervisor", None)
+    if controller is None or not hasattr(controller, "schedule_vram_unload"):
+        return _controller_unavailable_response()
+
+    registry = getattr(raw_request.app.state, "model_registry", None)
+
+    try:
+        result = await controller.schedule_vram_unload(model_id)
+    except HTTPException:
+        raise
+    except Exception as exc:  # pragma: no cover - defensive
+        return _controller_error_response(exc)
+
+    action_id = cast("str | None", result.get("action_id"))
+    state = cast("str | None", result.get("state"))
+    progress = cast("float | None", result.get("progress"))
+    worker_port: int | None = None
+    error: str | None = None
+
+    if registry is not None:
+        with contextlib.suppress(Exception):
+            _, action = registry.get_vram_action_status(action_id=action_id, model_id=model_id)
+            state = cast("str | None", action.get("vram_action_state", state))
+            progress = cast("float | None", action.get("vram_action_progress", progress))
+            worker_port = cast("int | None", action.get("worker_port"))
+            error = cast("str | None", action.get("vram_action_error"))
+
+    return HubControlActionResponse(
+        status="accepted",
+        action="vram_unload",
+        model=model_id,
+        action_id=action_id,
+        state=state,
+        progress=progress,
+        worker_port=worker_port,
+        message=cast("str | None", result.get("message")),
+        error=error,
+    )
+
+
+@hub_router.get("/control/status", response_model=HubControlStatusResponse)
+async def hub_control_status(
+    raw_request: Request,
+    model_id: str | None = None,
+    action_id: str | None = None,
+) -> HubControlStatusResponse | JSONResponse:
+    """Return control-plane status for a model or action id."""
+
+    if not model_id and not action_id:
+        return JSONResponse(
+            content=create_error_response(
+                "model_id or action_id is required",
                 "invalid_request_error",
                 HTTPStatus.BAD_REQUEST,
             ),
@@ -1583,12 +1348,23 @@ async def hub_vram_unload(
         return _registry_unavailable_response()
 
     try:
-        await registry.request_vram_unload(target, timeout=getattr(payload, "timeout", None))
-        message = f"VRAM unload requested for '{target}'"
+        target_model_id, action = registry.get_vram_action_status(
+            model_id=model_id if model_id else None,
+            action_id=action_id if action_id else None,
+        )
     except Exception as exc:
         return _registry_error_response(exc)
 
-    return HubModelActionResponse(status="ok", action="unload", model=target, message=message)
+    return HubControlStatusResponse(
+        model=target_model_id,
+        action_id=cast("str | None", action.get("vram_action_id")),
+        state=cast("str | None", action.get("vram_action_state")),
+        progress=cast("float | None", action.get("vram_action_progress")),
+        error=cast("str | None", action.get("vram_action_error")),
+        worker_port=cast("int | None", action.get("worker_port")),
+        started_ts=cast("int | None", action.get("vram_action_started_ts")),
+        updated_ts=cast("int | None", action.get("vram_action_updated_ts")),
+    )
 
 
 @hub_router.post("/hub/shutdown", response_model=HubServiceActionResponse)
@@ -1601,151 +1377,99 @@ async def hub_shutdown(
     This endpoint forwards the shutdown request to the running hub manager
     process. If the hub manager is not running an appropriate error is returned.
     """
+    # Log caller information to help diagnose accidental or spurious shutdown
     try:
-        config = _load_hub_config_from_request(raw_request)
-    except HubConfigError as exc:
-        return _hub_config_error_response(str(exc))
+        peer = getattr(raw_request, "client", None)
+        if peer is not None:
+            client_host = getattr(peer, "host", None)
+            client_port = getattr(peer, "port", None)
+            logger.info(f"Hub shutdown requested by {client_host}:{client_port}")
+        else:
+            logger.info("Hub shutdown requested (client info unavailable)")
+    except Exception:
+        logger.exception("Failed to log shutdown caller info")
 
-    controller = getattr(raw_request.app.state, "hub_controller", None)
+    controller = _get_controller(raw_request)
     if controller is None:
-        controller = getattr(raw_request.app.state, "supervisor", None)
-    if controller is not None:
-        background_tasks.add_task(controller.shutdown_all)
+        return _controller_unavailable_response()
 
-        # Schedule server shutdown after model shutdown
-        async def shutdown_server() -> None:
-            await asyncio.sleep(1)  # Give time for response to be sent
-            sys.exit(0)
+    # Allow callers to request full process exit by providing ?exit=1 or
+    # header `X-Hub-Exit: 1`. By default we will shutdown managed models
+    # but keep the daemon process alive to avoid accidental termination.
+    exit_param = raw_request.query_params.get("exit")
+    exit_header = raw_request.headers.get("X-Hub-Exit")
+    should_exit = str(exit_param or "").lower() in {"1", "true", "yes"} or str(
+        exit_header or ""
+    ).lower() in {"1", "true", "yes"}
 
-        background_tasks.add_task(shutdown_server)
-        return HubServiceActionResponse(
-            status="ok",
-            action="stop",
-            message="Shutdown requested",
-            details={},
-        )
+    controller_stopped = _stop_controller_process(raw_request, background_tasks)
+    if controller_stopped and should_exit:
+        # If the caller explicitly requested process exit, schedule it.
+        try:
 
-    try:
-        await _call_daemon_api_async(config, "POST", "/hub/shutdown")
-    except HubServiceError as exc:
-        return _service_error_response("shutdown hub manager", exc)
+            async def _shutdown_server() -> None:
+                await asyncio.sleep(1)
+                sys.exit(0)
+
+            background_tasks.add_task(_shutdown_server)
+            logger.info("Daemon process exit scheduled by caller request")
+        except Exception:
+            logger.exception("Failed to schedule daemon exit")
+    if not controller_stopped:
+        return _controller_unavailable_response()
+
+    message = "Shutdown requested"
+    if controller_stopped and not should_exit:
+        message = "Shutdown requested (managed models stopped; daemon remains running)"
 
     return HubServiceActionResponse(
         status="ok",
         action="stop",
-        message="Shutdown requested",
+        message=message,
         details={},
     )
 
 
-async def _hub_model_service_action(
-    raw_request: Request,
-    model_name: str,
-    action: Literal["start", "stop"],
-) -> HubModelActionResponse | JSONResponse:
-    """Execute a load or unload action on a model via the hub service.
+MessageBuilder = Callable[[str, str], str]
 
-    Parameters
-    ----------
-    raw_request : Request
-        The incoming FastAPI request.
-    model_name : str
-        Name of the model to act on.
-    action : Literal["start", "stop"]
-        The action to perform.
 
-    Returns
-    -------
-    HubModelActionResponse or JSONResponse
-        Action response or error response.
-    """
-    target = _normalize_model_name(model_name)
-    if not target:
-        return JSONResponse(
-            content=create_error_response(
-                "Model name cannot be empty",
-                "invalid_request_error",
-                HTTPStatus.BAD_REQUEST,
-            ),
-            status_code=HTTPStatus.BAD_REQUEST,
-        )
+def _default_model_action_message(name: str, action: str) -> str:
+    """Return the default human-readable summary for memory actions."""
 
-    try:
-        config = _load_hub_config_from_request(raw_request)
-    except HubConfigError as exc:
-        return _hub_config_error_response(str(exc))
+    return f"Model '{name}' {action} requested"
 
-    if action == "start":
-        availability_error = _guard_hub_action_availability(
-            raw_request,
-            config,
-            target,
-            deny_detail="Group capacity exceeded. Unload another model or wait for auto-unload.",
-            log_context="Hub start",
-        )
-        if availability_error is not None:
-            return availability_error
 
-    controller = getattr(raw_request.app.state, "hub_controller", None)
-    if controller is None:
-        controller = getattr(raw_request.app.state, "supervisor", None)
-    if controller is not None:
-        try:
-            if action == "start":
-                await controller.start_model(target)
-                message = f"Model '{target}' start requested"
-            else:
-                await controller.stop_model(target)
-                message = f"Model '{target}' stop requested"
-        except Exception as exc:
-            return _controller_error_response(exc)
-        return HubModelActionResponse(status="ok", action=action, model=target, message=message)
+def _vram_action_message(name: str, action: str) -> str:
+    """Return the VRAM-specific summary for memory actions."""
 
-    try:
-        await _call_daemon_api_async(config, "GET", "/health")
-    except HubServiceError:
-        return _manager_unavailable_response()
+    return f"VRAM {action} requested for '{name}'"
 
-    try:
-        await _call_daemon_api_async(config, "POST", "/hub/reload")
-    except HubServiceError as exc:
-        return _service_error_response("reload before executing the model action", exc)
 
-    try:
-        if action == "start":
-            await _call_daemon_api_async(config, "POST", f"/hub/models/{target}/start")
-            message = f"Model '{target}' start requested"
-        else:
-            await _call_daemon_api_async(config, "POST", f"/hub/models/{target}/stop")
-            message = f"Model '{target}' stop requested"
-    except HubServiceError as exc:
-        friendly = action.replace("-", " ")
-        return _service_error_response(f"{friendly} for model '{target}'", exc)
+def _start_action_message(name: str, _action: str) -> str:
+    """Return the hub start summary for scheduled VRAM loads."""
 
-    return HubModelActionResponse(status="ok", action=action, model=target, message=message)
+    return f"Model '{name}' start requested"
+
+
+def _stop_action_message(name: str, _action: str) -> str:
+    """Return the hub stop summary for scheduled VRAM unloads."""
+
+    return f"Model '{name}' stop requested"
 
 
 async def _hub_memory_controller_action(
     raw_request: Request,
     model_name: str,
     action: Literal["load", "unload"],
+    *,
+    message_builder: MessageBuilder | None = None,
+    log_context: str = "Hub load",
+    guard_deny_detail: str = "Group capacity exceeded. Unload another model or wait for auto-unload.",
+    settings: dict[str, Any] | None = None,
+    response_action: Literal["start", "stop", "load", "unload"] | None = None,
 ) -> HubModelActionResponse | JSONResponse:
-    """Execute a memory load/unload request using the in-process controller.
+    """Schedule a VRAM load/unload via the controller and return action metadata."""
 
-    Parameters
-    ----------
-    raw_request : Request
-        The incoming FastAPI request.
-    model_name : str
-        The name of the model to act on.
-    action : Literal["load", "unload"]
-        The action to perform.
-
-    Returns
-    -------
-    HubModelActionResponse or JSONResponse
-        Response indicating the result of the action.
-    """
     target = _normalize_model_name(model_name)
     if not target:
         return JSONResponse(
@@ -1758,76 +1482,75 @@ async def _hub_memory_controller_action(
         )
 
     config = _get_cached_hub_config(raw_request)
-
     if action == "load":
         availability_error = _guard_hub_action_availability(
             raw_request,
             config,
             target,
-            deny_detail="Group capacity exceeded. Unload another model or wait for auto-unload.",
-            log_context="Hub load",
+            deny_detail=guard_deny_detail,
+            log_context=log_context,
         )
         if availability_error is not None:
             return availability_error
 
     controller = getattr(raw_request.app.state, "hub_controller", None)
     if controller is None:
+        controller = getattr(raw_request.app.state, "supervisor", None)
+
+    schedule_attr = "schedule_vram_load" if action == "load" else "schedule_vram_unload"
+    schedule_fn = getattr(controller, schedule_attr, None) if controller is not None else None
+    if schedule_fn is None:
         return _controller_unavailable_response()
+
+    registry = getattr(raw_request.app.state, "model_registry", None)
 
     try:
         if action == "load":
-            # Shield the long-running load so cancellation of the request
-            # (for example due to a client disconnect) doesn't cancel the
-            # underlying model initialization. If the await is cancelled
-            # we schedule the operation in the background and return a
-            # "requested" response to the client.
-            coro = controller.load_model(target)
-            try:
-                await asyncio.shield(coro)
-                message = f"Model '{target}' load requested"
-            except asyncio.CancelledError:
-                # Request task was cancelled (client disconnected). Ensure
-                # the load continues in background and return a requested
-                # response. Create a fresh coroutine for the background
-                # task since coroutine objects cannot be awaited/used
-                # twice.
-                task = asyncio.create_task(controller.load_model(target))
-                _retain_task(task)
-                message = f"Model '{target}' load requested (running in background)"
+            schedule_result = await schedule_fn(target, settings=settings)
         else:
-            coro = controller.unload_model(target)
-            try:
-                await asyncio.shield(coro)
-                message = f"Model '{target}' unload requested"
-            except asyncio.CancelledError:
-                # Create a fresh coroutine for the background unload task.
-                task = asyncio.create_task(controller.unload_model(target))
-                _retain_task(task)
-                message = f"Model '{target}' unload requested (running in background)"
-    except BrokenPipeError as e:  # pragma: no cover - defensive handling
-        # Broken pipe can surface from low-level I/O during heavy init; log
-        # and schedule the operation in background to avoid exposing raw
-        # socket errors to the UI while still performing the work.
+            schedule_result = await schedule_fn(target)
+    except HTTPException as exc:  # pragma: no cover - propagate as structured error
         logger.exception(
-            f"Broken pipe while executing {action} for {target}: {e}",
+            f"Controller rejected {action} for {target}. {type(exc).__name__}: {exc}",
         )
-        try:
-            task = asyncio.create_task(
-                controller.load_model(target)
-                if action == "load"
-                else controller.unload_model(target)
-            )
-            _retain_task(task)
-        except Exception:
-            logger.debug("Failed to schedule background model action after BrokenPipeError")
-        message = f"Model '{target}' {action} requested (running in background)"
-    except Exception as e:  # pragma: no cover - defensive logging
+        return _controller_error_response(exc)
+    except Exception as exc:  # pragma: no cover - defensive logging
         logger.exception(
-            f"Unexpected failure while executing {action} for {target}. {type(e).__name__}: {e}",
+            f"Unexpected failure while scheduling {action} for {target}. {type(exc).__name__}: {exc}",
         )
-        return _controller_error_response(e)
+        return _controller_error_response(exc)
 
-    return HubModelActionResponse(status="ok", action=action, model=target, message=message)
+    action_id = cast("str | None", schedule_result.get("action_id"))
+    state = cast("str | None", schedule_result.get("state"))
+    progress = cast("float | None", schedule_result.get("progress"))
+    worker_port = cast("int | None", schedule_result.get("worker_port"))
+    error = cast("str | None", schedule_result.get("error"))
+
+    if registry is not None and action_id is not None:
+        with contextlib.suppress(Exception):
+            _, action_meta = registry.get_vram_action_status(action_id=action_id)
+            state = cast("str | None", action_meta.get("vram_action_state", state))
+            progress = cast("float | None", action_meta.get("vram_action_progress", progress))
+            worker_port = cast("int | None", action_meta.get("worker_port", worker_port))
+            error = cast("str | None", action_meta.get("vram_action_error", error))
+
+    effective_action = response_action or action
+    builder = message_builder or _default_model_action_message
+    message = cast("str | None", schedule_result.get("message")) or builder(
+        target, effective_action
+    )
+
+    return HubModelActionResponse(
+        status="ok",
+        action=effective_action,
+        model=target,
+        message=message,
+        action_id=action_id,
+        state=state,
+        progress=progress,
+        worker_port=worker_port,
+        error=error,
+    )
 
 
 __all__ = [

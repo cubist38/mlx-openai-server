@@ -1023,6 +1023,25 @@ def _print_watch_snapshot(snapshot: dict[str, Any]) -> None:
     help="Specify reasoning parser to use instead of auto-detection. Only works with language models.",
 )
 @click.option(
+    "--draft-model-path",
+    type=str,
+    default=None,
+    help="Path to the draft model used for speculative decoding when supported by the worker.",
+)
+@click.option(
+    "--draft-tokens",
+    type=click.IntRange(1),
+    default=None,
+    help="Number of speculative draft tokens to generate before verification when using a draft model.",
+)
+@click.option(
+    "--worker-extra-arg",
+    "worker_extra_args",
+    multiple=True,
+    type=str,
+    help="Additional CLI arguments forwarded to worker processes. Repeat for multiple arguments.",
+)
+@click.option(
     "--trust-remote-code",
     is_flag=True,
     help="Enable trust_remote_code when loading models. This allows loading custom code from model repositories.",
@@ -1059,6 +1078,9 @@ def launch(
     enable_auto_tool_choice: bool,
     tool_call_parser: str | None,
     reasoning_parser: str | None,
+    draft_model_path: str | None,
+    draft_tokens: int | None,
+    worker_extra_args: tuple[str, ...],
     trust_remote_code: bool,
     jit_enabled: bool,
     auto_unload_minutes: int | None,
@@ -1147,6 +1169,9 @@ def launch(
         enable_auto_tool_choice=enable_auto_tool_choice,
         tool_call_parser=tool_call_parser,
         reasoning_parser=reasoning_parser,
+        draft_model_path=draft_model_path,
+        draft_tokens=draft_tokens,
+        worker_extra_args=list(worker_extra_args) or None,
         trust_remote_code=trust_remote_code,
         jit_enabled=jit_enabled,
         auto_unload_minutes=auto_unload_minutes,

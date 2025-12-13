@@ -11,9 +11,10 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import AsyncIterator, Awaitable, Callable, Iterable
-from contextlib import AbstractAsyncContextManager, asynccontextmanager
+from contextlib import AbstractAsyncContextManager, asynccontextmanager, suppress
 import time
 from typing import Any, TypedDict, cast
+import uuid
 
 from loguru import logger
 
@@ -71,6 +72,20 @@ class VRAMStatus(TypedDict, total=False):
         Error message from the last failed VRAM load attempt, or ``None``.
     active_requests : int
         Number of currently active requests being served by this model.
+    vram_action_id : str | None
+        Identifier for the latest VRAM load/unload action.
+    vram_action_state : str | None
+        State of the latest VRAM action (pending/loading/ready/error).
+    vram_action_progress : float | None
+        Progress percentage (0-100) for the latest VRAM action.
+    vram_action_error : str | None
+        Error message associated with the latest VRAM action, if any.
+    vram_action_started_ts : int | None
+        Timestamp when the latest VRAM action started.
+    vram_action_updated_ts : int | None
+        Timestamp when the latest VRAM action was last updated.
+    worker_port : int | None
+        Assigned port for the worker/sidecar serving this model, when applicable.
     -----
     The registry stores other dynamic keys as needed (e.g. ``_loading_task``),
     so this TypedDict is intentionally non-total to document the common subset
@@ -228,6 +243,13 @@ class ModelRegistry:
         base_metadata.setdefault("vram_last_unload_ts", None)
         base_metadata.setdefault("vram_last_request_ts", None)
         base_metadata.setdefault("vram_load_error", None)
+        base_metadata.setdefault("vram_action_id", None)
+        base_metadata.setdefault("vram_action_state", None)
+        base_metadata.setdefault("vram_action_progress", None)
+        base_metadata.setdefault("vram_action_error", None)
+        base_metadata.setdefault("vram_action_started_ts", None)
+        base_metadata.setdefault("vram_action_updated_ts", None)
+        base_metadata.setdefault("worker_port", None)
         base_metadata.setdefault("active_requests", 0)
 
         self._handlers[model_id] = handler
@@ -290,6 +312,14 @@ class ModelRegistry:
                     entry["vram_last_unload_ts"] = int(time.time())
 
             if metadata_updates:
+                # Instrument registry updates for troubleshooting worker_port propagation
+                try:
+                    if "worker_port" in metadata_updates:
+                        logger.debug(
+                            f"registry.update_model_state called for '{model_id}' with worker_port={metadata_updates.get('worker_port')}",
+                        )
+                except Exception:
+                    pass
                 entry.update(metadata_updates)
             if status is not None:
                 entry["status"] = status
@@ -408,6 +438,9 @@ class ModelRegistry:
             entry["vram_loaded"] = loaded
             if loaded:
                 entry["vram_last_load_ts"] = int(time.time())
+                entry["vram_action_state"] = "ready"
+                entry["vram_action_progress"] = 100.0
+                entry["vram_action_error"] = None
             entry.pop("_loading_task", None)
 
         return manager
@@ -458,6 +491,11 @@ class ModelRegistry:
             # Keep human-readable status in sync with VRAM residency
             entry["status"] = "loaded"
             entry.pop("vram_load_error", None)
+            entry.setdefault("vram_action_id", uuid.uuid4().hex)
+            entry["vram_action_state"] = "ready"
+            entry["vram_action_progress"] = 100.0
+            entry["vram_action_error"] = None
+            entry["vram_action_updated_ts"] = int(time.time())
 
         if self._group_policies:
             self._recompute_group_availability()
@@ -500,6 +538,11 @@ class ModelRegistry:
             # Keep human-readable status in sync with VRAM residency
             entry["status"] = "unloaded"
             entry.pop("vram_load_error", None)
+            entry.setdefault("vram_action_id", uuid.uuid4().hex)
+            entry["vram_action_state"] = "ready"
+            entry["vram_action_progress"] = 100.0
+            entry["vram_action_error"] = None
+            entry["vram_action_updated_ts"] = int(time.time())
 
         if self._group_policies:
             self._recompute_group_availability()
@@ -594,7 +637,10 @@ class ModelRegistry:
         -------
         dict[str, Any]
             Dictionary containing the keys: ``vram_loaded``, ``vram_last_load_ts``,
-            ``vram_last_unload_ts``, ``vram_last_request_ts``, ``vram_load_error``, and ``active_requests``.
+            ``vram_last_unload_ts``, ``vram_last_request_ts``, ``vram_load_error``,
+            ``active_requests``, ``vram_action_id``, ``vram_action_state``,
+            ``vram_action_progress``, ``vram_action_error``,
+            ``vram_action_started_ts``, ``vram_action_updated_ts``, and ``worker_port``.
         """
         if model_id not in self._extra:
             raise KeyError(f"Model '{model_id}' not found in registry")
@@ -606,7 +652,125 @@ class ModelRegistry:
             "vram_last_request_ts": entry.get("vram_last_request_ts"),
             "vram_load_error": entry.get("vram_load_error"),
             "active_requests": int(entry.get("active_requests", 0)),
+            "vram_action_id": entry.get("vram_action_id"),
+            "vram_action_state": entry.get("vram_action_state"),
+            "vram_action_progress": entry.get("vram_action_progress"),
+            "vram_action_error": entry.get("vram_action_error"),
+            "vram_action_started_ts": entry.get("vram_action_started_ts"),
+            "vram_action_updated_ts": entry.get("vram_action_updated_ts"),
+            "worker_port": entry.get("worker_port"),
         }
+
+    async def start_vram_action(
+        self,
+        model_id: str,
+        *,
+        action_id: str | None = None,
+        state: str = "pending",
+    ) -> str:
+        """Record the start of a VRAM load/unload action and return its id."""
+
+        action = action_id or uuid.uuid4().hex
+        now = int(time.time())
+        async with self._lock:
+            if model_id not in self._extra:
+                raise KeyError(f"Model '{model_id}' not found in registry")
+            entry = self._extra.setdefault(model_id, {})
+            entry["vram_action_id"] = action
+            entry["vram_action_state"] = state
+            entry["vram_action_progress"] = 0.0
+            entry["vram_action_error"] = None
+            entry["vram_action_started_ts"] = now
+            entry["vram_action_updated_ts"] = now
+        return action
+
+    async def update_vram_action(
+        self,
+        model_id: str,
+        *,
+        action_id: str | None = None,
+        state: str | None = None,
+        progress: float | None = None,
+        error: str | None | object = _UNSET,
+        worker_port: int | None | object = _UNSET,
+    ) -> str:
+        """Update VRAM action metadata for a model and return the action id."""
+
+        now = int(time.time())
+        async with self._lock:
+            if model_id not in self._extra:
+                raise KeyError(f"Model '{model_id}' not found in registry")
+            entry = self._extra.setdefault(model_id, {})
+            current_action = entry.get("vram_action_id")
+            if action_id and current_action and action_id != current_action:
+                raise ValueError(
+                    f"Action id mismatch for model '{model_id}': expected {current_action}, got {action_id}"
+                )
+            if current_action is None and action_id is None:
+                current_action = uuid.uuid4().hex
+                entry["vram_action_id"] = current_action
+            elif current_action is None and action_id is not None:
+                current_action = action_id
+                entry["vram_action_id"] = action_id
+
+            if state is not None:
+                entry["vram_action_state"] = state
+            if progress is not None:
+                entry["vram_action_progress"] = max(0.0, min(float(progress), 100.0))
+            if error is not _UNSET:
+                entry["vram_action_error"] = error
+                if error is not None and state is None:
+                    entry["vram_action_state"] = "error"
+            if worker_port is not _UNSET:
+                with suppress(Exception):
+                    logger.debug(
+                        f"registry.update_vram_action called for '{model_id}' with worker_port={worker_port}"
+                    )
+                entry["worker_port"] = worker_port
+
+            entry["vram_action_updated_ts"] = now
+            return cast("str", current_action)
+
+    def get_vram_action_status(
+        self,
+        *,
+        model_id: str | None = None,
+        action_id: str | None = None,
+    ) -> tuple[str, dict[str, Any]]:
+        """Return VRAM action status by model_id or action_id."""
+
+        if model_id is None and action_id is None:
+            raise ValueError("model_id or action_id is required")
+
+        target_model_id: str | None = model_id
+        entry: dict[str, Any] | None = None
+
+        if target_model_id is not None:
+            entry = self._extra.get(target_model_id)
+            if entry is None:
+                raise KeyError(f"Model '{target_model_id}' not found in registry")
+            current_action = entry.get("vram_action_id")
+            if action_id is not None and current_action and action_id != current_action:
+                raise KeyError(f"Action '{action_id}' not found for model '{target_model_id}'")
+        else:
+            for mid, data in self._extra.items():
+                if data.get("vram_action_id") == action_id:
+                    target_model_id = mid
+                    entry = data
+                    break
+            if target_model_id is None or entry is None:
+                raise KeyError(f"Action '{action_id}' not found")
+
+        action_status = {
+            "vram_action_id": entry.get("vram_action_id"),
+            "vram_action_state": entry.get("vram_action_state"),
+            "vram_action_progress": entry.get("vram_action_progress"),
+            "vram_action_error": entry.get("vram_action_error"),
+            "vram_action_started_ts": entry.get("vram_action_started_ts"),
+            "vram_action_updated_ts": entry.get("vram_action_updated_ts"),
+            "worker_port": entry.get("worker_port"),
+        }
+        return target_model_id, action_status
 
     def has_model(self, model_id: str) -> bool:
         """Return ``True`` when the model is registered."""

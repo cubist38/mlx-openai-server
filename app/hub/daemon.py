@@ -19,10 +19,9 @@ from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager, suppress
 from dataclasses import dataclass
 from http import HTTPStatus
-import os
 from pathlib import Path
 import time
-from typing import Any, cast
+from typing import Any, Literal, cast
 
 from fastapi import FastAPI, HTTPException
 from loguru import logger
@@ -37,8 +36,10 @@ from ..const import (
     DEFAULT_IS_DEFAULT_MODEL,
     DEFAULT_JIT_ENABLED,
     DEFAULT_LOG_LEVEL,
+    DEFAULT_MAX_CONCURRENCY,
     DEFAULT_MODEL_TYPE,
     DEFAULT_PORT,
+    DEFAULT_QUEUE_SIZE,
 )
 from ..core.model_registry import ModelRegistry, build_group_policy_payload
 from ..server import (
@@ -51,6 +52,7 @@ from ..server import (
 )
 from ..utils.network import is_port_available
 from .config import MLXHubConfig, MLXHubGroupConfig, load_hub_config
+from .worker import SidecarWorker, SidecarWorkerError
 
 
 def create_app_with_config(config_path: str) -> FastAPI:
@@ -71,18 +73,28 @@ def create_app_with_config(config_path: str) -> FastAPI:
 
 
 @dataclass
+class PendingOperation:
+    """Track an in-flight load or unload action for a model."""
+
+    action: Literal["load", "unload"]
+    task: asyncio.Task[dict[str, Any]]
+
+
+@dataclass
 class ModelRecord:
     """Record of a model's runtime state."""
 
     name: str
     config: Any
     manager: Any | None = None  # LazyHandlerManager
+    worker: SidecarWorker | None = None
     auto_unload_minutes: int | None = None
     group: str | None = None
     is_default: bool = False
     model_path: str | None = None
     started_at: float | None = None
     exit_code: int | None = None
+    pending_operation: PendingOperation | None = None
 
 
 class HubSupervisor:
@@ -118,7 +130,8 @@ class HubSupervisor:
         self.idle_controller = idle_controller
         self._models: dict[str, ModelRecord] = {}
         self._lock = asyncio.Lock()
-        self._bg_tasks: list[asyncio.Task[None]] = []
+        self._model_locks: dict[str, asyncio.Lock] = {}
+        self._bg_tasks: list[asyncio.Task[Any]] = []
         self._shutdown = False
 
         # Populate model records from hub_config
@@ -145,7 +158,453 @@ class HubSupervisor:
             )
             self._models[name] = record
 
-    def _remove_log_sink(self, record: ModelRecord, name: str) -> None:
+    async def _get_record_with_lock(
+        self,
+        name: str,
+        *,
+        raise_not_found: bool = True,
+    ) -> tuple[ModelRecord | None, asyncio.Lock | None]:
+        """Return the requested model record and its lock, creating the lock when needed.
+
+        Parameters
+        ----------
+        name : str
+            Target model identifier.
+        raise_not_found : bool, default True
+            When True, raise ``HTTPException`` if the record is missing; otherwise return ``None``.
+
+        Returns
+        -------
+        tuple[ModelRecord | None, asyncio.Lock | None]
+            Record/lock pair for the requested model; elements are ``None`` when missing and
+            ``raise_not_found`` is False.
+
+        Raises
+        ------
+        HTTPException
+            If ``raise_not_found`` is True and the model is unknown to the supervisor.
+        """
+
+        async with self._lock:
+            record = self._models.get(name)
+            if record is None:
+                if raise_not_found:
+                    raise HTTPException(status_code=404, detail="model not found")
+                return None, None
+            lock = self._model_locks.get(name)
+            if lock is None:
+                lock = asyncio.Lock()
+                self._model_locks[name] = lock
+        return record, lock
+
+    async def _wait_for_record_operation_completion(
+        self,
+        record: ModelRecord,
+        record_lock: asyncio.Lock,
+    ) -> None:
+        """Wait for any in-flight load/unload task tied to ``record`` to finish."""
+
+        while True:
+            async with record_lock:
+                pending = record.pending_operation
+                if pending is None:
+                    return
+                if pending.task.done():
+                    record.pending_operation = None
+                    continue
+                task = pending.task
+            await task
+
+    def _attach_pending_operation(
+        self,
+        *,
+        record: ModelRecord,
+        record_lock: asyncio.Lock,
+        action: Literal["load", "unload"],
+        task: asyncio.Task[dict[str, Any]],
+    ) -> None:
+        """Associate ``task`` with ``record`` while ensuring cleanup on completion."""
+
+        record.pending_operation = PendingOperation(action=action, task=task)
+
+        def _cleanup(fut: asyncio.Task[dict[str, Any]]) -> None:
+            async def _clear() -> None:
+                async with record_lock:
+                    current = record.pending_operation
+                    if current is not None and current.task is fut:
+                        record.pending_operation = None
+
+            asyncio.create_task(_clear())
+
+        task.add_done_callback(_cleanup)
+
+    def _registry_model_id(self, name: str, record: ModelRecord) -> str | None:
+        """Return the registry identifier to use for ``record``."""
+
+        if record.model_path:
+            return record.model_path
+        cfg = record.config
+        if isinstance(cfg, MLXServerConfig):
+            candidate = getattr(cfg, "model_path", None)
+            if candidate:
+                return str(candidate)
+        return name
+
+    def _ensure_worker_instance(self, name: str, record: ModelRecord) -> SidecarWorker:
+        """Return an initialized worker instance for ``record``."""
+
+        if record.worker is not None:
+            return record.worker
+        config = record.config
+        if not isinstance(config, MLXServerConfig):
+            raise HTTPException(
+                status_code=HTTPStatus.INTERNAL_SERVER_ERROR,
+                detail=f"Model '{name}' missing MLX configuration for worker launch",
+            )
+        record.worker = SidecarWorker(name=name, config=config)
+        return record.worker
+
+    async def _start_worker(
+        self,
+        *,
+        name: str,
+        record: ModelRecord,
+        model_id: str | None,
+    ) -> SidecarWorker:
+        """Start (or verify) the sidecar worker for ``record``."""
+        logger.info(
+            f"_start_worker called for name={name} model_id={model_id} record.model_path={record.model_path} record.worker={record.worker} registry_present={self.registry is not None}"
+        )
+        worker = self._ensure_worker_instance(name, record)
+        await worker.start()
+        logger.info(
+            f"_start_worker: worker started for name={name} port={worker.port} pid={worker.pid}"
+        )
+        if self.registry and model_id:
+            try:
+                has = self.registry.has_model(model_id)
+            except Exception as exc:  # pragma: no cover - defensive
+                logger.debug(f"Registry.has_model check failed for '{model_id}': {exc}")
+                has = False
+            logger.debug(f"Registry.has_model('{model_id}') -> {has}")
+
+            if not has:
+                logger.debug(
+                    f"Registry does not have model '{model_id}'; skipping worker_port update"
+                )
+            else:
+                metadata_updates: dict[str, Any] = {
+                    "worker_port": worker.port,
+                    "max_concurrency": getattr(record.config, "max_concurrency", None),
+                    "queue_size": getattr(record.config, "queue_size", None),
+                }
+                cleaned = {
+                    key: value for key, value in metadata_updates.items() if value is not None
+                }
+                logger.debug(
+                    f"_start_worker: prepared metadata_updates={metadata_updates} cleaned={cleaned}"
+                )
+                if not cleaned:
+                    logger.debug(f"_start_worker: no metadata to update for '{model_id}'; skipping")
+                if cleaned:
+                    try:
+                        logger.info(f"Updating registry metadata for '{model_id}': {cleaned}")
+                        await self.registry.update_model_state(model_id, metadata_updates=cleaned)
+                        # Read back list_models entry for confirmation
+                        try:
+                            models = self.registry.list_models()
+                            found = next((m for m in models if m.get("id") == model_id), None)
+                            logger.info(f"After update, registry record for '{model_id}': {found}")
+                            # Verify the readback contains the expected port; retry once if it doesn't
+                            found_port = None
+                            if found is not None:
+                                try:
+                                    found_port = found.get("metadata", {}).get("worker_port")
+                                except Exception:
+                                    found_port = None
+                            if found_port != worker.port:
+                                logger.warning(
+                                    f"Registry readback for '{model_id}' does not match worker.port (found={found_port} expected={worker.port}); retrying update"
+                                )
+                                try:
+                                    await self.registry.update_model_state(
+                                        model_id, metadata_updates=cleaned
+                                    )
+                                    models = self.registry.list_models()
+                                    found = next(
+                                        (m for m in models if m.get("id") == model_id), None
+                                    )
+                                    logger.info(
+                                        f"After retry, registry record for '{model_id}': {found}"
+                                    )
+                                except Exception as exc:  # pragma: no cover - defensive
+                                    logger.warning(
+                                        f"Retry to update registry metadata for '{model_id}' failed: {exc}"
+                                    )
+                        except Exception as exc:  # pragma: no cover - defensive
+                            logger.info(f"Failed to read registry back for '{model_id}': {exc}")
+                    except Exception as exc:
+                        logger.warning(
+                            f"Failed to update registry worker_port for '{model_id}': {exc}"
+                        )
+        return worker
+
+    async def _stop_worker(
+        self,
+        *,
+        name: str,
+        record: ModelRecord,
+        model_id: str | None,
+    ) -> None:
+        """Stop the sidecar worker for ``record`` if running."""
+
+        worker = record.worker
+        if worker is None:
+            return
+        try:
+            await worker.stop()
+        except SidecarWorkerError as exc:  # pragma: no cover - defensive logging
+            logger.warning(f"Failed to stop worker '{name}': {exc}")
+        finally:
+            record.worker = None
+            if self.registry and model_id and self.registry.has_model(model_id):
+                try:
+                    await self.registry.update_model_state(
+                        model_id,
+                        metadata_updates={"worker_port": None},
+                    )
+                except Exception as exc:  # pragma: no cover - defensive
+                    logger.debug(f"Failed to clear worker_port for '{model_id}': {exc}")
+
+    def _launch_load_task(
+        self,
+        *,
+        name: str,
+        record: ModelRecord,
+        record_lock: asyncio.Lock,
+        reason: str,
+    ) -> asyncio.Task[dict[str, Any]]:
+        """Create and track a load task for ``name``."""
+
+        manager = record.manager
+        if manager is None:
+            raise HTTPException(
+                status_code=400,
+                detail="model manager not initialized; call start_model first",
+            )
+
+        task = asyncio.create_task(
+            self._execute_load_operation(
+                name=name,
+                record=record,
+                manager=manager,
+                reason=reason,
+            )
+        )
+        self._attach_pending_operation(
+            record=record, record_lock=record_lock, action="load", task=task
+        )
+        self._track_task(task, f"model-load:{name}")
+        return task
+
+    def _launch_unload_task(
+        self,
+        *,
+        name: str,
+        record: ModelRecord,
+        record_lock: asyncio.Lock,
+        reason: str,
+    ) -> asyncio.Task[dict[str, Any]]:
+        """Create and track an unload task for ``name``."""
+
+        manager = record.manager
+        if manager is None:
+            raise HTTPException(status_code=404, detail="model not found")
+
+        task = asyncio.create_task(
+            self._execute_unload_operation(
+                name=name,
+                record=record,
+                manager=manager,
+                reason=reason,
+            )
+        )
+        self._attach_pending_operation(
+            record=record,
+            record_lock=record_lock,
+            action="unload",
+            task=task,
+        )
+        self._track_task(task, f"model-unload:{name}")
+        return task
+
+    def _launch_stop_task(
+        self,
+        *,
+        name: str,
+        record: ModelRecord,
+        record_lock: asyncio.Lock,
+        manager: LazyHandlerManager,
+        model_id: str | None,
+    ) -> asyncio.Task[dict[str, Any]]:
+        """Create and track a stop task for ``name``."""
+
+        task = asyncio.create_task(
+            self._execute_stop_operation(
+                name=name,
+                record=record,
+                record_lock=record_lock,
+                manager=manager,
+                model_id=model_id,
+            )
+        )
+        self._attach_pending_operation(
+            record=record,
+            record_lock=record_lock,
+            action="unload",
+            task=task,
+        )
+        self._track_task(task, f"model-stop:{name}")
+        return task
+
+    def _build_manager_for_record(self, name: str, record: ModelRecord) -> LazyHandlerManager:
+        """Return a newly initialized manager for ``record`` without side effects."""
+
+        if isinstance(record.config, MLXServerConfig):
+            cfg = record.config
+        else:
+            cfg = MLXServerConfig(
+                model_path=str(
+                    getattr(record.config, "model_path", None)
+                    or getattr(record.config, "model", None)
+                    or "",
+                ),
+                model_type=getattr(record.config, "model_type", None) or DEFAULT_MODEL_TYPE,
+                host=getattr(record.config, "host", DEFAULT_API_HOST),
+                port=getattr(record.config, "port", None) or 0,
+                jit_enabled=bool(getattr(record.config, "jit_enabled", DEFAULT_JIT_ENABLED)),
+                auto_unload_minutes=getattr(
+                    record.config,
+                    "auto_unload_minutes",
+                    DEFAULT_AUTO_UNLOAD_MINUTES,
+                ),
+                name=getattr(record.config, "name", None)
+                or getattr(record.config, "model_name", None),
+            )
+
+        if not getattr(cfg, "log_level", None):
+            cfg.log_level = getattr(self.hub_config, "log_level", DEFAULT_LOG_LEVEL)
+
+        if not getattr(cfg, "no_log_file", False) and not getattr(cfg, "log_file", None):
+            model_name = getattr(cfg, "name", None)
+            hub_log_path = getattr(self.hub_config, "log_path", None)
+            if model_name and hub_log_path:
+                try:
+                    cfg.log_file = str(Path(hub_log_path) / f"{model_name}.log")
+                except Exception:
+                    cfg.log_file = None
+
+        manager = LazyHandlerManager(cfg)
+        try:
+            model_logger = getattr(manager, "_logger", None)
+            if model_logger:
+                model_logger.info(f"Started model {name} (JIT enabled, not loaded)")
+        except Exception:
+            logger.debug(f"Failed to write model-specific start log for {name}")
+        return manager
+
+    async def _execute_load_operation(
+        self,
+        *,
+        name: str,
+        record: ModelRecord,
+        manager: LazyHandlerManager,
+        reason: str,
+    ) -> dict[str, Any]:
+        """Perform the blocking ensure_loaded call outside metadata locks."""
+
+        model_id = self._registry_model_id(name, record)
+        # Suppress direct stdout/stderr writes during the load operation so native
+        # libraries do not raise BrokenPipeError if the client disconnects.
+        with redirect_fds_to_devnull():
+            await self._ensure_group_capacity(name)
+            handler = await manager.ensure_loaded(reason)
+
+        if handler:
+            try:
+                model_logger = getattr(manager, "_logger", None)
+                if model_logger:
+                    model_logger.info(f"Loaded model {name} handler")
+            except Exception:
+                logger.debug(f"Failed to write model-specific load log for {name}")
+
+            if self.registry and model_id is not None:
+                try:
+                    await self.registry.update_model_state(model_id, handler=manager)
+                except Exception as exc:
+                    logger.warning(f"Failed to update registry for loaded model {name}: {exc}")
+
+            try:
+                await self._start_worker(name=name, record=record, model_id=model_id)
+            except SidecarWorkerError as exc:
+                logger.error(f"Failed to start worker for model '{name}': {exc}")
+                raise HTTPException(
+                    status_code=HTTPStatus.INTERNAL_SERVER_ERROR,
+                    detail="failed to start worker process; check logs for details",
+                ) from exc
+            return {"status": "loaded", "name": name}
+
+        manager_state = "unknown"
+        with suppress(Exception):
+            manager_state = "loaded" if manager.is_vram_loaded() else "not_loaded"
+        logger.warning(
+            f"Failed to load model handler for {name}: ensure_loaded returned None, manager exists with state '{manager_state}'"
+        )
+        raise HTTPException(
+            status_code=HTTPStatus.INTERNAL_SERVER_ERROR,
+            detail="failed to load model handler; check logs for details",
+        )
+
+    async def _execute_unload_operation(
+        self,
+        *,
+        name: str,
+        record: ModelRecord,
+        manager: LazyHandlerManager,
+        reason: str,
+    ) -> dict[str, Any]:
+        """Perform the blocking unload call outside metadata locks."""
+
+        model_id = self._registry_model_id(name, record)
+        unloaded = await manager.unload(reason)
+        if not unloaded:
+            return {"status": "not_loaded", "name": name}
+
+        try:
+            model_logger = getattr(manager, "_logger", None)
+            if model_logger:
+                model_logger.info(f"Unloaded model {name} handler")
+        except Exception:
+            logger.debug(f"Failed to write model-specific unload log for {name}")
+
+        self._remove_log_sink(record, name)
+
+        if self.registry and model_id is not None:
+            try:
+                await self.registry.update_model_state(model_id, handler=None)
+            except Exception as exc:
+                logger.warning(f"Failed to update registry for unloaded model {name}: {exc}")
+
+        await self._stop_worker(name=name, record=record, model_id=model_id)
+        return {"status": "unloaded", "name": name}
+
+    def _remove_log_sink(
+        self,
+        record: ModelRecord,
+        name: str,
+        *,
+        manager: LazyHandlerManager | None = None,
+    ) -> None:
         """Safely remove a per-model log sink if the manager exposes it.
 
         Parameters
@@ -154,15 +613,18 @@ class HubSupervisor:
             The model record whose manager may expose a log sink removal API.
         name : str
             Slug name of the model (used for debug logging).
+        manager : LazyHandlerManager | None, optional
+            Explicit manager to target. Defaults to ``record.manager``.
 
         Notes
         -----
         This is a best-effort operation; failures are logged at debug level
         and not propagated to callers to avoid disturbing shutdown flows.
         """
+        target = manager or record.manager
         try:
-            if record.manager and hasattr(record.manager, "remove_log_sink"):
-                record.manager.remove_log_sink()
+            if target and hasattr(target, "remove_log_sink"):
+                target.remove_log_sink()
         except Exception:
             logger.debug(f"Failed to remove log sink for {name}")
 
@@ -229,6 +691,14 @@ class HubSupervisor:
         for group in getattr(self.hub_config, "groups", []):
             if getattr(group, "name", None) == group_name:
                 return cast("MLXHubGroupConfig", group)
+        return None
+
+    def _resolve_model_name(self, target: str) -> str | None:
+        """Resolve a model slug from either name or registry model_path."""
+
+        for name, rec in self._models.items():
+            if target in {name, rec.model_path}:
+                return name
         return None
 
     def _group_violation_error(self, model_name: str) -> HTTPException:
@@ -388,122 +858,78 @@ class HubSupervisor:
         RuntimeError
             If registry updates cannot be performed due to missing model id.
         """
-        async with self._lock:
-            if name not in self._models:
-                raise HTTPException(status_code=404, detail="model not found")
-            record = self._models[name]
+        record, record_lock = await self._get_record_with_lock(name)
+        if record is None or record_lock is None:  # pragma: no cover - defensive guard
+            raise HTTPException(status_code=404, detail="model not found")
 
+        manager_created = False
+        registry_model_id: str | None = None
+
+        async with record_lock:
             if record.manager and record.manager.is_vram_loaded():
                 return {"status": "already_loaded", "name": name}
 
-            # Store the original registered model identifier before potentially overwriting
-            original_model_path = record.model_path
+            if record.manager is None:
+                record.manager = self._build_manager_for_record(name, record)
+                manager_created = True
 
-            if not record.manager:
-                # Create the manager. Prefer using the parsed MLXServerConfig
-                # from the hub config (record.config) so fields like `log_file`
-                # and `log_level` are preserved. If record.config is not already
-                # an MLXServerConfig, build one and inherit hub defaults.
-                if isinstance(record.config, MLXServerConfig):
-                    cfg = record.config
-                else:
-                    cfg = MLXServerConfig(
-                        model_path=str(
-                            getattr(record.config, "model_path", None)
-                            or getattr(record.config, "model", None)
-                            or "",
-                        ),
-                        model_type=getattr(record.config, "model_type", None) or DEFAULT_MODEL_TYPE,
-                        host=getattr(record.config, "host", DEFAULT_API_HOST),
-                        port=getattr(record.config, "port", None) or 0,
-                        jit_enabled=bool(
-                            getattr(record.config, "jit_enabled", DEFAULT_JIT_ENABLED)
-                        ),
-                        auto_unload_minutes=getattr(
-                            record.config,
-                            "auto_unload_minutes",
-                            DEFAULT_AUTO_UNLOAD_MINUTES,
-                        ),
-                        name=getattr(record.config, "name", None)
-                        or getattr(record.config, "model_name", None),
-                    )
+            assert record.manager is not None  # for type checkers
+            registry_model_id = self._registry_model_id(name, record)
+            jit_enabled = bool(record.manager.jit_enabled)
+            manager_ref = record.manager
 
-                # Ensure model log level falls back to hub log level when unspecified
-                if not getattr(cfg, "log_level", None):
-                    cfg.log_level = getattr(self.hub_config, "log_level", DEFAULT_LOG_LEVEL)
-
-                # Resolve default per-model log file when not explicitly set and
-                # file logging is enabled. Use hub log path to derive the filename.
-                if not getattr(cfg, "no_log_file", False) and not getattr(cfg, "log_file", None):
-                    model_name = getattr(cfg, "name", None)
-                    if model_name and getattr(self.hub_config, "log_path", None):
-                        try:
-                            cfg.log_file = str(Path(self.hub_config.log_path) / f"{model_name}.log")
-                        except Exception:
-                            cfg.log_file = None
-
-                record.manager = LazyHandlerManager(cfg)
-                # Preserve the original registered model id. Do not overwrite
-                # `record.model_path` here — registry updates intentionally
-                # prefer the original registered id (see `model_id_for_registry`
-                # selection below).
-                # Also emit the start event to the model-specific log sink
-                try:
-                    model_logger = getattr(record.manager, "_logger", None)
-                    if model_logger:
-                        model_logger.info(f"Started model {name} (JIT enabled, not loaded)")
-                except Exception:
-                    logger.debug(f"Failed to write model-specific start log for {name}")
-
-            # Only load immediately if JIT is disabled
-            if not record.manager.jit_enabled:
-                await self._ensure_group_capacity(name)
-                await record.manager.ensure_loaded("start")
-                if self.registry:
-                    # Use the registered model_id (original_model_path) for update_model_state
-                    model_id_for_registry = (
-                        original_model_path if original_model_path else record.model_path
-                    )
-                    if model_id_for_registry is None:
-                        logger.error(
-                            f"Registry update skipped: missing model id for registry. "
-                            f"model={name!r} original_model_path={original_model_path!r} "
-                            f"record.model_path={record.model_path!r} manager={getattr(record, 'manager', None)!r}"
-                        )
-                        raise RuntimeError(
-                            f"Cannot update registry for model '{name}': model id is None"
-                        )
-                    await self.registry.update_model_state(
-                        model_id_for_registry, handler=record.manager
-                    )
-                # Also emit the load event to the model-specific log sink
-                try:
-                    model_logger = getattr(record.manager, "_logger", None)
-                    if model_logger:
-                        model_logger.info(f"Loaded model {name}")
-                except Exception:
-                    logger.debug(f"Failed to write model-specific load log for {name}")
-                return {"status": "loaded", "name": name}
-
-            # JIT enabled: just create the manager, don't load yet
-            if self.registry:
-                # Use the registered model_id (original_model_path) for update_model_state
-                model_id_for_registry = (
-                    original_model_path if original_model_path else record.model_path
+        if manager_created and self.registry is not None:
+            logger.debug(
+                f"start_model: manager_created={manager_created} registry_model_id={registry_model_id} jit_enabled={jit_enabled}"
+            )
+            if registry_model_id is None:
+                logger.error(
+                    f"Registry update skipped: missing model id for registry. model={name!r}"
                 )
-                if model_id_for_registry is None:
-                    logger.error(
-                        f"Registry update skipped: missing model id for registry (JIT start). "
-                        f"model={name!r} original_model_path={original_model_path!r} "
-                        f"record.model_path={record.model_path!r} manager={getattr(record, 'manager', None)!r}"
-                    )
-                    raise RuntimeError(
-                        f"Cannot update registry for model '{name}' (JIT start): model id is None"
-                    )
-                await self.registry.update_model_state(
-                    model_id_for_registry, handler=record.manager
+                raise RuntimeError(f"Cannot update registry for model '{name}': model id is None")
+            await self.registry.update_model_state(
+                registry_model_id,
+                handler=manager_ref,
+            )
+
+            logger.debug(
+                f"start_model: registry updated for {registry_model_id}; record.worker initially={record.worker}"
+            )
+            # Start the sidecar worker immediately so a "start" action makes the
+            # model's worker available and the registry can be updated with the
+            # assigned port synchronously.
+            try:
+                await self._start_worker(name=name, record=record, model_id=registry_model_id)
+                logger.debug(
+                    f"start_model: worker after _start_worker={record.worker} worker.port={getattr(record.worker, 'port', None) if record.worker else None}"
                 )
-            return {"status": "started", "name": name}
+            except SidecarWorkerError as exc:  # pragma: no cover - surface errors
+                logger.error(f"Failed to start worker for model '{name}': {exc}")
+                raise HTTPException(
+                    status_code=HTTPStatus.INTERNAL_SERVER_ERROR,
+                    detail="failed to start worker process; check logs for details",
+                ) from exc
+        else:
+            # Even when the manager already existed, ensure the sidecar worker
+            # is started so UI/client surfaces (e.g., /v1/models) can be
+            # populated with the assigned worker port. This covers cases
+            # where a manager may be attached but the worker isn't running.
+            try:
+                await self._start_worker(name=name, record=record, model_id=registry_model_id)
+                logger.debug(
+                    f"start_model (existing manager): worker after _start_worker={record.worker} worker.port={getattr(record.worker, 'port', None) if record.worker else None}"
+                )
+            except SidecarWorkerError as exc:  # pragma: no cover - surface errors
+                logger.error(f"Failed to start worker for model '{name}' (existing manager): {exc}")
+                raise HTTPException(
+                    status_code=HTTPStatus.INTERNAL_SERVER_ERROR,
+                    detail="failed to start worker process; check logs for details",
+                ) from exc
+
+        if not jit_enabled:
+            return await self.load_model(name)
+
+        return {"status": "started", "name": name}
 
     async def stop_model(self, name: str) -> dict[str, Any]:
         """Stop a supervised model process.
@@ -523,53 +949,77 @@ class HubSupervisor:
         HTTPException
             If the model is not found.
         """
-        async with self._lock:
-            if name not in self._models:
-                raise HTTPException(status_code=404, detail="model not found")
-            record = self._models[name]
-            if record.manager is None:
-                return {"status": "not_running", "name": name}
+        record, record_lock = await self._get_record_with_lock(name)
+        if record is None or record_lock is None:  # pragma: no cover - defensive guard
+            raise HTTPException(status_code=404, detail="model not found")
 
-            unloaded = await record.manager.unload("stop")
-            if unloaded:
-                # Also emit the unload event to the model-specific log sink
-                try:
-                    model_logger = getattr(record.manager, "_logger", None)
-                    if model_logger:
-                        model_logger.info(f"Unloaded model {name}")
-                except Exception:
-                    logger.debug(f"Failed to write model-specific unload log for {name}")
-                # Remove per-model log sink if present
-                self._remove_log_sink(record, name)
-                record.manager = None  # Clear the manager so the model is fully stopped
-                # Update registry to reflect the stopped state
-                if self.registry and record.model_path is not None:
-                    try:
-                        await self.registry.update_model_state(record.model_path, handler=None)
-                    except Exception as e:
-                        logger.warning(f"Failed to update registry for stopped model {name}: {e}")
-                return {"status": "stopped", "name": name}
+        model_id = self._registry_model_id(name, record)
+        await self._wait_for_record_operation_completion(record, record_lock)
 
-            # If unload returned False it usually means the manager existed but
-            # there was no loaded handler (JIT manager with no active process).
-            # Treat a stop request as removing the manager in this case so the
-            # supervisor and UI reflect the not-running state.
-            # Also emit the removal to the model-specific log sink if possible
+        async with record_lock:
+            manager = record.manager
+            if manager is None:
+                stop_task = None
+            else:
+                record.manager = None
+                stop_task = self._launch_stop_task(
+                    name=name,
+                    record=record,
+                    record_lock=record_lock,
+                    manager=manager,
+                    model_id=model_id,
+                )
+
+        if stop_task is None:
+            await self._stop_worker(name=name, record=record, model_id=model_id)
+            return {"status": "not_running", "name": name}
+
+        return await stop_task
+
+    async def _execute_stop_operation(
+        self,
+        *,
+        name: str,
+        record: ModelRecord,
+        record_lock: asyncio.Lock,
+        manager: LazyHandlerManager,
+        model_id: str | None,
+    ) -> dict[str, Any]:
+        """Unload the manager, update registry, and stop the worker."""
+
+        try:
+            unloaded = await manager.unload("stop")
+        except Exception:
+            async with record_lock:
+                if record.manager is None:
+                    record.manager = manager
+            raise
+
+        if unloaded:
             try:
-                model_logger = getattr(record.manager, "_logger", None)
+                model_logger = getattr(manager, "_logger", None)
+                if model_logger:
+                    model_logger.info(f"Unloaded model {name}")
+            except Exception:
+                logger.debug(f"Failed to write model-specific unload log for {name}")
+        else:
+            try:
+                model_logger = getattr(manager, "_logger", None)
                 if model_logger:
                     model_logger.info(f"Removing manager for {name} (no handler loaded)")
             except Exception:
                 logger.debug(f"Failed to write model-specific removal log for {name}")
+
+        self._remove_log_sink(record, name, manager=manager)
+
+        if self.registry and model_id is not None:
             try:
-                # Remove per-model log sink if present
-                self._remove_log_sink(record, name)
-                record.manager = None
-                if self.registry and record.model_path is not None:
-                    await self.registry.update_model_state(record.model_path, handler=None)
-            except Exception as e:
-                logger.warning(f"Failed to update registry while removing manager for {name}: {e}")
-            return {"status": "stopped", "name": name}
+                await self.registry.update_model_state(model_id, handler=None)
+            except Exception as exc:
+                logger.warning(f"Failed to update registry for stopped model {name}: {exc}")
+
+        await self._stop_worker(name=name, record=record, model_id=model_id)
+        return {"status": "stopped", "name": name}
 
     async def get_handler(self, name: str, reason: str = "request") -> MLXHandler | None:
         """Get the current handler for a model, loading it if necessary.
@@ -586,13 +1036,23 @@ class HubSupervisor:
         MLXHandler | None
             The handler instance, or None if not found or failed to load.
         """
-        async with self._lock:
-            record = self._models.get(name)
-            if record is None or record.manager is None:
-                return None
-            if not record.manager.is_vram_loaded():
-                await self._ensure_group_capacity(name)
-            return await record.manager.ensure_loaded(reason)
+        record, record_lock = await self._get_record_with_lock(name, raise_not_found=False)
+        if record is None or record_lock is None:
+            return None
+
+        # Loop until we observe a loaded manager so heavy work stays outside the lock.
+        while True:
+            async with record_lock:
+                manager = record.manager
+                if manager is None:
+                    return None
+                manager_loaded = manager.is_vram_loaded()
+
+            if not manager_loaded:
+                await self.load_model(name)
+                continue
+
+            return await manager.ensure_loaded(reason)
 
     async def acquire_handler(self, name: str, reason: str = "request") -> MLXHandler | None:
         """Acquire a handler for the given model name.
@@ -634,58 +1094,42 @@ class HubSupervisor:
         HTTPException
             If the model is not found or manager is uninitialized.
         """
-        # Suppress direct stdout/stderr writes during the load operation.
-        # Some third-party libraries may write directly to the OS-level
-        # stdout/stderr file descriptors (e.g. Rust-backed tokenizers). Use
-        # an FD-level redirect to /dev/null for the duration of the load so
-        # native writes don't raise BrokenPipeError when the parent's pipe
-        # is closed.
-        with redirect_fds_to_devnull():
-            async with self._lock:
-                if name not in self._models:
-                    raise HTTPException(status_code=404, detail="model not found")
-                record = self._models[name]
+        record, record_lock = await self._get_record_with_lock(name)
+        if record is None or record_lock is None:  # pragma: no cover - defensive guard
+            raise HTTPException(status_code=404, detail="model not found")
+
+        while True:
+            async with record_lock:
                 if record.manager is None:
                     raise HTTPException(
                         status_code=400,
                         detail="model manager not initialized; call start_model first",
                     )
+
                 if record.manager.is_vram_loaded():
                     return {"status": "already_loaded", "name": name}
 
-                await self._ensure_group_capacity(name)
-                handler = await record.manager.ensure_loaded("load")
-                if handler:
-                    # Also emit the handler-loaded event to the model-specific log sink
-                    try:
-                        model_logger = getattr(record.manager, "_logger", None)
-                        if model_logger:
-                            model_logger.info(f"Loaded model {name} handler")
-                    except Exception:
-                        logger.debug(f"Failed to write model-specific handler load log for {name}")
-                    # Update registry to reflect the loaded state
-                    if self.registry and record.model_path is not None:
-                        try:
-                            await self.registry.update_model_state(
-                                record.model_path, handler=record.manager
-                            )
-                        except Exception as e:
-                            logger.warning(
-                                f"Failed to update registry for loaded model {name}: {e}"
-                            )
-                    return {"status": "loaded", "name": name}
-                # Handler loading failed - log details and raise appropriate exception
-                manager_state = "unknown"
-                with suppress(Exception):
-                    manager_state = "loaded" if record.manager.is_vram_loaded() else "not_loaded"
-                logger.warning(
-                    f"Failed to load model handler for {name}: ensure_loaded returned None, "
-                    f"manager exists with state '{manager_state}'"
-                )
-                raise HTTPException(
-                    status_code=HTTPStatus.INTERNAL_SERVER_ERROR,
-                    detail="failed to load model handler; check logs for details",
-                )
+                pending = record.pending_operation
+                if pending and pending.task.done():
+                    record.pending_operation = None
+                    pending = None
+
+                if pending is None:
+                    task = self._launch_load_task(
+                        name=name,
+                        record=record,
+                        record_lock=record_lock,
+                        reason="load",
+                    )
+                    pending_action: Literal["load", "unload"] = "load"
+                else:
+                    task = pending.task
+                    pending_action = pending.action
+
+            if pending_action != "load":
+                await task
+                continue
+            return await task
 
     async def unload_model(self, name: str) -> dict[str, Any]:
         """Unload a model's handler from memory.
@@ -702,32 +1146,108 @@ class HubSupervisor:
         dict[str, Any]
             Status dict indicating the unload outcome.
         """
-        async with self._lock:
-            if name not in self._models:
-                raise HTTPException(status_code=404, detail="model not found")
-            record = self._models[name]
-            if record.manager is None:
-                return {"status": "not_loaded", "name": name}
-            unloaded = await record.manager.unload("unload")
-            if unloaded:
-                # Also emit the unload event to the model-specific log sink
-                try:
-                    model_logger = getattr(record.manager, "_logger", None)
-                    if model_logger:
-                        model_logger.info(f"Unloaded model {name} handler")
-                except Exception:
-                    logger.debug(f"Failed to write model-specific handler unload log for {name}")
-                # Remove per-model log sink if present
-                self._remove_log_sink(record, name)
-                # Update registry to reflect unloaded state (but keep manager alive)
-                if self.registry and record.model_path is not None:
-                    try:
-                        await self.registry.update_model_state(record.model_path, handler=None)
-                    except Exception as e:
-                        logger.warning(f"Failed to update registry for unloaded model {name}: {e}")
-                return {"status": "unloaded", "name": name}
+        record, record_lock = await self._get_record_with_lock(name)
+        if record is None or record_lock is None:  # pragma: no cover - defensive guard
+            raise HTTPException(status_code=404, detail="model not found")
 
-            return {"status": "not_loaded", "name": name}
+        while True:
+            async with record_lock:
+                if record.manager is None or not record.manager.is_vram_loaded():
+                    return {"status": "not_loaded", "name": name}
+
+                pending = record.pending_operation
+                if pending and pending.task.done():
+                    record.pending_operation = None
+                    pending = None
+
+                if pending is None:
+                    task = self._launch_unload_task(
+                        name=name,
+                        record=record,
+                        record_lock=record_lock,
+                        reason="unload",
+                    )
+                    pending_action: Literal["load", "unload"] = "unload"
+                else:
+                    task = pending.task
+                    pending_action = pending.action
+
+            if pending_action != "unload":
+                await task
+                continue
+            return await task
+
+    async def schedule_vram_load(
+        self,
+        name: str,
+        *,
+        settings: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Schedule an asynchronous VRAM load for ``name`` and return action metadata."""
+
+        _ = settings  # reserved for future extensions
+        async with self._lock:
+            resolved = name if name in self._models else self._resolve_model_name(name)
+            if resolved is None:
+                raise HTTPException(status_code=404, detail="model not found")
+            name = resolved
+            record = self._models[name]
+            model_id = self._registry_model_id(name, record)
+
+        assert model_id is not None, f"Model {name} has no registry identifier"
+        action_id: str | None = None
+        if self.registry is not None:
+            action_id = await self.registry.start_vram_action(model_id, state="loading")
+            await self.registry.update_vram_action(
+                model_id,
+                action_id=action_id,
+                progress=0.0,
+                state="loading",
+            )
+
+        task = asyncio.create_task(self._run_vram_load(name, model_id, action_id))
+        self._track_task(task, f"vram-load:{name}")
+        return {
+            "status": "accepted",
+            "action": "vram_load",
+            "model": name,
+            "action_id": action_id,
+            "state": "loading",
+            "progress": 0.0,
+        }
+
+    async def schedule_vram_unload(self, name: str) -> dict[str, Any]:
+        """Schedule an asynchronous VRAM unload for ``name`` and return action metadata."""
+
+        async with self._lock:
+            resolved = name if name in self._models else self._resolve_model_name(name)
+            if resolved is None:
+                raise HTTPException(status_code=404, detail="model not found")
+            name = resolved
+            record = self._models[name]
+            model_id = self._registry_model_id(name, record)
+
+        assert model_id is not None, f"Model {name} has no registry identifier"
+        action_id: str | None = None
+        if self.registry is not None:
+            action_id = await self.registry.start_vram_action(model_id, state="loading")
+            await self.registry.update_vram_action(
+                model_id,
+                action_id=action_id,
+                progress=0.0,
+                state="loading",
+            )
+
+        task = asyncio.create_task(self._run_vram_unload(name, model_id, action_id))
+        self._track_task(task, f"vram-unload:{name}")
+        return {
+            "status": "accepted",
+            "action": "vram_unload",
+            "model": name,
+            "action_id": action_id,
+            "state": "loading",
+            "progress": 0.0,
+        }
 
     async def reload_config(self) -> dict[str, Any]:
         """Reload the hub configuration and reconcile models.
@@ -815,6 +1335,16 @@ class HubSupervisor:
                                     metadata_extras={
                                         "group": getattr(model, "group", None),
                                         "model_path": new_model_path,
+                                        "max_concurrency": getattr(
+                                            model,
+                                            "max_concurrency",
+                                            DEFAULT_MAX_CONCURRENCY,
+                                        ),
+                                        "queue_size": getattr(
+                                            model,
+                                            "queue_size",
+                                            DEFAULT_QUEUE_SIZE,
+                                        ),
                                     },
                                 )
                             except ValueError:
@@ -865,6 +1395,16 @@ class HubSupervisor:
                                 metadata_extras={
                                     "group": getattr(model, "group", None),
                                     "model_path": model_id,
+                                    "max_concurrency": getattr(
+                                        model,
+                                        "max_concurrency",
+                                        DEFAULT_MAX_CONCURRENCY,
+                                    ),
+                                    "queue_size": getattr(
+                                        model,
+                                        "queue_size",
+                                        DEFAULT_QUEUE_SIZE,
+                                    ),
                                 },
                             )
                         except ValueError:
@@ -874,6 +1414,12 @@ class HubSupervisor:
                 self._models[name] = record
 
             logger.debug(f"Reloaded hub config: started={started} stopped={stopped}")
+            # Drop locks for models that no longer exist; new locks will be created lazily
+            self._model_locks = {
+                model_name: lock
+                for model_name, lock in self._model_locks.items()
+                if model_name in self._models
+            }
 
         if self.registry is not None:
             self.registry.set_group_policies(
@@ -1006,25 +1552,109 @@ class HubSupervisor:
             snapshot["groups"] = sorted(group_state.values(), key=lambda entry: entry["name"])
         return snapshot
 
-    def add_background_task(self, task: asyncio.Task[None]) -> None:
+    def add_background_task(self, task: asyncio.Task[Any]) -> None:
         """Add a background task to be tracked by the supervisor.
 
         Parameters
         ----------
-        task : asyncio.Task[None]
+        task : asyncio.Task[Any]
             Task to track; it will be removed when completed via callbacks.
         """
         self._bg_tasks.append(task)
 
-    def remove_background_task(self, task: asyncio.Task[None]) -> None:
+    def remove_background_task(self, task: asyncio.Task[Any]) -> None:
         """Remove a background task from tracking.
 
         Parameters
         ----------
-        task : asyncio.Task[None]
+        task : asyncio.Task[Any]
             Task previously added with :meth:`add_background_task`.
         """
         self._bg_tasks.remove(task)
+
+    def _track_task(self, task: asyncio.Task[Any], label: str) -> None:
+        """Track a background task and log failures."""
+
+        self.add_background_task(task)
+
+        def _on_done(fut: asyncio.Task[None]) -> None:
+            with suppress(Exception):
+                self.remove_background_task(fut)
+            if fut.cancelled():
+                logger.warning(f"Background task cancelled: {label}")
+                return
+            exc = fut.exception()
+            if exc:
+                logger.warning(f"Background task failed ({label}): {exc}")
+
+        task.add_done_callback(_on_done)
+
+    async def _run_vram_load(
+        self,
+        name: str,
+        model_id: str | None,
+        action_id: str | None,
+    ) -> None:
+        """Execute a VRAM load and push progress to the registry."""
+
+        try:
+            await self._ensure_group_capacity(name)
+            await self.load_model(name)
+            if self.registry is not None and model_id is not None:
+                worker_port: int | None = None
+                record = self._models.get(name)
+                if record and record.worker:
+                    worker_port = record.worker.port
+                await self.registry.update_vram_action(
+                    model_id,
+                    action_id=action_id,
+                    state="ready",
+                    progress=100.0,
+                    error=None,
+                    worker_port=worker_port,
+                )
+        except Exception as exc:  # pragma: no cover - defensive logging
+            if self.registry is not None and model_id is not None:
+                with suppress(Exception):
+                    await self.registry.update_vram_action(
+                        model_id,
+                        action_id=action_id,
+                        state="error",
+                        progress=0.0,
+                        error=str(exc),
+                    )
+            logger.warning(f"VRAM load failed for {name}: {exc}")
+
+    async def _run_vram_unload(
+        self,
+        name: str,
+        model_id: str | None,
+        action_id: str | None,
+    ) -> None:
+        """Execute a VRAM unload and push progress to the registry."""
+
+        try:
+            await self.unload_model(name)
+            if self.registry is not None and model_id is not None:
+                await self.registry.update_vram_action(
+                    model_id,
+                    action_id=action_id,
+                    state="ready",
+                    progress=100.0,
+                    error=None,
+                    worker_port=None,
+                )
+        except Exception as exc:  # pragma: no cover - defensive logging
+            if self.registry is not None and model_id is not None:
+                with suppress(Exception):
+                    await self.registry.update_vram_action(
+                        model_id,
+                        action_id=action_id,
+                        state="error",
+                        progress=0.0,
+                        error=str(exc),
+                    )
+            logger.warning(f"VRAM unload failed for {name}: {exc}")
 
     async def shutdown_all(self) -> None:
         """Gracefully stop all supervised model processes.
@@ -1195,6 +1825,8 @@ def create_app(hub_config_path: str | None = None) -> FastAPI:
             metadata_extras={
                 "group": getattr(model, "group", None),
                 "model_path": model_id,
+                "max_concurrency": getattr(model, "max_concurrency", DEFAULT_MAX_CONCURRENCY),
+                "queue_size": getattr(model, "queue_size", DEFAULT_QUEUE_SIZE),
             },
         )
 

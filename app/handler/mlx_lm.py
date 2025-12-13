@@ -506,7 +506,7 @@ class MLXLMHandler:
             )
             raise HTTPException(status_code=HTTPStatus.INTERNAL_SERVER_ERROR, detail=content) from e
         else:
-            return response  # type: ignore[no-any-return]
+            return response
 
     async def _process_request(self, request_data: dict[str, Any]) -> tuple[Any, int]:
         """

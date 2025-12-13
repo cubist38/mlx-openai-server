@@ -11,9 +11,12 @@ from typing import Annotated, Any, Literal, TypeAlias
 
 from fastapi import APIRouter, Form, HTTPException, Query, Request
 from fastapi.responses import JSONResponse, StreamingResponse
+import httpx
 from loguru import logger
 import numpy as np
+from starlette.background import BackgroundTask
 
+from ..const import DEFAULT_API_HOST
 from ..handler import MFLUX_AVAILABLE, MLXFluxHandler
 from ..handler.mlx_embeddings import MLXEmbeddingsHandler
 from ..handler.mlx_lm import MLXLMHandler
@@ -53,7 +56,6 @@ from ..utils.errors import create_error_response
 from .availability import get_model_registry, guard_model_availability
 from .hub_routes import (
     HubConfigError,
-    _call_daemon_api_async,
     _load_hub_config_from_request,
     get_cached_model_metadata,
     get_configured_model_id,
@@ -67,7 +69,6 @@ from .hub_routes import (
 )
 
 router = APIRouter()
-
 __all__ = [
     "hub_load_model",
     "hub_start_model",
@@ -77,6 +78,26 @@ __all__ = [
     "hub_unload_model",
     "router",
 ]
+
+_WORKER_PROXY_TIMEOUT = httpx.Timeout(connect=5.0, read=None, write=None, pool=5.0)
+_REQUEST_HOP_HEADERS = {
+    "host",
+    "content-length",
+    "connection",
+    "x-forwarded-for",
+    "x-forwarded-proto",
+}
+_RESPONSE_HOP_HEADERS = {
+    "content-length",
+    "connection",
+    "keep-alive",
+    "proxy-authenticate",
+    "proxy-authorization",
+    "te",
+    "trailers",
+    "transfer-encoding",
+    "upgrade",
+}
 
 
 def _has_multimodal_content(request: ChatCompletionRequest) -> bool:
@@ -118,6 +139,7 @@ async def _get_handler_or_error(
     *,
     model_name: str | None = None,
     api_model_id: str | None = None,
+    skip_availability_check: bool = False,
 ) -> tuple[MLXHandlerType | None, JSONResponse | None]:
     """Return a loaded handler or an error response if unavailable.
 
@@ -137,9 +159,15 @@ async def _get_handler_or_error(
     tuple[MLXHandlerType | None, JSONResponse | None]
         A handler/error tuple where exactly one entry is ``None``.
     """
-    availability_error = guard_model_availability(raw_request, api_model_id or model_name)
+    availability_error = None
+    if not skip_availability_check:
+        availability_error = guard_model_availability(raw_request, api_model_id or model_name)
     if availability_error is not None:
         return None, availability_error
+    target_id = api_model_id or model_name
+    _, registry_error = _get_registry_vram_status(raw_request, target_id)
+    if registry_error is not None:
+        return None, registry_error
 
     controller = getattr(raw_request.app.state, "hub_controller", None)
     if controller is not None and model_name is not None:
@@ -239,7 +267,7 @@ def _hub_model_required_error() -> JSONResponse:
     )
 
 
-def _resolve_model_for_openai_api(
+async def _resolve_model_for_openai_api(
     raw_request: Request,
     model_name: str | None,
     *,
@@ -313,7 +341,7 @@ def _resolve_model_for_openai_api(
         mapped_api_id = normalized
 
     # Validate that the handler is running if we can query running models
-    running_models = get_running_hub_models(raw_request)
+    running_models = await get_running_hub_models(raw_request)
     if running_models is not None:
         # running_models may contain either handler names (slugs) or registry ids/paths.
         # Accept a match against either the resolved handler name or the api model id
@@ -363,6 +391,217 @@ def _model_field_was_provided(payload: Any) -> bool:
     if not isinstance(fields_set, set):
         return False
     return "model" in fields_set
+
+
+def _is_hub_mode(raw_request: Request) -> bool:
+    """Return True when the application is running with a hub controller."""
+
+    return bool(
+        getattr(raw_request.app.state, "hub_controller", None)
+        or getattr(raw_request.app.state, "supervisor", None)
+    )
+
+
+def _get_registry_vram_status(
+    raw_request: Request,
+    model_id: str | None,
+) -> tuple[dict[str, Any] | None, JSONResponse | None]:
+    """Fetch registry VRAM status, returning an error response when invalid."""
+
+    if not model_id:
+        return None, None
+
+    registry = get_model_registry(raw_request)
+    if registry is None:
+        return None, None
+
+    try:
+        status = registry.get_vram_status(model_id)
+    except KeyError:
+        return None, None
+
+    action_state = status.get("vram_action_state")
+    action_error = status.get("vram_action_error")
+    worker_port = status.get("worker_port")
+
+    if action_state in {"pending", "loading"}:
+        return status, JSONResponse(
+            content=create_error_response(
+                f"Model '{model_id}' is still loading",
+                "service_unavailable",
+                HTTPStatus.SERVICE_UNAVAILABLE,
+            ),
+            status_code=HTTPStatus.SERVICE_UNAVAILABLE,
+        )
+    if action_state == "error":
+        return status, JSONResponse(
+            content=create_error_response(
+                action_error or f"Model '{model_id}' failed to load",
+                "service_unavailable",
+                HTTPStatus.SERVICE_UNAVAILABLE,
+            ),
+            status_code=HTTPStatus.SERVICE_UNAVAILABLE,
+        )
+    if action_state and action_state == "ready" and worker_port is None:
+        return status, JSONResponse(
+            content=create_error_response(
+                f"Model '{model_id}' sidecar is not ready (port unavailable)",
+                "service_unavailable",
+                HTTPStatus.SERVICE_UNAVAILABLE,
+            ),
+            status_code=HTTPStatus.SERVICE_UNAVAILABLE,
+        )
+    return status, None
+
+
+def _resolve_registry_status(
+    raw_request: Request,
+    candidates: tuple[str | None, str | None],
+) -> tuple[str | None, dict[str, Any] | None, JSONResponse | None]:
+    """Return the first available registry status for the provided candidates."""
+
+    for candidate in candidates:
+        if not candidate:
+            continue
+        status, error = _get_registry_vram_status(raw_request, candidate)
+        if error is not None or status is not None:
+            return candidate, status, error
+    return None, None, None
+
+
+async def _guard_and_maybe_proxy(
+    raw_request: Request,
+    *,
+    api_model_id: str | None,
+    handler_name: str | None,
+) -> StreamingResponse | JSONResponse | None:
+    """Enforce availability guardrails and proxy if a worker is ready."""
+
+    availability_error = guard_model_availability(raw_request, api_model_id or handler_name)
+    if availability_error is not None:
+        return availability_error
+    return await _maybe_proxy_to_worker(
+        raw_request,
+        api_model_id=api_model_id,
+        handler_name=handler_name,
+    )
+
+
+async def _maybe_proxy_to_worker(
+    raw_request: Request,
+    *,
+    api_model_id: str | None,
+    handler_name: str | None,
+) -> StreamingResponse | JSONResponse | None:
+    """Proxy the current request to the worker when a ready sidecar exists."""
+
+    if not _is_hub_mode(raw_request):
+        return None
+
+    model_id, status, status_error = _resolve_registry_status(
+        raw_request,
+        (api_model_id, handler_name),
+    )
+    if status_error is not None:
+        return status_error
+    if not status:
+        return None
+
+    worker_port = status.get("worker_port")
+    if not isinstance(worker_port, int):
+        return None
+
+    body = await raw_request.body()
+    return await _proxy_request_to_worker(
+        raw_request,
+        worker_port=worker_port,
+        model_id=model_id or api_model_id or handler_name or "unknown",
+        body=body,
+    )
+
+
+async def _proxy_request_to_worker(
+    raw_request: Request,
+    *,
+    worker_port: int,
+    model_id: str,
+    body: bytes,
+) -> StreamingResponse | JSONResponse:
+    """Forward the current request to the worker sidecar and stream the response."""
+
+    query = raw_request.url.query
+    target_url = f"http://{DEFAULT_API_HOST}:{worker_port}{raw_request.url.path}"
+    if query:
+        target_url = f"{target_url}?{query}"
+
+    headers = _prepare_proxy_headers(raw_request)
+    client = httpx.AsyncClient(timeout=_WORKER_PROXY_TIMEOUT)
+    try:
+        proxy_request = client.build_request(
+            raw_request.method,
+            target_url,
+            content=body,
+            headers=headers,
+        )
+        response = await client.send(proxy_request, stream=True)
+    except httpx.HTTPError as exc:
+        await client.aclose()
+        logger.error(
+            f"Failed to proxy request for model '{model_id}' on port {worker_port}: {exc}",
+        )
+        return JSONResponse(
+            content=create_error_response(
+                f"Failed to contact model '{model_id}' worker",
+                "service_unavailable",
+                HTTPStatus.SERVICE_UNAVAILABLE,
+            ),
+            status_code=HTTPStatus.SERVICE_UNAVAILABLE,
+        )
+
+    async def _close_stream() -> None:
+        await response.aclose()
+        await client.aclose()
+
+    filtered_headers = _filter_worker_response_headers(response.headers)
+    return StreamingResponse(
+        response.aiter_raw(),
+        status_code=response.status_code,
+        headers=dict(filtered_headers),
+        background=BackgroundTask(_close_stream),
+    )
+
+
+def _prepare_proxy_headers(raw_request: Request) -> list[tuple[str, str]]:
+    """Prepare request headers for proxying to the worker sidecar."""
+
+    prepared: list[tuple[str, str]] = []
+    for raw_key, raw_value in raw_request.headers.raw:
+        key = raw_key.decode("latin-1")
+        if key.lower() in _REQUEST_HOP_HEADERS:
+            continue
+        prepared.append((key, raw_value.decode("latin-1")))
+
+    forwarded = raw_request.headers.get("x-forwarded-for")
+    client_host = getattr(getattr(raw_request, "client", None), "host", None)
+    if client_host:
+        forwarded = f"{forwarded}, {client_host}" if forwarded else client_host
+    if forwarded:
+        prepared.append(("X-Forwarded-For", forwarded))
+
+    proto = raw_request.headers.get("x-forwarded-proto") or raw_request.url.scheme or "http"
+    prepared.append(("X-Forwarded-Proto", proto))
+    return prepared
+
+
+def _filter_worker_response_headers(headers: httpx.Headers) -> list[tuple[str, str]]:
+    """Remove hop-by-hop headers before returning the worker response."""
+
+    filtered: list[tuple[str, str]] = []
+    for key, value in headers.multi_items():
+        if key.lower() in _RESPONSE_HOP_HEADERS:
+            continue
+        filtered.append((key, value))
+    return filtered
 
 
 # =============================================================================
@@ -427,7 +666,7 @@ async def health(raw_request: Request) -> HealthCheckResponse | JSONResponse:
 
 
 @router.get("/v1/models", response_model=None)
-async def models(raw_request: Request) -> ModelsResponse | JSONResponse:
+async def models(raw_request: Request) -> ModelsResponse | JSONResponse:  # noqa: C901
     """Get list of available models with cached response for instant delivery.
 
     This endpoint is defined early to ensure it's not blocked by other routes.
@@ -450,37 +689,66 @@ async def models(raw_request: Request) -> ModelsResponse | JSONResponse:
             running_models: list[str] | None = None
             supervisor_status = None
             if supervisor is not None:
-                # Hub daemon: get running models directly from supervisor.
-                supervisor_status = await supervisor.get_status()
-                running_models = [
-                    model["model_path"]
-                    for model in supervisor_status.get("models", [])
-                    if model.get("state") == "running" and model.get("model_path")
-                ]
-            else:
-                # Separate server: get running models and status from hub daemon
-                running_models_set = get_running_hub_models(raw_request)
+                try:
+                    supervisor_status = await supervisor.get_status()
+                    logger.info(
+                        f"supervisor_status received with {len(supervisor_status.get('models', [])) if supervisor_status else 0} models"
+                    )
+                    running_models = [
+                        model["model_path"]
+                        for model in supervisor_status.get("models", [])
+                        if model.get("state") == "running" and model.get("model_path")
+                    ]
+                except Exception:
+                    supervisor_status = None
+                    running_models = None
+
+            if running_models is None:
+                running_models_set = await get_running_hub_models(raw_request)
                 running_models = (
                     list(running_models_set) if running_models_set is not None else None
                 )
-                # Also get the full supervisor status for metadata updates
-                if running_models_set is not None:
-                    try:
-                        config = _load_hub_config_from_request(raw_request)
-                        supervisor_status = await _call_daemon_api_async(
-                            config, "GET", "/hub/status", timeout=1.0
-                        )
-                    except Exception:
-                        supervisor_status = None
 
             models_data = registry.list_models()
+            # If the registry lacks a worker_port, try to read the live port
+            # from the supervisor's status snapshot (preferred) as a fallback.
+            if supervisor is not None and supervisor_status is not None:
+                try:
+                    # Build a mapping of model_path -> port from the status snapshot
+                    status_map: dict[str, int | None] = {
+                        str(m.get("model_path")): m.get("port")
+                        for m in supervisor_status.get("models", [])
+                        if isinstance(m, dict) and isinstance(m.get("model_path"), str)
+                    }
+                    for model in models_data:
+                        model_path = model.get("id")
+                        if not model_path:
+                            continue
+                        metadata = model.setdefault("metadata", {})
+                        if (
+                            metadata.get("worker_port") is None
+                            and status_map.get(model_path) is not None
+                        ):
+                            metadata["worker_port"] = status_map.get(model_path)
+                            logger.debug(
+                                f"Patched registry metadata for {model_path} from supervisor status: worker_port={metadata['worker_port']}"
+                            )
+                except Exception:
+                    # Defensive: do not fail the whole endpoint on introspection errors
+                    logger.debug("Failed to patch registry models from supervisor status snapshot")
             # Update metadata from supervisor status if available
             if supervisor_status is not None:
-                model_lookup = {
-                    model["model_path"]: model
-                    for model in supervisor_status.get("models", [])
-                    if model.get("model_path")
-                }
+                model_lookup: dict[str, dict[str, Any]] = {}
+                for model in supervisor_status.get("models", []):
+                    # Accept both top-level `model_path` and nested metadata['model_path']
+                    mp_top = model.get("model_path")
+                    if mp_top:
+                        model_lookup[mp_top] = model
+                    meta = model.get("metadata")
+                    if isinstance(meta, dict):
+                        mp_meta = meta.get("model_path")
+                        if mp_meta:
+                            model_lookup[mp_meta] = model
                 for model in models_data:
                     model_path = model.get("id")
                     if model_path in model_lookup:
@@ -496,6 +764,15 @@ async def models(raw_request: Request) -> ModelsResponse | JSONResponse:
                             metadata["status"] = "initialized"
                         else:
                             metadata["status"] = "unloaded"
+                        # Update port if available (accept top-level or nested shapes)
+                        port_val = supervisor_model.get("port") or (
+                            (supervisor_model.get("metadata") or {}).get("port")
+                        )
+                        if port_val:
+                            metadata["worker_port"] = port_val
+                            logger.info(
+                                f"Populating worker_port for registry model {model_path}: port={port_val}"
+                            )
                         # Update other VRAM fields if available
                         if supervisor_model.get("unload_timestamp"):
                             metadata["vram_last_unload_ts"] = supervisor_model["unload_timestamp"]
@@ -589,7 +866,7 @@ async def queue_stats(
     dict[str, Any] or JSONResponse
         Queue statistics or error response.
     """
-    api_model_id, handler_name, validation_error = _resolve_model_for_openai_api(
+    api_model_id, handler_name, validation_error = await _resolve_model_for_openai_api(
         raw_request, model, provided_explicitly=model is not None
     )
     if validation_error is not None:
@@ -653,7 +930,7 @@ async def chat_completions(
     ChatCompletionResponse or StreamingResponse or JSONResponse
         Chat completion response, stream, or error response.
     """
-    api_model_id, handler_name, validation_error = _resolve_model_for_openai_api(
+    api_model_id, handler_name, validation_error = await _resolve_model_for_openai_api(
         raw_request, request.model, provided_explicitly=_model_field_was_provided(request)
     )
     if validation_error is not None:
@@ -662,11 +939,20 @@ async def chat_completions(
     if api_model_id is not None:
         request.model = api_model_id
 
+    proxy_or_error = await _guard_and_maybe_proxy(
+        raw_request,
+        api_model_id=api_model_id,
+        handler_name=handler_name,
+    )
+    if proxy_or_error is not None:
+        return proxy_or_error
+
     handler, error = await _get_handler_or_error(
         raw_request,
         "chat_completions",
         model_name=handler_name,
         api_model_id=api_model_id,
+        skip_availability_check=True,
     )
     if error is not None:
         return error
@@ -725,7 +1011,7 @@ async def chat_completions(
 async def embeddings(
     request: EmbeddingRequest,
     raw_request: Request,
-) -> EmbeddingResponse | JSONResponse:
+) -> EmbeddingResponse | JSONResponse | StreamingResponse:
     """Handle embedding requests.
 
     Parameters
@@ -740,7 +1026,7 @@ async def embeddings(
     EmbeddingResponse or JSONResponse
         Embedding response or error response.
     """
-    api_model_id, handler_name, validation_error = _resolve_model_for_openai_api(
+    api_model_id, handler_name, validation_error = await _resolve_model_for_openai_api(
         raw_request, request.model, provided_explicitly=_model_field_was_provided(request)
     )
     if validation_error is not None:
@@ -748,11 +1034,20 @@ async def embeddings(
     if api_model_id is not None:
         request.model = api_model_id
 
+    proxy_or_error = await _guard_and_maybe_proxy(
+        raw_request,
+        api_model_id=api_model_id,
+        handler_name=handler_name,
+    )
+    if proxy_or_error is not None:
+        return proxy_or_error
+
     handler, error = await _get_handler_or_error(
         raw_request,
         "embeddings",
         model_name=handler_name,
         api_model_id=api_model_id,
+        skip_availability_check=True,
     )
     if error is not None:
         return error
@@ -797,7 +1092,7 @@ async def embeddings(
 async def image_generations(
     request: ImageGenerationRequest,
     raw_request: Request,
-) -> ImageGenerationResponse | JSONResponse:
+) -> ImageGenerationResponse | JSONResponse | StreamingResponse:
     """Handle image generation requests.
 
     Parameters
@@ -812,7 +1107,7 @@ async def image_generations(
     ImageGenerationResponse or JSONResponse
         Image generation response or error response.
     """
-    api_model_id, handler_name, validation_error = _resolve_model_for_openai_api(
+    api_model_id, handler_name, validation_error = await _resolve_model_for_openai_api(
         raw_request, request.model, provided_explicitly=_model_field_was_provided(request)
     )
     if validation_error is not None:
@@ -820,11 +1115,20 @@ async def image_generations(
     if api_model_id is not None:
         request.model = api_model_id
 
+    proxy_or_error = await _guard_and_maybe_proxy(
+        raw_request,
+        api_model_id=api_model_id,
+        handler_name=handler_name,
+    )
+    if proxy_or_error is not None:
+        return proxy_or_error
+
     handler, error = await _get_handler_or_error(
         raw_request,
         "image_generation",
         model_name=handler_name,
         api_model_id=api_model_id,
+        skip_availability_check=True,
     )
     if error is not None:
         return error
@@ -867,7 +1171,7 @@ async def image_generations(
 async def create_image_edit(
     request: Annotated[ImageEditRequest, Form()],
     raw_request: Request,
-) -> ImageEditResponse | JSONResponse:
+) -> ImageEditResponse | JSONResponse | StreamingResponse:
     """Handle image editing requests with dynamic provider routing.
 
     Parameters
@@ -882,7 +1186,7 @@ async def create_image_edit(
     ImageEditResponse or JSONResponse
         Image edit response or error response.
     """
-    api_model_id, handler_name, validation_error = _resolve_model_for_openai_api(
+    api_model_id, handler_name, validation_error = await _resolve_model_for_openai_api(
         raw_request, request.model, provided_explicitly=_model_field_was_provided(request)
     )
     if validation_error is not None:
@@ -890,11 +1194,20 @@ async def create_image_edit(
     if api_model_id is not None:
         request.model = api_model_id
 
+    proxy_or_error = await _guard_and_maybe_proxy(
+        raw_request,
+        api_model_id=api_model_id,
+        handler_name=handler_name,
+    )
+    if proxy_or_error is not None:
+        return proxy_or_error
+
     handler, error = await _get_handler_or_error(
         raw_request,
         "image_edit",
         model_name=handler_name,
         api_model_id=api_model_id,
+        skip_availability_check=True,
     )
     if error is not None:
         return error
@@ -951,7 +1264,7 @@ async def create_audio_transcriptions(
     StreamingResponse or TranscriptionResponse or JSONResponse or str
         Transcription response, stream, or error response.
     """
-    api_model_id, handler_name, validation_error = _resolve_model_for_openai_api(
+    api_model_id, handler_name, validation_error = await _resolve_model_for_openai_api(
         raw_request, request.model, provided_explicitly=_model_field_was_provided(request)
     )
     if validation_error is not None:
@@ -959,11 +1272,20 @@ async def create_audio_transcriptions(
     if api_model_id is not None:
         request.model = api_model_id
 
+    proxy_or_error = await _guard_and_maybe_proxy(
+        raw_request,
+        api_model_id=api_model_id,
+        handler_name=handler_name,
+    )
+    if proxy_or_error is not None:
+        return proxy_or_error
+
     handler, error = await _get_handler_or_error(
         raw_request,
         "audio_transcriptions",
         model_name=handler_name,
         api_model_id=api_model_id,
+        skip_availability_check=True,
     )
     if error is not None:
         return error

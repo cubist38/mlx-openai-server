@@ -105,8 +105,8 @@ def test_hub_status_reports_degraded_when_config_unavailable(tmp_path: Path) -> 
     assert response.counts.registered == 0
     assert response.counts.started == 0
     assert response.counts.loaded == 0
-    assert len(response.warnings) == 1
-    assert "Hub manager unavailable" in response.warnings[0]
+    assert len(response.warnings) == 2
+    assert "Hub controller is not available" in response.warnings[0]
     assert response.controller_available is False
 
 
@@ -121,8 +121,8 @@ def test_hub_status_falls_back_to_cached_metadata(tmp_path: Path) -> None:
     assert response.status == "degraded"
     assert response.counts.registered == 0
     assert response.counts.started == 0
-    assert len(response.warnings) == 1
-    assert "Hub manager unavailable" in response.warnings[0]
+    assert len(response.warnings) == 2
+    assert "Hub controller is not available" in response.warnings[0]
     assert response.controller_available is False
 
 

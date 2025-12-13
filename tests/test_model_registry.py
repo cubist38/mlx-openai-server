@@ -267,6 +267,43 @@ def test_request_vram_idempotency() -> None:
     asyncio.run(_test())
 
 
+def test_vram_action_tracking() -> None:
+    """Registry should track VRAM action ids, progress, and ports."""
+
+    async def _test() -> None:
+        registry = ModelRegistry()
+        registry.register_model(model_id="tracked", handler=None, model_type="lm")
+
+        action_id = await registry.start_vram_action("tracked", state="loading")
+        await registry.update_vram_action(
+            "tracked",
+            action_id=action_id,
+            progress=42.0,
+            state="loading",
+        )
+
+        mid, status = registry.get_vram_action_status(action_id=action_id)
+        assert mid == "tracked"
+        assert status["vram_action_id"] == action_id
+        assert status["vram_action_state"] == "loading"
+        assert status["vram_action_progress"] == 42.0
+
+        await registry.update_vram_action(
+            "tracked",
+            action_id=action_id,
+            progress=100.0,
+            state="ready",
+            worker_port=8081,
+        )
+        mid2, status2 = registry.get_vram_action_status(model_id="tracked")
+        assert mid2 == "tracked"
+        assert status2["vram_action_state"] == "ready"
+        assert status2["vram_action_progress"] == 100.0
+        assert status2["worker_port"] == 8081
+
+    asyncio.run(_test())
+
+
 def test_handler_session_counts_and_ensure() -> None:
     """handler_session should increment active_requests and ensure VRAM loaded."""
 

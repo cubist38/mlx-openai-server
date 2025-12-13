@@ -85,16 +85,6 @@ class MLX_LM:
             return int(self.tokenizer.eos_token_id)
         return 0
 
-    def _get_pad_token_id(self) -> int:
-        """Get a safe pad token ID, falling back through options."""
-        if self.pad_token_id is not None:
-            return int(self.pad_token_id)
-        if hasattr(self.tokenizer, "pad_token_id") and self.tokenizer.pad_token_id is not None:
-            return int(self.tokenizer.pad_token_id)
-        if hasattr(self.tokenizer, "eos_token_id") and self.tokenizer.eos_token_id is not None:
-            return int(self.tokenizer.eos_token_id)
-        return 0
-
     def _apply_pooling_strategy(self, embeddings: mx.array) -> mx.array:
         return mx.mean(embeddings, axis=1)
 

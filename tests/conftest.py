@@ -6,10 +6,12 @@ to avoid duplication of common test helpers.
 
 from __future__ import annotations
 
+import builtins
 from collections.abc import Callable
+import contextlib
 from http import HTTPStatus
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock
 
 from fastapi import HTTPException
@@ -18,6 +20,32 @@ import pytest
 from app.config import MLXServerConfig
 from app.hub.config import MLXHubConfig
 from app.server import LazyHandlerManager
+
+
+# Ensure SWIG-generated builtins declare a module to avoid DeprecationWarnings.
+def _fix_swig_types() -> None:
+    """Fix SWIG-generated types that lack __module__ attribute."""
+    for _swig_name in ("SwigPyObject", "SwigPyPacked", "swigvarlink"):
+        _swig_type = getattr(builtins, _swig_name, None)
+        if _swig_type is not None and not getattr(_swig_type, "__module__", None):
+            with contextlib.suppress(Exception):
+                setattr(_swig_type, "__module__", "builtins")
+
+
+# Run the fix at conftest import time
+_fix_swig_types()
+
+
+@pytest.fixture(autouse=True, scope="session")
+def fix_swig_types_session() -> None:
+    """Ensure SWIG types are fixed throughout the session."""
+    _fix_swig_types()
+
+
+@pytest.fixture(autouse=True)
+def fix_swig_types_function() -> None:
+    """Ensure SWIG types are fixed before each test function."""
+    _fix_swig_types()
 
 
 @pytest.fixture
@@ -29,18 +57,38 @@ def make_hub_config(tmp_path: Path) -> Callable[..., MLXHubConfig]:
     """
 
     def _factory(**overrides: object) -> MLXHubConfig:
-        cfg = MLXHubConfig(
-            host=overrides.get("host", "127.0.0.1"),
-            port=overrides.get("port", 8123),
-            model_starting_port=overrides.get("model_starting_port", 8000),
-            log_level=overrides.get("log_level", "INFO"),
-            log_path=overrides.get("log_path", tmp_path / "logs"),
-            enable_status_page=overrides.get("enable_status_page", True),
-            source_path=overrides.get("source_path", tmp_path / "hub.yaml"),
+        host = str(overrides.get("host", "127.0.0.1"))
+        port_raw = cast("int | float | str", overrides.get("port", 8123))
+        port = int(port_raw)
+        model_port_raw = cast("int | float | str", overrides.get("model_starting_port", 8000))
+        model_starting_port = int(model_port_raw)
+        log_level = str(overrides.get("log_level", "INFO"))
+
+        log_path_raw = overrides.get("log_path", tmp_path / "logs")
+        log_path = log_path_raw if isinstance(log_path_raw, Path) else Path(str(log_path_raw))
+
+        source_path_raw = overrides.get("source_path", tmp_path / "hub.yaml")
+        source_path = (
+            Path(str(source_path_raw))
+            if source_path_raw is not None and not isinstance(source_path_raw, Path)
+            else source_path_raw
         )
-        models = overrides.get(
-            "models",
-            [MLXServerConfig(model_path="/models/foo", name="foo", model_type="lm")],
+
+        cfg = MLXHubConfig(
+            host=host,
+            port=port,
+            model_starting_port=model_starting_port,
+            log_level=log_level,
+            log_path=log_path,
+            enable_status_page=bool(overrides.get("enable_status_page", True)),
+            source_path=source_path,
+        )
+        models = cast(
+            "list[MLXServerConfig]",
+            overrides.get(
+                "models",
+                [MLXServerConfig(model_path="/models/foo", name="foo", model_type="lm")],
+            ),
         )
         cfg.models = models
         return cfg
@@ -123,14 +171,14 @@ def make_config(tmp_path: Path) -> Callable[[], MLXHubConfig]:
 
 
 @pytest.fixture
-def live_snapshot() -> Callable[[int], dict]:
+def live_snapshot() -> Callable[[int], dict[str, Any]]:
     """Factory fixture returning a function that generates a live snapshot payload.
 
     Returns a callable `fn(pid: int=4321) -> dict` to mirror the previous
     test-local helper used across tests.
     """
 
-    def _live_snapshot(pid: int = 4321) -> dict:
+    def _live_snapshot(pid: int = 4321) -> dict[str, Any]:
         return {
             "models": [
                 {
@@ -214,6 +262,9 @@ class _StubController:
         self.started: list[str] = []
         self.stopped: list[str] = []
         self.reload_count = 0
+        self.scheduled_loads: list[str] = []
+        self.scheduled_unloads: list[str] = []
+        self.force_action_id: str | None = None
 
     async def load_model(self, name: str) -> None:
         self.loaded.append(name)
@@ -235,6 +286,42 @@ class _StubController:
 
     async def stop_model(self, name: str) -> None:
         self.stopped.append(name)
+
+    async def schedule_vram_load(
+        self, name: str, *, settings: dict[str, Any] | None = None
+    ) -> dict[str, Any]:
+        _ = settings
+        self.scheduled_loads.append(name)
+        self.loaded.append(name)
+        if name == "denied":
+            raise HTTPException(status_code=HTTPStatus.TOO_MANY_REQUESTS, detail="group busy")
+        if name == "saturated":
+            raise HTTPException(
+                status_code=HTTPStatus.TOO_MANY_REQUESTS,
+                detail="Group capacity exceeded. Unload another model or wait for auto-unload.",
+            )
+        action_id = self._consume_action_id(f"{name}-load-action")
+        return {
+            "action_id": action_id,
+            "state": "loading",
+            "progress": 0.0,
+            "worker_port": 8124,
+            "message": "scheduled",
+        }
+
+    async def schedule_vram_unload(self, name: str) -> dict[str, Any]:
+        self.scheduled_unloads.append(name)
+        self.unloaded.append(name)
+        if name == "missing":
+            raise HTTPException(status_code=HTTPStatus.BAD_REQUEST, detail="not loaded")
+        action_id = self._consume_action_id(f"{name}-unload-action")
+        return {
+            "action_id": action_id,
+            "state": "loading",
+            "progress": 0.0,
+            "worker_port": 8125,
+            "message": "scheduled",
+        }
 
     async def reload_config(self) -> dict[str, Any]:
         self.reload_count += 1
@@ -272,6 +359,13 @@ class _StubController:
                 },
             ],
         }
+
+    def _consume_action_id(self, default: str) -> str:
+        if self.force_action_id:
+            action_id = self.force_action_id
+            self.force_action_id = None
+            return action_id
+        return default
 
 
 @pytest.fixture

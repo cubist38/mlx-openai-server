@@ -9,11 +9,11 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI
 from fastapi.testclient import TestClient
 import pytest
 
-from app.api.hub_routes import HubServiceError, _stop_controller_process, hub_router
+from app.api.hub_routes import _stop_controller_process, hub_router
 from app.core.model_registry import ModelRegistry
 from app.hub.config import load_hub_config
 from app.hub.daemon import HubSupervisor
@@ -64,66 +64,6 @@ models:
     app.state.hub_controller = controller
 
     state = stub_service_state
-    state.status_payload["models"] = [
-        {
-            "name": "alpha",
-            "state": "running",
-            "pid": 111,
-            "group": "default",
-            "log_path": str(tmp_path / "alpha.log"),
-        },
-    ]
-
-    async def _stub_call(
-        config: Any,
-        method: str,
-        path: str,
-        *,
-        json: Any | None = None,
-        timeout: float = 5.0,
-    ) -> dict[str, Any]:
-        # Emulate the daemon HTTP surface used by the routes.
-        if method == "GET" and path == "/health":
-            if not state.available:
-                raise HubServiceError("unavailable")
-            return {"status": "ok"}
-        if method == "POST" and path == "/hub/reload":
-            if not state.available:
-                raise HubServiceError("unavailable")
-            state.reload_calls += 1
-            return state.reload_result
-        if method == "GET" and path == "/hub/status":
-            if not state.available:
-                raise HubServiceError("unavailable")
-            return state.status_payload
-        if method == "POST" and path.startswith("/hub/models/") and path.endswith("/start"):
-            if not state.available:
-                raise HubServiceError("unavailable")
-            name = path.split("/")[-2]
-            if name == "saturated":
-                raise HubServiceError("group full", status_code=HTTPStatus.TOO_MANY_REQUESTS)
-            state.start_calls.append(name)
-            return {"message": "started"}
-        if method == "POST" and path.startswith("/hub/models/") and path.endswith("/stop"):
-            if not state.available:
-                raise HubServiceError("unavailable")
-            name = path.split("/")[-2]
-            state.stop_calls.append(name)
-            return {"message": "stopped"}
-        if method == "POST" and path == "/hub/shutdown":
-            if not state.available:
-                raise HubServiceError("unavailable")
-            state.shutdown_called = True
-            return {"message": "shutdown"}
-        raise HubServiceError("unhandled stub call")
-
-    monkeypatch.setattr("app.api.hub_routes._call_daemon_api_async", _stub_call)
-
-    def _fake_start_process(path: str, *, host: str | None = None, port: int | None = None) -> int:  # noqa: ARG001
-        state.available = True
-        return 4321
-
-    monkeypatch.setattr("app.api.hub_routes.start_hub_service_process", _fake_start_process)
 
     def _fake_stop_controller(_raw_request: Any, _background_tasks: Any) -> bool:  # noqa: ANN401
         state.controller_stop_calls += 1
@@ -142,8 +82,7 @@ def test_hub_status_uses_service_snapshot(
     hub_service_app: tuple[TestClient, Any, Any],
 ) -> None:
     """Hub status endpoint should prefer hub service snapshots when available."""
-    client, state, controller = hub_service_app
-    state.available = True
+    client, _state, controller = hub_service_app
 
     response = client.get("/hub/status")
 
@@ -159,36 +98,37 @@ def test_hub_status_ok_when_service_unavailable_and_controller_available(
     hub_service_app: tuple[TestClient, Any, Any],
 ) -> None:
     """Hub status should be ok when controller is available, even if service is offline."""
-    client, state, _controller = hub_service_app
-    state.available = False
+    client, _state, controller = hub_service_app
+
+    async def _raise() -> dict[str, Any]:  # pragma: no cover - test stub
+        raise RuntimeError("status unavailable")
+
+    controller.get_status = _raise  # type: ignore[assignment]
 
     response = client.get("/hub/status")
     assert response.status_code == HTTPStatus.OK
     payload = response.json()
-    assert payload["status"] == "ok"
+    assert payload["status"] == "degraded"
     assert payload["counts"]["registered"] == 2
 
 
 def test_hub_model_start_calls_service_client(
     hub_service_app: tuple[TestClient, Any, Any],
 ) -> None:
-    """Model start endpoint should call controller.start_model."""
-    client, state, controller = hub_service_app
-    state.available = True
+    """Model start endpoint should schedule controller VRAM loads."""
+    client, _state, controller = hub_service_app
 
     response = client.post("/hub/models/alpha/start", json={})
 
     assert response.status_code == HTTPStatus.OK
-    assert controller.started == ["alpha"]
-    assert state.reload_calls == 0
+    assert controller.scheduled_loads == ["alpha"]
 
 
 def test_hub_model_start_surfaces_capacity_errors(
     hub_service_app: tuple[TestClient, Any, Any],
 ) -> None:
     """Capacity errors from controller should translate to HTTP 429 responses."""
-    client, state, _controller = hub_service_app
-    state.available = True
+    client, _state, _controller = hub_service_app
 
     response = client.post("/hub/models/saturated/start", json={})
 
@@ -205,8 +145,7 @@ def test_hub_model_start_blocked_when_registry_denies(
 ) -> None:
     """Start requests should fail fast when the registry rejects the model."""
 
-    client, state, controller = hub_service_app
-    state.available = True
+    client, _state, controller = hub_service_app
 
     async def _seed_registry() -> None:
         registry = ModelRegistry()
@@ -234,7 +173,7 @@ def test_hub_model_start_blocked_when_registry_denies(
     response = client.post("/hub/models/alpha/start", json={})
 
     assert response.status_code == HTTPStatus.TOO_MANY_REQUESTS
-    assert controller.started == []
+    assert controller.scheduled_loads == []
 
 
 def test_hub_vram_load_blocked_when_registry_denies(
@@ -242,26 +181,10 @@ def test_hub_vram_load_blocked_when_registry_denies(
 ) -> None:
     """VRAM load requests should reuse the cached availability guard."""
 
-    client, state, _controller = hub_service_app
-    state.available = True
+    client, _state, controller = hub_service_app
 
-    class GuardedRegistry(ModelRegistry):
-        def __init__(self) -> None:
-            super().__init__()
-            self.vram_load_called = False
-
-        async def request_vram_load(
-            self,
-            model_id: str,
-            *,
-            force: bool = False,
-            timeout: float | None = None,
-        ) -> None:
-            self.vram_load_called = True
-            raise AssertionError(f"request_vram_load should not run for {model_id}")
-
-    async def _seed_registry() -> GuardedRegistry:
-        registry = GuardedRegistry()
+    async def _seed_registry() -> ModelRegistry:
+        registry = ModelRegistry()
         registry.register_model(
             model_id="/models/alpha",
             handler=None,
@@ -287,45 +210,34 @@ def test_hub_vram_load_blocked_when_registry_denies(
     response = client.post("/hub/models/alpha/vram/load", json={})
 
     assert response.status_code == HTTPStatus.TOO_MANY_REQUESTS
-    assert guarded_registry.vram_load_called is False
+    assert controller.scheduled_loads == []
 
 
-def test_hub_service_start_spawns_process_when_missing(
+def test_hub_service_start_returns_controller_snapshot(
     hub_service_app: tuple[TestClient, Any, Any],
 ) -> None:
-    """/hub/service/start should spawn the service when it is not running."""
-    client, state, _controller = hub_service_app
-    state.available = False
+    """/hub/service/start should report controller details without spawning processes."""
+    client, _state, controller = hub_service_app
 
     response = client.post("/hub/service/start")
 
     assert response.status_code == HTTPStatus.OK
-    assert state.reload_calls == 1  # reload invoked after start
     body = response.json()
     assert body["action"] == "start"
-    assert body["details"]["pid"] == 4321
+    assert "models" in body["details"]
+    assert controller.reload_count == 1
 
 
 def test_hub_service_stop_handles_missing_manager(
     hub_service_app: tuple[TestClient, Any, Any],
 ) -> None:
-    """Stop should still return success when the manager is offline.
-
-    Parameters
-    ----------
-    hub_service_app : tuple[TestClient, _StubServiceState, _StubController]
-        Fixture providing the test client and stubs.
-    """
-    client, state, _controller = hub_service_app
-    state.available = False
+    """Stop should return an error when no controller is available."""
+    client, _state, _controller = hub_service_app
+    client.app.state.hub_controller = None
 
     response = client.post("/hub/service/stop")
 
-    assert response.status_code == HTTPStatus.OK
-    assert state.shutdown_called is False
-    assert state.controller_stop_calls == 1
-    payload = response.json()
-    assert payload["details"] == {"controller_stopped": True, "manager_shutdown": True}
+    assert response.status_code == HTTPStatus.SERVICE_UNAVAILABLE
 
 
 def test_hub_service_stop_shuts_down_manager_when_available(
@@ -339,24 +251,20 @@ def test_hub_service_stop_shuts_down_manager_when_available(
         Fixture providing the test client and stubs.
     """
     client, state, _controller = hub_service_app
-    state.available = True
 
     response = client.post("/hub/service/stop")
 
     assert response.status_code == HTTPStatus.OK
-    assert state.shutdown_called is False
-    assert state.reload_calls == 0
     assert state.controller_stop_calls == 1
     payload = response.json()
-    assert payload["details"] == {"controller_stopped": True, "manager_shutdown": True}
+    assert payload["details"] == {"controller_stopped": True}
 
 
 def test_hub_service_reload_endpoint_returns_diff(
     hub_service_app: tuple[TestClient, Any, Any],
 ) -> None:
     """/hub/service/reload should surface the diff returned by the service."""
-    client, state, controller = hub_service_app
-    state.available = True
+    client, _state, controller = hub_service_app
 
     response = client.post("/hub/service/reload")
 
@@ -380,7 +288,53 @@ def test_hub_load_model_invokes_controller(
     response = client.post("/hub/models/alpha/load", json={"reason": "dashboard"})
 
     assert response.status_code == HTTPStatus.OK
-    assert controller.loaded == ["alpha"]
+    payload = response.json()
+    assert controller.scheduled_loads == ["alpha"]
+    assert payload["action_id"] == "alpha-load-action"
+    assert payload["state"] == "loading"
+
+
+def test_hub_load_model_includes_registry_metadata(
+    hub_service_app: tuple[TestClient, Any, Any],
+) -> None:
+    """Load responses should surface registry-provided action snapshots."""
+
+    client, _state, controller = hub_service_app
+
+    class _RegistryStub:
+        def __init__(self) -> None:
+            self.queries: list[tuple[str | None, str | None]] = []
+
+        def get_vram_action_status(
+            self,
+            *,
+            model_id: str | None = None,
+            action_id: str | None = None,
+        ) -> tuple[str, dict[str, Any]]:
+            self.queries.append((model_id, action_id))
+            return "/models/alpha", {
+                "vram_action_id": action_id,
+                "vram_action_state": "allocating",
+                "vram_action_progress": 55.0,
+                "vram_action_error": None,
+                "worker_port": 9000,
+                "vram_action_started_ts": 1,
+                "vram_action_updated_ts": 2,
+            }
+
+    registry = _RegistryStub()
+    client.app.state.model_registry = registry
+    controller.force_action_id = "registry-action"
+
+    response = client.post("/hub/models/alpha/load", json={})
+
+    assert response.status_code == HTTPStatus.OK
+    body = response.json()
+    assert body["action_id"] == "registry-action"
+    assert body["state"] == "allocating"
+    assert body["progress"] == 55.0
+    assert body["worker_port"] == 9000
+    assert registry.queries == [(None, "registry-action")]
 
 
 def test_hub_memory_actions_surface_controller_errors(
@@ -396,69 +350,31 @@ def test_hub_memory_actions_surface_controller_errors(
 
     response = client.post("/hub/models/missing/unload", json={})
     assert response.status_code == HTTPStatus.BAD_REQUEST
-    assert controller.unloaded[-1] == "missing"
+    assert controller.scheduled_unloads[-1] == "missing"
 
 
-def test_vram_admin_endpoints_invoke_registry(
+def test_vram_admin_endpoints_schedule_controller(
     hub_service_app: tuple[TestClient, Any, Any],
 ) -> None:
-    """Admin VRAM endpoints should call the ModelRegistry on app.state."""
-    client, _state, _controller = hub_service_app
+    """Admin VRAM endpoints should enqueue controller actions."""
 
-    class _StubRegistry:
-        def __init__(self) -> None:
-            self.loaded: list[str] = []
-            self.unloaded: list[str] = []
-
-        async def request_vram_load(
-            self, name: str, *, force: bool = False, timeout: float | None = None
-        ) -> None:
-            # Accept explicit `force`/`timeout` keyword args from the real API.
-            # Reference them to avoid unused-variable warnings in static analysis.
-            _ = (force, timeout)
-            if name == "denied":
-                # Simulate a validation error
-                raise HTTPException(status_code=HTTPStatus.BAD_REQUEST, detail="denied")
-            self.loaded.append(name)
-
-        async def request_vram_unload(self, name: str, *, timeout: float | None = None) -> None:
-            # Accept explicit `timeout` keyword arg from the real API and
-            # reference it to avoid unused-variable warnings.
-            _ = timeout
-            if name == "missing":
-                raise HTTPException(status_code=HTTPStatus.BAD_REQUEST, detail="not loaded")
-            self.unloaded.append(name)
-
-    registry = _StubRegistry()
-    client.app.state.model_registry = registry
+    client, _state, controller = hub_service_app
 
     response = client.post("/hub/models/alpha/vram/load", json={})
     assert response.status_code == HTTPStatus.OK
-    assert registry.loaded == ["alpha"]
+    assert controller.scheduled_loads[-1] == "alpha"
 
     response = client.post("/hub/models/alpha/vram/unload", json={})
     assert response.status_code == HTTPStatus.OK
-    assert registry.unloaded == ["alpha"]
+    assert controller.scheduled_unloads[-1] == "alpha"
 
 
-def test_vram_admin_endpoints_surface_registry_errors(
+def test_vram_admin_endpoints_surface_controller_errors(
     hub_service_app: tuple[TestClient, Any, Any],
 ) -> None:
-    """Registry errors should propagate as HTTP responses from the VRAM endpoints."""
+    """Scheduler errors should propagate through the VRAM endpoints."""
+
     client, _state, _controller = hub_service_app
-
-    class _StubRegistryErr:
-        async def request_vram_load(
-            self, name: str, *, force: bool = False, timeout: float | None = None
-        ) -> None:
-            _ = (force, timeout)
-            raise HTTPException(status_code=HTTPStatus.TOO_MANY_REQUESTS, detail="group busy")
-
-        async def request_vram_unload(self, name: str, *, timeout: float | None = None) -> None:
-            _ = timeout
-            raise HTTPException(status_code=HTTPStatus.BAD_REQUEST, detail="not loaded")
-
-    client.app.state.model_registry = _StubRegistryErr()
 
     response = client.post("/hub/models/denied/vram/load", json={})
     assert response.status_code == HTTPStatus.TOO_MANY_REQUESTS
@@ -508,12 +424,6 @@ models: []
 
     controller = FakeController()
     app.state.hub_controller = controller
-
-    # Avoid contacting an external daemon during the test
-    async def _fake_call_daemon_api_async(*_args, **_kwargs: Any) -> None:
-        raise HubServiceError("unavailable")
-
-    monkeypatch.setattr("app.api.hub_routes._call_daemon_api_async", _fake_call_daemon_api_async)
 
     # Patch asyncio.sleep in the hub_routes module so the delayed exit runs immediately
     async def _no_sleep(_secs: float) -> None:  # pragma: no cover - test helper
@@ -640,23 +550,22 @@ async def test_hub_sync_once_updates_registry(monkeypatch: pytest.MonkeyPatch) -
         ]
     }
 
-    async def fake_call(
-        cfg: object, method: str, path: str, timeout: float = 2.0
-    ) -> dict[str, Any]:
-        return snapshot
-
     def fake_load_cfg(req: object) -> SimpleNamespace:
         # Return a simple object with host/port attributes
         return SimpleNamespace(host="127.0.0.1", port=5005)
 
-    # Patch the functions as used by the server module (they are imported
-    # into `app.server` at module load time), so override there.
-    monkeypatch.setattr("app.server._call_daemon_api_async", fake_call)
+    # Patch helper imports in `app.server`.
     monkeypatch.setattr("app.server._load_hub_config_from_request", fake_load_cfg)
 
     app = FastAPI()
     registry = ModelRegistry()
     app.state.model_registry = registry
+
+    class _FakeController:
+        async def get_status(self) -> dict[str, Any]:
+            return snapshot
+
+    app.state.hub_controller = _FakeController()
 
     # Register the model so update_model_state will accept it
     registry.register_model(model_id, handler=None, model_type="lm")
