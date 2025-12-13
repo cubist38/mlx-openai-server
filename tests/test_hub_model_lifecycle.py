@@ -54,6 +54,7 @@ class _TestHubSupervisor(HubSupervisor):
         self.idle_controller = None
         self._models = {}
         self._lock = asyncio.Lock()
+        self._model_locks = {}
         self._bg_tasks = []
         self._shutdown = False
 
@@ -68,6 +69,7 @@ class _TestHubSupervisor(HubSupervisor):
             record.model_path = getattr(model, "model_path", None)
             record.auto_unload_minutes = getattr(model, "auto_unload_minutes", None)
             record.manager = None
+            record.worker = None
             record.started_at = None
             record.exit_code = None
             self._models[name] = record
@@ -129,12 +131,29 @@ async def test_model_start_sets_manager_and_memory_loaded(
     supervisor = _TestHubSupervisor(hub_config_with_defaults)
 
     # Mock the handler manager creation
-    with patch("app.hub.daemon.LazyHandlerManager") as mock_lhm:
+    with (
+        patch("app.hub.daemon.LazyHandlerManager") as mock_lhm,
+        patch.object(
+            HubSupervisor,
+            "_start_worker",
+            new_callable=AsyncMock,
+        ) as mock_start_worker,
+    ):
         mock_manager = MagicMock()
-        mock_manager.ensure_loaded = AsyncMock(return_value=MagicMock())
-        mock_manager.is_vram_loaded.return_value = True
+        manager_loaded = {"value": False}
+
+        async def _ensure_loaded(_reason: str = "request") -> MagicMock:
+            manager_loaded["value"] = True
+            return MagicMock()
+
+        def _is_loaded() -> bool:
+            return manager_loaded["value"]
+
+        mock_manager.ensure_loaded = AsyncMock(side_effect=_ensure_loaded)
+        mock_manager.is_vram_loaded.side_effect = _is_loaded
         mock_manager.jit_enabled = False  # regular_model is not JIT-enabled
         mock_lhm.return_value = mock_manager
+        mock_start_worker.return_value = MagicMock()
 
         result = await supervisor.start_model("regular_model")
 
@@ -144,7 +163,8 @@ async def test_model_start_sets_manager_and_memory_loaded(
         # Check that the record was updated
         record = supervisor._models["regular_model"]
         assert record.manager is not None
-        assert record.manager.is_vram_loaded() is True
+        assert manager_loaded["value"] is True
+        assert mock_manager.ensure_loaded.await_count == 1
 
         # Verify LazyHandlerManager was created with correct config
         mock_lhm.assert_called_once()
@@ -193,31 +213,91 @@ async def test_model_load_and_unload(hub_config_with_defaults: MLXHubConfig) -> 
     supervisor = _TestHubSupervisor(hub_config_with_defaults)
 
     # First start the model to initialize the manager
-    with patch("app.hub.daemon.LazyHandlerManager") as mock_lhm:
+    with (
+        patch("app.hub.daemon.LazyHandlerManager") as mock_lhm,
+        patch.object(
+            HubSupervisor,
+            "_start_worker",
+            new_callable=AsyncMock,
+        ) as mock_start_worker,
+    ):
         mock_manager = MagicMock()
-        mock_manager.ensure_loaded = AsyncMock(return_value=MagicMock())
+        manager_loaded = {"value": False}
+
+        async def _ensure_loaded(_reason: str = "request") -> MagicMock:
+            manager_loaded["value"] = True
+            return MagicMock()
+
+        def _is_loaded() -> bool:
+            return manager_loaded["value"]
+
+        async def _unload(_reason: str = "manual") -> bool:
+            manager_loaded["value"] = False
+            return True
+
+        mock_manager.ensure_loaded = AsyncMock(side_effect=_ensure_loaded)
+        mock_manager.is_vram_loaded.side_effect = _is_loaded
         mock_manager.jit_enabled = False  # regular_model is not JIT-enabled
+        mock_manager.unload = AsyncMock(side_effect=_unload)
         mock_lhm.return_value = mock_manager
+        mock_start_worker.return_value = MagicMock()
 
         start_result = await supervisor.start_model("regular_model")
         assert start_result["status"] == "loaded"
 
     # Now test load - model is already loaded from start_model
-    mock_manager.is_vram_loaded.return_value = True
     result = await supervisor.load_model("regular_model")
     assert result["status"] == "already_loaded"  # Model is already loaded from start_model
     assert result["name"] == "regular_model"
 
     # Test unload - model is still loaded
-    mock_manager.is_vram_loaded.return_value = True
-    mock_manager.unload = AsyncMock(return_value=True)
-
     result = await supervisor.unload_model("regular_model")
     assert result["status"] == "unloaded"
     assert result["name"] == "regular_model"
 
     # Verify unload was called
     mock_manager.unload.assert_called_once_with("unload")
+
+
+@pytest.mark.asyncio
+async def test_get_handler_waits_for_model_load(tmp_path: Path) -> None:
+    """Supervisor.get_handler should trigger a load when VRAM is empty."""
+    config = MLXHubConfig(log_path=tmp_path / "logs")
+    config.models = [
+        MLXServerConfig(
+            name="jit_model",
+            model_path="/models/jit",
+            model_type="lm",
+            jit_enabled=True,
+        )
+    ]
+    supervisor = HubSupervisor(config)
+
+    record = supervisor._models["jit_model"]
+    manager = MagicMock(spec=LazyHandlerManager)
+    handler = MagicMock()
+    manager.ensure_loaded = AsyncMock(return_value=handler)
+
+    manager_state = {"loaded": False}
+
+    def _is_loaded() -> bool:
+        return manager_state["loaded"]
+
+    manager.is_vram_loaded.side_effect = _is_loaded
+    record.manager = manager
+
+    async def fake_load_model(name: str) -> dict[str, Any]:
+        assert name == "jit_model"
+        manager_state["loaded"] = True
+        return {"status": "loaded", "name": name}
+
+    supervisor.load_model = AsyncMock(side_effect=fake_load_model)  # type: ignore[method-assign]
+
+    acquired = await supervisor.get_handler("jit_model")
+
+    assert acquired is handler
+    supervisor.load_model.assert_awaited_once_with("jit_model")
+    manager.ensure_loaded.assert_awaited_once()
 
 
 @pytest.mark.asyncio
@@ -461,29 +541,44 @@ models:
 
     # Mock supervisor methods
     supervisor = app.state.supervisor
-    supervisor.start_model = AsyncMock(return_value={"status": "loaded", "name": "test_model"})
-    supervisor.stop_model = AsyncMock(return_value={"status": "stopped", "name": "test_model"})
-    supervisor.load_model = AsyncMock(return_value={"status": "loaded", "name": "test_model"})
-    supervisor.unload_model = AsyncMock(return_value={"status": "unloaded", "name": "test_model"})
+    load_response = {
+        "status": "accepted",
+        "action": "vram_load",
+        "model": "test_model",
+        "action_id": "action-1",
+        "state": "loading",
+        "progress": 0.0,
+    }
+    unload_response = {
+        "status": "accepted",
+        "action": "vram_unload",
+        "model": "test_model",
+        "action_id": "action-2",
+        "state": "loading",
+        "progress": 0.0,
+    }
+
+    supervisor.schedule_vram_load = AsyncMock(return_value=load_response)
+    supervisor.schedule_vram_unload = AsyncMock(return_value=unload_response)
 
     client = TestClient(app)
 
     # Test start
     response = client.post("/hub/models/test_model/start")
     assert response.status_code == 200
-    supervisor.start_model.assert_called_with("test_model")
+    supervisor.schedule_vram_load.assert_awaited_with("test_model", settings=None)
 
     # Test stop
     response = client.post("/hub/models/test_model/stop")
     assert response.status_code == 200
-    supervisor.stop_model.assert_called_with("test_model")
+    supervisor.schedule_vram_unload.assert_awaited_with("test_model")
 
     # Test load
     response = client.post("/hub/models/test_model/load")
     assert response.status_code == 200
-    supervisor.load_model.assert_called_with("test_model")
+    assert supervisor.schedule_vram_load.await_count == 2
 
     # Test unload
     response = client.post("/hub/models/test_model/unload")
     assert response.status_code == 200
-    supervisor.unload_model.assert_called_with("test_model")
+    assert supervisor.schedule_vram_unload.await_count == 2

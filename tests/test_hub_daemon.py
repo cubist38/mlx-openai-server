@@ -39,6 +39,28 @@ class _StubSupervisor:
     async def unload_model(self, name: str) -> dict[str, Any]:
         return {"status": "memory_unloaded", "name": name}
 
+    async def schedule_vram_load(
+        self, name: str, *, settings: dict[str, Any] | None = None
+    ) -> dict[str, Any]:
+        return {
+            "status": "accepted",
+            "action": "vram_load",
+            "model": name,
+            "action_id": "test-id",
+            "state": "loading",
+            "progress": 0.0,
+        }
+
+    async def schedule_vram_unload(self, name: str) -> dict[str, Any]:
+        return {
+            "status": "accepted",
+            "action": "vram_unload",
+            "model": name,
+            "action_id": "test-id",
+            "state": "unloading",
+            "progress": 0.0,
+        }
+
     async def reload_config(self) -> dict[str, Any]:
         return {"started": [], "stopped": [], "unchanged": []}
 

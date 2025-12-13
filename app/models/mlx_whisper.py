@@ -11,7 +11,6 @@ from collections.abc import Generator
 from functools import lru_cache
 from typing import Any
 
-import librosa
 from loguru import logger
 from mlx_whisper.transcribe import transcribe
 import numpy as np
@@ -23,6 +22,8 @@ CHUNK_SIZE = 30
 @lru_cache(maxsize=32)
 def load_audio(fname: str) -> np.ndarray:  # type: ignore[type-arg]
     """Load and cache audio file. Cache size limited to 32 recent files."""
+    import librosa  # noqa: PLC0415
+
     a, _ = librosa.load(fname, sr=SAMPLING_RATE, dtype=np.float32)
     return a
 

@@ -53,12 +53,7 @@ from starlette.responses import Response
 import uvicorn
 
 from .api.endpoints import router
-from .api.hub_routes import (
-    HubConfigError,
-    _call_daemon_api_async,
-    _load_hub_config_from_request,
-    hub_router,
-)
+from .api.hub_routes import HubConfigError, _load_hub_config_from_request, hub_router
 from .config import MLXServerConfig
 from .const import HUB_POLL_INTERVAL_SECONDS
 from .core.manager_protocol import ManagerProtocol
@@ -1436,10 +1431,17 @@ async def _hub_sync_once(app: FastAPI) -> None:
     registry.set_group_policies(build_group_policy_payload(getattr(hub_config, "groups", None)))
     await _sync_registry_models_from_config(registry, hub_config)
 
+    controller = getattr(app.state, "hub_controller", None)
+    if controller is None:
+        controller = getattr(app.state, "supervisor", None)
+    if controller is None:
+        logger.debug("Hub sync: no in-process controller available")
+        return
+
     try:
-        snapshot = await _call_daemon_api_async(hub_config, "GET", "/hub/status", timeout=2.0)
+        snapshot = await controller.get_status()
     except Exception as e:
-        logger.debug(f"Hub sync: failed to fetch hub status: {e}")
+        logger.debug(f"Hub sync: failed to fetch controller status: {e}")
         return
 
     models = snapshot.get("models") if isinstance(snapshot, dict) else None

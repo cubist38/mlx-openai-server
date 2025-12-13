@@ -631,6 +631,76 @@ class HubModelActionResponse(OpenAIBaseModel):
     )
     model: str = Field(..., description="Model name targeted by the action.")
     message: str | None = Field(None, description="Additional context about the action outcome.")
+    action_id: str | None = Field(
+        None,
+        description="Identifier for the asynchronous VRAM action, when applicable.",
+    )
+    state: str | None = Field(
+        None,
+        description="Current scheduler state for VRAM actions (loading, unloading, ready, etc.).",
+    )
+    progress: float | None = Field(
+        None,
+        description="Progress percentage reported by the controller for VRAM actions.",
+    )
+    worker_port: int | None = Field(
+        None,
+        description="Sidecar worker port assigned to the action when available.",
+    )
+    error: str | None = Field(
+        None, description="Error message when the action enters an error state."
+    )
+
+
+class HubControlLoadRequest(OpenAIBaseModel):
+    """Request payload for hub control-plane VRAM loads."""
+
+    model_id: str = Field(..., description="Registry model identifier to load into VRAM.")
+    settings: dict[str, Any] | None = Field(
+        default=None,
+        description="Optional model-specific settings for the load action.",
+    )
+
+
+class HubControlUnloadRequest(OpenAIBaseModel):
+    """Request payload for hub control-plane VRAM unloads."""
+
+    model_id: str = Field(..., description="Registry model identifier to unload from VRAM.")
+
+
+class HubControlActionResponse(OpenAIBaseModel):
+    """Response payload for control-plane load/unload actions."""
+
+    status: Literal["accepted", "ok"] = Field(
+        "accepted",
+        description="Indicates the action was accepted/scheduled.",
+    )
+    action: Literal["vram_load", "vram_unload"] = Field(
+        ...,
+        description="Control-plane action type.",
+    )
+    model: str = Field(..., description="Target model id.")
+    action_id: str | None = Field(None, description="Identifier for the async action.")
+    state: str | None = Field(None, description="Current state of the action.")
+    progress: float | None = Field(None, description="Progress percentage (0-100).")
+    worker_port: int | None = Field(None, description="Port for the worker/sidecar when available.")
+    message: str | None = Field(None, description="Optional human-readable summary.")
+    error: str | None = Field(None, description="Error message when state is 'error'.")
+
+
+class HubControlStatusResponse(OpenAIBaseModel):
+    """Response payload for control-plane status queries."""
+
+    model: str = Field(..., description="Target model id.")
+    action_id: str | None = Field(None, description="Identifier for the async action.")
+    state: str | None = Field(None, description="Current state of the action.")
+    progress: float | None = Field(None, description="Progress percentage (0-100).")
+    error: str | None = Field(None, description="Error message when state is 'error'.")
+    worker_port: int | None = Field(None, description="Port for the worker/sidecar when available.")
+    started_ts: int | None = Field(None, description="Timestamp when the action started (seconds).")
+    updated_ts: int | None = Field(
+        None, description="Timestamp when the action last updated (seconds)."
+    )
 
 
 class HubServiceActionResponse(OpenAIBaseModel):

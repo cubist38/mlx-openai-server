@@ -76,6 +76,9 @@ class MLXServerConfig:
     group: str | None = DEFAULT_GROUP
     is_default_model: bool = DEFAULT_IS_DEFAULT_MODEL
     enable_status_page: bool = DEFAULT_ENABLE_STATUS_PAGE
+    draft_model_path: str | None = None
+    draft_tokens: int | None = None
+    worker_extra_args: list[str] | None = None
 
     # Used to capture raw CLI input before processing
     lora_paths_str: str | None = DEFAULT_LORA_PATHS_STR
@@ -161,6 +164,23 @@ class MLXServerConfig:
             self.group = self.group.strip()
             if not self.group:
                 self.group = None
+
+        if self.draft_tokens is not None:
+            if self.draft_tokens <= 0:
+                raise ValueError("draft_tokens must be a positive integer when provided")
+
+        if self.worker_extra_args is not None:
+            if isinstance(self.worker_extra_args, str):  # pragma: no cover - defensive
+                self.worker_extra_args = [self.worker_extra_args]
+            else:
+                normalized: list[str] = []
+                for value in self.worker_extra_args:
+                    if value is None:
+                        continue
+                    text = str(value).strip()
+                    if text:
+                        normalized.append(text)
+                self.worker_extra_args = normalized or None
 
     @property
     def model_identifier(self) -> str:

@@ -95,6 +95,7 @@ quiet-level = 3
 
 [tool.pytest.ini_options]
 addopts = "--tb=short"
+asyncio_mode = "auto"
 
 [tool.ruff]
 line-length = 100
