@@ -1,8 +1,8 @@
 """Request tracking middleware for correlation IDs and request logging."""
 
+from collections.abc import Awaitable, Callable
 import time
 import uuid
-from typing import Callable
 
 from fastapi import Request, Response
 from loguru import logger
@@ -21,15 +21,19 @@ class RequestTrackingMiddleware(BaseHTTPMiddleware):
     - Logs request start/end with timing information
     """
 
-    async def dispatch(self, request: Request, call_next: Callable) -> Response:
+    async def dispatch(
+        self, request: Request, call_next: Callable[[Request], Awaitable[Response]]
+    ) -> Response:
         """
         Process each request with correlation ID tracking.
 
-        Args:
+        Args
+        ----
             request: Incoming FastAPI request
             call_next: Next middleware/handler in chain
 
-        Returns:
+        Returns
+        -------
             Response with X-Request-ID header added
         """
         # Get or generate request ID
@@ -43,13 +47,12 @@ class RequestTrackingMiddleware(BaseHTTPMiddleware):
         # Log request start
         start_time = time.time()
         logger.info(
-            f"Request started: {request.method} {request.url.path} "
-            f"[request_id={request_id}]"
+            f"Request started: {request.method} {request.url.path} [request_id={request_id}]"
         )
 
         try:
             # Process request
-            response = await call_next(request)
+            response: Response = await call_next(request)
 
             # Calculate duration
             duration = time.time() - start_time
@@ -64,15 +67,12 @@ class RequestTrackingMiddleware(BaseHTTPMiddleware):
                 f"[request_id={request_id}]"
             )
 
-            return response
-
-        except Exception as e:
+        except Exception:
             # Log error with request ID
             duration = time.time() - start_time
-            logger.error(
+            logger.exception(
                 f"Request failed: {request.method} {request.url.path} "
-                f"error={str(e)} duration={duration:.3f}s "
-                f"[request_id={request_id}]",
-                exc_info=True
+                f"duration={duration:.3f}s [request_id={request_id}]"
             )
             raise
+        return response
