@@ -13,6 +13,7 @@ import datetime
 import json
 import os
 from pathlib import Path
+import signal
 import subprocess
 import sys
 import threading
@@ -39,8 +40,6 @@ from .const import (
 )
 from .handler.parser.factory import PARSER_REGISTRY
 from .hub.config import HubConfigError, MLXHubConfig, load_hub_config
-
-# Hub IPC service removed: CLI uses HTTP API to contact the hub daemon
 from .main import start
 from .version import __version__
 
@@ -1516,6 +1515,9 @@ def hub_stop(ctx: click.Context) -> None:
         raise click.ClickException(f"Config sync failed before shutdown: {e}") from e
 
     try:
+        # Request daemon to shutdown supervised models. Some daemon
+        # deployments may not exit the process unless explicitly asked;
+        # attempt a graceful shutdown first via the API.
         _call_daemon_api(config, "POST", "/hub/shutdown")
     except click.ClickException as e:
         msg = str(e)
@@ -1525,6 +1527,23 @@ def hub_stop(ctx: click.Context) -> None:
         raise click.ClickException(f"Hub shutdown failed: {e}") from e
 
     _flash("Hub manager shutdown requested", tone="success")
+    # Best-effort: if a runtime state file is present, attempt to terminate
+    # the daemon process directly to ensure the uvicorn process exits.
+    try:
+        runtime = _read_hub_runtime_state(config)
+        if runtime:
+            rt_pid = runtime.get("pid")
+            if isinstance(rt_pid, int):
+                pid = rt_pid
+                try:
+                    os.kill(pid, signal.SIGTERM)
+                    logger.info(f"Sent SIGTERM to hub daemon pid={pid}")
+                except OSError:
+                    # Process may have already exited; ignore errors.
+                    pass
+    except Exception:
+        # Never fail the CLI stop on best-effort termination errors.
+        logger.debug("Best-effort daemon termination failed; continuing")
 
 
 @hub.command(name="start-model", help="Start one or more model processes")

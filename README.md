@@ -303,6 +303,8 @@ If the output is `i386` (on an M-series machine), you are using a non-native Pyt
 - **Launch mode (single-model)**: When you start the server in the normal/launch mode it exposes only the OpenAI-compatible API surface under `/v1/...` (chat, embeddings, images, etc.). This keeps the single-model process focused on inference and doesn't expose the hub admin controls.
 - **Hub (daemon) mode**: When running the hub daemon (the supervisor/process manager), the server exposes both the `/v1/...` inference endpoints and the `/hub/...` admin/control endpoints.
 
+Hub deployments rely on a single FastAPI hub daemon implemented in `app/hub/daemon.py`. The CLI, dashboard, and any automation call the daemon's HTTP API directly (for example `/hub/status`, `/hub/reload`, `/hub/models/{name}/start`, `/hub/shutdown`).
+
 ### Starting the Server
 
 You can start the MLX server using either the Python module or the CLI command. Both methods support the same parameters, including logging configuration options.

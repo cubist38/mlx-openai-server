@@ -21,9 +21,23 @@ class _StubSupervisor:
     def __init__(self) -> None:
         self.shutdown_called = False
         self.started: dict[str, int] = {}
+        self._status_models = [
+            {
+                "name": "alpha",
+                "state": "running",
+                "group": "tier_one",
+                "memory_loaded": True,
+            },
+            {
+                "name": "beta",
+                "state": "stopped",
+                "group": "tier_one",
+                "memory_loaded": False,
+            },
+        ]
 
     async def get_status(self) -> dict[str, Any]:
-        return {"timestamp": 1, "models": [{"name": "alpha", "state": "stopped"}]}
+        return {"timestamp": 1, "models": self._status_models}
 
     async def start_model(self, name: str) -> dict[str, Any]:
         self.started[name] = 1234
@@ -81,6 +95,14 @@ port: 8123
 models:
   - name: alpha
     model_path: /models/alpha
+    group: tier_one
+  - name: beta
+    model_path: /models/beta
+    group: tier_one
+groups:
+  - name: tier_one
+    max_loaded: 2
+    idle_unload_trigger_min: null
 """.strip(),
     )
 
@@ -99,6 +121,15 @@ models:
     payload = r.json()
     assert "models" in payload, "Response should contain 'models' key"
     assert isinstance(payload["models"], list), "payload['models'] should be a list"
+    assert payload["groups"] == [
+        {
+            "name": "tier_one",
+            "max_loaded": 2,
+            "idle_unload_trigger_min": None,
+            "loaded": 1,
+            "models": ["alpha", "beta"],
+        }
+    ]
 
 
 @pytest.mark.asyncio
@@ -112,6 +143,14 @@ port: 8123
 models:
   - name: alpha
     model_path: /models/alpha
+    group: tier_one
+  - name: beta
+    model_path: /models/beta
+    group: tier_one
+groups:
+  - name: tier_one
+    max_loaded: 2
+    idle_unload_trigger_min: null
 """.strip(),
     )
 

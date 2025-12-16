@@ -11,10 +11,15 @@ This document expands on the **Hub Mode** section in the project README and desc
 2. **Hub daemon (HTTP control plane)**
    - The legacy IPC-based `HubService` was replaced by a single FastAPI-backed hub daemon. The daemon owns process supervision, memory lifecycle, and an HTTP control surface under `/hub/*`.
    - The CLI and FastAPI routes interact with the daemon via HTTP (for example, `GET /hub/status`, `POST /hub/reload`, `POST /hub/models/{model}/start`).
+   - There is no `/hub/service/*` shim or IPC socket client anymore; every operator flow calls the daemon's HTTP API directly.
    - Supported actions include health checks, status queries, reloads, model start/stop, memory load/unload, and graceful shutdowns. Every public control surface maps to one of these HTTP endpoints.
-3. **Daemon client pattern**
+3. **Shared lifecycle helpers**
+   - `app/core/hub_lifecycle.py` exports `HubLifecycleService`, `HubServiceAdapter`, and `get_hub_lifecycle_service()` so FastAPI routes, CLI helpers, and background tasks all speak the same interface. Tests can stub a single service object and rely on the helper to inject it into `app.state` the same way the daemon does.
+   - `RegistrySyncService` centralizes registry mutations (handler load/unload, worker telemetry). Both the daemon and the single-model server reuse it to keep metadata identical across processes.
+   - `app/core/hub_status.py` contains `build_group_state()`, which normalizes the `/hub/status` group summaries for the CLI, HTML dashboard, and API consumers.
+4. **Daemon client pattern**
    - Instead of an IPC client, callers now issue HTTP requests to the daemon. Tests and tools should call the daemon endpoints or stub the async HTTP helper used by `app.api.hub_routes`.
-4. **FastAPI `/hub` surface**
+5. **FastAPI `/hub` surface**
    - Exposes JSON APIs plus the HTML dashboard. Operators can trigger the same start/reload/stop/load/unload actions directly from the browser while receiving flash/toast feedback.
 
    **Routing note:** The `/hub` admin surface is implemented in `app/api/hub_routes.py` and is intended to be mounted only by the hub daemon. The single-model launch process exposes only the OpenAI-compatible `/v1/...` endpoints. This ensures a single canonical implementation for `/hub` and prevents duplicate handlers across processes.
@@ -91,13 +96,12 @@ Flash helper tones (`info`, `success`, `warning`, `error`) mirror the HTML dashb
 | --- | --- | --- |
 | `/hub/status` | GET | Reloads `hub.yaml`, queries the HubManager, and returns counts/models/warnings. Falls back to cached metadata with warnings when the service is offline. |
 | `/hub` | GET | Serves the HTML dashboard when `enable_status_page` is true; returns 404 otherwise. |
-| `/hub/service/start` | POST | Starts the HubManager if it is not running. Returns PID details or HTTP 400 if the config is missing. |
-| `/hub/service/reload` | POST | Runs `reload()` inside the service and returns the diff (`started/stopped/unchanged`). |
-| `/hub/service/stop` | POST | Requests shutdown, returning HTTP 503 if no manager is running. |
-| `/hub/models/{model}/start` | POST | Reloads, then issues `start_model`. HTTP 429 indicates group capacity exhaustion. (CLI: `hub start-model`) |
-| `/hub/models/{model}/stop` | POST | Reloads, then issues `stop_model`. (CLI: `hub stop-model`) |
-| `/hub/models/{model}/load` | POST | Passes the request to the controller so it can instantiate the handler locally. |
-| `/hub/models/{model}/unload` | POST | Requests the controller tear down the in-memory handler and free resources. |
+| `/hub/reload` | POST | Calls the controller's `reload_config()` and returns the diff (`started/stopped/unchanged`). |
+| `/hub/shutdown` | POST | Requests a graceful shutdown of managed models; pass `?exit=1` or `X-Hub-Exit: 1` to terminate the daemon after cleanup. |
+| `/hub/models/{model}/start` | POST | Validates availability and calls `start_model`; HTTP 429 indicates group capacity exhaustion. (CLI: `hub start-model`) |
+| `/hub/models/{model}/stop` | POST | Tells the controller to stop the worker and schedule VRAM unload. (CLI: `hub stop-model`) |
+| `/hub/models/{model}/load` | POST | Passes the request to the controller so it can instantiate the handler locally (VRAM load). |
+| `/hub/models/{model}/unload` | POST | Requests the controller tear down the in-memory handler and free resources (VRAM unload). |
 
 All responses use the same OpenAI-style `error` envelope (`type`, `message`, `code`) so upstream tooling can reuse existing error handling paths.
 
@@ -112,6 +116,6 @@ For more implementation details, inspect:
 - `app/hub/config.py` – YAML loader, slug validation, log-path normalization.
 - `app/hub/manager.py` – Process orchestration, group accounting, observability events.
 - `app/hub/daemon.py` – FastAPI-based hub daemon, process supervision, and HTTP control plane.
-- `app/hub/service.py` – (removed) legacy IPC service. The daemon replaces this component; do not rely on the IPC shim.
-- `app/hub/service.py` – removed (legacy IPC service; replaced by the hub daemon).
+- `app/core/hub_lifecycle.py` – Shared lifecycle services (`HubLifecycleService`, `HubServiceAdapter`, `RegistrySyncService`).
+- `app/core/hub_status.py` – Group/status formatting helpers consumed by `/hub/status` and the CLI.
 - `app/api/hub_routes.py` – FastAPI endpoints powering `/hub`, `/hub/status`, and service/model controls.

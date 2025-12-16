@@ -400,6 +400,21 @@ This document tracks session-to-session handoffs for the `mlx-openai-server-lab`
 
 ---
 
+## Session 9: Phase 1 – Daemon Docs Refresh
+**Date**: 2025-12-16  
+**Branch**: `Create-hub`  
+**Goal**: Remove the last HubService references from the docs and point operators to the daemon-only HTTP API.
+
+### Actions Taken
+1. ✅ Updated `docs/HUB_MODE.md` so the API table documents `/hub/reload`, `/hub/shutdown`, and the remaining `/hub/models/*` routes instead of the removed `/hub/service/*` shim. Added explicit guidance that every CLI/dashboard action now calls the FastAPI daemon directly.
+2. ✅ Refreshed the README "Hub vs Launch Modes" section with a note explaining that the FastAPI hub daemon (implemented in `app/hub/daemon.py`) is the only control surface—there is no IPC client or HubService shim.
+3. ✅ Logged this work here so future sessions know the documentation already reflects the daemon-only architecture.
+
+### Next Actions
+- Spot-check smaller docs/examples for straggling references to the shim while focusing on Plan Part C cleanup tasks.
+
+---
+
 ## Hub Daemon Migration — Single-daemon approach (summary)
 
 The hub architecture is now a single long-lived FastAPI "hub daemon" that owns process supervision, memory/runtime state, and an HTTP control plane. The daemon exposes a canonical API rooted under `/hub/*` (examples: `/hub/status`, `/hub/models/{name}/start`, `/hub/models/{name}/load`) and is implemented in `app/hub/daemon.py`.

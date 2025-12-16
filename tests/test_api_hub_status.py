@@ -7,7 +7,8 @@ from typing import Any
 
 import pytest
 
-from app.api.hub_routes import _build_groups_from_config, _build_models_from_config
+from app.api.hub_routes import _build_models_from_config
+from app.core.hub_status import build_group_state
 from app.hub.config import MLXHubConfig, MLXHubGroupConfig
 
 
@@ -87,9 +88,16 @@ def test_build_groups_merges_live_snapshot(
         ],
     }
 
-    groups = _build_groups_from_config(config, snapshot)
-    assert groups[0].loaded == 1
-    assert groups[0].models == ["foo"]
+    if isinstance(snapshot, dict) and isinstance(snapshot.get("groups"), list):
+        group_entries = snapshot.get("groups") or []
+    else:
+        group_entries = build_group_state(
+            getattr(config, "groups", []) or [],
+            snapshot.get("models") if isinstance(snapshot, dict) else None,
+            fallback_members={config.models[0].group: [config.models[0].name]},
+        )
+    assert group_entries[0]["loaded"] == 1
+    assert group_entries[0]["models"] == ["foo"]
 
 
 def test_build_groups_defaults_to_config_members(
@@ -100,6 +108,10 @@ def test_build_groups_defaults_to_config_members(
     config.groups = [MLXHubGroupConfig(name="tier", max_loaded=1, idle_unload_trigger_min=10)]
     config.models[0].group = "tier"
 
-    groups = _build_groups_from_config(config, None)
-    assert groups[0].loaded == 0
-    assert groups[0].models == ["foo"]
+    group_entries = build_group_state(
+        getattr(config, "groups", []) or [],
+        None,
+        fallback_members={config.models[0].group: [config.models[0].name]},
+    )
+    assert group_entries[0]["loaded"] == 0
+    assert group_entries[0]["models"] == ["foo"]

@@ -335,6 +335,7 @@ class SidecarWorker:
         child process so the hub operator can debug failures more easily.
         """
         prefix = f"worker[{self.name}].{stream_name}"
+        bound_logger = logger.bind(model=self.name)
         try:
             while True:
                 line = await stream.readline()
@@ -345,11 +346,14 @@ class SidecarWorker:
                 except Exception:
                     text = str(line)
                 if text:
-                    # Use debug for stdout and error for stderr to keep logs useful
+                    # Send worker logs to the model-specific sink by binding
+                    # the `model` extra. Use INFO for stderr (diagnostic
+                    # messages) instead of ERROR so they do not surface as
+                    # global errors, and DEBUG for stdout.
                     if stream_name == "stderr":
-                        logger.error(f"{prefix}: {text}")
+                        bound_logger.info(f"{prefix}: {text}")
                     else:
-                        logger.debug(f"{prefix}: {text}")
+                        bound_logger.debug(f"{prefix}: {text}")
         except asyncio.CancelledError:
             return
         except Exception as exc:  # pragma: no cover - defensive logging

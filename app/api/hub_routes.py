@@ -18,6 +18,8 @@ from fastapi.templating import Jinja2Templates
 from loguru import logger
 
 from ..const import DEFAULT_ENABLE_STATUS_PAGE, DEFAULT_HUB_CONFIG_PATH
+from ..core.hub_lifecycle import get_hub_lifecycle_service
+from ..core.hub_status import build_group_state
 from ..hub.config import HubConfigError, MLXHubConfig, load_hub_config
 from ..schemas.openai import (
     HubControlActionResponse,
@@ -27,7 +29,6 @@ from ..schemas.openai import (
     HubGroupStatus,
     HubModelActionRequest,
     HubModelActionResponse,
-    HubServiceActionResponse,
     HubStatusCounts,
     HubStatusResponse,
     Model,
@@ -139,67 +140,6 @@ def _resolve_hub_config_path(raw_request: Request) -> Path:
         return Path(str(source_path)).expanduser()
 
     return DEFAULT_HUB_CONFIG_PATH
-
-
-def _stop_controller_process(
-    raw_request: Request, background_tasks: BackgroundTasks | None = None
-) -> bool:
-    """Stop the in-process hub controller (if present).
-
-    Adjusts local state by scheduling a shutdown of an in-process
-    controller/supervisor when present.
-
-    Parameters
-    ----------
-    raw_request : Request
-        FastAPI request used to access `app.state` and locate the
-        in-process controller/supervisor.
-
-    Returns
-    -------
-    bool
-        True if a local controller was present and a shutdown was scheduled,
-        False if no in-process controller was found.
-    """
-    controller = getattr(raw_request.app.state, "hub_controller", None)
-    if controller is None:
-        controller = getattr(raw_request.app.state, "supervisor", None)
-
-    if controller is None:
-        return False
-
-    # If a FastAPI BackgroundTasks object is provided, schedule the
-    # shutdown via background tasks so it mirrors the behavior of the
-    # `/hub/shutdown` endpoint and allows the response to be returned
-    # to the client before the shutdown proceeds. Also schedule a
-    # delayed process exit so the daemon terminates after shutting down
-    # managed models.
-    try:
-        if background_tasks is not None:
-            background_tasks.add_task(controller.shutdown_all)
-
-            async def _shutdown_server() -> None:
-                await asyncio.sleep(1)
-                sys.exit(0)
-
-            background_tasks.add_task(_shutdown_server)
-        else:
-            # Fallback: schedule as a retained asyncio task so it isn't
-            # garbage-collected prematurely.
-            task = asyncio.create_task(controller.shutdown_all())
-            _retain_task(task)
-    except Exception:
-        logger.exception("Failed to schedule shutdown for in-process controller")
-    return True
-
-
-def _get_controller(raw_request: Request) -> Any | None:
-    """Return the in-process hub controller or supervisor when available."""
-
-    controller = getattr(raw_request.app.state, "hub_controller", None)
-    if controller is None:
-        controller = getattr(raw_request.app.state, "supervisor", None)
-    return controller
 
 
 def _resolve_registry_model_id(config: MLXHubConfig | None, model_name: str) -> str | None:
@@ -560,59 +500,10 @@ def _build_models_from_config(
     return rendered, counts
 
 
-def _build_groups_from_config(
-    config: MLXHubConfig,
-    live_snapshot: dict[str, Any] | None,
-) -> list[HubGroupStatus]:
-    """Build group summaries combining config metadata and live status."""
-
-    configured_groups = list(getattr(config, "groups", []) or [])
-    if not configured_groups:
-        return []
-
-    live_lookup: dict[str, dict[str, Any]] = {}
-    if live_snapshot is not None:
-        groups = live_snapshot.get("groups")
-        if isinstance(groups, list):
-            for entry in groups:
-                name = entry.get("name")
-                if isinstance(name, str):
-                    live_lookup[name] = entry
-
-    members_by_group: dict[str, list[str]] = {}
-    for server_cfg in getattr(config, "models", []):
-        group_name = getattr(server_cfg, "group", None)
-        if not group_name:
-            continue
-        members_by_group.setdefault(group_name, []).append(server_cfg.name or "<unnamed>")
-
-    summaries: list[HubGroupStatus] = []
-    for cfg_group in configured_groups:
-        name = cfg_group.name
-        live = live_lookup.get(name, {})
-        live_members = live.get("models")
-        configured_members = members_by_group.get(name, [])
-        member_list = configured_members
-        if isinstance(live_members, list) and live_members:
-            member_list = [str(entry) for entry in live_members]
-        summaries.append(
-            HubGroupStatus(
-                name=name,
-                max_loaded=cfg_group.max_loaded,
-                idle_unload_trigger_min=getattr(cfg_group, "idle_unload_trigger_min", None),
-                loaded=int(live.get("loaded", 0) or 0),
-                models=member_list,
-            ),
-        )
-    return summaries
-
-
 async def get_running_hub_models(raw_request: Request) -> set[str] | None:
     """Return the set of model names whose handlers are currently running."""
 
-    controller = getattr(raw_request.app.state, "hub_controller", None)
-    if controller is None:
-        controller = getattr(raw_request.app.state, "supervisor", None)
+    controller = get_hub_lifecycle_service(raw_request.app)
     if controller is None:
         return None
 
@@ -620,6 +511,14 @@ async def get_running_hub_models(raw_request: Request) -> set[str] | None:
         snapshot = await controller.get_status()
     except Exception as exc:  # pragma: no cover - controller failures surface elsewhere
         logger.debug(f"Failed to read controller status: {exc}")
+        return None
+
+    # Treat an empty snapshot as unavailable so callers can fall back to
+    # registry-only logic. Some controller implementations may return an
+    # empty mapping when status is unsupported; in that case surface as
+    # unavailable (``None``) rather than an empty set which triggers
+    # stricter validation paths in higher-level request handling.
+    if not isinstance(snapshot, dict) or not snapshot:
         return None
 
     running: set[str] = set()
@@ -692,9 +591,7 @@ async def hub_status(raw_request: Request) -> HubStatusResponse:
     warnings: list[str] = []
     snapshot: dict[str, Any] | None = None
 
-    controller = getattr(raw_request.app.state, "hub_controller", None)
-    if controller is None:
-        controller = getattr(raw_request.app.state, "supervisor", None)
+    controller = get_hub_lifecycle_service(raw_request.app)
 
     if controller is None:
         warnings.append("Hub controller is not available.")
@@ -729,7 +626,60 @@ async def hub_status(raw_request: Request) -> HubStatusResponse:
         )
 
     models, counts = _build_models_from_config(config, snapshot)
-    groups = _build_groups_from_config(config, snapshot)
+    # Prefer authoritative VRAM residency from the central registry when
+    # available. The controller snapshot can be slightly stale or may not
+    # expose vram residency for some backends; consult the registry to
+    # ensure the status page reflects the true loaded state.
+    registry = getattr(raw_request.app.state, "model_registry", None)
+    if registry is not None:
+        for m in models:
+            try:
+                meta = getattr(m, "metadata", None)
+                if not isinstance(meta, dict):
+                    continue
+                model_path = meta.get("model_path")
+                if not model_path:
+                    continue
+                try:
+                    vstatus = registry.get_vram_status(model_path)
+                except Exception:
+                    continue
+                # Map registry VRAM flag into the UI metadata fields the
+                # dashboard expects.
+                vram_loaded = bool(vstatus.get("vram_loaded", False))
+                meta["memory_state"] = "loaded" if vram_loaded else "unloaded"
+                meta["memory_loaded"] = vram_loaded
+                # Propagate worker port when present so UI can link to worker
+                # endpoints and so downstream probes can prefer worker data.
+                if vstatus.get("worker_port") is not None:
+                    meta.setdefault("port", vstatus.get("worker_port"))
+            except Exception:
+                # Be defensive: do not let a registry read failure break status
+                # generation; skip augmentation for this model.
+                continue
+    fallback_members: dict[str, list[str]] = {}
+    for server_cfg in getattr(config, "models", []):
+        group_name = getattr(server_cfg, "group", None)
+        if not group_name:
+            continue
+        fallback_members.setdefault(group_name, []).append(server_cfg.name or "<unnamed>")
+
+    snapshot_models = snapshot.get("models") if isinstance(snapshot, dict) else None
+    group_entries = build_group_state(
+        getattr(config, "groups", []) or [],
+        snapshot_models if isinstance(snapshot_models, list) else None,
+        fallback_members=fallback_members,
+    )
+    groups = [
+        HubGroupStatus(
+            name=cast("str", entry.get("name")),
+            max_loaded=entry.get("max_loaded"),
+            idle_unload_trigger_min=entry.get("idle_unload_trigger_min"),
+            loaded=int(entry.get("loaded", 0) or 0),
+            models=entry.get("models", []),
+        )
+        for entry in group_entries
+    ]
     response_timestamp = int(time.time())
     if snapshot is not None:
         timestamp_value = snapshot.get("timestamp")
@@ -797,14 +747,13 @@ async def hub_reload(raw_request: Request) -> dict[str, Any] | JSONResponse:
     except HubConfigError as exc:
         return _hub_config_error_response(str(exc))
 
-    controller = getattr(raw_request.app.state, "hub_controller", None)
-    if controller is None:
-        controller = getattr(raw_request.app.state, "supervisor", None)
+    controller = get_hub_lifecycle_service(raw_request.app)
     if controller is None:
         return _controller_unavailable_response()
 
     try:
-        result: dict[str, Any] = await controller.reload_config()
+        result_raw = await controller.reload_config()
+        result: dict[str, Any] = result_raw if isinstance(result_raw, dict) else {}
     except Exception as exc:
         return _controller_error_response(exc)
     return result
@@ -848,119 +797,9 @@ async def hub_status_page(raw_request: Request) -> HTMLResponse:
     # Serve the inline hub dashboard HTML directly on the main API port.
     # Do not proxy or fetch a separate page from the hub daemon; the
     # dashboard communicates with the daemon (if present) via the
-    # `/hub/status` and service endpoints exposed by this API.
+    # `/hub/status` endpoint and the remaining hub control APIs.
     context = {"request": raw_request}
     return templates.TemplateResponse("hub_status.html.jinja", context)
-
-
-@hub_router.post("/hub/service/start", response_model=HubServiceActionResponse)
-async def hub_service_start(raw_request: Request) -> HubServiceActionResponse | JSONResponse:
-    """Start the background hub manager service if it is not already running.
-
-    Parameters
-    ----------
-    raw_request : Request
-        The incoming FastAPI request.
-
-    Returns
-    -------
-    HubServiceActionResponse or JSONResponse
-        Response indicating the result of the start action.
-
-    Raises
-    ------
-    HubConfigError
-        If the hub configuration cannot be loaded.
-    """
-    try:
-        _load_hub_config_from_request(raw_request)
-    except HubConfigError as exc:
-        return _hub_config_error_response(str(exc))
-
-    controller = _get_controller(raw_request)
-    if controller is None:
-        return _controller_unavailable_response()
-
-    snapshot: dict[str, Any] | None = None
-    try:
-        with contextlib.suppress(Exception):
-            await controller.reload_config()
-        snapshot = await controller.get_status()
-    except Exception as exc:
-        return _controller_error_response(exc)
-
-    details: dict[str, Any] = {}
-    if isinstance(snapshot, dict):
-        details["models"] = snapshot.get("models", [])
-
-    return HubServiceActionResponse(
-        status="ok",
-        action="start",
-        message="Hub controller is already running.",
-        details=details,
-    )
-
-
-@hub_router.post("/hub/service/stop", response_model=HubServiceActionResponse)
-async def hub_service_stop(
-    raw_request: Request, background_tasks: BackgroundTasks
-) -> HubServiceActionResponse | JSONResponse:
-    """Stop the hub controller and manager service when present.
-
-    Parameters
-    ----------
-    raw_request : Request
-        The incoming FastAPI request.
-
-    Returns
-    -------
-    HubServiceActionResponse | JSONResponse
-        Response indicating the result of the stop operation.
-
-    """
-    controller = _get_controller(raw_request)
-    if controller is None:
-        return _controller_unavailable_response()
-
-    controller_stopped = _stop_controller_process(raw_request, background_tasks)
-
-    return HubServiceActionResponse(
-        status="ok",
-        action="stop",
-        message="Hub controller shutdown requested"
-        if controller_stopped
-        else "Hub controller was not running",
-        details={
-            "controller_stopped": controller_stopped,
-        },
-    )
-
-
-@hub_router.post("/hub/service/reload", response_model=HubServiceActionResponse)
-async def hub_service_reload(raw_request: Request) -> HubServiceActionResponse | JSONResponse:
-    """Reload hub.yaml inside the running manager service and return the diff.
-
-    Parameters
-    ----------
-    raw_request : Request
-        The incoming FastAPI request.
-
-    Returns
-    -------
-    HubServiceActionResponse or JSONResponse
-        Response indicating the result of the reload action.
-
-    """
-    reload_result = await hub_reload(raw_request)
-    if isinstance(reload_result, JSONResponse):
-        return reload_result
-
-    return HubServiceActionResponse(
-        status="ok",
-        action="reload",
-        message="Hub configuration reloaded",
-        details=reload_result,
-    )
 
 
 @hub_router.post("/hub/models/{model_name}/start", response_model=HubModelActionResponse)
@@ -997,21 +836,7 @@ async def hub_start_model(
             status_code=HTTPStatus.BAD_REQUEST,
         )
 
-    # Check availability against the registry before attempting to start
-    config = _get_cached_hub_config(raw_request)
-    availability_error = _guard_hub_action_availability(
-        raw_request,
-        config,
-        model_name,
-        deny_detail="Model is currently unavailable",
-        log_context="start",
-    )
-    if availability_error is not None:
-        return availability_error
-
-    controller = getattr(raw_request.app.state, "hub_controller", None)
-    if controller is None:
-        controller = getattr(raw_request.app.state, "supervisor", None)
+    controller = get_hub_lifecycle_service(raw_request.app)
 
     if controller is None:
         return _controller_unavailable_response()
@@ -1223,16 +1048,16 @@ async def hub_control_load(
             status_code=HTTPStatus.BAD_REQUEST,
         )
 
-    controller = getattr(raw_request.app.state, "hub_controller", None)
-    if controller is None:
-        controller = getattr(raw_request.app.state, "supervisor", None)
+    controller = get_hub_lifecycle_service(raw_request.app)
     if controller is None or not hasattr(controller, "schedule_vram_load"):
         return _controller_unavailable_response()
 
     registry = getattr(raw_request.app.state, "model_registry", None)
 
     try:
-        result = await controller.schedule_vram_load(model_id, settings=payload.settings)
+        result_raw = await controller.schedule_vram_load(model_id, settings=payload.settings)
+        # Coerce optional controller payloads to a mapping for downstream access
+        result: dict[str, Any] = result_raw if isinstance(result_raw, dict) else {}
     except HTTPException:
         raise
     except Exception as exc:  # pragma: no cover - defensive
@@ -1244,13 +1069,27 @@ async def hub_control_load(
     worker_port: int | None = None
     error: str | None = None
 
+    action: dict[str, Any] | None = None
     if registry is not None:
+        # Resolve hub-config model slugs to registry identifiers when
+        # possible so callers may provide the hub-facing name.
+        try:
+            cfg = _get_cached_hub_config(raw_request)
+            registry_model_id = _resolve_registry_model_id(cfg, model_id) or model_id
+        except Exception:
+            registry_model_id = model_id
         with contextlib.suppress(Exception):
-            _, action = registry.get_vram_action_status(action_id=action_id, model_id=model_id)
-            state = cast("str | None", action.get("vram_action_state", state))
-            progress = cast("float | None", action.get("vram_action_progress", progress))
-            worker_port = cast("int | None", action.get("worker_port"))
-            error = cast("str | None", action.get("vram_action_error"))
+            _, action = registry.get_vram_action_status(
+                action_id=action_id, model_id=registry_model_id
+            )
+
+    # Ensure `action` is a mapping for downstream access
+    action_map: dict[str, Any] = action if isinstance(action, dict) else {}
+
+    state = cast("str | None", action_map.get("vram_action_state", state))
+    progress = cast("float | None", action_map.get("vram_action_progress", progress))
+    worker_port = cast("int | None", action_map.get("worker_port"))
+    error = cast("str | None", action_map.get("vram_action_error"))
 
     return HubControlActionResponse(
         status="accepted",
@@ -1283,16 +1122,15 @@ async def hub_control_unload(
             status_code=HTTPStatus.BAD_REQUEST,
         )
 
-    controller = getattr(raw_request.app.state, "hub_controller", None)
-    if controller is None:
-        controller = getattr(raw_request.app.state, "supervisor", None)
+    controller = get_hub_lifecycle_service(raw_request.app)
     if controller is None or not hasattr(controller, "schedule_vram_unload"):
         return _controller_unavailable_response()
 
     registry = getattr(raw_request.app.state, "model_registry", None)
 
     try:
-        result = await controller.schedule_vram_unload(model_id)
+        result_raw = await controller.schedule_vram_unload(model_id)
+        result: dict[str, Any] = result_raw if isinstance(result_raw, dict) else {}
     except HTTPException:
         raise
     except Exception as exc:  # pragma: no cover - defensive
@@ -1304,13 +1142,27 @@ async def hub_control_unload(
     worker_port: int | None = None
     error: str | None = None
 
+    action: dict[str, Any] | None = None
     if registry is not None:
+        # Resolve hub-config model slugs to registry identifiers when
+        # possible so callers may provide the hub-facing name.
+        try:
+            cfg = _get_cached_hub_config(raw_request)
+            registry_model_id = _resolve_registry_model_id(cfg, model_id) or model_id
+        except Exception:
+            registry_model_id = model_id
         with contextlib.suppress(Exception):
-            _, action = registry.get_vram_action_status(action_id=action_id, model_id=model_id)
-            state = cast("str | None", action.get("vram_action_state", state))
-            progress = cast("float | None", action.get("vram_action_progress", progress))
-            worker_port = cast("int | None", action.get("worker_port"))
-            error = cast("str | None", action.get("vram_action_error"))
+            _, action = registry.get_vram_action_status(
+                action_id=action_id, model_id=registry_model_id
+            )
+
+    # Ensure `action` is a mapping for downstream access
+    action_map: dict[str, Any] = action if isinstance(action, dict) else {}
+
+    state = cast("str | None", action_map.get("vram_action_state", state))
+    progress = cast("float | None", action_map.get("vram_action_progress", progress))
+    worker_port = cast("int | None", action_map.get("worker_port"))
+    error = cast("str | None", action_map.get("vram_action_error"))
 
     return HubControlActionResponse(
         status="accepted",
@@ -1347,31 +1199,44 @@ async def hub_control_status(
     if registry is None:
         return _registry_unavailable_response()
 
+    action: dict[str, Any] | None = None
     try:
+        # Map hub-facing slugs to the registry identifier when a
+        # ``model_id`` was supplied so callers can pass the hub name.
+        cfg = _get_cached_hub_config(raw_request)
+        resolved_model_id = None
+        if model_id:
+            resolved_model_id = _resolve_registry_model_id(cfg, model_id) or model_id
+
         target_model_id, action = registry.get_vram_action_status(
-            model_id=model_id if model_id else None,
+            model_id=resolved_model_id if resolved_model_id else None,
             action_id=action_id if action_id else None,
         )
+        if not isinstance(action, dict):
+            action = {}
     except Exception as exc:
         return _registry_error_response(exc)
 
+    # Ensure `action` is a mapping for downstream access
+    action_map: dict[str, Any] = action if isinstance(action, dict) else {}
+
     return HubControlStatusResponse(
         model=target_model_id,
-        action_id=cast("str | None", action.get("vram_action_id")),
-        state=cast("str | None", action.get("vram_action_state")),
-        progress=cast("float | None", action.get("vram_action_progress")),
-        error=cast("str | None", action.get("vram_action_error")),
-        worker_port=cast("int | None", action.get("worker_port")),
-        started_ts=cast("int | None", action.get("vram_action_started_ts")),
-        updated_ts=cast("int | None", action.get("vram_action_updated_ts")),
+        action_id=cast("str | None", action_map.get("vram_action_id")),
+        state=cast("str | None", action_map.get("vram_action_state")),
+        progress=cast("float | None", action_map.get("vram_action_progress")),
+        error=cast("str | None", action_map.get("vram_action_error")),
+        worker_port=cast("int | None", action_map.get("worker_port")),
+        started_ts=cast("int | None", action_map.get("vram_action_started_ts")),
+        updated_ts=cast("int | None", action_map.get("vram_action_updated_ts")),
     )
 
 
-@hub_router.post("/hub/shutdown", response_model=HubServiceActionResponse)
+@hub_router.post("/hub/shutdown", response_model=None)
 async def hub_shutdown(
     raw_request: Request,
     background_tasks: BackgroundTasks,
-) -> HubServiceActionResponse | JSONResponse:
+) -> dict[str, Any] | JSONResponse:
     """Request the hub daemon to shutdown all managed models and exit.
 
     This endpoint forwards the shutdown request to the running hub manager
@@ -1389,7 +1254,7 @@ async def hub_shutdown(
     except Exception:
         logger.exception("Failed to log shutdown caller info")
 
-    controller = _get_controller(raw_request)
+    controller = get_hub_lifecycle_service(raw_request.app)
     if controller is None:
         return _controller_unavailable_response()
 
@@ -1402,19 +1267,33 @@ async def hub_shutdown(
         exit_header or ""
     ).lower() in {"1", "true", "yes"}
 
-    controller_stopped = _stop_controller_process(raw_request, background_tasks)
-    if controller_stopped and should_exit:
-        # If the caller explicitly requested process exit, schedule it.
+    controller_stopped = False
+    try:
+        if background_tasks is not None:
+            background_tasks.add_task(controller.shutdown_all)
+        else:
+            task = asyncio.create_task(controller.shutdown_all())
+            _retain_task(task)
+        controller_stopped = True
+    except Exception:
+        logger.exception("Failed to schedule shutdown for in-process controller")
+
+    def _schedule_daemon_exit() -> None:
+        async def _shutdown_server() -> None:
+            await asyncio.sleep(1)
+            sys.exit(0)
+
         try:
-
-            async def _shutdown_server() -> None:
-                await asyncio.sleep(1)
-                sys.exit(0)
-
-            background_tasks.add_task(_shutdown_server)
+            if background_tasks is not None:
+                background_tasks.add_task(_shutdown_server)
+            else:
+                _retain_task(asyncio.create_task(_shutdown_server()))
             logger.info("Daemon process exit scheduled by caller request")
         except Exception:
             logger.exception("Failed to schedule daemon exit")
+
+    if controller_stopped and should_exit:
+        _schedule_daemon_exit()
     if not controller_stopped:
         return _controller_unavailable_response()
 
@@ -1422,12 +1301,12 @@ async def hub_shutdown(
     if controller_stopped and not should_exit:
         message = "Shutdown requested (managed models stopped; daemon remains running)"
 
-    return HubServiceActionResponse(
-        status="ok",
-        action="stop",
-        message=message,
-        details={},
-    )
+    return {
+        "status": "ok",
+        "action": "stop",
+        "message": message,
+        "details": {},
+    }
 
 
 MessageBuilder = Callable[[str, str], str]
@@ -1493,9 +1372,7 @@ async def _hub_memory_controller_action(
         if availability_error is not None:
             return availability_error
 
-    controller = getattr(raw_request.app.state, "hub_controller", None)
-    if controller is None:
-        controller = getattr(raw_request.app.state, "supervisor", None)
+    controller = get_hub_lifecycle_service(raw_request.app)
 
     schedule_attr = "schedule_vram_load" if action == "load" else "schedule_vram_unload"
     schedule_fn = getattr(controller, schedule_attr, None) if controller is not None else None
@@ -1509,6 +1386,7 @@ async def _hub_memory_controller_action(
             schedule_result = await schedule_fn(target, settings=settings)
         else:
             schedule_result = await schedule_fn(target)
+        schedule_map: dict[str, Any] = schedule_result if isinstance(schedule_result, dict) else {}
     except HTTPException as exc:  # pragma: no cover - propagate as structured error
         logger.exception(
             f"Controller rejected {action} for {target}. {type(exc).__name__}: {exc}",
@@ -1520,11 +1398,11 @@ async def _hub_memory_controller_action(
         )
         return _controller_error_response(exc)
 
-    action_id = cast("str | None", schedule_result.get("action_id"))
-    state = cast("str | None", schedule_result.get("state"))
-    progress = cast("float | None", schedule_result.get("progress"))
-    worker_port = cast("int | None", schedule_result.get("worker_port"))
-    error = cast("str | None", schedule_result.get("error"))
+    action_id = cast("str | None", schedule_map.get("action_id"))
+    state = cast("str | None", schedule_map.get("state"))
+    progress = cast("float | None", schedule_map.get("progress"))
+    worker_port = cast("int | None", schedule_map.get("worker_port"))
+    error = cast("str | None", schedule_map.get("error"))
 
     if registry is not None and action_id is not None:
         with contextlib.suppress(Exception):
@@ -1536,9 +1414,7 @@ async def _hub_memory_controller_action(
 
     effective_action = response_action or action
     builder = message_builder or _default_model_action_message
-    message = cast("str | None", schedule_result.get("message")) or builder(
-        target, effective_action
-    )
+    message = cast("str | None", schedule_map.get("message")) or builder(target, effective_action)
 
     return HubModelActionResponse(
         status="ok",

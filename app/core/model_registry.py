@@ -294,13 +294,33 @@ class ModelRegistry:
                     # refresh created_at to indicate new attachment
                     self._metadata[model_id].created_at = int(time.time())
                     # Update vram_loaded status
-                    try:
-                        loaded = bool(getattr(handler, "is_vram_loaded", lambda: False)())
-                    except Exception:
-                        loaded = False
+                    # If the caller explicitly provided `vram_loaded` in
+                    # `metadata_updates`, prefer that value rather than
+                    # probing the handler. This avoids races where the
+                    # caller has already determined residency but the
+                    # handler-level probe lags behind.
+                    explicit_vram = None
+                    if metadata_updates and "vram_loaded" in metadata_updates:
+                        try:
+                            explicit_vram = bool(metadata_updates.get("vram_loaded"))
+                        except Exception:
+                            explicit_vram = None
+
+                    if explicit_vram is not None:
+                        loaded = explicit_vram
+                    else:
+                        try:
+                            loaded = bool(getattr(handler, "is_vram_loaded", lambda: False)())
+                        except Exception:
+                            loaded = False
+
                     entry["vram_loaded"] = loaded
                     if loaded:
-                        entry["vram_last_load_ts"] = int(time.time())
+                        # Use provided timestamp if present, otherwise now
+                        if metadata_updates and metadata_updates.get("vram_last_load_ts"):
+                            entry["vram_last_load_ts"] = metadata_updates.get("vram_last_load_ts")
+                        else:
+                            entry["vram_last_load_ts"] = int(time.time())
                         # Clear any stale unload timestamp when loading
                         entry.pop("vram_last_unload_ts", None)
                     else:

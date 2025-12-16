@@ -16,6 +16,7 @@ import numpy as np
 from starlette.background import BackgroundTask
 
 from ..const import DEFAULT_API_HOST
+from ..core.hub_lifecycle import get_hub_lifecycle_service
 from ..handler import MFLUX_AVAILABLE, MLXFluxHandler
 from ..handler.mlx_embeddings import MLXEmbeddingsHandler
 from ..handler.mlx_lm import MLXLMHandler
@@ -168,7 +169,7 @@ async def _get_handler_or_error(
     if registry_error is not None:
         return None, registry_error
 
-    controller = getattr(raw_request.app.state, "hub_controller", None)
+    controller = get_hub_lifecycle_service(raw_request.app)
     if controller is not None and model_name is not None:
         target = model_name.strip()
         if not target:
@@ -304,7 +305,7 @@ async def _resolve_model_for_openai_api(
     the resolved handler name or the resolved API model id.
     """
     normalized = (model_name or "").strip() or None
-    controller = getattr(raw_request.app.state, "hub_controller", None)
+    controller = get_hub_lifecycle_service(raw_request.app)
     # Non-hub mode: handler name and API id are the same
     if controller is None:
         return normalized, normalized, None
@@ -396,7 +397,7 @@ def _is_hub_mode(raw_request: Request) -> bool:
     """Return True when the application is running with a hub controller."""
 
     return bool(
-        getattr(raw_request.app.state, "hub_controller", None)
+        get_hub_lifecycle_service(raw_request.app)
         or getattr(raw_request.app.state, "supervisor", None)
     )
 
@@ -624,7 +625,7 @@ async def health(raw_request: Request) -> HealthCheckResponse | JSONResponse:
     """
     handler_manager = getattr(raw_request.app.state, "handler_manager", None)
     configured_model_id = get_configured_model_id(raw_request)
-    controller = getattr(raw_request.app.state, "hub_controller", None)
+    controller = get_hub_lifecycle_service(raw_request.app)
 
     if handler_manager is not None:
         handler = getattr(handler_manager, "current_handler", None)

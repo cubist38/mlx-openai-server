@@ -145,11 +145,15 @@ def _load_yaml(path: Path) -> dict[str, Any]:
     """
     try:
         with path.open("r", encoding="utf-8") as fh:
-            loaded = yaml.safe_load(fh) or {}
+            text = fh.read()
+        try:
+            loaded = yaml.safe_load(text) or {}
+        except yaml.YAMLError as e:
+            # Fail fast on YAML parse errors; do not attempt to auto-dedent
+            # the file contents as that may mask configuration issues.
+            raise HubConfigError(f"Failed to parse hub config '{path}': {e}") from e
     except FileNotFoundError as e:
         raise HubConfigError(f"Hub config file not found: {path}") from e
-    except yaml.YAMLError as e:
-        raise HubConfigError(f"Failed to parse hub config '{path}': {e}") from e
 
     if not isinstance(loaded, dict):
         raise HubConfigError("Hub config root must be a mapping")

@@ -247,8 +247,8 @@
                 <div class="muted">Controls</div>
                 <div class="actions">
                     <button class="refresh-btn" type="button">Refresh</button>
-                    <button class="action-btn action-btn--secondary" type="button" data-service-action="reload">Reload</button>
-                    <button class="action-btn action-btn--secondary" type="button" data-service-action="stop">Stop</button>
+                    <button class="action-btn action-btn--secondary" type="button" data-daemon-action="reload">Reload</button>
+                    <button class="action-btn action-btn--secondary" type="button" data-daemon-action="stop">Stop</button>
                 </div>
             </div>
         </div>
@@ -284,10 +284,9 @@
 
     <script>
         const REFRESH_INTERVAL_MS = 5000;
-        const SERVICE_ENDPOINTS = {
-            start: '/hub/service/start',
-            stop: '/hub/service/stop',
-            reload: '/hub/service/reload',
+        const DAEMON_ENDPOINTS = {
+            stop: '/hub/shutdown',
+            reload: '/hub/reload',
         };
         const CONTROLLER_WARNING_MESSAGE = 'Hub controller is not running on this server. Memory buttons stay disabled until the hub server is up.';
         let controllerAvailable = false;
@@ -531,7 +530,7 @@
 
         let toastTimeoutId;
         let flashTimeoutId;
-        let serviceListenerAttached = false;
+        let daemonListenerAttached = false;
         function showToast(message, tone = 'success') {
             const toast = document.getElementById('toast');
             // Ensure toast is appended into overlays to avoid being trapped inside other contexts
@@ -560,11 +559,11 @@
             }
         }
 
-        function attachServiceActionListeners() {
-            if (!serviceListenerAttached) {
-                document.addEventListener('click', onServiceActionClick);
-                console.debug('attachServiceActionListeners: listeners attached');
-                serviceListenerAttached = true;
+        function attachDaemonActionListeners() {
+            if (!daemonListenerAttached) {
+                document.addEventListener('click', onDaemonActionClick);
+                console.debug('attachDaemonActionListeners: listeners attached');
+                daemonListenerAttached = true;
             }
         }
 
@@ -642,21 +641,21 @@
             }
         }
 
-        async function onServiceActionClick(event) {
-            const button = event.target.closest('[data-service-action]');
+        async function onDaemonActionClick(event) {
+            const button = event.target.closest('[data-daemon-action]');
             if (!button) return;
 
-            const action = button.getAttribute('data-service-action');
-            if (!action || !(action in SERVICE_ENDPOINTS)) {
+            const action = button.getAttribute('data-daemon-action');
+            if (!action || !(action in DAEMON_ENDPOINTS)) {
                 return;
             }
 
-            const endpoint = SERVICE_ENDPOINTS[action];
+            const endpoint = DAEMON_ENDPOINTS[action];
             const originalLabel = button.textContent;
             button.disabled = true;
             button.textContent = `${action.charAt(0).toUpperCase() + action.slice(1)}…`;
             // Provide immediate debug feedback so users can see the click was registered
-            console.debug('Service action clicked:', action);
+            console.debug('Daemon action clicked:', action);
             try { showToast(`${action.charAt(0).toUpperCase() + action.slice(1)} request…`, 'info'); } catch (e) { /* ignore */ }
             clearFlash();
 
@@ -664,15 +663,15 @@
                 const response = await fetch(endpoint, { method: 'POST', cache: 'no-store', headers: { 'Cache-Control': 'no-cache' } });
                 const payload = await response.json().catch(() => ({}));
                 if (!response.ok) {
-                    const message = payload?.error?.message ?? payload?.message ?? `Failed to ${action} hub manager`;
+                    const message = payload?.error?.message ?? payload?.message ?? `Failed to ${action} hub daemon`;
                     showFlash(message, 'error');
                     return;
                 }
                 const tone = action === 'stop' ? 'warn' : 'success';
-                const message = payload?.message ?? `Hub ${action} request accepted`;
+                const message = payload?.message ?? `Hub daemon ${action} request accepted`;
                 showFlash(message, tone);
             } catch (error) {
-                showFlash(error.message ?? `Failed to ${action} hub manager`, 'error');
+                showFlash(error.message ?? `Failed to ${action} hub daemon`, 'error');
             } finally {
                 button.disabled = false;
                 button.textContent = originalLabel;
@@ -716,7 +715,7 @@
         document.querySelectorAll('.refresh-btn').forEach(btn => {
             btn.addEventListener('click', fetchSnapshot);
         });
-        attachServiceActionListeners();
+        attachDaemonActionListeners();
         fetchSnapshot();
         setInterval(fetchSnapshot, REFRESH_INTERVAL_MS);
     </script>

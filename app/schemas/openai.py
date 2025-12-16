@@ -703,21 +703,6 @@ class HubControlStatusResponse(OpenAIBaseModel):
     )
 
 
-class HubServiceActionResponse(OpenAIBaseModel):
-    """Response payload for hub service management commands."""
-
-    status: Literal["ok"] = Field("ok", description="Indicates the manager accepted the command.")
-    action: Literal["start", "stop", "reload"] = Field(
-        ...,
-        description="Service-level action executed by the hub manager.",
-    )
-    message: str | None = Field(None, description="Human-readable summary of the outcome.")
-    details: dict[str, Any] | None = Field(
-        default=None,
-        description="Optional structured payload (diffs, PID info, etc.).",
-    )
-
-
 class ImageSize(str, Enum):
     """Available image sizes."""
 

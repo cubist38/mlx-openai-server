@@ -56,6 +56,7 @@ from .api.endpoints import router
 from .api.hub_routes import HubConfigError, _load_hub_config_from_request, hub_router
 from .config import MLXServerConfig
 from .const import HUB_POLL_INTERVAL_SECONDS
+from .core.hub_lifecycle import RegistrySyncService
 from .core.manager_protocol import ManagerProtocol
 from .core.model_registry import ModelRegistry, build_group_policy_payload
 from .handler import MFLUX_AVAILABLE, MLXFluxHandler
@@ -924,7 +925,11 @@ class CentralIdleAutoUnloadController:
         last_activity_ts = None
         if handler is not None and hasattr(handler, "last_activity_timestamp"):
             try:
-                last_activity_ts = handler.last_activity_timestamp()
+                val = handler.last_activity_timestamp()
+                try:
+                    last_activity_ts = float(val)
+                except Exception:
+                    last_activity_ts = None
             except Exception:
                 last_activity_ts = None
 
@@ -940,7 +945,11 @@ class CentralIdleAutoUnloadController:
         idle_elapsed = None
         if handler is not None and hasattr(handler, "seconds_since_last_activity"):
             try:
-                idle_elapsed = handler.seconds_since_last_activity()
+                val2 = handler.seconds_since_last_activity()
+                try:
+                    idle_elapsed = float(val2)
+                except Exception:
+                    idle_elapsed = None
             except Exception:
                 idle_elapsed = None
 
@@ -1106,8 +1115,9 @@ def create_lifespan(
         if registry is None:
             registry = ModelRegistry()
             app.state.model_registry = registry
+        registry_sync = RegistrySyncService(registry)
         registry_model_id = get_registry_model_id(config_args)
-        base_registry_metadata = {
+        base_registry_metadata: dict[str, Any] = {
             "model_path": config_args.model_identifier,
             "model_type": config_args.model_type,
             "context_length": config_args.context_length,
@@ -1153,23 +1163,17 @@ def create_lifespan(
                 metadata_payload["vram_last_load_ts"] = int(
                     getattr(handler, "model_created", int(time.time()))
                 )
-                metadata_payload["status"] = "loaded"
             else:
                 metadata_payload["vram_loaded"] = False
-                metadata_payload.setdefault("status", status)
 
-            try:
-                await registry.update_model_state(
-                    registry_model_id,
-                    handler=handler,
-                    status=status,
-                    metadata_updates=metadata_payload,
-                )
-            except Exception as e:  # pragma: no cover - defensive logging
-                logger.warning(
-                    f"Failed to synchronize model registry for {registry_model_id}. "
-                    f"{type(e).__name__}: {e}",
-                )
+            vram_loaded_flag = metadata_payload.pop("vram_loaded", None)
+            await registry_sync.record_state(
+                registry_model_id,
+                handler=handler,
+                status=status,
+                vram_loaded=vram_loaded_flag,
+                metadata_updates=metadata_payload,
+            )
 
         def _update_model_metadata(handler: MLXHandler | None) -> None:
             model_metadata = getattr(app.state, "model_metadata", None)
@@ -1517,6 +1521,7 @@ async def _hub_sync_once(app: FastAPI) -> None:
     if registry is None:
         logger.debug("No model registry present; skipping hub sync iteration")
         return
+    registry_sync = RegistrySyncService(registry)
 
     fake_req = SimpleNamespace(app=app)
     try:
@@ -1557,7 +1562,7 @@ async def _hub_sync_once(app: FastAPI) -> None:
             state = str(entry.get("state") or "").lower()
             status = "loaded" if vram_loaded else ("running" if state == "running" else "stopped")
 
-            metadata_updates: dict[str, object] = {"vram_loaded": vram_loaded}
+            metadata_updates: dict[str, Any] = {"vram_loaded": vram_loaded}
 
             # Timestamps: prefer explicit fields if present
             started_at = entry.get("started_at")
@@ -1582,8 +1587,13 @@ async def _hub_sync_once(app: FastAPI) -> None:
 
             try:
                 if registry.has_model(model_path):
-                    await registry.update_model_state(
-                        model_path, metadata_updates=metadata_updates, status=status
+                    vram_flag = metadata_updates.pop("vram_loaded", None)
+                    await registry_sync.record_state(
+                        model_path,
+                        handler=None,
+                        status=status,
+                        vram_loaded=vram_flag,
+                        metadata_updates=metadata_updates,
                     )
             except KeyError:
                 # Not registered locally — skip
