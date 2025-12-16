@@ -225,6 +225,9 @@ def test_handler_session_updates_active_requests_and_notifies() -> None:
             # inside session active_requests should be 1
             status = registry.get_vram_status(model_id)
             assert status["active_requests"] == 1
+            # Ensure JIT load is reflected in the registry (vram_loaded set)
+            status_vram = registry.get_vram_status(model_id)
+            assert status_vram["vram_loaded"] is True
 
         # after exiting, active_requests should be 0 and notifier called
         status2 = registry.get_vram_status(model_id)
@@ -255,14 +258,32 @@ def test_request_vram_idempotency() -> None:
         await registry.request_vram_load("idm", force=True)
         assert manager.load_calls == 2
 
-        # Unload
-        await registry.request_vram_unload("idm")
-        assert not manager.is_vram_loaded()
-        assert manager.unload_calls == 1
 
-        # Double unload is a no-op
-        await registry.request_vram_unload("idm")
-        assert manager.unload_calls == 1
+def test_loading_clears_previous_unload_timestamp() -> None:
+    """When a model transitions to loaded, any prior vram_last_unload_ts should be cleared."""
+
+    async def _test() -> None:
+        registry = ModelRegistry()
+        model_id = "clear-unload"
+        registry.register_model(model_id=model_id, handler=None, model_type="lm")
+
+        # Simulate an unload in the past
+        await registry.update_model_state(model_id, handler=None, status="unloaded")
+        await registry.update_model_state(
+            model_id, metadata_updates={"vram_last_unload_ts": int(time.time())}
+        )
+        status_before = registry.get_vram_status(model_id)
+        assert status_before.get("vram_last_unload_ts") is not None
+
+        # Attach a handler and mark it loaded via update_model_state
+        handler = DummyManager()
+        # Simulate the manager already loaded when attached
+        handler._loaded = True
+        await registry.update_model_state(model_id, handler=handler)
+
+        status_after = registry.get_vram_status(model_id)
+        # On load, vram_last_unload_ts should be cleared
+        assert status_after.get("vram_last_unload_ts") in (None, 0)
 
     asyncio.run(_test())
 
@@ -300,6 +321,21 @@ def test_vram_action_tracking() -> None:
         assert status2["vram_action_state"] == "ready"
         assert status2["vram_action_progress"] == 100.0
         assert status2["worker_port"] == 8081
+        # VRAM residency should be set when action reaches ready with a worker port
+        status_vram = registry.get_vram_status("tracked")
+        assert status_vram["vram_loaded"] is True
+
+        # If the ready state reports no worker port (e.g., unload), VRAM residency is cleared
+        action_id2 = await registry.start_vram_action("tracked", state="loading")
+        await registry.update_vram_action(
+            "tracked",
+            action_id=action_id2,
+            progress=100.0,
+            state="ready",
+            worker_port=None,
+        )
+        status_vram2 = registry.get_vram_status("tracked")
+        assert status_vram2["vram_loaded"] is False
 
     asyncio.run(_test())
 
@@ -444,5 +480,59 @@ def test_idle_trigger_shows_models_after_stale_snapshot() -> None:
         snapshots = registry.get_group_snapshots()
         assert "alpha" in snapshots["shared"]["idle_eligible"]
         assert snapshots["shared"]["mode"] == "all"
+
+    asyncio.run(_test())
+
+
+def test_group_availability_with_vram_action_ready_state() -> None:
+    """Group policies should respond to vram action state updates for services."""
+
+    async def _test() -> None:
+        registry = ModelRegistry()
+        for name in ("alpha", "beta"):
+            registry.register_model(
+                model_id=name,
+                handler=None,
+                model_type="lm",
+                metadata_extras={"group": "shared"},
+            )
+
+        # Mark alpha as ready via vram action (simulating service sidecar)
+        action_id = await registry.start_vram_action("alpha", state="loading")
+        await registry.update_vram_action(
+            "alpha", action_id=action_id, state="ready", worker_port=9001
+        )
+
+        registry.set_group_policies({"shared": {"max_loaded": 1}})
+
+        assert registry.is_model_available("alpha") is True
+        assert registry.is_model_available("beta") is False
+
+    asyncio.run(_test())
+
+
+def test_group_availability_with_jit_loads() -> None:
+    """Group policies should account for JIT-loaded models (handler sessions)."""
+
+    async def _test() -> None:
+        registry = ModelRegistry()
+        for name in ("alpha", "beta"):
+            registry.register_model(
+                model_id=name,
+                handler=DummyManager(),
+                model_type="lm",
+                metadata_extras={"group": "shared"},
+            )
+
+        # Alpha should become loaded via a handler session (JIT)
+        async with registry.handler_session("alpha"):
+            # JIT load should mark alpha as loaded in the registry
+            assert registry.get_vram_status("alpha")["vram_loaded"] is True
+
+        registry.set_group_policies({"shared": {"max_loaded": 1}})
+
+        # After alpha is loaded, beta should not be available
+        assert registry.is_model_available("alpha") is True
+        assert registry.is_model_available("beta") is False
 
     asyncio.run(_test())

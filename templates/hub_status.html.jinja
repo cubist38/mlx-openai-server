@@ -661,7 +661,7 @@
             clearFlash();
 
             try {
-                const response = await fetch(endpoint, { method: 'POST' });
+                const response = await fetch(endpoint, { method: 'POST', cache: 'no-store', headers: { 'Cache-Control': 'no-cache' } });
                 const payload = await response.json().catch(() => ({}));
                 if (!response.ok) {
                     const message = payload?.error?.message ?? payload?.message ?? `Failed to ${action} hub manager`;
@@ -686,7 +686,7 @@
 
         async function fetchSnapshot() {
             try {
-                const response = await fetch('/hub/status');
+                const response = await fetch('/hub/status', { cache: 'no-store', headers: { 'Cache-Control': 'no-cache, no-store, must-revalidate' } });
                 if (!response.ok) {
                     throw new Error(`Request failed with status ${response.status}`);
                 }

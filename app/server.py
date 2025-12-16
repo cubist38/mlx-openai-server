@@ -462,6 +462,7 @@ class LazyHandlerManager(ManagerProtocol):
         self._on_change = on_change
         self._on_activity = on_activity
         self._last_activity = time.monotonic()
+        self._last_activity_wallclock = time.time()  # Track wall clock time for timestamp reporting
         self._background_tasks: set[asyncio.Task[None]] = set()
         # Optional per-model log sink id (registered with loguru)
         # Bound logger for manager-scoped messages (adds `model` extra)
@@ -530,6 +531,7 @@ class LazyHandlerManager(ManagerProtocol):
         on_activity callback if provided.
         """
         self._last_activity = time.monotonic()
+        self._last_activity_wallclock = time.time()
         if self._on_activity:
             self._on_activity()
 
@@ -552,6 +554,16 @@ class LazyHandlerManager(ManagerProtocol):
             Seconds since last activity.
         """
         return time.monotonic() - self._last_activity
+
+    def last_activity_timestamp(self) -> float:
+        """Get the wall clock timestamp of the last activity.
+
+        Returns
+        -------
+        float
+            Wall clock timestamp (time.time()) of the last activity.
+        """
+        return self._last_activity_wallclock
 
     def idle_timeout_seconds(self) -> int | None:
         """Return the idle timeout in seconds, or None if auto-unload is disabled.
@@ -677,8 +689,22 @@ class LazyHandlerManager(ManagerProtocol):
             else:
                 await coro
 
+        # Notify owner that VRAM residency may have changed so any cached
+        # metadata (e.g., model_metadata or registry entries) can be updated.
+        try:
+            if self._on_change:
+                # Call with the current handler to signal a potential state change.
+                self._on_change(self._handler)
+        except Exception:
+            # Do not let callbacks raise from ensure_vram_loaded.
+            self._logger.debug("on_change callback raised during ensure_vram_loaded")
+
     async def release_vram(self, *, timeout: float | None = None) -> None:
-        """Release VRAM resources by unloading the handler (idempotent)."""
+        """Release VRAM by unloading the handler (compatible with ManagerProtocol).
+
+        This maps onto the existing ``unload`` behavior for the manager and
+        provides the method expected by the typing protocol.
+        """
         coro = self.unload("release_vram")
         if timeout is not None:
             await asyncio.wait_for(coro, timeout=timeout)
@@ -894,7 +920,23 @@ class CentralIdleAutoUnloadController:
         timeout_secs = int(minutes) * 60
         now = time.time()
 
-        # Get idle time using the same logic as _watch_loop
+        # Try to get the last activity wall clock timestamp for more accurate calculation
+        last_activity_ts = None
+        if handler is not None and hasattr(handler, "last_activity_timestamp"):
+            try:
+                last_activity_ts = handler.last_activity_timestamp()
+            except Exception:
+                last_activity_ts = None
+
+        # If we have a wall clock timestamp, calculate expected unload time directly
+        if last_activity_ts is not None:
+            expected_unload = last_activity_ts + timeout_secs
+            # If already past timeout, it should unload soon
+            if expected_unload <= now:
+                return now
+            return expected_unload
+
+        # Fallback: Get idle time using seconds_since_last_activity
         idle_elapsed = None
         if handler is not None and hasattr(handler, "seconds_since_last_activity"):
             try:
@@ -1090,6 +1132,32 @@ def create_lifespan(
                 config_args.model_identifier,
             )
             status = "initialized" if handler else "unloaded"
+
+            # If the handler has loaded VRAM, try to record that in the registry
+            # so any downstream availability checks see the correct state.
+            # Prefer the manager-level VRAM state when available because the
+            # manager is the authoritative owner of residency (handlers do
+            # not always implement `is_vram_loaded`). Fall back to a handler
+            # provided callable for compatibility.
+            try:
+                mgr = getattr(app.state, "handler_manager", None)
+                if mgr is not None:
+                    vram_loaded = bool(mgr.is_vram_loaded())
+                else:
+                    vram_loaded = bool(getattr(handler, "is_vram_loaded", lambda: False)())
+            except Exception:
+                vram_loaded = False
+
+            if vram_loaded:
+                metadata_payload["vram_loaded"] = True
+                metadata_payload["vram_last_load_ts"] = int(
+                    getattr(handler, "model_created", int(time.time()))
+                )
+                metadata_payload["status"] = "loaded"
+            else:
+                metadata_payload["vram_loaded"] = False
+                metadata_payload.setdefault("status", status)
+
             try:
                 await registry.update_model_state(
                     registry_model_id,
@@ -1118,6 +1186,35 @@ def create_lifespan(
                     "model_path",
                     metadata_block.get("model_path"),
                 )
+
+                # Reflect VRAM residency in the cached metadata so local GET /v1/models
+                # reports the current in-memory state for JIT-loaded models.
+                try:
+                    # Prefer the manager-level VRAM state when available. Handlers
+                    # themselves do not implement `is_vram_loaded()`; the
+                    # responsibility lives on the handler manager (which owns
+                    # residency). Use the manager if present, otherwise fall
+                    # back to a handler provided callable for compatibility.
+                    mgr = getattr(app.state, "handler_manager", None)
+                    if mgr is not None:
+                        vram_loaded = bool(mgr.is_vram_loaded())
+                    else:
+                        vram_loaded = bool(getattr(handler, "is_vram_loaded", lambda: False)())
+                except Exception:
+                    vram_loaded = False
+                metadata_block["vram_loaded"] = vram_loaded
+                if vram_loaded:
+                    metadata_block["vram_last_load_ts"] = int(
+                        getattr(handler, "model_created", int(time.time()))
+                    )
+                    logger.info(
+                        f"Cached metadata: vram_loaded=True for {metadata_block.get('model_path')}"
+                    )
+                else:
+                    metadata_block["vram_last_unload_ts"] = int(time.time())
+                    logger.info(
+                        f"Cached metadata: vram_loaded=False for {metadata_block.get('model_path')}"
+                    )
 
         def _update_handler(handler: MLXHandler | None) -> None:
             app.state.handler = handler

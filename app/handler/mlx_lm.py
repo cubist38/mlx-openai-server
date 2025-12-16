@@ -192,6 +192,16 @@ class MLXLMHandler:
         # Add load settings
         metadata["load_settings"] = {"model_path": self.model_path, "model_type": "lm"}
 
+        # Report whether the handler currently has model weights resident.
+        try:
+            metadata["vram_loaded"] = bool(getattr(self, "model", None) is not None)
+            if metadata["vram_loaded"]:
+                metadata["vram_last_load_ts"] = int(
+                    getattr(self, "model_created", int(time.time()))
+                )
+        except Exception:
+            metadata["vram_loaded"] = False
+
         return metadata
 
     async def get_models(self) -> list[dict[str, Any]]:

@@ -24,6 +24,7 @@ import time
 from typing import Any, Literal, cast
 
 from fastapi import FastAPI, HTTPException
+import httpx
 from loguru import logger
 
 from ..config import MLXServerConfig
@@ -53,6 +54,58 @@ from ..server import (
 from ..utils.network import is_port_available
 from .config import MLXHubConfig, MLXHubGroupConfig, load_hub_config
 from .worker import SidecarWorker, SidecarWorkerError
+
+
+async def _probe_worker_for_memory(
+    record: ModelRecord, idx: int
+) -> tuple[int, bool | None, dict[str, object] | None]:
+    """Probe a sidecar worker for its model memory state.
+
+    Returns a tuple (index, memory_loaded_or_none, extras_or_none).
+    """
+    try:
+        worker = record.worker
+        if worker is None or not getattr(worker, "ready", False):
+            return (idx, None, None)
+
+        # Derive host similarly to SidecarWorker._health_host without using
+        # its private helper to avoid accessing protected members.
+        host = (worker.config.host or DEFAULT_API_HOST).strip()
+        if host in {"0.0.0.0", "::", "[::]"}:
+            host = DEFAULT_API_HOST
+        if host.startswith("[") and host.endswith("]"):
+            host = host[1:-1]
+
+        port = int(getattr(worker, "port", worker.config.port))
+        url = f"http://{host}:{port}/v1/models"
+        async with httpx.AsyncClient(timeout=0.5) as client:
+            try:
+                resp = await client.get(url)
+            except httpx.HTTPError:
+                logger.debug(f"Worker probe failed to connect to {url}")
+                return (idx, None, None)
+            if resp.status_code != 200:
+                logger.debug(f"Worker probe returned non-200 ({resp.status_code}) for {url}")
+                return (idx, None, None)
+            payload = resp.json()
+            data = payload.get("data") or []
+            for model in data:
+                mid = model.get("id")
+                if mid == record.model_path:
+                    meta = model.get("metadata") or {}
+                    memory_loaded = bool(meta.get("vram_loaded", False))
+                    extras: dict[str, object] = {}
+                    if meta.get("vram_last_request_ts") is not None:
+                        extras["last_activity_ts"] = meta.get("vram_last_request_ts")
+                    if meta.get("vram_last_unload_ts") is not None:
+                        extras["unload_timestamp"] = meta.get("vram_last_unload_ts")
+                    logger.debug(
+                        f"Worker probe: model {record.model_path} at {host}:{port} memory_loaded={memory_loaded}"
+                    )
+                    return (idx, memory_loaded, extras)
+    except Exception:
+        return (idx, None, None)
+    return (idx, None, None)
 
 
 def create_app_with_config(config_path: str) -> FastAPI:
@@ -887,6 +940,24 @@ class HubSupervisor:
                     f"Registry update skipped: missing model id for registry. model={name!r}"
                 )
                 raise RuntimeError(f"Cannot update registry for model '{name}': model id is None")
+            # Ensure manager activity notifiers propagate to the central idle
+            # controller so sidecar-backed models wake the controller on
+            # activity. Use the registry-aware model id when wiring the
+            # callback so the controller can query status consistently.
+            try:
+                if self.idle_controller is not None and registry_model_id is not None:
+                    try:
+                        manager_ref.set_activity_callback(
+                            lambda _mid=registry_model_id: self.idle_controller.notify_activity(
+                                _mid
+                            )
+                        )
+                    except Exception:
+                        # Best-effort; do not fail start_model if wiring fails
+                        logger.debug(f"Failed to set activity callback for manager {name}")
+            except Exception:
+                logger.debug("Idle controller wiring skipped; controller may be unavailable")
+
             await self.registry.update_model_state(
                 registry_model_id,
                 handler=manager_ref,
@@ -1481,17 +1552,29 @@ class HubSupervisor:
                 if self.idle_controller and hasattr(
                     self.idle_controller, "get_expected_unload_timestamp"
                 ):
-                    # Use model_path as the registry model_id, fallback to name if not available
-                    model_id = rec.model_path or name
+                    # Prefer the registry-aware model id so the controller can
+                    # look up VRAM status consistently (falls back to name).
+                    try:
+                        model_id = self._registry_model_id(name, rec)
+                    except Exception:
+                        model_id = rec.model_path or name
                     unload_timestamp = self.idle_controller.get_expected_unload_timestamp(model_id)
 
             # Get last activity timestamp from the manager
-            if manager and hasattr(manager, "seconds_since_last_activity"):
+            if manager and hasattr(manager, "last_activity_timestamp"):
+                try:
+                    last_activity_ts = manager.last_activity_timestamp()
+                except Exception:
+                    last_activity_ts = None
+            elif manager and hasattr(manager, "seconds_since_last_activity"):
+                # Fallback for managers without wall clock timestamp support
                 try:
                     seconds_since_activity = manager.seconds_since_last_activity()
                     last_activity_ts = time.time() - seconds_since_activity
                 except Exception:
                     last_activity_ts = None
+            else:
+                last_activity_ts = None
 
             state = "running" if manager else "stopped"
             snapshot["models"].append(
@@ -1535,6 +1618,42 @@ class HubSupervisor:
             entry["models"].append(name)
             if is_vram_loaded:
                 entry["loaded"] += 1
+
+        # For models backed by sidecar workers, schedule probes via a module-level
+        # helper to query the worker's /v1/models. The helper runs concurrently
+        # and returns tidy tuples we merge into the status snapshot when present.
+        probe_tasks: list[asyncio.Task[tuple[int, bool | None, dict[str, object] | None]]] = []
+        for idx, item in enumerate(models_snapshot):
+            rec = cast("ModelRecord", item["record"])
+            if rec.worker and rec.worker.ready:
+                # Probe worker asynchronously (do not let failures surface)
+                probe_tasks.append(asyncio.create_task(_probe_worker_for_memory(rec, idx)))
+
+        if probe_tasks:
+            try:
+                results = await asyncio.gather(*probe_tasks, return_exceptions=False)
+            except Exception:
+                results = []
+
+            for idx, memory_loaded, extra in results:
+                try:
+                    model_entry = snapshot["models"][idx]
+                    # Prefer worker-reported memory_loaded when available
+                    if memory_loaded is not None:
+                        model_entry["memory_loaded"] = memory_loaded
+                        # Also expose vram-related timestamps if the worker provided them
+                        if extra:
+                            if extra.get("last_activity_ts") is not None:
+                                model_entry["last_activity_ts"] = extra.get("last_activity_ts")
+                            # Do NOT override the computed expected unload timestamp
+                            # with the worker-reported vram_last_unload_ts (a past
+                            # timestamp indicating when an unload occurred). The
+                            # supervisor computes `unload_timestamp` as an
+                            # expected time for auto-unload and that value should
+                            # take precedence over a past unload marker from the
+                            # worker probe.
+                except Exception:
+                    continue
 
         for group_name, cfg in group_configs.items():
             group_state.setdefault(

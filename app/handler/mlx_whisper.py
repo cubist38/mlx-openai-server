@@ -66,12 +66,26 @@ class MLXWhisperHandler:
 
     async def get_models(self) -> list[dict[str, Any]]:
         """Get list of available models with their metadata."""
+        try:
+            vram_loaded = bool(getattr(self, "model", None) is not None)
+        except Exception:
+            vram_loaded = False
+        meta: dict[str, Any] = {
+            "model_type": "whisper",
+            "context_length": None,
+            "status": "initialized",
+            "model_path": self.model_path,
+            "vram_loaded": vram_loaded,
+        }
+        if vram_loaded:
+            meta["vram_last_load_ts"] = int(self.model_created)
         return [
             {
                 "id": self.model_path,
                 "object": "model",
                 "created": self.model_created,
                 "owned_by": "local",
+                "metadata": meta,
             },
         ]
 

@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Callable
 from pathlib import Path
+import time
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -403,6 +404,45 @@ async def test_group_idle_trigger_raises_when_no_candidate(tmp_path: Path) -> No
 
 
 @pytest.mark.asyncio
+async def test_cannot_load_second_model_when_group_max_loaded_one_and_no_idle_trigger(
+    tmp_path: Path,
+) -> None:
+    """Ensure loading a second model in a group with max_loaded=1 and no.
+
+    idle_unload_trigger_min is rejected with HTTP 409.
+    """
+    config = MLXHubConfig(log_path=tmp_path / "logs")
+    # Group has max_loaded=1 but no idle_unload_trigger_min set -> immediate violation
+    config.groups = [MLXHubGroupConfig(name="only_one", max_loaded=1)]
+    config.models = [
+        MLXServerConfig(
+            name="first", model_path="/models/first", model_type="lm", group="only_one"
+        ),
+        MLXServerConfig(
+            name="second", model_path="/models/second", model_type="lm", group="only_one"
+        ),
+    ]
+
+    supervisor = HubSupervisor(config)
+
+    # Simulate the first model already loaded
+    first = supervisor._models["first"]
+    first_manager = MagicMock(spec=LazyHandlerManager)
+    first_manager.is_vram_loaded.return_value = True
+    first.manager = first_manager
+
+    # Prepare the second model with an initialized manager that is not loaded
+    second = supervisor._models["second"]
+    second.manager = MagicMock(spec=LazyHandlerManager)
+    second.manager.is_vram_loaded.return_value = False
+
+    with pytest.raises(HTTPException) as exc:
+        await supervisor.load_model("second")
+
+    assert exc.value.status_code == 409
+
+
+@pytest.mark.asyncio
 async def test_get_status_returns_correct_state(hub_config_with_defaults: MLXHubConfig) -> None:
     """Test that get_status returns correct running/stopped states."""
     supervisor = _TestHubSupervisor(hub_config_with_defaults)
@@ -453,6 +493,120 @@ async def test_get_status_returns_correct_state(hub_config_with_defaults: MLXHub
 
     assert regular_model_status["state"] == "running"
     assert default_model_status["state"] == "stopped"
+
+
+@pytest.mark.asyncio
+async def test_worker_probe_unload_timestamp_does_not_override_expected(tmp_path: Path) -> None:
+    """Ensure a worker probe's vram_last_unload_ts (past value) does not override.
+
+    The supervisor's computed expected unload_timestamp (which should be future).
+    """
+    cfg = MLXHubConfig(log_path=tmp_path / "logs")
+    cfg.models = [
+        MLXServerConfig(
+            name="m",
+            model_path="/models/m",
+            model_type="lm",
+            auto_unload_minutes=60,
+            jit_enabled=True,
+        )
+    ]
+    sup = HubSupervisor(cfg)
+
+    # Simulate a loaded model with a future expected unload timestamp
+    record = sup._models["m"]
+    manager = MagicMock(spec=LazyHandlerManager)
+    manager.is_vram_loaded.return_value = True
+    record.manager = manager
+    # Replace idle_controller to return a future timestamp
+    future_ts = time.time() + 3600
+    sup.idle_controller = MagicMock()
+    sup.idle_controller.get_expected_unload_timestamp.return_value = future_ts
+
+    # Patch the probe helper to return a past unload timestamp in extras
+    async def fake_probe(_rec: Any, idx: int) -> tuple[int, bool | None, dict[str, object] | None]:
+        return (
+            idx,
+            True,
+            {"last_activity_ts": time.time() - 10, "unload_timestamp": int(time.time())},
+        )
+
+    with patch("app.hub.daemon._probe_worker_for_memory", new=AsyncMock(side_effect=fake_probe)):
+        status = await sup.get_status()
+
+    m_entry = next(m for m in status["models"] if m["name"] == "m")
+    # The expected unload timestamp from idle_controller should be preserved
+    assert m_entry.get("unload_timestamp") == future_ts
+
+
+def test_hub_status_unload_timestamp_after_real_load(
+    write_hub_yaml: Callable[[str, str], Path],
+) -> None:
+    """Integration test: start and load a model and verify /hub/status shows expected unload timestamp."""
+    cfg = write_hub_yaml(
+        """
+host: 127.0.0.1
+port: 8123
+models:
+  - name: m
+    model_path: /models/m
+    model_type: lm
+    jit_enabled: true
+    auto_unload_minutes: 1
+""",
+        "hub-integration.yaml",
+    )
+
+    app = create_app(str(cfg))
+
+    # Prevent actual sidecar processes from being started
+    # Prevent actual sidecar processes from being started and stub manager behavior
+    with (
+        patch.object(HubSupervisor, "_start_worker", new_callable=AsyncMock),
+        patch("app.hub.daemon.LazyHandlerManager") as mock_lhm,
+    ):
+        mock_manager = MagicMock()
+        mock_manager.ensure_loaded = AsyncMock(return_value=MagicMock())
+        mock_manager.is_vram_loaded.return_value = True
+        mock_manager.seconds_since_last_activity.return_value = 0
+        # Ensure manager advertises auto-unload timeout so the controller
+        # can compute an expected unload timestamp.
+        mock_manager.auto_unload_minutes = 1
+        mock_manager.jit_enabled = True
+        mock_lhm.return_value = mock_manager
+
+        with TestClient(app) as client:
+            # Start the model (makes manager and worker available)
+            r = client.post("/hub/models/m/start")
+            assert r.status_code == 200
+
+            # Now load the model into VRAM
+            r = client.post("/hub/models/m/load")
+            assert r.status_code == 200
+            # Ensure the load is fully executed (run synchronously in-test)
+            asyncio.run(app.state.supervisor.load_model("m"))
+
+            # Optionally check the HTTP endpoint too (sanity) then inspect supervisor snapshot
+            r = client.get("/hub/status")
+            assert r.status_code == 200
+
+            # Inspect supervisor directly to avoid any HTTP-side rendering differences
+            status_snapshot = asyncio.run(app.state.supervisor.get_status())
+            m_entry = next(
+                (m for m in status_snapshot.get("models", []) if m.get("name") == "m"), None
+            )
+            assert m_entry is not None
+            # Sanity-check registry/handler state to help debug failures
+            st = app.state.model_registry.get_vram_status("/models/m")
+            assert st.get("vram_loaded") is True
+            handler = app.state.model_registry.get_handler("/models/m")
+            assert handler is not None
+            assert getattr(handler, "auto_unload_minutes", None) == 1
+            unload_ts = m_entry.get("unload_timestamp")
+            assert unload_ts is not None
+            now = time.time()
+            # auto_unload_minutes=1 => approx +60s; allow small drift
+            assert unload_ts > now + 50 and unload_ts < now + 70
 
 
 @pytest.mark.asyncio

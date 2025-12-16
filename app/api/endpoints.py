@@ -1,6 +1,5 @@
 """API endpoints for the MLX OpenAI server."""
 
-import asyncio
 import base64
 from collections.abc import AsyncGenerator
 from http import HTTPStatus
@@ -773,27 +772,45 @@ async def models(raw_request: Request) -> ModelsResponse | JSONResponse:  # noqa
                             logger.info(
                                 f"Populating worker_port for registry model {model_path}: port={port_val}"
                             )
-                        # Update other VRAM fields if available
-                        if supervisor_model.get("unload_timestamp"):
-                            metadata["vram_last_unload_ts"] = supervisor_model["unload_timestamp"]
-                        if supervisor_model.get("last_activity_ts"):
-                            metadata["vram_last_request_ts"] = supervisor_model["last_activity_ts"]
-                            # Also update the registry metadata for availability calculations
-                            if model_path is not None:
-                                registry_metadata_updates = {
-                                    "vram_last_request_ts": int(
-                                        supervisor_model["last_activity_ts"]
-                                    )
-                                }
-                                if supervisor_model.get("unload_timestamp"):
-                                    registry_metadata_updates["vram_last_unload_ts"] = int(
-                                        supervisor_model["unload_timestamp"]
-                                    )
-                                # Update registry asynchronously (don't wait for it)
-                                asyncio.create_task(
-                                    registry.update_model_state(
-                                        model_path, metadata_updates=registry_metadata_updates
-                                    )
+                        # Update other VRAM fields if available and persist them
+                        # immediately in the registry so that availability calculations
+                        # performed later in this request reflect the live supervisor
+                        # view (e.g., service-backed models reporting memory_loaded).
+                        if model_path is not None:
+                            registry_metadata_updates: dict[str, object] = {}
+                            if supervisor_model.get("unload_timestamp"):
+                                metadata["vram_last_unload_ts"] = supervisor_model[
+                                    "unload_timestamp"
+                                ]
+                                registry_metadata_updates["vram_last_unload_ts"] = int(
+                                    supervisor_model["unload_timestamp"]
+                                )
+                            if supervisor_model.get("last_activity_ts"):
+                                metadata["vram_last_request_ts"] = supervisor_model[
+                                    "last_activity_ts"
+                                ]
+                                registry_metadata_updates["vram_last_request_ts"] = int(
+                                    supervisor_model["last_activity_ts"]
+                                )
+
+                            # Reflect memory residency in the registry so availability
+                            # calculations that rely on `vram_loaded` see service-backed
+                            # models as loaded/unloaded.
+                            memory_loaded = bool(supervisor_model.get("memory_loaded", False))
+                            metadata["vram_loaded"] = memory_loaded
+                            registry_metadata_updates["vram_loaded"] = memory_loaded
+                            if memory_loaded:
+                                registry_metadata_updates["vram_last_load_ts"] = int(time.time())
+
+                            # Persist updates synchronously so subsequent availability
+                            # checks in this endpoint see the updated state.
+                            try:
+                                await registry.update_model_state(
+                                    model_path, metadata_updates=registry_metadata_updates
+                                )
+                            except Exception:
+                                logger.debug(
+                                    f"Failed to persist supervisor-derived metadata for {model_path}"
                                 )
 
             available_ids = registry.get_available_model_ids()
@@ -816,6 +833,28 @@ async def models(raw_request: Request) -> ModelsResponse | JSONResponse:  # noqa
             )
 
     cached_metadata = get_cached_model_metadata(raw_request)
+    # If running as a standalone worker prefer the live handler view when the
+    # handler manager reports VRAM residency (more authoritative than the
+    # cached snapshot). This helps ensure probes read `vram_loaded=True`
+    # immediately after a JIT load instead of a stale cached False value.
+    handler_manager = getattr(raw_request.app.state, "handler_manager", None)
+    if handler_manager is not None:
+        try:
+            if bool(getattr(handler_manager, "is_vram_loaded", lambda: False)()):
+                handler = getattr(handler_manager, "current_handler", None)
+                if handler is not None:
+                    try:
+                        models_data = await handler.get_models()
+                        return ModelsResponse(
+                            object="list", data=[Model(**model) for model in models_data]
+                        )
+                    except Exception:
+                        # Fall back to cached metadata on handler errors
+                        pass
+        except Exception:
+            # Defensive: do not let manager introspection break the endpoint
+            pass
+
     if cached_metadata is not None:
         return ModelsResponse(object="list", data=[Model(**cached_metadata)])
 

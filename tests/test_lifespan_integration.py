@@ -55,6 +55,16 @@ def test_lifespan_respects_jit_enabled(monkeypatch: pytest.MonkeyPatch) -> None:
 
     config = MLXServerConfig(model_path="/models/test", jit_enabled=True, auto_unload_minutes=None)
     app = FastAPI()
+    # Populate the model metadata cache the way `setup_server` normally does
+    app.state.model_metadata = [
+        {
+            "id": config.model_identifier,
+            "object": "model",
+            "created": int(time.time()),
+            "owned_by": "local",
+            "metadata": {"model_path": config.model_identifier},
+        }
+    ]
     lifespan = create_lifespan(config)
 
     async def _run() -> None:
@@ -157,5 +167,54 @@ def test_jit_triggers_handler_load_on_request(monkeypatch: pytest.MonkeyPatch) -
             handler = await hm.ensure_loaded("test-request")
             assert handler is not None
             assert called["count"] == 1
+
+    asyncio.run(_run())
+
+
+def test_cached_metadata_reflects_manager_vram(monkeypatch: pytest.MonkeyPatch) -> None:
+    """When a handler is loaded via JIT the cached metadata should report vram_loaded."""
+
+    async def fake_instantiate(cfg: MLXServerConfig) -> object:
+        # Return a simple handler-like object
+        return SimpleNamespace(model_path=cfg.model_path, model_created=int(time.time()))
+
+    monkeypatch.setattr("app.server.instantiate_handler", fake_instantiate)
+
+    config = MLXServerConfig(model_path="/models/test", jit_enabled=True, auto_unload_minutes=None)
+    app = FastAPI()
+    lifespan = create_lifespan(config)
+
+    async def _run() -> None:
+        async with lifespan(app):
+            # Ensure the model metadata cache exists (populated by setup_server in normal runs)
+            if getattr(app.state, "model_metadata", None) is None:
+                app.state.model_metadata = [
+                    {
+                        "id": config.model_identifier,
+                        "object": "model",
+                        "created": int(time.time()),
+                        "owned_by": "local",
+                        "metadata": {"model_path": config.model_identifier},
+                    }
+                ]
+
+            hm = app.state.handler_manager
+
+            # Trigger load via ensure_loaded (simulates first request)
+            handler = await hm.ensure_loaded("test-request")
+            assert handler is not None
+
+            # The manager should report VRAM residency
+            assert hm.is_vram_loaded()
+
+            # Wait for the on_change callback to update the cached metadata
+            for _ in range(50):
+                md = getattr(app.state, "model_metadata", None)
+                if md and md[0].get("metadata", {}).get("vram_loaded"):
+                    break
+                await asyncio.sleep(0.01)
+
+            md = app.state.model_metadata
+            assert md and md[0]["metadata"]["vram_loaded"] is True
 
     asyncio.run(_run())

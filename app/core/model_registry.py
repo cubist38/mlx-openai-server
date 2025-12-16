@@ -301,6 +301,8 @@ class ModelRegistry:
                     entry["vram_loaded"] = loaded
                     if loaded:
                         entry["vram_last_load_ts"] = int(time.time())
+                        # Clear any stale unload timestamp when loading
+                        entry.pop("vram_last_unload_ts", None)
                     else:
                         entry.pop("vram_last_load_ts", None)
                     entry["status"] = "loaded" if loaded else "unloaded"
@@ -607,6 +609,24 @@ class ModelRegistry:
                     await asyncio.wait_for(coro, timeout=ensure_timeout)
                 else:
                     await coro
+                # Ensure registry reflects VRAM residency after a JIT load.
+                async with self._lock:
+                    entry = self._extra.setdefault(model_id, {})
+                    try:
+                        loaded = bool(getattr(manager, "is_vram_loaded", lambda: False)())
+                    except Exception:
+                        loaded = False
+                    entry["vram_loaded"] = loaded
+                    if loaded:
+                        entry["vram_last_load_ts"] = int(time.time())
+                        entry.setdefault("vram_action_id", uuid.uuid4().hex)
+                        entry["vram_action_state"] = "ready"
+                        entry["vram_action_progress"] = 100.0
+                        entry["vram_action_error"] = None
+                        entry["status"] = "loaded"
+                    if self._group_policies:
+                        # Recompute availability so group policies see JIT-loaded models immediately
+                        self._recompute_group_availability()
 
             try:
                 yield manager
@@ -721,6 +741,10 @@ class ModelRegistry:
                 entry["vram_action_error"] = error
                 if error is not None and state is None:
                     entry["vram_action_state"] = "error"
+                # When an action reports an error, ensure VRAM residency is cleared
+                if error is not None:
+                    entry["vram_loaded"] = False
+                    entry["vram_last_unload_ts"] = now
             if worker_port is not _UNSET:
                 with suppress(Exception):
                     logger.debug(
@@ -728,7 +752,59 @@ class ModelRegistry:
                     )
                 entry["worker_port"] = worker_port
 
+            # Interpret action state transitions for service-backed controllers
+            if state is not None:
+                try:
+                    # A "ready" state generally indicates an available sidecar.
+                    # If a worker_port is present the model should be considered loaded;
+                    # conversely a ready state with no port (or an explicit unload)
+                    # should mark the model as not loaded.
+                    if state == "ready":
+                        # A ready state generally indicates the action finished.
+                        # Prefer an explicit worker_port when present, but also
+                        # consider an attached handler's VRAM residency (for
+                        # in-process handlers where no worker port exists).
+                        if entry.get("worker_port") is not None:
+                            entry["vram_loaded"] = True
+                            entry["vram_last_load_ts"] = now
+                            # Clear any stale unload timestamp when a service reports ready
+                            entry.pop("vram_last_unload_ts", None)
+                            entry["status"] = "loaded"
+                        else:
+                            # Fall back to attached handler's reported state
+                            handler = self._handlers.get(model_id)
+                            loaded = False
+                            if handler is not None:
+                                try:
+                                    loaded = bool(
+                                        getattr(handler, "is_vram_loaded", lambda: False)()
+                                    )
+                                except Exception:
+                                    loaded = False
+                            if loaded:
+                                entry["vram_loaded"] = True
+                                entry["vram_last_load_ts"] = now
+                                entry.pop("vram_last_unload_ts", None)
+                                entry["status"] = "loaded"
+                            else:
+                                entry["vram_loaded"] = False
+                                entry["vram_last_unload_ts"] = now
+                                entry["status"] = "unloaded"
+                    elif state == "error":
+                        entry["vram_loaded"] = False
+                        entry["vram_last_unload_ts"] = now
+                        entry["status"] = "unloaded"
+                except Exception:
+                    # Defensive: ensure update does not raise for unexpected metadata
+                    pass
+
             entry["vram_action_updated_ts"] = now
+
+            # If group policies exist, recompute availability snapshot after
+            # applying VRAM action-derived state changes above.
+            if self._group_policies:
+                self._recompute_group_availability()
+
             return cast("str", current_action)
 
     def get_vram_action_status(

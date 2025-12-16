@@ -110,17 +110,29 @@ class MLXVLMHandler:
     async def get_models(self) -> list[dict[str, Any]]:
         """Get list of available models with their metadata."""
         try:
+            vram_loaded = bool(getattr(self, "model", None) is not None)
+            meta: dict[str, Any] = {
+                "model_type": "vlm",
+                "context_length": None,
+                "status": "initialized",
+                "model_path": self.model_path,
+                "vram_loaded": vram_loaded,
+            }
+        except Exception as e:
+            logger.error(f"Error getting models. {type(e).__name__}: {e}")
+            return []
+        else:
+            if vram_loaded:
+                meta["vram_last_load_ts"] = int(self.model_created)
             return [
                 {
                     "id": self.model_path,
                     "object": "model",
                     "created": self.model_created,
                     "owned_by": "local",
+                    "metadata": meta,
                 },
             ]
-        except Exception as e:
-            logger.error(f"Error getting models. {type(e).__name__}: {e}")
-            return []
 
     def _create_parsers(self) -> tuple[Any | None, Any | None]:
         """
