@@ -1,7 +1,7 @@
 import gc
 import os
 import mlx.core as mx
-from mlx_lm.utils import load, pipeline_load
+from mlx_lm.utils import load, sharded_load
 from mlx_lm.generate import (
     generate,
     stream_generate,
@@ -50,7 +50,7 @@ class MLX_LM:
 
     def _initialize_model(self, model_path: str, trust_remote_code: bool = False):
         if self.pipeline:
-            return pipeline_load(model_path)
+            return sharded_load(model_path, self.group, self.group)
         return load(model_path, lazy=False, tokenizer_config = {"trust_remote_code": trust_remote_code})
         
     def _apply_pooling_strategy(self, embeddings: mx.array) -> mx.array:
