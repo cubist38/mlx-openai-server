@@ -1,7 +1,7 @@
 import gc
 import os
 import mlx.core as mx
-from mlx_lm.utils import load
+from mlx_lm.utils import load, pipeline_load
 from mlx_lm.generate import (
     generate,
     stream_generate,
@@ -28,9 +28,13 @@ class MLX_LM:
     supporting both streaming and non-streaming modes.
     """
 
-    def __init__(self, model_path: str, context_length: int = 32768, trust_remote_code: bool = False, chat_template_file: str = None):
+    def __init__(self, model_path: str, context_length: int = 32768, trust_remote_code: bool = False, chat_template_file: str = None, pipeline: bool = False):
         try:
-            self.model, self.tokenizer = load(model_path, lazy=False, tokenizer_config = {"trust_remote_code": trust_remote_code})
+            self.pipeline = pipeline
+            self.model, self.tokenizer = self._initialize_model(model_path)
+            if self.pipeline:
+                self.group = mx.distributed.init()
+                self.rank = self.group.rank()
             self.pad_token_id = self.tokenizer.pad_token_id
             self.bos_token = self.tokenizer.bos_token
             self.model_type = self.model.model_type
@@ -43,6 +47,11 @@ class MLX_LM:
                     self.tokenizer.chat_template = f.read()
         except Exception as e:
             raise ValueError(f"Error loading model: {str(e)}")
+
+    def _initialize_model(self, model_path: str, trust_remote_code: bool = False):
+        if self.pipeline:
+            return pipeline_load(model_path)
+        return load(model_path, lazy=False, tokenizer_config = {"trust_remote_code": trust_remote_code})
         
     def _apply_pooling_strategy(self, embeddings: mx.array) -> mx.array:
         embeddings = mx.mean(embeddings, axis=1)

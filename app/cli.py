@@ -185,6 +185,11 @@ def cli():
     type=str,
     help="Path to a custom chat template file. Only works with language models (lm) and multimodal models.",
 )
+@click.option(
+    "--pipeline",
+    is_flag=True,
+    help="Use pipeline parallel mode for distributed inference. Only works with language models (lm) model type.",
+)
 def launch(
     model_path,
     model_type,
@@ -207,6 +212,7 @@ def launch(
     reasoning_parser,
     trust_remote_code,
     chat_template_file,
+    pipeline,
 ) -> None:
     """Start the FastAPI/Uvicorn server with the supplied flags.
 
@@ -237,6 +243,7 @@ def launch(
         reasoning_parser=reasoning_parser,
         trust_remote_code=trust_remote_code,
         chat_template_file=chat_template_file,
+        pipeline=pipeline,
     )
 
     asyncio.run(start(args))

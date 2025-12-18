@@ -170,6 +170,53 @@ Chat templates use Jinja2 syntax and should follow the standard format expected 
 
 > **Note:** If the chat template file does not exist, the server will raise an error during startup. Make sure the file path is correct and the file is accessible.
 
+### Pipeline Parallel Mode
+
+The server supports pipeline parallel mode for distributed inference across multiple hosts, enabling you to run large language models that don't fit on a single machine. This feature uses MLX's distributed capabilities to split model layers across multiple devices.
+
+**Key features:**
+- **Distributed inference**: Split model layers across multiple hosts/devices
+- **Memory efficiency**: Distribute model memory requirements across multiple machines
+- **Scalability**: Scale to larger models by adding more hosts
+- **Model compatibility**: Works with all language models (`lm` model type)
+
+**Requirements:**
+- Multiple hosts with MLX installed
+- Network connectivity between hosts
+- Model must be accessible from all hosts
+
+**Usage:**
+
+To use pipeline parallel mode, you must run the server using `mlx.launch` with the `--pipeline` flag:
+
+```bash
+mlx.launch --hosts ip1,ip2,ip3,... python -m app.main \
+  --model-path <path-to-mlx-model> \
+  --model-type lm \
+  --pipeline \
+  --max-concurrency 1 \
+  --queue-timeout 300 \
+  --queue-size 100
+```
+
+**Example with multiple hosts:**
+```bash
+# Run on 3 hosts for pipeline parallel inference
+mlx.launch --hosts 192.168.1.10,192.168.1.11,192.168.1.12 python -m app.main \
+  --model-path mlx-community/llama-3-70b-instruct-4bit \
+  --model-type lm \
+  --pipeline \
+  --context-length 8192
+```
+
+**How it works:**
+- When `--pipeline` is enabled, the server uses `pipeline_load()` instead of `load()` to load the model
+- MLX automatically distributes model layers across the specified hosts
+- Each host processes a portion of the model layers during inference
+- The distributed group is initialized automatically when pipeline mode is enabled
+
+**Note:** Pipeline parallel mode is only available for language models (`--model-type lm`). It requires running with `mlx.launch` to properly set up the distributed environment.
+
 ## Installation
 
 Follow these steps to set up the MLX-powered server:
@@ -350,6 +397,15 @@ python -m app.main \
   --model-type lm \
   --log-file /tmp/custom.log \
   --log-level DEBUG
+
+# With pipeline parallel mode (requires mlx.launch)
+mlx.launch --hosts ip1,ip2,ip3,... python -m app.main \
+  --model-path <path-to-mlx-model> \
+  --model-type lm \
+  --pipeline \
+  --max-concurrency 1 \
+  --queue-timeout 300 \
+  --queue-size 100
 ```
 
 #### Method 2: CLI Command
@@ -424,6 +480,7 @@ mlx-openai-server launch \
 - `--reasoning-parser`: Specify reasoning parser to use instead of auto-detection. Only works with language models (`lm` or `multimodal` model types). Available options: `qwen3`, `glm4_moe`, `qwen3_moe`, `qwen3_next`, `qwen3_vl`, `harmony`, `minimax`.
 - `--trust-remote-code`: Enable `trust_remote_code` when loading models. This allows loading custom code from model repositories. Default: `False` (disabled). Only works with `lm` or `multimodal` model types.
 - `--chat-template-file`: Path to a custom chat template file. Only works with language models (`lm`) and multimodal models (`multimodal`). Default: `None` (uses model's default chat template).
+- `--pipeline`: Use pipeline parallel mode for distributed inference. Only works with language models (`lm` model type). Requires running with `mlx.launch` for distributed setup.
 - `--log-file`: Path to log file. If not specified, logs will be written to 'logs/app.log' by default.
 - `--no-log-file`: Disable file logging entirely. Only console output will be shown.
 - `--log-level`: Set the logging level. Choices: `DEBUG`, `INFO`, `WARNING`, `ERROR`, `CRITICAL`. Default: `INFO`.
