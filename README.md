@@ -3,12 +3,21 @@
 [![MIT License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 [![Python 3.11](https://img.shields.io/badge/python-3.11-blue.svg)](https://www.python.org/downloads/release/python-3110/)
 
+---
+
+## ⭐ Star History
+
+[![Star History Chart](https://api.star-history.com/svg?repos=cubist38/mlx-openai-server&type=Timeline&legend=bottom-right)](https://www.star-history.com/#cubist38/mlx-openai-server&type=Timeline&legend=bottom-right)
+
+---
+
 ## Description
 This repository hosts a high-performance API server that provides OpenAI-compatible endpoints for MLX models. Developed using Python and powered by the FastAPI framework, it provides an efficient, scalable, and user-friendly solution for running MLX-based multimodal models locally with an OpenAI-compatible interface. The server supports text, vision, audio processing, and image generation capabilities with enhanced Flux-series model support.
 
 > **Note:** This project currently supports **MacOS with M-series chips** only as it specifically leverages MLX, Apple's framework optimized for Apple Silicon.
 
 ## Table of Contents
+- [Star History](#-star-history)
 - [Key Features](#key-features)
 - [Demo](#demo)
 - [OpenAI Compatibility](#openai-compatibility)
