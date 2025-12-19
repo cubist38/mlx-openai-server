@@ -84,8 +84,31 @@ async def start(config: MLXServerConfig) -> None:
     routine, logs progress, and starts the Uvicorn server. It handles
     KeyboardInterrupt and logs any startup failures before exiting the
     process with a non-zero code.
+
+    In pipeline parallel mode, only rank 0 serves HTTP. Worker ranks
+    initialize the model (loading their layer shard) and wait for
+    distributed tensor operations from the coordinator.
     """
     try:
+        # Handle pipeline parallel mode: only rank 0 serves HTTP
+        if config.pipeline:
+            import asyncio
+            import mlx.core as mx
+            group = mx.distributed.init()
+            rank = group.rank()
+
+            if rank != 0:
+                # Worker mode: initialize model handler to load layer shard, then wait
+                logger.info(f"Pipeline worker rank {rank}/{group.size()} initializing...")
+                _ = setup_server(config)  # Loads model shard during handler init
+                logger.info(f"Pipeline worker rank {rank} ready, waiting for coordinator")
+                while True:
+                    await asyncio.sleep(3600)
+                return
+
+            # Rank 0 continues to serve HTTP
+            logger.info(f"Pipeline coordinator (rank 0/{group.size()}) starting HTTP server")
+
         # Display startup information
         print_startup_banner(config)
 

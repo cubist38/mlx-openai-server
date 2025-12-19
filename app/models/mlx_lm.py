@@ -31,10 +31,15 @@ class MLX_LM:
     def __init__(self, model_path: str, context_length: int = 32768, trust_remote_code: bool = False, chat_template_file: str = None, pipeline: bool = False):
         try:
             self.pipeline = pipeline
-            self.model, self.tokenizer = self._initialize_model(model_path)
+            self.trust_remote_code = trust_remote_code
+            # Initialize distributed group before model loading (sharded_load needs it)
             if self.pipeline:
                 self.group = mx.distributed.init()
                 self.rank = self.group.rank()
+            else:
+                self.group = None
+                self.rank = 0
+            self.model, self.tokenizer = self._initialize_model(model_path)
             self.pad_token_id = self.tokenizer.pad_token_id
             self.bos_token = self.tokenizer.bos_token
             self.model_type = self.model.model_type
@@ -48,10 +53,12 @@ class MLX_LM:
         except Exception as e:
             raise ValueError(f"Error loading model: {str(e)}")
 
-    def _initialize_model(self, model_path: str, trust_remote_code: bool = False):
+    def _initialize_model(self, model_path: str):
         if self.pipeline:
+            # Note: sharded_load() doesn't support tokenizer_config passthrough.
+            # trust_remote_code is not applied in pipeline mode (mlx-lm limitation).
             return sharded_load(model_path, self.group, self.group)
-        return load(model_path, lazy=False, tokenizer_config = {"trust_remote_code": trust_remote_code})
+        return load(model_path, lazy=False, tokenizer_config={"trust_remote_code": self.trust_remote_code})
         
     def _apply_pooling_strategy(self, embeddings: mx.array) -> mx.array:
         embeddings = mx.mean(embeddings, axis=1)
