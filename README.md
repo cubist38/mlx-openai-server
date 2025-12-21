@@ -1815,3 +1815,11 @@ A special acknowledgment to all contributors, users, and supporters who have hel
 Your engagement and contributions help make this project better for everyone in the MLX and local AI community. Together, we're building a more accessible and powerful ecosystem for local AI development.
 
 Thank you for being part of this journey! 🚀
+
+---
+
+## ⭐ Star History
+
+[![Star History Chart](https://api.star-history.com/svg?repos=cubist38/mlx-openai-server&type=Timeline&legend=bottom-right)](https://www.star-history.com/#cubist38/mlx-openai-server&type=Timeline&legend=bottom-right)
+
+---
