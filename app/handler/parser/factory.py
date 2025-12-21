@@ -28,6 +28,8 @@ from . import (
     Llama4PythonicToolParser,
     Ministral3ThinkingParser,
     Ministral3ToolParser,
+    Nemotron3NanoToolParser,
+    Nemotron3NanoThinkingParser,
 )
 from .glm4_moe import Glm4MoEMessageConverter
 from .minimax import MiniMaxMessageConverter
@@ -72,6 +74,10 @@ PARSER_REGISTRY: Dict[str, Dict[str, Callable]] = {
     "ministral3": {
         "thinking": Ministral3ThinkingParser,
         "tool": Ministral3ToolParser,
+    },
+    "nemotron3_nano": {
+        "thinking": Nemotron3NanoThinkingParser,
+        "tool": Nemotron3NanoToolParser,
     },
 }
 
@@ -126,6 +132,11 @@ PARSER_METADATA: Dict[str, Dict[str, Any]] = {
     "llama4_pythonic": {
         "respects_enable_thinking": False,
         "needs_redacted_reasoning_prefix": False,
+        "has_special_parsing": False,
+    },
+    "nemotron3_nano": {
+        "respects_enable_thinking": True,
+        "needs_redacted_reasoning_prefix": True,
         "has_special_parsing": False,
     },
 }
