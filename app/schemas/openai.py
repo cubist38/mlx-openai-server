@@ -533,7 +533,7 @@ class ImageGenerationError(OpenAIBaseModel):
 class ImageEditRequest(OpenAIBaseModel):
     """Request data for OpenAI-compatible image edit API."""
 
-    image: UploadFile = Field(..., description="The image to edit")
+    image: UploadFile | list[UploadFile] = Field(..., description="The image(s) to edit. Must be a file upload or a list of file uploads")
     prompt: str = Field(..., description="The prompt for the image edit")
     model: str | None = Field(
         default=Config.IMAGE_EDIT_MODEL, description="The model to use for image edit"
