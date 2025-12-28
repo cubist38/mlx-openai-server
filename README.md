@@ -18,6 +18,7 @@ This repository hosts a high-performance API server that provides OpenAI-compati
   - [Starting the Server](#starting-the-server)
   - [CLI Usage](#cli-usage)
   - [Logging Configuration](#logging-configuration)
+  - [Hub Mode](#hub-mode)
   - [Using the API](#using-the-api)
   - [Structured Outputs](#structured-outputs-with-json-schema)
 - [Request Queue System](#request-queue-system)
@@ -928,6 +929,115 @@ Web status page
 - When `enable_status_page` is `true`, the HTML dashboard at `/hub` displays a live snapshot of registered models, process state, memory load status, and exposes Start/Stop and Load/Unload controls for operators.
 - Group names in the dashboard now expose a tooltip summarizing `max_loaded` and `idle_unload_trigger_min` whenever the metadata is present.
 - The dashboard polls `/hub/status` periodically and shows flash/toast messages for actions.
+
+### VRAM Lifecycle & Model Visibility
+
+The server implements a clear VRAM lifecycle model that governs when models are visible to clients and when they can be loaded into memory. Understanding the distinction between **started/stopped** (process lifecycle) and **loaded/unloaded** (VRAM residency) is essential for effective model management.
+
+#### Visibility Matrix
+
+Models appear in `/v1/models` based on their **started** state, not their VRAM loaded state:
+
+| State | Process Running | VRAM Loaded | Visible in `/v1/models` | Can Accept Requests |
+|-------|----------------|-------------|------------------------|-------------------|
+| Started | ✅ Yes | ✅ Yes | ✅ Yes | ✅ Yes |
+| Started | ✅ Yes | ❌ No (JIT) | ✅ Yes | ✅ Yes (auto-loads) |
+| Stopped | ❌ No | ❌ No | ❌ No | ❌ No |
+
+**Core principle**: A model is visible in `/v1/models` once started and remains visible until explicitly stopped, regardless of whether handlers are currently loaded in VRAM. This ensures consistent API availability while allowing flexible memory management.
+
+#### Load vs Start Operations
+
+- **Start** (`hub start-model`, `/hub/models/{model}/start`): Launches the worker process and marks the model as started, making it visible in `/v1/models`. For non-JIT models, also loads handlers into memory immediately.
+- **Stop** (`hub stop-model`, `/hub/models/{model}/stop`): Terminates the worker process, unloads any handlers from VRAM, and removes the model from `/v1/models` visibility.
+- **Load** (`hub load-model`, `/hub/models/{model}/load`): Loads handlers into VRAM for an already-started model. May return HTTP 429 if group capacity is exceeded.
+- **Unload** (`hub unload-model`, `/hub/models/{model}/unload`): Releases VRAM while keeping the worker process alive and the model visible in `/v1/models`.
+
+#### Configuration Rules & Validation
+
+The server enforces these configuration constraints at startup:
+
+**JIT & Auto-Unload:**
+- `jit_enabled: true` is **required** to use `auto_unload_minutes`
+- Without JIT, models load immediately on start and remain loaded
+- Manual load/unload operations work regardless of JIT setting
+
+**Group Constraints:**
+- `idle_unload_trigger_min` can **only** be set when `max_loaded` is also defined
+- `max_loaded` must be ≥ 1 if specified
+- Invalid configurations raise errors during server startup
+
+#### Group Capacity Enforcement
+
+Groups control how many models can simultaneously occupy VRAM. Behavior depends on whether `idle_unload_trigger_min` is configured:
+
+##### Without `idle_unload_trigger_min` (simple capacity cap)
+
+When a group sets only `max_loaded`:
+
+1. **Hard capacity limit**: Only `max_loaded` models can be loaded simultaneously
+2. **Load attempts blocked**: Returns HTTP 429 when attempting to load beyond capacity
+3. **Visibility controlled by load state**:
+   - When < `max_loaded` models loaded: All started models in group appear in `/v1/models`
+   - When `max_loaded` models loaded: Unloaded models in group are **hidden** from `/v1/models`
+   - Once a loaded model unloads: All started models become visible again
+
+**Example**: Group with `max_loaded: 2` and 3 started models:
+- With 0-1 models loaded: All 3 appear in `/v1/models`
+- With 2 models loaded: Only the 2 loaded models appear in `/v1/models`
+- Load attempt on 3rd model: Returns HTTP 429
+- After unloading one model: All 3 reappear in `/v1/models`
+
+##### With `idle_unload_trigger_min` (intelligent eviction)
+
+When both `max_loaded` and `idle_unload_trigger_min` are set:
+
+1. **Capacity limit**: Still enforces `max_loaded` simultaneous models
+2. **Smart eviction**: When at capacity, checks if any loaded model has been idle ≥ `idle_unload_trigger_min`
+3. **Automatic unload**: Evicts the longest-idle qualifying model to make room for new load requests
+4. **Visibility controlled by idle state**:
+   - When < `max_loaded` models loaded: All started models in group appear in `/v1/models`
+   - When `max_loaded` models loaded AND all idle < threshold: Unloaded models **hidden** from `/v1/models`
+   - When `max_loaded` models loaded AND ≥1 idle ≥ threshold: All started models visible (eviction possible)
+   - Once eviction occurs or count drops: All started models become visible
+5. **Fallback to 429**: Returns HTTP 429 only if at capacity with no models meeting idle threshold
+
+**Example**: Group with `max_loaded: 2`, `idle_unload_trigger_min: 15` and 3 started models:
+- With 0-1 models loaded: All 3 appear in `/v1/models`
+- With 2 models loaded, both idle < 15 min: Only the 2 loaded models appear in `/v1/models`
+- With 2 models loaded, one idle ≥ 15 min: All 3 appear in `/v1/models`
+- Load attempt on 3rd model:
+  - If one model idle ≥ 15 min: Longest-idle model unloaded, 3rd model loads successfully
+  - If both models idle < 15 min: Returns HTTP 429
+
+#### Auto-Unload Timers
+
+Per-model `auto_unload_minutes` provides automatic VRAM management independent of group policies:
+
+- **Requirements**: Requires `jit_enabled: true` (validated at config load)
+- **Trigger**: Timer starts after each request completes
+- **Timer reset**: Every new request resets the idle timer
+- **Action**: After idle period expires, handlers automatically unload from VRAM
+- **Process preserved**: Worker process remains running, model stays visible in `/v1/models`
+- **Next request**: Triggers JIT load automatically
+- **Independence**: Operates separately from `idle_unload_trigger_min` (group eviction)
+
+**Key difference from group eviction:**
+- `auto_unload_minutes`: Scheduled background timer that unloads after idle period
+- `idle_unload_trigger_min`: On-demand threshold checked only when another model needs capacity
+
+**CLI flags**: `--jit` and `--auto-unload-minutes <N>`  
+**Hub config**: `jit_enabled: true` and `auto_unload_minutes: 120`
+
+#### Summary of Independent Mechanisms
+
+The VRAM lifecycle involves three independent mechanisms:
+
+1. **JIT loading** (`jit_enabled`): Defers handler initialization until first request
+2. **Auto-unload timers** (`auto_unload_minutes`): Scheduled unload after idle period (requires JIT)
+3. **Group eviction** (`max_loaded` + `idle_unload_trigger_min`): On-demand unload when capacity needed
+
+These mechanisms work together to provide flexible memory management while maintaining API consistency through the visibility rules above.
 
 ### Using the API
 

@@ -607,7 +607,10 @@ class HubSupervisor:
 
         registry_sync = getattr(self, "registry_sync", None)
         if registry_sync and model_id is not None:
-            await registry_sync.handler_unloaded(model_id)
+            await registry_sync.handler_unloaded(
+                model_id,
+                metadata_updates={"started": False},
+            )
 
         await self._stop_worker(name=name, record=record, model_id=model_id)
         return {"status": "unloaded", "name": name}
@@ -891,55 +894,37 @@ class HubSupervisor:
             manager_ref = record.manager
 
         registry_sync = getattr(self, "registry_sync", None)
-        if manager_created and registry_sync is not None:
-            logger.debug(
-                f"start_model: manager_created={manager_created} registry_model_id={registry_model_id} jit_enabled={jit_enabled}"
-            )
+        if registry_sync is not None:
             if registry_model_id is None:
                 logger.error(
                     f"Registry update skipped: missing model id for registry. model={name!r}"
                 )
                 raise RuntimeError(f"Cannot update registry for model '{name}': model id is None")
+            logger.debug(
+                f"start_model: manager_created={manager_created} registry_model_id={registry_model_id} jit_enabled={jit_enabled}"
+            )
             await registry_sync.record_state(
                 registry_model_id,
                 handler=manager_ref,
                 status="initialized",
                 vram_loaded=False,
+                metadata_updates={"started": True},
             )
-
             logger.debug(
                 f"start_model: registry updated for {registry_model_id}; record.worker initially={record.worker}"
             )
-            # Start the sidecar worker immediately so a "start" action makes the
-            # model's worker available and the registry can be updated with the
-            # assigned port synchronously.
-            try:
-                await self._start_worker(name=name, record=record, model_id=registry_model_id)
-                logger.debug(
-                    f"start_model: worker after _start_worker={record.worker} worker.port={getattr(record.worker, 'port', None) if record.worker else None}"
-                )
-            except SidecarWorkerError as exc:  # pragma: no cover - surface errors
-                logger.error(f"Failed to start worker for model '{name}': {exc}")
-                raise HTTPException(
-                    status_code=HTTPStatus.INTERNAL_SERVER_ERROR,
-                    detail="failed to start worker process; check logs for details",
-                ) from exc
-        else:
-            # Even when the manager already existed, ensure the sidecar worker
-            # is started so UI/client surfaces (e.g., /v1/models) can be
-            # populated with the assigned worker port. This covers cases
-            # where a manager may be attached but the worker isn't running.
-            try:
-                await self._start_worker(name=name, record=record, model_id=registry_model_id)
-                logger.debug(
-                    f"start_model (existing manager): worker after _start_worker={record.worker} worker.port={getattr(record.worker, 'port', None) if record.worker else None}"
-                )
-            except SidecarWorkerError as exc:  # pragma: no cover - surface errors
-                logger.error(f"Failed to start worker for model '{name}' (existing manager): {exc}")
-                raise HTTPException(
-                    status_code=HTTPStatus.INTERNAL_SERVER_ERROR,
-                    detail="failed to start worker process; check logs for details",
-                ) from exc
+
+        try:
+            await self._start_worker(name=name, record=record, model_id=registry_model_id)
+            logger.debug(
+                f"start_model{' (existing manager)' if not manager_created else ''}: worker after _start_worker={record.worker} worker.port={getattr(record.worker, 'port', None) if record.worker else None}"
+            )
+        except SidecarWorkerError as exc:  # pragma: no cover - surface errors
+            logger.error(f"Failed to start worker for model '{name}': {exc}")
+            raise HTTPException(
+                status_code=HTTPStatus.INTERNAL_SERVER_ERROR,
+                detail="failed to start worker process; check logs for details",
+            ) from exc
 
         if not jit_enabled:
             return await self.load_model(name)
@@ -969,6 +954,7 @@ class HubSupervisor:
             raise HTTPException(status_code=404, detail="model not found")
 
         model_id = self._registry_model_id(name, record)
+        registry_sync = getattr(self, "registry_sync", None)
         await self._wait_for_record_operation_completion(record, record_lock)
 
         async with record_lock:
@@ -987,6 +973,12 @@ class HubSupervisor:
 
         if stop_task is None:
             await self._stop_worker(name=name, record=record, model_id=model_id)
+            if registry_sync and self.registry is not None and model_id is not None:
+                with suppress(Exception):
+                    await self.registry.update_model_state(
+                        model_id,
+                        metadata_updates={"started": False},
+                    )
             return {"status": "not_running", "name": name}
 
         return await stop_task
@@ -1033,7 +1025,10 @@ class HubSupervisor:
 
         registry_sync = getattr(self, "registry_sync", None)
         if registry_sync and model_id is not None:
-            await registry_sync.handler_unloaded(model_id)
+            await registry_sync.handler_unloaded(
+                model_id,
+                metadata_updates={"started": False},
+            )
 
         await self._stop_worker(name=name, record=record, model_id=model_id)
         return {"status": "stopped", "name": name}
@@ -1362,6 +1357,7 @@ class HubSupervisor:
                                             "queue_size",
                                             DEFAULT_QUEUE_SIZE,
                                         ),
+                                        "started": False,
                                     },
                                 )
                             except ValueError:
@@ -1422,6 +1418,7 @@ class HubSupervisor:
                                         "queue_size",
                                         DEFAULT_QUEUE_SIZE,
                                     ),
+                                    "started": False,
                                 },
                             )
                         except ValueError:
@@ -1871,6 +1868,7 @@ def create_app(hub_config_path: str | None = None) -> FastAPI:
                 "model_path": model_id,
                 "max_concurrency": getattr(model, "max_concurrency", DEFAULT_MAX_CONCURRENCY),
                 "queue_size": getattr(model, "queue_size", DEFAULT_QUEUE_SIZE),
+                "started": False,
             },
         )
 

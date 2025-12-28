@@ -9,6 +9,7 @@ arguments and applying small model-type-specific defaults).
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from typing import Any
 
 from loguru import logger
 
@@ -38,6 +39,9 @@ from .const import (
     DEFAULT_TOOL_CALL_PARSER,
     DEFAULT_TRUST_REMOTE_CODE,
 )
+
+_TRUE_BOOL_LITERALS = {"1", "true", "yes", "on"}
+_FALSE_BOOL_LITERALS = {"0", "false", "no", "off"}
 
 
 @dataclass
@@ -111,6 +115,15 @@ class MLXServerConfig:
         None
             This method mutates the instance in-place and does not return a value.
         """
+        # Normalize boolean/int fields before dependent validation runs
+        self.jit_enabled = _coerce_bool(self.jit_enabled, field_name="jit_enabled")
+        if self.auto_unload_minutes is not None:
+            self.auto_unload_minutes = _coerce_positive_int(
+                self.auto_unload_minutes,
+                field_name="auto_unload_minutes",
+                friendly_name="Auto-unload minutes",
+            )
+
         # Process comma-separated LoRA paths and scales into lists (or None)
         if self.lora_paths_str:
             self.lora_paths = [p.strip() for p in self.lora_paths_str.split(",") if p.strip()]
@@ -146,11 +159,8 @@ class MLXServerConfig:
             )
             self.config_name = "flux-kontext-dev"
 
-        if self.auto_unload_minutes is not None:
-            if not self.jit_enabled:
-                raise ValueError("Auto-unload requires JIT loading to be enabled")
-            if self.auto_unload_minutes <= 0:
-                raise ValueError("Auto-unload minutes must be a positive integer")
+        if self.auto_unload_minutes is not None and not self.jit_enabled:
+            raise ValueError("Auto-unload requires JIT loading to be enabled")
 
         if isinstance(self.log_level, str):
             self.log_level = self.log_level.upper()
@@ -199,3 +209,41 @@ class MLXServerConfig:
             The resolved model identifier to use for handler initialization.
         """
         return self.model_path
+
+
+def _coerce_bool(value: Any, *, field_name: str) -> bool:
+    """Normalize a boolean-like value that may come from CLI or YAML."""
+
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in _TRUE_BOOL_LITERALS:
+            return True
+        if normalized in _FALSE_BOOL_LITERALS:
+            return False
+        raise ValueError(f"{field_name} must be a boolean value (got '{value}')")
+    if isinstance(value, int) and value in (0, 1):
+        return bool(value)
+    raise ValueError(f"{field_name} must be a boolean value (got {value!r})")
+
+
+def _coerce_positive_int(value: Any, *, field_name: str, friendly_name: str | None = None) -> int:
+    """Normalize a positive integer value, raising when invalid."""
+
+    if isinstance(value, bool):
+        raise TypeError(f"{field_name} must be an integer value (got boolean)")
+    if isinstance(value, int):
+        candidate = value
+    elif isinstance(value, str):
+        try:
+            candidate = int(value.strip())
+        except ValueError as exc:
+            raise ValueError(f"{field_name} must be an integer value") from exc
+    else:
+        raise TypeError(f"{field_name} must be an integer value (got {type(value).__name__})")
+
+    label = friendly_name or field_name
+    if candidate <= 0:
+        raise ValueError(f"{label} must be a positive integer")
+    return candidate

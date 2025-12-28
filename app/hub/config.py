@@ -373,7 +373,12 @@ def _build_models(
             model_payload["port"] = candidate_port
         reserved_ports.add(candidate_port)
 
-        server_config = MLXServerConfig(**model_payload)
+        try:
+            server_config = MLXServerConfig(**model_payload)
+        except ValueError as exc:
+            raise HubConfigError(
+                f"Model '{name}' has invalid configuration: {exc}",
+            ) from exc
         server_config.is_default_model = default_flag
         if not server_config.name:
             raise HubConfigError("Each hub model must have a slug-compliant name")
@@ -457,6 +462,8 @@ def load_hub_config(
         additional_reserved_ports=set(),
     )
 
+    _validate_group_membership_constraints(hub.groups, hub.models)
+
     # Ensure all models inherit the hub's status page setting
     for model in hub.models:
         model.enable_status_page = hub.enable_status_page
@@ -539,3 +546,49 @@ def _allocate_port(
     raise HubConfigError(
         f"Unable to find an available port for model '{name}' starting at {starting_port}",
     )
+
+
+def _validate_group_membership_constraints(
+    groups: list[MLXHubGroupConfig],
+    models: list[MLXServerConfig],
+) -> None:
+    """Ensure group constraints only apply to models capable of JIT loading."""
+
+    if not groups:
+        return
+
+    membership: dict[str, list[MLXServerConfig]] = {}
+    for model in models:
+        if not model.group:
+            continue
+        membership.setdefault(model.group, []).append(model)
+
+    for group in groups:
+        assigned = membership.get(group.name, [])
+        if not assigned:
+            continue
+
+        if group.idle_unload_trigger_min is not None:
+            offenders = [
+                model.name for model in assigned if not model.jit_enabled and model.name is not None
+            ]
+            if offenders:
+                offending = ", ".join(offenders)
+                raise HubConfigError(
+                    "idle_unload_trigger_min requires all models in group "
+                    f"'{group.name}' to enable JIT loading so they can unload when idle. "
+                    f"Update the following model(s): {offending}",
+                )
+
+        if group.max_loaded is not None and len(assigned) > group.max_loaded:
+            offenders = [
+                model.name for model in assigned if not model.jit_enabled and model.name is not None
+            ]
+            if offenders:
+                offending = ", ".join(offenders)
+                raise HubConfigError(
+                    f"Group '{group.name}' caps max_loaded at {group.max_loaded} "
+                    f"but has {len(assigned)} member(s). Models expected to stay unloaded "
+                    "until requested must enable JIT. Update the following model(s): "
+                    f"{offending}",
+                )

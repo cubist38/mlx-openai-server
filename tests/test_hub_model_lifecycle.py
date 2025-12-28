@@ -690,6 +690,53 @@ async def test_reload_config_rejects_model_path_change_for_started_models(
 
 
 @pytest.mark.asyncio
+async def test_start_and_stop_update_registry_started_flag(tmp_path: Path) -> None:
+    """Ensure start_model marks models as started and stop_model clears the flag."""
+
+    cfg = MLXHubConfig(log_path=tmp_path / "logs")
+    cfg.models = [
+        MLXServerConfig(
+            name="tracked",
+            model_path="/models/tracked",
+            model_type="lm",
+            jit_enabled=True,
+        )
+    ]
+
+    registry = ModelRegistry()
+    registry.register_model(
+        model_id="/models/tracked",
+        handler=None,
+        model_type="lm",
+    )
+
+    supervisor = HubSupervisor(cfg, registry)
+
+    with (
+        patch("app.hub.daemon.LazyHandlerManager") as mock_lhm,
+        patch.object(HubSupervisor, "_start_worker", new_callable=AsyncMock) as mock_start_worker,
+        patch.object(HubSupervisor, "_stop_worker", new_callable=AsyncMock) as mock_stop_worker,
+    ):
+        mock_manager = MagicMock()
+        mock_manager.is_vram_loaded.return_value = False
+        mock_manager.jit_enabled = True
+        mock_manager.unload = AsyncMock(return_value=True)
+        mock_lhm.return_value = mock_manager
+
+        await supervisor.start_model("tracked")
+        mock_start_worker.assert_awaited()
+
+        metadata = registry.list_models()[0]["metadata"]
+        assert metadata.get("started") is True
+
+        await supervisor.stop_model("tracked")
+        mock_stop_worker.assert_awaited()
+
+        metadata = registry.list_models()[0]["metadata"]
+        assert metadata.get("started") is False
+
+
+@pytest.mark.asyncio
 async def test_default_models_auto_start_during_lifespan(
     write_hub_yaml: Callable[[str, str], Path],
 ) -> None:

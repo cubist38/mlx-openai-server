@@ -42,7 +42,7 @@ from pathlib import Path
 import sys
 import time
 from types import SimpleNamespace
-from typing import Any, TypeAlias, cast
+from typing import Any, Literal, TypeAlias, cast
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -700,13 +700,19 @@ class LazyHandlerManager(ManagerProtocol):
             # Do not let callbacks raise from ensure_vram_loaded.
             self._logger.debug("on_change callback raised during ensure_vram_loaded")
 
-    async def release_vram(self, *, timeout: float | None = None) -> None:
+    async def release_vram(
+        self,
+        *,
+        timeout: float | None = None,
+        trigger: Literal["manual", "auto"] = "manual",
+    ) -> None:
         """Release VRAM by unloading the handler (compatible with ManagerProtocol).
 
         This maps onto the existing ``unload`` behavior for the manager and
         provides the method expected by the typing protocol.
         """
-        coro = self.unload("release_vram")
+        reason = "auto-unload" if trigger == "auto" else "release_vram"
+        coro = self.unload(reason)
         if timeout is not None:
             await asyncio.wait_for(coro, timeout=timeout)
         else:
@@ -1047,7 +1053,7 @@ class CentralIdleAutoUnloadController:
 
                     if idle_elapsed >= timeout_secs and status.get("vram_loaded", False):
                         try:
-                            await self.registry.request_vram_unload(mid)
+                            await self.registry.request_vram_unload(mid, trigger="auto")
                         except Exception:
                             # On failure, backoff to avoid tight error loops
                             self._backoff[mid] = time.time() + 30
@@ -1124,6 +1130,7 @@ def create_lifespan(
             "jit_enabled": config_args.jit_enabled,
             "auto_unload_minutes": config_args.auto_unload_minutes,
             "group": config_args.group,
+            "started": True,
         }
         registry.register_model(
             model_id=registry_model_id,
@@ -1631,6 +1638,7 @@ async def _sync_registry_models_from_config(registry: ModelRegistry, hub_config:
             "model_path": model_id,
             "model_type": getattr(model_cfg, "model_type", None),
             "context_length": getattr(model_cfg, "context_length", None),
+            "started": False,
         }
 
         if registry.has_model(model_id):

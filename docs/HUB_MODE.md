@@ -82,6 +82,123 @@ Flash helper tones (`info`, `success`, `warning`, `error`) mirror the HTML dashb
 - Hub-facing actions (`hub start-model`, `hub load-model`, `hub vram load`, `/hub/models/{model}/start`, etc.) call the same guard helper. If a group is already at its `max_loaded` ceiling and no member satisfies the optional `idle_unload_trigger_min`, the request fails fast with the existing OpenAI-style `429: Group capacity exceeded. Unload another model or wait for auto-unload.` response instead of invoking the controller/daemon.
 - Because the CLI, dashboard, and OpenAI APIs all reference the same cache, operators see identical availability decisions no matter which surface they use.
 
+## VRAM Lifecycle & Model Visibility
+
+The hub implements a clear VRAM lifecycle that separates **visibility** (what appears in `/v1/models`) from **VRAM residency** (what's loaded in memory). Understanding these distinctions is critical for configuring groups and managing memory effectively.
+
+### Visibility Rules
+
+| State | Process | VRAM | `/v1/models` | Accepts Requests |
+|-------|---------|------|--------------|-----------------|
+| Started | Running | Loaded | ✅ Visible | ✅ Yes |
+| Started | Running | Unloaded (JIT) | ✅ Visible | ✅ Yes (auto-loads) |
+| Stopped | Not running | Not loaded | ❌ Hidden | ❌ No |
+
+**Core principle**: Model visibility is determined by the `started` flag. Once started, a model remains visible until explicitly stopped, even if handlers are unloaded from memory. However, group capacity rules may temporarily hide unloaded models when the group is at capacity (see below).
+
+### Load vs Start Operations
+
+- **start-model**: Launches worker process + marks as started + (optionally) loads into VRAM
+- **stop-model**: Terminates worker + unloads VRAM + marks as stopped (removes from `/v1/models`)
+- **load-model**: Loads handlers into VRAM for an already-started model (may return 429 if group capacity exceeded)
+- **unload-model**: Releases VRAM while keeping worker running and model visible
+
+### Configuration Validation
+
+The hub enforces these rules at config load time:
+
+- **JIT requirement for auto-unload**: `auto_unload_minutes` requires `jit_enabled: true`
+- **Group trigger dependency**: `idle_unload_trigger_min` can only be set when `max_loaded` is also defined
+- **Capacity minimum**: `max_loaded` must be ≥ 1 if specified
+
+Invalid configurations raise `HubConfigError` or `ConfigError` before the hub starts.
+
+### Group Capacity Enforcement
+
+Groups control simultaneous VRAM occupancy. Behavior differs based on `idle_unload_trigger_min`:
+
+#### Without `idle_unload_trigger_min`
+
+Simple capacity cap with visibility gating:
+
+1. **Hard limit**: Only `max_loaded` models can be loaded at once
+2. **Load blocking**: HTTP 429 when attempting to exceed capacity
+3. **Dynamic visibility**:
+   - When loaded count < `max_loaded`: All started models visible in `/v1/models`
+   - When loaded count = `max_loaded`: Only loaded models visible; unloaded models hidden
+   - After unload reduces count: All started models become visible again
+
+**Example**: Group `tier_one` with `max_loaded: 1` and models [A, B, C] all started:
+```
+Initial state (none loaded):
+  - /v1/models shows: [A, B, C]
+  - Load A → succeeds, /v1/models shows: [A]
+  - Load B → returns 429, /v1/models still: [A]
+  - Unload A → /v1/models shows: [A, B, C]
+  - Load B → succeeds, /v1/models shows: [B]
+```
+
+#### With `idle_unload_trigger_min`
+
+Intelligent eviction with idle-based visibility:
+
+1. **Capacity limit**: Still enforces `max_loaded` simultaneous models
+2. **Eviction check**: When at capacity, checks if any loaded model idle ≥ threshold
+3. **Automatic unload**: Evicts longest-idle model meeting threshold to free capacity
+4. **Conditional visibility**:
+   - When loaded count < `max_loaded`: All started models visible
+   - When at `max_loaded` AND all idle < threshold: Only loaded models visible
+   - When at `max_loaded` AND ≥1 idle ≥ threshold: All started models visible (eviction possible)
+5. **429 fallback**: Returns error only when at capacity with no eviction candidates
+
+**Example**: Group `high_memory` with `max_loaded: 2`, `idle_unload_trigger_min: 15` and models [X, Y, Z] all started:
+```
+Scenario 1 - No eviction candidates:
+  - Load X (idle=0) + Y (idle=0) → both loaded, /v1/models: [X, Y]
+  - Load Z → returns 429 (no models idle ≥15 min)
+
+Scenario 2 - Eviction candidate available:
+  - X loaded (idle=20 min), Y loaded (idle=5 min)
+  - /v1/models shows: [X, Y, Z] (one model idle ≥15 min)
+  - Load Z → X auto-unloaded, Z loaded, /v1/models: [Y, Z]
+  - Load X → Y still active, returns 429
+  - Wait 10 min (Y now idle=15 min)
+  - /v1/models shows: [X, Y, Z]
+  - Load X → Y auto-unloaded, X loaded, succeeds
+```
+
+### Auto-Unload Behavior
+
+Per-model `auto_unload_minutes` provides scheduled memory management:
+
+- **Requirements**: Must have `jit_enabled: true` (enforced during config validation)
+- **Trigger**: Background timer starts after request completion
+- **Timer reset**: Every request resets the idle counter
+- **Action**: When timer expires, handlers unload from VRAM automatically
+- **Visibility preserved**: Worker stays running, model remains in `/v1/models`
+- **JIT reload**: Next request triggers automatic load
+- **Independent operation**: Works separately from group `idle_unload_trigger_min`
+
+**Key distinction**:
+- `auto_unload_minutes`: Proactive scheduled unload (background timer)
+- `idle_unload_trigger_min`: Reactive threshold-based eviction (capacity-driven)
+
+### Manual Load/Unload
+
+Regardless of JIT or group settings, manual operations always work:
+
+- CLI: `hub load-model <name>`, `hub unload-model <name>`
+- API: `POST /hub/models/{model}/load`, `POST /hub/models/{model}/unload`
+- Respects group capacity (may return 429 or trigger eviction)
+- Does not require JIT to be enabled
+
+### Implementation Notes
+
+- Visibility is determined by syncing `HubSupervisor` memory state into `ModelRegistry` before filtering
+- `get_available_model_ids()` respects the `started` flag plus group load-state visibility rules
+- `build_group_state()` counts only loaded models while including all group members
+- Tests: `test_v1_models_filters_based_on_supervisor_memory_loaded`, `test_v1_models_hides_stopped_models`
+
 ## HTML Dashboard Details
 
 - Polls `/hub/status` every five seconds by default and renders the same data used by the CLI.

@@ -13,7 +13,7 @@ import asyncio
 from collections.abc import AsyncIterator, Awaitable, Callable, Iterable
 from contextlib import AbstractAsyncContextManager, asynccontextmanager, suppress
 import time
-from typing import Any, TypedDict, cast
+from typing import Any, Literal, TypedDict, cast
 import uuid
 
 from loguru import logger
@@ -105,7 +105,7 @@ class ModelRegistry:
 
     The registry stores three parallel structures:
     - ``_handlers``: model_id -> manager object (or ``None`` if not
-      attached yet)
+        attached yet)
     - ``_metadata``: model_id -> ``ModelMetadata`` instance
     - ``_extra``: model_id -> dict with VRAM and runtime metadata
     """
@@ -123,7 +123,8 @@ class ModelRegistry:
         # Group policy + availability tracking
         self._group_policies: dict[str, dict[str, Any]] = {}
         self._group_snapshots: dict[str, dict[str, Any]] = {}
-        self._available_model_ids: set[str] | None = None
+        self._available_model_ids: set[str] = set()
+        self._blocked_model_ids: set[str] = set()
         self._availability_snapshot_ts: float | None = None
         logger.info("Model registry initialized")
 
@@ -157,29 +158,25 @@ class ModelRegistry:
         if normalized:
             self._recompute_group_availability()
         else:
-            self._available_model_ids = None
+            self._available_model_ids = set()
+            self._blocked_model_ids = set()
             self._group_snapshots = {}
             self._availability_snapshot_ts = None
 
     def get_available_model_ids(self) -> set[str]:
-        """Return the most recently computed set of API-visible model ids."""
+        """Return the cached set of started (API-visible) model ids."""
 
-        if self._available_model_ids is None:
-            return set(self._handlers.keys())
-
-        # Check if the availability snapshot is stale (older than 10 seconds)
-        # This ensures idle time-based availability is updated periodically
-        if self._availability_snapshot_ts is not None:
-            now = time.time()
-            if now - self._availability_snapshot_ts > 10.0:
-                self._recompute_group_availability()
-
-        return set(self._available_model_ids)
+        self._ensure_availability_snapshot()
+        return self._available_model_ids - self._blocked_model_ids
 
     def is_model_available(self, model_id: str) -> bool:
         """Return True when ``model_id`` is currently exposed to clients."""
 
-        return model_id in self.get_available_model_ids()
+        self._ensure_availability_snapshot()
+
+        if model_id not in self._available_model_ids:
+            return False
+        return model_id not in self._blocked_model_ids
 
     def get_group_snapshots(self) -> dict[str, dict[str, Any]]:
         """Return the latest computed per-group availability snapshot."""
@@ -235,6 +232,15 @@ class ModelRegistry:
         if metadata_extras:
             base_metadata.update(metadata_extras)
 
+        started_raw = base_metadata.get("started", True)
+        if isinstance(started_raw, str):
+            normalized = started_raw.strip().lower()
+            started_value = normalized in {"1", "true", "yes", "on"}
+        else:
+            started_value = bool(started_raw)
+
+        base_metadata["started"] = started_value
+
         base_metadata.setdefault(
             "vram_loaded",
             bool(handler and getattr(handler, "is_vram_loaded", lambda: False)()),
@@ -251,6 +257,8 @@ class ModelRegistry:
         base_metadata.setdefault("vram_action_updated_ts", None)
         base_metadata.setdefault("worker_port", None)
         base_metadata.setdefault("active_requests", 0)
+        base_metadata.setdefault("vram_last_load_origin", None)
+        base_metadata.setdefault("vram_last_unload_origin", None)
 
         self._handlers[model_id] = handler
         self._metadata[model_id] = metadata
@@ -473,6 +481,7 @@ class ModelRegistry:
         *,
         force: bool = False,
         timeout: float | None = None,
+        origin: Literal["manual", "auto"] = "manual",
     ) -> None:
         """Request that the attached manager load model weights into VRAM.
 
@@ -510,6 +519,7 @@ class ModelRegistry:
             entry = self._extra.setdefault(model_id, {})
             entry["vram_loaded"] = True
             entry["vram_last_load_ts"] = int(time.time())
+            entry["vram_last_load_origin"] = origin
             # Keep human-readable status in sync with VRAM residency
             entry["status"] = "loaded"
             entry.pop("vram_load_error", None)
@@ -522,7 +532,13 @@ class ModelRegistry:
         if self._group_policies:
             self._recompute_group_availability()
 
-    async def request_vram_unload(self, model_id: str, *, timeout: float | None = None) -> None:
+    async def request_vram_unload(
+        self,
+        model_id: str,
+        *,
+        timeout: float | None = None,
+        trigger: Literal["manual", "auto"] = "manual",
+    ) -> None:
         """Request that the attached manager release VRAM resources (unload).
 
         Parameters
@@ -531,6 +547,9 @@ class ModelRegistry:
             Registered model identifier.
         timeout : float | None, optional
             Optional timeout (seconds) to wait for the manager operation.
+        trigger : {"manual", "auto"}, default "manual"
+            Indicates whether the unload was initiated manually (CLI/API)
+            or automatically (idle timer / eviction). Used for telemetry.
 
         Raises
         ------
@@ -547,7 +566,7 @@ class ModelRegistry:
         if manager is None:
             raise KeyError(f"No manager attached for model '{model_id}'")
 
-        coro = manager.release_vram()
+        coro = manager.release_vram(trigger=trigger)
         if timeout is not None:
             await asyncio.wait_for(coro, timeout=timeout)
         else:
@@ -557,6 +576,7 @@ class ModelRegistry:
             entry = self._extra.setdefault(model_id, {})
             entry["vram_loaded"] = False
             entry["vram_last_unload_ts"] = int(time.time())
+            entry["vram_last_unload_origin"] = trigger
             # Keep human-readable status in sync with VRAM residency
             entry["status"] = "unloaded"
             entry.pop("vram_load_error", None)
@@ -699,6 +719,8 @@ class ModelRegistry:
             "vram_action_started_ts": entry.get("vram_action_started_ts"),
             "vram_action_updated_ts": entry.get("vram_action_updated_ts"),
             "worker_port": entry.get("worker_port"),
+            "vram_last_load_origin": entry.get("vram_last_load_origin"),
+            "vram_last_unload_origin": entry.get("vram_last_unload_origin"),
         }
 
     async def start_vram_action(
@@ -721,7 +743,6 @@ class ModelRegistry:
             entry["vram_action_progress"] = 0.0
             entry["vram_action_error"] = None
             entry["vram_action_started_ts"] = now
-            entry["vram_action_updated_ts"] = now
         return action
 
     async def update_vram_action(
@@ -899,11 +920,24 @@ class ModelRegistry:
         if not self._group_policies:
             return membership
         for model_id, entry in self._extra.items():
+            if entry.get("started") is False:
+                continue
             group_name = entry.get("group")
             if not group_name or group_name not in self._group_policies:
                 continue
             membership.setdefault(group_name, []).append(model_id)
         return membership
+
+    def _get_started_model_ids(self) -> set[str]:
+        """Return the identifiers for models marked as started."""
+
+        started: set[str] = set()
+        for model_id in self._handlers:
+            entry = self._extra.get(model_id, {})
+            if entry.get("started") is False:
+                continue
+            started.add(model_id)
+        return started if started else set(self._handlers.keys())
 
     def _estimate_idle_seconds(self, model_id: str, *, now: float | None = None) -> float | None:
         """Best-effort idle duration using request/load timestamps."""
@@ -925,18 +959,22 @@ class ModelRegistry:
         current = time.time() if now is None else now
         return max(0.0, current - reference)
 
-    def _recompute_group_availability(self) -> None:
-        """Recalculate which models are available based on group policies."""
+    def _recompute_group_availability(self, *, started_ids: set[str] | None = None) -> None:
+        """Recalculate visibility and blocked sets based on group policies."""
+
+        started = started_ids if started_ids is not None else self._get_started_model_ids()
 
         if not self._group_policies:
-            self._available_model_ids = None
+            self._available_model_ids = set(started)
+            self._blocked_model_ids = set()
             self._group_snapshots = {}
-            self._availability_snapshot_ts = None
+            self._availability_snapshot_ts = time.time()
             return
 
         now = time.time()
         membership = self._build_group_membership()
-        available: set[str] = set(self._handlers.keys())
+        available: set[str] = set(started)
+        blocked: set[str] = set()
         snapshots: dict[str, dict[str, Any]] = {}
 
         for group_name, members in membership.items():
@@ -960,15 +998,27 @@ class ModelRegistry:
                     if idle_seconds >= threshold_seconds:
                         idle_eligible.append(mid)
 
+            # Determine visibility based on group rules:
+            # 1. If max_loaded is not set, show all started models (default)
+            # 2. If idle_unload_trigger_min is not set:
+            #    - Block unloaded models when max_loaded models are loaded
+            # 3. If idle_unload_trigger_min is set:
+            #    - Block unloaded models when max_loaded models are loaded AND
+            #      no loaded models meet the idle threshold
             allow_unloaded = True
             if max_loaded is not None and len(loaded_members) >= max_loaded:
-                if idle_trigger is None or not idle_eligible:
+                if idle_trigger is None:
+                    # Without idle_unload_trigger_min: hide unloaded models when at capacity
+                    allow_unloaded = False
+                elif not idle_eligible:
+                    # With idle_unload_trigger_min: hide unloaded models when at capacity
+                    # and no loaded models are idle enough for eviction
                     allow_unloaded = False
 
             if not allow_unloaded:
                 for mid in members:
                     if mid not in loaded_members:
-                        available.discard(mid)
+                        blocked.add(mid)
 
             snapshots[group_name] = {
                 "name": group_name,
@@ -984,5 +1034,36 @@ class ModelRegistry:
             }
 
         self._available_model_ids = available
+        self._blocked_model_ids = blocked
         self._group_snapshots = snapshots
         self._availability_snapshot_ts = now
+
+    def _ensure_availability_snapshot(self) -> None:
+        """Ensure the cached visibility snapshot is up to date."""
+
+        started_ids = self._get_started_model_ids()
+
+        # No policies: visibility equals started set
+        if not self._group_policies:
+            if self._available_model_ids != set(started_ids):
+                self._available_model_ids = set(started_ids)
+                self._blocked_model_ids = set()
+                self._group_snapshots = {}
+                self._availability_snapshot_ts = time.time()
+            return
+
+        needs_recompute = False
+        if not started_ids.issubset(
+            self._available_model_ids
+        ) or not self._available_model_ids.issubset(started_ids):
+            needs_recompute = True
+
+        if self._availability_snapshot_ts is None:
+            needs_recompute = True
+        else:
+            now = time.time()
+            if now - self._availability_snapshot_ts > 10.0:
+                needs_recompute = True
+
+        if needs_recompute:
+            self._recompute_group_availability(started_ids=set(started_ids))

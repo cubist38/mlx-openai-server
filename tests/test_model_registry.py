@@ -81,7 +81,12 @@ class DummyManager:
                 await asyncio.sleep(0.01)
                 self._loaded = True
 
-    async def release_vram(self, *, timeout: float | None = None) -> None:
+    async def release_vram(
+        self,
+        *,
+        timeout: float | None = None,
+        trigger: str = "manual",
+    ) -> None:
         """Release VRAM for this manager, simulating an unload delay."""
         async with self.ensure_lock:
             if self._loaded:
@@ -189,7 +194,8 @@ def test_request_vram_load_unload_idempotent_concurrent() -> None:
 
         # Concurrently request unloads
         unload_tasks = [
-            asyncio.create_task(registry.request_vram_unload(model_id)) for _ in range(4)
+            asyncio.create_task(registry.request_vram_unload(model_id, trigger="manual"))
+            for _ in range(4)
         ]
         await asyncio.gather(*unload_tasks)
 
@@ -429,7 +435,7 @@ def test_available_model_ids_return_cached_snapshot_copy() -> None:
         snapshot = registry.get_available_model_ids()
         assert snapshot == {"alpha"}
 
-        snapshot.add("beta")
+        snapshot.add("gamma")
         assert registry.is_model_available("beta") is False
 
     asyncio.run(_test())
@@ -459,7 +465,7 @@ def test_idle_trigger_shows_models_after_stale_snapshot() -> None:
         )
         await registry.update_model_state("beta", metadata_updates={"vram_loaded": False})
 
-        # Initially, only loaded models should be available
+        # Started models stay visible even when blocked due to policies
         assert registry.is_model_available("alpha") is True
         assert registry.is_model_available("beta") is False
 
@@ -531,8 +537,104 @@ def test_group_availability_with_jit_loads() -> None:
 
         registry.set_group_policies({"shared": {"max_loaded": 1}})
 
-        # After alpha is loaded, beta should not be available
+        # After alpha is loaded, beta should be marked blocked but remain started
         assert registry.is_model_available("alpha") is True
         assert registry.is_model_available("beta") is False
+
+
+def test_started_but_unloaded_models_visible_when_no_policy() -> None:
+    """Started models without group policies should always be available."""
+
+    async def _test() -> None:
+        registry = ModelRegistry()
+        registry.register_model(model_id="alpha", handler=None, model_type="lm")
+        registry.register_model(model_id="beta", handler=None, model_type="lm")
+
+        await registry.update_model_state("alpha", metadata_updates={"started": True})
+        await registry.update_model_state("beta", metadata_updates={"started": True})
+
+        ids = registry.get_available_model_ids()
+        assert ids == {"alpha", "beta"}
+
+    asyncio.run(_test())
+
+
+def test_manual_vs_auto_load_origin_tracking() -> None:
+    """request_vram_load/unload should record the supplied origin/trigger."""
+
+    async def _test() -> None:
+        registry = ModelRegistry()
+        registry.register_model("alpha", handler=DummyManager(), model_type="lm")
+
+        await registry.request_vram_load("alpha", origin="manual")
+        status = registry.get_vram_status("alpha")
+        assert status["vram_last_load_origin"] == "manual"
+
+        await registry.request_vram_unload("alpha", trigger="auto")
+        status2 = registry.get_vram_status("alpha")
+        assert status2["vram_last_unload_origin"] == "auto"
+
+    asyncio.run(_test())
+
+
+def test_manual_load_bypasses_idle_blocking() -> None:
+    """Manual JIT load should succeed even when idle auto-unload is pending."""
+
+    async def _test() -> None:
+        registry = ModelRegistry()
+        manager = DummyManager()
+        registry.register_model(
+            "alpha",
+            handler=manager,
+            model_type="lm",
+            metadata_extras={"group": "tier"},
+        )
+        registry.register_model(
+            "beta",
+            handler=DummyManager(),
+            model_type="lm",
+            metadata_extras={"group": "tier"},
+        )
+
+        # alpha already loaded -> beta blocked by policy (max_loaded=1)
+        await registry.request_vram_load("alpha", origin="auto")
+        registry.set_group_policies({"tier": {"max_loaded": 1}})
+        assert registry.is_model_available("beta") is False
+
+        # manual load should still execute (policy enforcement happens upstream)
+        await registry.request_vram_load("beta", origin="manual")
+        status = registry.get_vram_status("beta")
+        assert status["vram_loaded"] is True
+
+    asyncio.run(_test())
+
+
+def test_blocked_models_return_via_availability_cache() -> None:
+    """Models should remain visible but flagged as blocked when policies deny them."""
+
+    async def _test() -> None:
+        registry = ModelRegistry()
+        registry.register_model(
+            model_id="alpha",
+            handler=None,
+            model_type="lm",
+            metadata_extras={"group": "shared"},
+        )
+        registry.register_model(
+            model_id="beta",
+            handler=None,
+            model_type="lm",
+            metadata_extras={"group": "shared"},
+        )
+
+        await registry.update_model_state("alpha", metadata_updates={"vram_loaded": True})
+        registry.set_group_policies({"shared": {"max_loaded": 1}})
+
+        ids = registry.get_available_model_ids()
+        assert ids == {"alpha"}
+        assert registry.is_model_available("alpha") is True
+        assert registry.is_model_available("beta") is False
+
+    asyncio.run(_test())
 
     asyncio.run(_test())

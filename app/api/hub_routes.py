@@ -526,6 +526,14 @@ async def get_running_hub_models(raw_request: Request) -> set[str] | None:
     if not isinstance(models, list):
         return running
 
+    # Use registry's started flag if available to align with visibility rules
+    registry = getattr(raw_request.app.state, "model_registry", None)
+    if registry is not None:
+        # Registry tracks started status and handles availability filtering
+        available = registry.get_available_model_ids()
+        return available if available else set()
+
+    # Fallback to snapshot-based filtering when registry unavailable
     for entry in models:
         if not isinstance(entry, dict):
             continue

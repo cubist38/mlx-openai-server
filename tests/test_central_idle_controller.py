@@ -54,7 +54,12 @@ class FakeManager:  # type: ignore[override]
         if not self._loaded or force:
             self._loaded = True
 
-    async def release_vram(self, *, _timeout: float | None = None) -> None:
+    async def release_vram(
+        self,
+        *,
+        _timeout: float | None = None,
+        trigger: str = "manual",
+    ) -> None:
         """Simulate releasing VRAM with a tiny sleep and record the call."""
         await asyncio.sleep(0)
         if self._loaded:
@@ -141,7 +146,12 @@ def test_unload_failure_triggers_backoff() -> None:
         calls = {"count": 0}
 
         class FailManager(FakeManager):
-            async def release_vram(self, *, timeout: float | None = None) -> None:
+            async def release_vram(
+                self,
+                *,
+                timeout: float | None = None,
+                trigger: str = "manual",
+            ) -> None:
                 calls["count"] += 1
                 raise RuntimeError("simulated unload failure")
 
@@ -194,7 +204,7 @@ async def test_central_controller_unloads_idle_model_with_fake_registry() -> Non
         def get_handler(self, _model_id: str) -> None:
             return None
 
-        async def request_vram_unload(self, _model_id: str) -> None:
+        async def request_vram_unload(self, _model_id: str, *, trigger: str = "manual") -> None:
             unloaded.set()
 
     registry = FakeRegistry()
@@ -239,7 +249,7 @@ async def test_notify_activity_prevents_unload_with_fake_registry() -> None:
         def get_handler(self, _model_id: str) -> FakeHandler:
             return handler
 
-        async def request_vram_unload(self, _model_id: str) -> None:
+        async def request_vram_unload(self, _model_id: str, *, trigger: str = "manual") -> None:
             unloaded.set()
 
     registry = FakeRegistry()

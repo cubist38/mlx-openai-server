@@ -686,7 +686,6 @@ async def models(raw_request: Request) -> ModelsResponse | JSONResponse:  # noqa
     supervisor = getattr(raw_request.app.state, "supervisor", None)
     if registry is not None:
         try:
-            running_models: list[str] | None = None
             supervisor_status = None
             if supervisor is not None:
                 try:
@@ -694,49 +693,13 @@ async def models(raw_request: Request) -> ModelsResponse | JSONResponse:  # noqa
                     logger.info(
                         f"supervisor_status received with {len(supervisor_status.get('models', [])) if supervisor_status else 0} models"
                     )
-                    running_models = [
-                        model["model_path"]
-                        for model in supervisor_status.get("models", [])
-                        if model.get("state") == "running" and model.get("model_path")
-                    ]
                 except Exception:
                     supervisor_status = None
-                    running_models = None
-
-            if running_models is None:
-                running_models_set = await get_running_hub_models(raw_request)
-                running_models = (
-                    list(running_models_set) if running_models_set is not None else None
-                )
 
             models_data = registry.list_models()
-            # If the registry lacks a worker_port, try to read the live port
-            # from the supervisor's status snapshot (preferred) as a fallback.
-            if supervisor is not None and supervisor_status is not None:
-                try:
-                    # Build a mapping of model_path -> port from the status snapshot
-                    status_map: dict[str, int | None] = {
-                        str(m.get("model_path")): m.get("port")
-                        for m in supervisor_status.get("models", [])
-                        if isinstance(m, dict) and isinstance(m.get("model_path"), str)
-                    }
-                    for model in models_data:
-                        model_path = model.get("id")
-                        if not model_path:
-                            continue
-                        metadata = model.setdefault("metadata", {})
-                        if (
-                            metadata.get("worker_port") is None
-                            and status_map.get(model_path) is not None
-                        ):
-                            metadata["worker_port"] = status_map.get(model_path)
-                            logger.debug(
-                                f"Patched registry metadata for {model_path} from supervisor status: worker_port={metadata['worker_port']}"
-                            )
-                except Exception:
-                    # Defensive: do not fail the whole endpoint on introspection errors
-                    logger.debug("Failed to patch registry models from supervisor status snapshot")
-            # Update metadata from supervisor status if available
+
+            # Update metadata from supervisor status if available, BEFORE filtering by availability
+            # This ensures group policies see the latest VRAM residency state
             if supervisor_status is not None:
                 model_lookup: dict[str, dict[str, Any]] = {}
                 for model in supervisor_status.get("models", []):
@@ -749,77 +712,72 @@ async def models(raw_request: Request) -> ModelsResponse | JSONResponse:  # noqa
                         mp_meta = meta.get("model_path")
                         if mp_meta:
                             model_lookup[mp_meta] = model
+
                 for model in models_data:
                     model_path = model.get("id")
                     if model_path in model_lookup:
                         supervisor_model = model_lookup[model_path]
                         metadata = model.setdefault("metadata", {})
-                        metadata["vram_loaded"] = supervisor_model.get("memory_loaded", False)
-                        # Update status based on state and memory_loaded
-                        state = supervisor_model.get("state", "stopped")
-                        memory_loaded = supervisor_model.get("memory_loaded", False)
+
+                        # Reflect memory residency in the registry so availability
+                        # calculations that rely on `vram_loaded` see service-backed
+                        # models as loaded/unloaded.
+                        memory_loaded = bool(supervisor_model.get("memory_loaded", False))
+                        metadata["vram_loaded"] = memory_loaded
+                        registry_metadata_updates: dict[str, object] = {
+                            "vram_loaded": memory_loaded
+                        }
+
                         if memory_loaded:
                             metadata["status"] = "loaded"
-                        elif state == "running":
-                            metadata["status"] = "initialized"
+                            registry_metadata_updates["vram_last_load_ts"] = int(time.time())
                         else:
-                            metadata["status"] = "unloaded"
+                            state = supervisor_model.get("state", "stopped")
+                            if state == "running":
+                                metadata["status"] = "initialized"
+                            else:
+                                metadata["status"] = "unloaded"
+
+                        # Update other VRAM fields if available
+                        if supervisor_model.get("unload_timestamp"):
+                            metadata["vram_last_unload_ts"] = supervisor_model["unload_timestamp"]
+                            registry_metadata_updates["vram_last_unload_ts"] = int(
+                                supervisor_model["unload_timestamp"]
+                            )
+                        if supervisor_model.get("last_activity_ts"):
+                            metadata["vram_last_request_ts"] = supervisor_model["last_activity_ts"]
+                            registry_metadata_updates["vram_last_request_ts"] = int(
+                                supervisor_model["last_activity_ts"]
+                            )
+
                         # Update port if available (accept top-level or nested shapes)
                         port_val = supervisor_model.get("port") or (
                             (supervisor_model.get("metadata") or {}).get("port")
                         )
                         if port_val:
                             metadata["worker_port"] = port_val
-                            logger.info(
+                            logger.debug(
                                 f"Populating worker_port for registry model {model_path}: port={port_val}"
                             )
-                        # Update other VRAM fields if available and persist them
-                        # immediately in the registry so that availability calculations
-                        # performed later in this request reflect the live supervisor
-                        # view (e.g., service-backed models reporting memory_loaded).
-                        if model_path is not None:
-                            registry_metadata_updates: dict[str, object] = {}
-                            if supervisor_model.get("unload_timestamp"):
-                                metadata["vram_last_unload_ts"] = supervisor_model[
-                                    "unload_timestamp"
-                                ]
-                                registry_metadata_updates["vram_last_unload_ts"] = int(
-                                    supervisor_model["unload_timestamp"]
-                                )
-                            if supervisor_model.get("last_activity_ts"):
-                                metadata["vram_last_request_ts"] = supervisor_model[
-                                    "last_activity_ts"
-                                ]
-                                registry_metadata_updates["vram_last_request_ts"] = int(
-                                    supervisor_model["last_activity_ts"]
-                                )
 
-                            # Reflect memory residency in the registry so availability
-                            # calculations that rely on `vram_loaded` see service-backed
-                            # models as loaded/unloaded.
-                            memory_loaded = bool(supervisor_model.get("memory_loaded", False))
-                            metadata["vram_loaded"] = memory_loaded
-                            registry_metadata_updates["vram_loaded"] = memory_loaded
-                            if memory_loaded:
-                                registry_metadata_updates["vram_last_load_ts"] = int(time.time())
+                        # Persist updates synchronously so subsequent availability
+                        # checks in this endpoint see the updated state.
+                        try:
+                            await registry.update_model_state(
+                                model_path, metadata_updates=registry_metadata_updates
+                            )
+                        except Exception:
+                            logger.debug(
+                                f"Failed to persist supervisor-derived metadata for {model_path}"
+                            )
 
-                            # Persist updates synchronously so subsequent availability
-                            # checks in this endpoint see the updated state.
-                            try:
-                                await registry.update_model_state(
-                                    model_path, metadata_updates=registry_metadata_updates
-                                )
-                            except Exception:
-                                logger.debug(
-                                    f"Failed to persist supervisor-derived metadata for {model_path}"
-                                )
-
+            # NOW fetch available_ids after syncing supervisor status
+            # For /v1/models visibility, show all started models regardless of group blocking.
+            # Group policies only affect load requests (via guard_model_availability), not visibility.
             available_ids = registry.get_available_model_ids()
-            models_data = [model for model in models_data if model.get("id") in available_ids]
 
-            if running_models is not None:
-                running_filter = {mid for mid in running_models if mid}
-                models_data = [model for model in models_data if model.get("id") in running_filter]
+            # Filter by started flag only for visibility
+            models_data = [model for model in models_data if model.get("id") in available_ids]
 
             return ModelsResponse(object="list", data=[Model(**model) for model in models_data])
         except Exception as e:

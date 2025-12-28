@@ -26,3 +26,102 @@ This document captures plan-streamlineHubLifecycle Part A step 1 by mapping the 
 3. ✅ Updated the dashboard template [templates/hub_status.html.jinja](templates/hub_status.html.jinja) so start/stop/load/unload buttons call `/hub/models/{name}/...` and all UI labels reference the daemon instead of the removed service shim.
 4. ✅ Replaced `test_hub_service.py` with daemon-focused API coverage (`tests/test_hub_daemon_routes.py`) exercising `/hub/models/*`, `/hub/reload`, and `/hub/shutdown`.
 5. ✅ Refreshed hub documentation ([docs/HUB_MODE.md](docs/HUB_MODE.md), [docs/HANDOFFS.md](docs/HANDOFFS.md), README sections) to describe the daemon-only control plane now that the shim is gone.
+
+## VRAM Lifecycle Implementation
+
+This section documents the stable VRAM lifecycle implementation following the plan-stableVramLifecycle convergence:
+
+### Configuration Validation (Step 1 Complete)
+
+**Location**: `app/config.py`, `app/hub/config.py`
+
+**Rules enforced**:
+- `auto_unload_minutes` requires `jit: true` (raises `ConfigError`)
+- Group `idle_unload_trigger_min` requires `max_loaded` to be set (raises `HubConfigError`)
+- `max_loaded` must be ≥ 1 if specified
+
+**Tests**: `tests/test_config.py`, `tests/test_hub_config.py`
+
+### Registry & Handler Coordination (Step 2 Complete)
+
+**Location**: `app/core/model_registry.py`, `app/core/manager_protocol.py`
+
+**Key changes**:
+- Explicit manager protocol separates manual vs automated unload triggers
+- Registry availability cache tracks started-not-loaded models as available
+- Idle timestamp plumbing preserved; provenance tracking added
+
+**Visibility logic**:
+- `get_available_model_ids()` returns models where `started=True`
+- Group filtering applies additional load-state visibility rules
+- Tests: `test_model_registry.py`
+
+### Supervisor/Daemon Flows (Step 3 Complete)
+
+**Location**: `app/hub/daemon.py`, `app/hub/worker.py`
+
+**Behavior**:
+- `HubSupervisor.start_model` always records `started` flag and spins up workers
+- `HubSupervisor.stop_model` clears `started` flag via `RegistrySyncService`
+- Started-but-unloaded models retain visibility metadata
+- Group capacity enforcement uses 10s availability cache
+
+**Error responses**:
+- HTTP 429 when group at capacity with no eviction candidates
+- Message: "Group capacity exceeded. Unload another model or wait for auto-unload."
+
+**Tests**: `test_hub_daemon.py`, `test_control_plane.py`
+
+### API Visibility (Step 4 Complete)
+
+**Location**: `app/api/endpoints.py`, `app/core/hub_status.py`
+
+**Implementation**:
+- `/v1/models` syncs supervisor memory state into registry before filtering
+- Uses `get_available_model_ids()` which respects `started` flag
+- `build_group_state()` counts only loaded models while including all members
+
+**Visibility rules**:
+- Stopped models: Never appear
+- Started models: Appear by default
+- Group at capacity without idle candidates: Only loaded models visible
+- Group at capacity with idle ≥ threshold: All started models visible
+
+**Tests**: `test_endpoints_models.py` (`test_v1_models_filters_based_on_supervisor_memory_loaded`, `test_v1_models_hides_stopped_models`)
+
+### Manual Controls (Step 5 Complete)
+
+**Location**: `app/cli.py`, `app/api/hub_routes.py`
+
+**Commands**:
+- `hub load-model <name>` / `POST /hub/models/{model}/load`
+- `hub unload-model <name>` / `POST /hub/models/{model}/unload`
+
+**Behavior**:
+- Works regardless of JIT setting
+- Calls daemon API and surfaces validation errors
+- Hub routes enforce group constraints via `_guard_hub_action_availability`
+- Returns 429 when group policies violated
+
+**Tests**: `test_cli_hub_actions.py`, `test_control_plane.py`
+
+### Documentation (Step 6 Complete)
+
+**Updated files**:
+- `README.md`: Added comprehensive "VRAM Lifecycle & Model Visibility" section
+- `docs/HUB_MODE.md`: Expanded lifecycle rules with detailed examples
+- `docs/HUB_LIFECYCLE_MAPPING.md`: This section documents implementation
+
+**Test coverage**:
+- `tests/test_hub_model_lifecycle.py`: Lifecycle state transitions
+- `tests/test_routes_by_mode.py`: Mode-specific visibility behavior
+- `tests/test_endpoints_models.py`: `/v1/models` filtering
+- `tests/test_control_plane.py`: Group capacity and eviction
+
+### Key Principles
+
+1. **Visibility = Started**: Model appears in `/v1/models` when `started=True`, independent of VRAM state (with group visibility exceptions)
+2. **Load ≠ Start**: Loading is VRAM operation; starting is process lifecycle
+3. **Group Visibility Gating**: Groups may hide unloaded models when at capacity based on idle state
+4. **Independent Timers**: `auto_unload_minutes` (scheduled) vs `idle_unload_trigger_min` (on-demand)
+5. **Manual Override**: Load/unload always available regardless of JIT configuration

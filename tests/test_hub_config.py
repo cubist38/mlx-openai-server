@@ -326,9 +326,84 @@ def test_group_idle_trigger_loads_successfully(tmp_path: Path) -> None:
           - name: alpha
             model_path: /models/a
             group: workers
+            jit_enabled: true
         """,
     )
 
     config = load_hub_config(hub_path)
 
     assert config.groups[0].idle_unload_trigger_min == 15
+
+
+def test_group_idle_trigger_requires_models_to_enable_jit(tmp_path: Path) -> None:
+    """Groups with idle triggers must only include JIT-capable models."""
+    hub_path = _write_yaml(
+        tmp_path / "hub.yaml",
+        """
+        groups:
+          - name: workers
+            max_loaded: 2
+            idle_unload_trigger_min: 10
+        models:
+          - name: alpha
+            model_path: /models/a
+            group: workers
+            jit_enabled: false
+        """,
+    )
+
+    with pytest.raises(HubConfigError, match="JIT"):
+        load_hub_config(hub_path)
+
+
+def test_group_max_loaded_over_subscription_requires_jit(tmp_path: Path) -> None:
+    """When more models exist than max_loaded, all must enable JIT to defer loading."""
+    hub_path = _write_yaml(
+        tmp_path / "hub.yaml",
+        dedent(
+            """
+            groups:
+              - name: workers
+                max_loaded: 1
+            models:
+              - name: alpha
+                model_path: /models/a
+                group: workers
+                jit_enabled: true
+              - name: beta
+                model_path: /models/b
+                group: workers
+                jit_enabled: false
+            """,
+        ),
+    )
+
+    with pytest.raises(HubConfigError, match="max_loaded"):
+        load_hub_config(hub_path)
+
+
+def test_group_max_loaded_over_subscription_all_jit_allowed(tmp_path: Path) -> None:
+    """Oversubscribed groups pass validation when all members enable JIT."""
+    hub_path = _write_yaml(
+        tmp_path / "hub.yaml",
+        dedent(
+            """
+            groups:
+              - name: workers
+                max_loaded: 1
+            models:
+              - name: alpha
+                model_path: /models/a
+                group: workers
+                jit_enabled: true
+              - name: beta
+                model_path: /models/b
+                group: workers
+                jit_enabled: true
+            """,
+        ),
+    )
+
+    config = load_hub_config(hub_path)
+
+    assert {model.name for model in config.models} == {"alpha", "beta"}

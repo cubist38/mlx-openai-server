@@ -38,23 +38,27 @@ This document provides comprehensive guidelines for AI coding agents contributin
 
 This project uses the following tools to maintain consistent code quality:
 
-- **ruff**: Automatic code formatter with options configured in `pyproject.toml`
+- **pre-commit**: Manages code quality hooks, including ruff for linting and formatting
+- **ruff**: Automatic code formatter and linter, configured in `pyproject.toml` and run via pre-commit
+- **mypy**: Static type checker that enforces our annotation standards during CI and local development (run separately, not via pre-commit)
 
 ### Formatting Workflow
 
 Before committing code changes:
 
 ```bash
-./.venv/bin/ruff check --fix <file_or_directory>
-./.venv/bin/ruff format <file_or_directory>
+pre-commit run --all-files
+./.venv/bin/mypy app/
 ```
 
-Alternatively, format the entire project:
+Alternatively, to format specific files:
 
 ```bash
-./.venv/bin/ruff check --fix app/ tests/
-./.venv/bin/ruff format app/ tests/
+pre-commit run --files <file_or_directory>
+./.venv/bin/mypy app/
 ```
+
+Note: If pre-commit is not installed, agents may run `pre-commit install` to set it up.
 
 ---
 
@@ -143,6 +147,11 @@ def calculate_metrics(data: list[float], threshold: float) -> dict[str, float]:
 - **Preserve comments**: Retain all existing inline comments and block comments when editing code. They provide valuable context for future maintainers.
 
 - **Modularity**: Break complex functions into smaller, testable units. Aim for single-responsibility principles.
+- **File size awareness**: Keep individual `.py` files to roughly 1,000 lines or fewer. If a module grows beyond that, propose and plan a split into multiple focused files.
+
+### String Handling
+
+- **Avoid `textwrap.dedent()`**: Do not rely on Python's `dedent` helper. Write string literals with the intended indentation or build them via explicit joins so the resulting layout is always obvious to readers.
 
 ---
 
@@ -232,11 +241,12 @@ test: add config validation tests for auto-unload settings
 
 - **New features**: All new functionality must include corresponding unit tests in the `tests/` directory.
 - **Bug fixes**: When fixing a bug, add a regression test to prevent recurrence.
-- **Run tests locally**: Before committing, run the test suite using:
+- **Run tests locally**: Before committing, run the test suite in the .venv using:
   
   ```bash
   ./.venv/bin/python -m pytest tests/
   ```
+- **.venv pytest only**: Always invoke `pytest` via the virtual environment executables (e.g., `./.venv/bin/pytest` or `./.venv/bin/python -m pytest`) to guarantee consistent dependency resolution.
 
 - **Test organization**: Mirror the structure of `app/` in `tests/`, e.g., tests for `app/config.py` go in `tests/test_config.py`.
 
@@ -308,18 +318,16 @@ When an agent cannot or chooses not to follow one or more guidelines in this doc
 Before finalizing any code contribution, verify:
 
 - ✅ Virtual environment (`./.venv`) is used for all operations
-- ✅ Code passes ruff linting and formatting
+- ✅ Code passes `pre-commit` and `mypy`
 - ✅ Type annotations are present on all functions/methods
 - ✅ Docstrings follow NumPy style conventions
 - ✅ Specific exceptions are caught (not bare `Exception`)
 - ✅ Appropriate logging is in place
 - ✅ Existing comments are preserved
 - ✅ Imports are organized at the top of files
+- ✅ `pytest` runs via `.venv` executables only
+- ✅ Large modules are evaluated for splitting once they approach 1,000 lines
 - ✅ Tests are written and passing
 - ✅ Documentation is updated (README, docstrings, etc.)
 - ✅ No branches/PRs created unless explicitly requested
 - ✅ Any deviations from guidelines are disclosed
-
----
-
-**Questions or suggestions?** Open an issue or discuss in the project's communication channels.

@@ -9,7 +9,7 @@ implementations.
 from __future__ import annotations
 
 from contextlib import AbstractAsyncContextManager
-from typing import Any, Protocol
+from typing import Any, Literal, Protocol
 
 
 class ManagerProtocol(Protocol):
@@ -34,6 +34,7 @@ class ManagerProtocol(Protocol):
         self,
         *,
         timeout: float | None = None,
+        trigger: Literal["manual", "auto"] = "manual",
     ) -> None:  # pragma: no cover - typing stub
         """Release VRAM resources held by this manager."""
 
