@@ -78,7 +78,7 @@ class MinimaxToolParser(BaseToolParser):
             # Build tool call object
             return {
                 "name": func_name,
-                "arguments": arguments
+                "arguments": json.dumps(arguments)
             }
         except Exception as e:
             print(f"Error parsing MiniMax tool call content: {tool_content}, Error: {e}")
