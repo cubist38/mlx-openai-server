@@ -45,7 +45,7 @@ class Qwen3VLReasoningParser(AbstractReasoningParser):
         matches = self.reasoning_regex.findall(model_output)
         if not matches:
             return None
-        return {"reasoning": matches[0]}
+        return {"reasoning_content": matches[0]}
 
     def extract_reasoning_streaming(
         self, chunk: str
@@ -64,30 +64,34 @@ class Qwen3VLReasoningParser(AbstractReasoningParser):
             - extracted_content: Reasoning dict if complete, chunk if passthrough, None if buffering
             - is_complete: True if chunk should be sent, False if still buffering
         """
+
         if self.reasoning_open in chunk:
             self.state = ReasoningParserState.FOUND_PREFIX
-            if self.reasoning_close in chunk:
-                self.buffer += chunk
-                result = self.extract_reasoning(self.buffer)
-                self.buffer = ""
-                self.state = ReasoningParserState.NORMAL
-                return result, True
-            else:
-                self.buffer += chunk
-                return None, False
+            reasoning_content_start_idx = chunk.find(self.reasoning_open)
+            reasoning_content = chunk[reasoning_content_start_idx + len(self.reasoning_open):]
+            return {
+                "reasoning_content": reasoning_content
+            }, False
 
         if self.state == ReasoningParserState.FOUND_PREFIX:
             if self.reasoning_close in chunk:
-                self.buffer += chunk
-                result = self.extract_reasoning(self.buffer)
-                self.buffer = ""
-                self.state = ReasoningParserState.NORMAL
-                return result, True
+                reasoning_content_end_idx = chunk.find(self.reasoning_close)
+                reasoning_content = chunk[:reasoning_content_end_idx]
+                after_reasoning_close_content = chunk[reasoning_content_end_idx + len(self.reasoning_close):]
+                return {
+                    "reasoning_content": reasoning_content,
+                    "content": after_reasoning_close_content
+                }, True
             else:
-                self.buffer += chunk
-                return None, False
+                reasoning_content = chunk
+                return {
+                    "reasoning_content": reasoning_content
+                }, False
+        
+        return {
+            "content": chunk
+        }, True
 
-        return chunk, True
 
 
 class Qwen3VLToolParser(AbstractToolParser):
@@ -183,7 +187,37 @@ class Qwen3VLToolParser(AbstractToolParser):
 if __name__ == "__main__":
     reasoning_parser = Qwen3VLReasoningParser()
     tool_parser = Qwen3VLToolParser()
-    reasoning = reasoning_parser.extract_reasoning_streaming("<think>I am thinking about the problem</think>")
-    print("Reasoning: ", reasoning)
-    tool_calls = tool_parser.extract_tool_calls_streaming("<tool_call>")
-    print("Tool calls: ", tool_calls)
+    # reasoning = reasoning_parser.extract_reasoning_streaming("<think>I am thinking about the problem</think>")
+    # print("Reasoning: ", reasoning)
+    # tool_calls = tool_parser.extract_tool_calls_streaming("<tool_call>")
+    # print("Tool calls: ", tool_calls)
+
+    chunks = [
+        "<think>I am ",
+        "thinking about the",
+        "problem",
+        ".</think><tool_call>",
+        "{\"name\": \"tool_name\",",
+        "\"arguments\": {\"argument_name\": \"argument_value\"}}",
+        "</tool_call>",
+    ]
+    after_thinking_close_content = None
+    for chunk in chunks:
+        if chunk is None:
+            continue
+        if reasoning_parser:
+            reasoning, is_complete = reasoning_parser.extract_reasoning_streaming(chunk)
+            print("Reasoning: ", reasoning)
+            if is_complete:
+                reasoning_parser = None
+                if reasoning.get("content"):
+                    after_thinking_close_content = reasoning.get("content")
+            continue
+        if after_thinking_close_content:
+            chunk = after_thinking_close_content + chunk
+            after_thinking_close_content = None
+        print("Chunk: ", chunk)
+        if tool_parser:
+            tool_calls, is_complete = tool_parser.extract_tool_calls_streaming(chunk)
+            print("Tool calls: ", tool_calls)
+            print("Is complete: ", is_complete)
