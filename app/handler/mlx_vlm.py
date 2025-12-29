@@ -11,10 +11,12 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from ..core.queue import RequestQueue
 from ..models.mlx_vlm import MLX_VLM
-from .parser import ParserFactory
+from ..parsers import get_reasoning_parser, get_tool_parser
 from ..core import ImageProcessor, AudioProcessor, VideoProcessor
 from ..utils.errors import create_error_response
+from ..utils.debug_logging import log_debug_request, log_debug_stats
 from ..schemas.openai import ChatCompletionRequest, EmbeddingRequest, ChatCompletionContentPart, ChatCompletionContentPartImage, ChatCompletionContentPartInputAudio, ChatCompletionContentPartVideo, UsageInfo
+
 
 class MLXVLMHandler:
     """
@@ -49,8 +51,8 @@ class MLXVLMHandler:
         
         # Store parser configuration
         self.enable_auto_tool_choice = enable_auto_tool_choice
-        self.tool_call_parser = tool_call_parser
-        self.reasoning_parser = reasoning_parser
+        self.reasoning_parser_class = get_reasoning_parser(reasoning_parser)
+        self.tool_parser_class = get_tool_parser(tool_call_parser)
 
         # Debug mode
         self.debug = debug
@@ -114,14 +116,14 @@ class MLXVLMHandler:
             request_dict = await self._prepare_multimodal_request(request)
 
             if self.debug:
+                log_debug_request(request_dict)
                 request_dict["verbose"] = True
             
             # Submit to the multimodal queue and get the generator
             response_generator = await self.request_queue.submit(request_id, request_dict)      
             
-            from app.parsers.qwen3_vl import Qwen3VLReasoningParser, Qwen3VLToolParser
-            reasoning_parser = Qwen3VLReasoningParser()
-            tool_parser = Qwen3VLToolParser()
+            reasoning_parser = self.reasoning_parser_class()
+            tool_parser = self.tool_parser_class()
 
             chat_template_kwargs = request_dict.get("chat_template_kwargs", {})
             enable_thinking = chat_template_kwargs.get("enable_thinking", True)
@@ -130,7 +132,7 @@ class MLXVLMHandler:
                 if reasoning_parser and reasoning_parser.respects_enable_thinking():
                     reasoning_parser = None
 
-            after_thinking_close_content = None
+            after_reasoning_close_content = None
             final_chunk = None
             is_first_chunk = True
             for chunk in response_generator:
@@ -146,13 +148,13 @@ class MLXVLMHandler:
                     parsed_content, is_complete = reasoning_parser.extract_reasoning_streaming(text)
                     
                     if parsed_content:
-                        if isinstance(parsed_content, dict):
-                            after_thinking_close_content = parsed_content.pop("content", None)
+                        after_reasoning_close_content = parsed_content.get("after_reasoning_close_content")
                         yield parsed_content
                     if is_complete:
                         reasoning_parser = None
-                    if after_thinking_close_content:
-                        text = after_thinking_close_content
+                    if after_reasoning_close_content:
+                        text = after_reasoning_close_content
+                        after_reasoning_close_content = None
                     else:
                         continue
                 if tool_parser:
@@ -168,8 +170,12 @@ class MLXVLMHandler:
             total_tokens = final_chunk.prompt_tokens + final_chunk.generation_tokens
             
             if self.debug:
-                logger.info(
-                    f"Prompt tokens: {final_chunk.prompt_tokens}, Generation tokens: {final_chunk.generation_tokens}, Total tokens: {total_tokens}, Generation speed: {final_chunk.generation_tps}, Peak memory: {final_chunk.peak_memory}"
+                log_debug_stats(
+                    final_chunk.prompt_tokens,
+                    final_chunk.generation_tokens,
+                    total_tokens,
+                    final_chunk.generation_tps,
+                    final_chunk.peak_memory
                 )
 
             yield {
@@ -208,14 +214,21 @@ class MLXVLMHandler:
             request_dict = await self._prepare_multimodal_request(request)
 
             if self.debug:
+                log_debug_request(request_dict)
                 request_dict["verbose"] = True
         
             response = await self.request_queue.submit(request_id, request_dict)
-                        
-            from app.parsers.qwen3_vl import Qwen3VLReasoningParser, Qwen3VLToolParser
-            reasoning_parser = Qwen3VLReasoningParser()
-            tool_parser = Qwen3VLToolParser()
             
+            reasoning_parser = self.reasoning_parser_class()
+            tool_parser = self.tool_parser_class()
+
+            chat_template_kwargs = request_dict.get("chat_template_kwargs", {})
+            enable_thinking = chat_template_kwargs.get("enable_thinking", True)
+
+            if not enable_thinking:
+                if reasoning_parser and reasoning_parser.respects_enable_thinking():
+                    reasoning_parser = None
+
             parsed_response = {
                 "reasoning_content": None,
                 "tool_calls": None,
@@ -241,8 +254,12 @@ class MLXVLMHandler:
             total_tokens = response.prompt_tokens + response.generation_tokens
 
             if self.debug:
-                logger.info(
-                    f"Prompt tokens: {response.prompt_tokens}, Generation tokens: {response.generation_tokens}, Total tokens: {total_tokens}, Generation speed: {response.generation_tps}, Peak memory: {response.peak_memory}"
+                log_debug_stats(
+                    response.prompt_tokens,
+                    response.generation_tokens,
+                    total_tokens,
+                    response.generation_tps,
+                    response.peak_memory
                 )
             
             usage = UsageInfo(

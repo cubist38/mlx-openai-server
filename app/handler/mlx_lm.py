@@ -7,8 +7,9 @@ from fastapi import HTTPException
 from loguru import logger
 from ..models.mlx_lm import MLX_LM
 from ..core.queue import RequestQueue
-from .parser import ParserFactory
 from ..utils.errors import create_error_response
+from ..utils.debug_logging import log_debug_request, log_debug_stats
+from ..parsers import get_reasoning_parser, get_tool_parser
 from typing import Any, AsyncGenerator, Dict, List, Optional, Tuple
 from ..schemas.openai import ChatCompletionRequest, EmbeddingRequest, UsageInfo
 
@@ -40,21 +41,14 @@ class MLXLMHandler:
         
         # Store parser configuration
         self.enable_auto_tool_choice = enable_auto_tool_choice
-        self.tool_call_parser = tool_call_parser
-        self.reasoning_parser = reasoning_parser
-
         # Debug mode
-        self.debug = debug
-        self.debug = True
-        
+        self.debug = debug   
+        self.reasoning_parser_class = get_reasoning_parser(reasoning_parser)
+        self.tool_parser_class = get_tool_parser(tool_call_parser)
         # Initialize request queue for text tasks
         self.request_queue = RequestQueue(max_concurrency=max_concurrency)
 
-        # Initialize message converter for supported models
-        self.converter = ParserFactory.create_converter(self.model_type)
-
         logger.info(f"Initialized MLXHandler with model path: {model_path}")
-
 
     async def get_models(self) -> List[Dict[str, Any]]:
         """
@@ -102,15 +96,14 @@ class MLXLMHandler:
 
         try:
             chat_messages, model_params = await self._prepare_text_request(request)
-
-            from app.parsers.functiongemma import FunctionGemmaToolParser
-            reasoning_parser = None
-            tool_parser = FunctionGemmaToolParser()
-
+            
             # Count prompt tokens
             chat_template_kwargs = model_params.get("chat_template_kwargs", {})
 
             enable_thinking = chat_template_kwargs.get("enable_thinking", True)
+            
+            reasoning_parser = self.reasoning_parser_class()
+            tool_parser = self.tool_parser_class()
 
             if not enable_thinking:
                 if reasoning_parser and reasoning_parser.respects_enable_thinking():
@@ -121,13 +114,14 @@ class MLXLMHandler:
                 "stream": True,
                 **model_params
             }
-
+            
             if self.debug:
+                log_debug_request(request_data)
                 request_data["verbose"] = True
 
             response_generator = await self.request_queue.submit(request_id, request_data)
 
-            after_thinking_close_content = None
+            after_reasoning_close_content = None
             final_chunk = None
             is_first_chunk = True
             for chunk in response_generator:
@@ -142,13 +136,13 @@ class MLXLMHandler:
                 if reasoning_parser:
                     parsed_content, is_complete = reasoning_parser.extract_reasoning_streaming(text)
                     if parsed_content:
-                        if isinstance(parsed_content, dict):
-                            after_thinking_close_content = parsed_content.pop("content", None)
+                        after_reasoning_close_content = parsed_content.get("after_reasoning_close_content")
                         yield parsed_content
                     if is_complete:
                         reasoning_parser = None
-                    if after_thinking_close_content:
-                        text = after_thinking_close_content
+                    if after_reasoning_close_content:
+                        text = after_reasoning_close_content
+                        after_reasoning_close_content = None
                     else:
                         continue
                 if tool_parser:
@@ -164,8 +158,12 @@ class MLXLMHandler:
             total_tokens = final_chunk.prompt_tokens + final_chunk.generation_tokens
 
             if self.debug:
-                logger.info(
-                    f"Prompt tokens: {final_chunk.prompt_tokens}, Generation tokens: {final_chunk.generation_tokens}, Total tokens: {total_tokens}, Generation speed: {final_chunk.generation_tps}, Peak memory: {final_chunk.peak_memory}"
+                log_debug_stats(
+                    final_chunk.prompt_tokens,
+                    final_chunk.generation_tokens,
+                    total_tokens,
+                    final_chunk.generation_tps,
+                    final_chunk.peak_memory
                 )
 
             yield {
@@ -211,13 +209,14 @@ class MLXLMHandler:
             }
 
             if self.debug:
+                log_debug_request(request_data)
                 request_data["verbose"] = True
 
             response = await self.request_queue.submit(request_id, request_data)
 
-            from app.parsers.functiongemma import FunctionGemmaToolParser
-            reasoning_parser = None
-            tool_parser = FunctionGemmaToolParser()
+            
+            reasoning_parser = self.reasoning_parser_class()
+            tool_parser = self.tool_parser_class()
 
             enable_thinking = chat_template_kwargs.get("enable_thinking", True)
 
@@ -245,15 +244,18 @@ class MLXLMHandler:
             if response_text:
                 if tool_parser:
                     parsed_content = tool_parser.extract_tool_calls(response_text)
-                    print(f"Parsed content: {parsed_content}")
                     parsed_response["tool_calls"] = parsed_content.get("tool_calls")
                     parsed_response["content"] = parsed_content.get("content")
 
             total_tokens = response.prompt_tokens + response.generation_tokens
 
             if self.debug:
-                logger.info(
-                    f"Prompt tokens: {response.prompt_tokens}, Generation tokens: {response.generation_tokens}, Total tokens: {total_tokens}, Generation speed: {response.generation_tps}, Peak memory: {response.peak_memory}"
+                log_debug_stats(
+                    response.prompt_tokens,
+                    response.generation_tokens,
+                    total_tokens,
+                    response.generation_tps,
+                    response.peak_memory
                 )
 
             usage = UsageInfo(
