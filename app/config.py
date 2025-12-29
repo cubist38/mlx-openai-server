@@ -42,6 +42,7 @@ class MLXServerConfig:
     reasoning_parser: str | None = None
     trust_remote_code: bool = False
     chat_template_file: str | None = None
+    debug: bool = False
 
     # Used to capture raw CLI input before processing
     lora_paths_str: str | None = None
