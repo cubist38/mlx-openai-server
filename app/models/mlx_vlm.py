@@ -5,6 +5,7 @@ from typing import List, Dict, Union, Generator
 from mlx_vlm.models.cache import make_prompt_cache
 from mlx_vlm import load, generate, stream_generate
 from mlx_vlm.video_generate import process_vision_info
+from ..utils.debug_logging import log_debug_prompt
 
 # Default model parameters
 DEFAULT_MAX_TOKENS = os.getenv("DEFAULT_MAX_TOKENS", 8192)
@@ -89,7 +90,7 @@ class MLX_VLM:
             **kwargs.get("chat_template_kwargs", {})
         )
         if verbose:
-            logger.info(f"Input prompt: {text}")
+            log_debug_prompt(text)
         
         image_inputs, video_inputs = process_vision_info(messages)
 

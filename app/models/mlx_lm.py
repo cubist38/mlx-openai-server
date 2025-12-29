@@ -1,5 +1,6 @@
 import gc
 import os
+import json
 import mlx.core as mx
 from loguru import logger
 from mlx_lm.utils import load
@@ -11,6 +12,7 @@ from outlines.processors import JSONLogitsProcessor
 from mlx_lm.models.cache import make_prompt_cache
 from mlx_lm.sample_utils import make_sampler, make_logits_processors
 from ..utils.outlines_transformer_tokenizer import OutlinesTransformerTokenizer
+from ..utils.debug_logging import log_debug_prompt
 from typing import List, Dict, Union, Generator
 
 DEFAULT_TEMPERATURE = os.getenv("DEFAULT_TEMPERATURE", 0.7)
@@ -198,7 +200,7 @@ class MLX_LM:
         )
 
         if verbose:
-            logger.info(f"Input prompt: {input_prompt}")
+            log_debug_prompt(input_prompt)
 
         stream_response = stream_generate(
             self.model,
