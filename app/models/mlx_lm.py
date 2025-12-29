@@ -198,7 +198,7 @@ class MLX_LM:
         )
 
         if verbose:
-            logger.info(f"input_prompt: {input_prompt}")
+            logger.info(f"Input prompt: {input_prompt}")
 
         stream_response = stream_generate(
             self.model,
