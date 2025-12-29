@@ -1,11 +1,12 @@
 import gc
 import os
 import mlx.core as mx
+from loguru import logger
 from mlx_lm.utils import load
 from mlx_lm.generate import (
-    generate,
-    stream_generate,
+    stream_generate
 )
+from mlx_lm.generate import GenerationResponse
 from outlines.processors import JSONLogitsProcessor
 from mlx_lm.models.cache import make_prompt_cache
 from mlx_lm.sample_utils import make_sampler, make_logits_processors
@@ -142,8 +143,9 @@ class MLX_LM:
         self, 
         messages: List[Dict[str, str]], 
         stream: bool = False, 
+        verbose: bool = False,
         **kwargs
-    ) -> Union[str, Generator[str, None, None]]:
+    ) -> Union[GenerationResponse, Generator[GenerationResponse, None, None]]:
         """
         Generate text response from the model.
 
@@ -183,37 +185,80 @@ class MLX_LM:
         
         mx.random.seed(seed)
         prompt_cache = make_prompt_cache(self.model, self.max_kv_size)
-
-        input_tokens = self.tokenizer.apply_chat_template(
+        
+        input_prompt = self.tokenizer.apply_chat_template(
             messages,
+            tokenize = False,
             add_generation_prompt=True,
             **chat_template_kwargs,
         )      
-
+        
         sampler = make_sampler(
            **sampler_kwargs
         )
-                
-        prompt_tokens = len(input_tokens)
 
-        if not stream:
-            return generate(
-                self.model,
-                self.tokenizer,
-                input_tokens,
-                sampler=sampler,
-                max_tokens=max_tokens,
-                prompt_cache=prompt_cache,
-                logits_processors=logits_processors
-            ), prompt_tokens
-        else:
-            # Streaming mode: return generator of chunks
-            return stream_generate(
-                self.model,
-                self.tokenizer,
-                input_tokens,
-                sampler=sampler,
-                max_tokens=max_tokens,
-                prompt_cache=prompt_cache,
-                logits_processors=logits_processors
-            ), prompt_tokens
+        if verbose:
+            logger.info(f"input_prompt: {input_prompt}")
+
+        stream_response = stream_generate(
+            self.model,
+            self.tokenizer,
+            input_prompt,
+            sampler=sampler,
+            max_tokens=max_tokens,
+            prompt_cache=prompt_cache,
+            logits_processors=logits_processors
+        )
+        if stream:
+            return stream_response
+
+        text = ""
+        final_chunk = None
+        for chunk in stream_response:
+            text += chunk.text
+            if chunk.finish_reason:
+                final_chunk = chunk
+
+        return GenerationResponse(
+            text=text,
+            finish_reason=final_chunk.finish_reason,
+            prompt_tokens=final_chunk.prompt_tokens,
+            prompt_tps=final_chunk.prompt_tps,
+            generation_tokens=final_chunk.generation_tokens,
+            generation_tps=final_chunk.generation_tps,
+            peak_memory=final_chunk.peak_memory,
+            logprobs=final_chunk.logprobs,
+            from_draft=final_chunk.from_draft,
+            token=final_chunk.token,
+        )
+        
+if __name__ == "__main__":
+    model = MLX_LM(model_path="mlx-community/functiongemma-270m-it-8bit")
+    print(model.get_model_type())
+
+    messages = [
+        {
+            "role": "user",
+            "content": "What is the date today?"
+        }
+    ]
+    chat_template_kwargs = {
+        "tools": [
+            {
+                "type": "function",
+                "function": {
+                    "name": "get_date",
+                    "description": "Get the date today",
+                }
+            }
+        ]
+    }
+    kwargs = {
+        "chat_template_kwargs": chat_template_kwargs,
+        "temperature": 0.0,
+        "top_p": 1.0,
+        "seed": 0,
+        "max_tokens": 512
+    }
+    response = model(messages, stream=False, **kwargs)
+    print(response)
