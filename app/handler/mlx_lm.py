@@ -101,9 +101,14 @@ class MLXLMHandler:
             chat_template_kwargs = model_params.get("chat_template_kwargs", {})
 
             enable_thinking = chat_template_kwargs.get("enable_thinking", True)
+
+            reasoning_parser = None
+            tool_parser = None
             
-            reasoning_parser = self.reasoning_parser_class()
-            tool_parser = self.tool_parser_class()
+            if self.reasoning_parser_class:
+                reasoning_parser = self.reasoning_parser_class()
+            if self.tool_parser_class:
+                tool_parser = self.tool_parser_class()
 
             if not enable_thinking:
                 if reasoning_parser and reasoning_parser.respects_enable_thinking():
@@ -214,9 +219,13 @@ class MLXLMHandler:
 
             response = await self.request_queue.submit(request_id, request_data)
 
-            
-            reasoning_parser = self.reasoning_parser_class()
-            tool_parser = self.tool_parser_class()
+            reasoning_parser = None
+            tool_parser = None
+
+            if self.reasoning_parser_class:
+                reasoning_parser = self.reasoning_parser_class()
+            if self.tool_parser_class:
+                tool_parser = self.tool_parser_class()
 
             enable_thinking = chat_template_kwargs.get("enable_thinking", True)
 
@@ -334,16 +343,13 @@ class MLXLMHandler:
             model_params.pop("messages", None)
             model_params.pop("stream", None)
 
-            # Apply message conversion if needed
-            if self.converter:
-                refined_messages = self.converter.convert_messages(messages)
-            else:
-                # Reformat messages for models without conversion needs
-                refined_messages = []
-                for message in messages:
-                    # Filter out None values
-                    cleaned_message = {k: v for k, v in message.items() if v is not None}
-                    refined_messages.append(cleaned_message)
+            
+            # Reformat messages for models without conversion needs
+            refined_messages = []
+            for message in messages:
+                # Filter out None values
+                cleaned_message = {k: v for k, v in message.items() if v is not None}
+                refined_messages.append(cleaned_message)
 
             # Call the model
             response = self.model(

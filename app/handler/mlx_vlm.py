@@ -120,10 +120,15 @@ class MLXVLMHandler:
                 request_dict["verbose"] = True
             
             # Submit to the multimodal queue and get the generator
-            response_generator = await self.request_queue.submit(request_id, request_dict)      
+            response_generator = await self.request_queue.submit(request_id, request_dict)    
+
+            reasoning_parser = None
+            tool_parser = None
             
-            reasoning_parser = self.reasoning_parser_class()
-            tool_parser = self.tool_parser_class()
+            if self.reasoning_parser_class:
+                reasoning_parser = self.reasoning_parser_class()
+            if self.tool_parser_class:
+                tool_parser = self.tool_parser_class()
 
             chat_template_kwargs = request_dict.get("chat_template_kwargs", {})
             enable_thinking = chat_template_kwargs.get("enable_thinking", True)
@@ -218,9 +223,14 @@ class MLXVLMHandler:
                 request_dict["verbose"] = True
         
             response = await self.request_queue.submit(request_id, request_dict)
-            
-            reasoning_parser = self.reasoning_parser_class()
-            tool_parser = self.tool_parser_class()
+
+            reasoning_parser = None
+            tool_parser = None
+
+            if self.reasoning_parser_class:
+                reasoning_parser = self.reasoning_parser_class()
+            if self.tool_parser_class:
+                tool_parser = self.tool_parser_class()
 
             chat_template_kwargs = request_dict.get("chat_template_kwargs", {})
             enable_thinking = chat_template_kwargs.get("enable_thinking", True)
