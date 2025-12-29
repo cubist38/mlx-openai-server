@@ -24,7 +24,7 @@ class Qwen3MoEReasoningParser(AbstractReasoningParser):
     """
 
     def __init__(self) -> None:
-        """Initialize the Qwen3 VL reasoning parser with appropriate regex patterns."""
+        """Initialize the Qwen3 MoE reasoning parser with appropriate regex patterns."""
         super().__init__(reasoning_open=THINKING_OPEN, reasoning_close=THINKING_CLOSE)
         self.reasoning_regex = re.compile(r"<think>(.*?)</think>", re.DOTALL)
 
@@ -126,7 +126,7 @@ class Qwen3MoEToolParser(AbstractToolParser):
         tool_calls = []
         for match in matches:
             try:
-                # Qwen3 VL uses JSON format inside tool_call tags
+                # Qwen3 MoE uses JSON format inside tool_call tags
                 tool_data = json.loads(match.strip())
                 tool_calls.append(
                     {
