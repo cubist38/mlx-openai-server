@@ -16,9 +16,9 @@ class FunctionGemmaToolParser(AbstractToolParser):
     <start_function_call>call:func_name{param:<escape>value<escape>}<end_function_call>
     """
 
-    def __init__(self) -> None:
+    def __init__(self, tool_open: str = TOOL_OPEN, tool_close: str = TOOL_CLOSE) -> None:
         """Initialize the FunctionGemma tool parser with appropriate regex patterns."""
-        super().__init__(tool_open=TOOL_OPEN, tool_close=TOOL_CLOSE)
+        super().__init__(tool_open=tool_open, tool_close=tool_close)
         # Regex patterns
         self.tool_call_regex = re.compile(
             r"<start_function_call>call:(\w+)\{(.*?)\}<end_function_call>"
