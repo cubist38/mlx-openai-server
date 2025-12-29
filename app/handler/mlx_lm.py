@@ -2,7 +2,6 @@ import gc
 import time
 import uuid
 import asyncio
-import json
 from http import HTTPStatus
 from fastapi import HTTPException
 from loguru import logger
@@ -12,6 +11,7 @@ from .parser import ParserFactory
 from ..utils.errors import create_error_response
 from typing import Any, AsyncGenerator, Dict, List, Optional, Tuple
 from ..schemas.openai import ChatCompletionRequest, EmbeddingRequest, UsageInfo
+
 
 class MLXLMHandler:
     """
@@ -198,8 +198,6 @@ class MLXLMHandler:
                 "stream": True,
                 **model_params
             }
-            js_data = json.dumps(request_data)
-            logger.info(f"generate_text_stream: submit {js_data}")
             response_generator, prompt_tokens = await self.request_queue.submit(request_id, request_data)
             # Create appropriate parsers for this model type
 
@@ -210,12 +208,10 @@ class MLXLMHandler:
             after_thinking_close_content = None
 
             if thinking_parser and ParserFactory.has_special_parsing(self.reasoning_parser):
-                logger.info("generate_text_stream: thinking with reasoning")
                 for chunk in response_generator:
                     if not chunk or not chunk.text:
                         continue
                     text = chunk.text
-                    logger.info(f"generate_text_stream: thinking with reasoning ={text}")
                     completion_chunks.append(text)
                     parsed_content, is_complete = thinking_parser.parse_stream(text)
                     if parsed_content:
@@ -224,7 +220,6 @@ class MLXLMHandler:
                         break
             else:
 
-                logger.info("generate_text_stream: thinking else")
                 if ParserFactory.respects_enable_thinking(self.reasoning_parser):
                     enable_thinking = chat_template_kwargs.get("enable_thinking", True)
                     if not enable_thinking:
@@ -238,7 +233,6 @@ class MLXLMHandler:
 
                     text = chunk.text
                     completion_chunks.append(text)
-                    logger.info(f"generate_text_stream: thinking else ={text}, all={completion_chunks}")
 
                     if is_first_chunk:
                         if thinking_parser and ParserFactory.needs_redacted_reasoning_prefix(self.reasoning_parser):
@@ -247,29 +241,24 @@ class MLXLMHandler:
 
                     if thinking_parser:
                         parsed_content, is_complete = thinking_parser.parse_stream(text)
-                        logger.info(f"generate_text_stream: [else] thinking_parser parsed={parsed_content} is_complete={is_complete}")
                         after_thinking_close_content = None
                         if parsed_content:
                             if isinstance(parsed_content, dict):
                                 after_thinking_close_content = parsed_content.pop("content", None)
-                            logger.info(f"generate_text_stream: thinking else yield after_thinking={after_thinking_close_content}")
                             yield parsed_content
                         if is_complete:
                             thinking_parser = None
                         if after_thinking_close_content:
                             text = after_thinking_close_content
                         else:
-                            logger.info(f"generate_text_stream: [else] thinking_parser continue")
                             continue
                         
                     if tool_parser:
                         parsed_content, is_complete = tool_parser.parse_stream(text)
-                        logger.info(f"generate_text_stream: [else] tool_parser parsed={parsed_content} is_complete={is_complete}")
                         if is_complete:
                             yield parsed_content
                         continue
 
-                    logger.info(f"generate_text_stream: final yield text={text}")
                     yield text
 
             # Count completion tokens and yield usage info at the end

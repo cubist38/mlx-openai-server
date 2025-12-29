@@ -10,11 +10,13 @@ from typing import Any, Callable, Dict, Optional, Tuple
 from loguru import logger
 
 from . import (
+    BaseMessageConverter,
     Glm4MoEThinkingParser,
     Glm4MoEToolParser,
     HarmonyParser,
     MinimaxThinkingParser,
     MinimaxToolParser,
+    Qwen3CoderToolParser,
     Qwen3MoEThinkingParser,
     Qwen3MoEToolParser,
     Qwen3NextThinkingParser,
@@ -30,7 +32,6 @@ from . import (
     Ministral3ToolParser,
     Nemotron3NanoToolParser,
     Nemotron3NanoThinkingParser,
-    BaseMessageConverter,
 )
 from .glm4_moe import Glm4MoEMessageConverter
 from .minimax import MiniMaxMessageConverter
@@ -44,6 +45,9 @@ PARSER_REGISTRY: Dict[str, Dict[str, Callable]] = {
     "glm4_moe": {
         "thinking": Glm4MoEThinkingParser,
         "tool": Glm4MoEToolParser,
+    },
+    "qwen3_coder": {
+        "tool": Qwen3CoderToolParser,
     },
     "qwen3_moe": {
         "thinking": Qwen3MoEThinkingParser,
@@ -86,6 +90,8 @@ PARSER_REGISTRY: Dict[str, Dict[str, Callable]] = {
 CONVERTER_REGISTRY: Dict[str, Callable] = {
     "glm4_moe": Glm4MoEMessageConverter,
     "minimax": MiniMaxMessageConverter,
+    "qwen3_coder": BaseMessageConverter,
+    "qwen3_moe": BaseMessageConverter,
 }
 
 # Registry mapping parser names to their metadata/properties
@@ -113,6 +119,11 @@ PARSER_METADATA: Dict[str, Dict[str, Any]] = {
     "qwen3_vl": {
         "respects_enable_thinking": False,
         "needs_redacted_reasoning_prefix": True,  # Needs prefix for both stream and response
+        "has_special_parsing": False,
+    },
+    "qwen3_coder": {
+        "respects_enable_thinking": True,
+        "needs_redacted_reasoning_prefix": True,
         "has_special_parsing": False,
     },
     "harmony": {
@@ -242,12 +253,11 @@ class ParserFactory:
         Returns:
             Message converter instance or None if no converter needed
         """
-        logger.info(f"create_converter model_type={model_type}")
         if model_type not in CONVERTER_REGISTRY:
-            converter_class = BaseMessageConverter
-            return converter_class()
-            #return None
+            logger.info(f"create_converter: NO converter for {model_type}")
+            return None
 
+        logger.info(f"create_converter: got converter for {model_type}")
         converter_class = CONVERTER_REGISTRY[model_type]
         return converter_class()
 

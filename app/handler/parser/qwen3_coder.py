@@ -1,26 +1,13 @@
 import re
 import json
 from typing import Any, Dict, Optional
-from .base import BaseToolParser, BaseThinkingParser
+from .base import BaseToolParser
 
 TOOL_OPEN = "<tool_call>"
 TOOL_CLOSE = "</tool_call>"
-THINKING_OPEN = "<think>"
-THINKING_CLOSE = "</think>"
 
-
-class Nemotron3NanoThinkingParser(BaseThinkingParser):
-    """Parser for Nemotron3 Nano model's thinking response format."""
-    
-    def __init__(self):
-        super().__init__(
-            thinking_open=THINKING_OPEN,
-            thinking_close=THINKING_CLOSE
-        )
-
-
-class Nemotron3NanoToolParser(BaseToolParser):
-    """Parser for Nemotron3 Nano model's tool response format.
+class Qwen3CoderToolParser(BaseToolParser):
+    """Parser for Qwen3 Coder model's tool response format.
     
     Handles tool calls in the format:
     <tool_call>
@@ -49,7 +36,7 @@ class Nemotron3NanoToolParser(BaseToolParser):
         )
     
     def _parse_tool_content(self, tool_content: str) -> Optional[Dict[str, Any]]:
-        """Parse Nemotron3 Nano's XML-style tool call format.
+        """Parse Qwen3 Coder's XML-style tool call format.
         
         Parameters
         ----------
@@ -82,5 +69,6 @@ class Nemotron3NanoToolParser(BaseToolParser):
                 "arguments": json.dumps(arguments)
             }
         except Exception as e:
-            print(f"Error parsing Nemotron3 Nano tool call: {tool_content}, Error: {e}")
+            print(f"Error parsing Qwen3 Coder tool call: {tool_content}, Error: {e}")
             return None
+
