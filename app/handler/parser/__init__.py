@@ -11,6 +11,7 @@ from .llama4_pythonic import Llama4PythonicToolParser
 from .ministral3 import Ministral3ToolParser, Ministral3ThinkingParser
 from .nemotron3_nano import Nemotron3NanoToolParser, Nemotron3NanoThinkingParser
 from .factory import ParserFactory
+from .base import BaseMessageConverter
 
 __all__ = [
     'BaseToolParser',
@@ -36,4 +37,5 @@ __all__ = [
     'Nemotron3NanoToolParser',
     'Nemotron3NanoThinkingParser',
     'ParserFactory',
+    'BaseMessageConverter',
 ]

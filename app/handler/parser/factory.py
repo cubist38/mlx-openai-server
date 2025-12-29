@@ -30,6 +30,7 @@ from . import (
     Ministral3ToolParser,
     Nemotron3NanoToolParser,
     Nemotron3NanoThinkingParser,
+    BaseMessageConverter,
 )
 from .glm4_moe import Glm4MoEMessageConverter
 from .minimax import MiniMaxMessageConverter
@@ -241,8 +242,11 @@ class ParserFactory:
         Returns:
             Message converter instance or None if no converter needed
         """
+        logger.info(f"create_converter model_type={model_type}")
         if model_type not in CONVERTER_REGISTRY:
-            return None
+            converter_class = BaseMessageConverter
+            return converter_class()
+            #return None
 
         converter_class = CONVERTER_REGISTRY[model_type]
         return converter_class()

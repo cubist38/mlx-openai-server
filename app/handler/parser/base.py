@@ -3,7 +3,8 @@ import logging
 from json_repair import repair_json
 from typing import Any, Dict, List, Optional, Tuple
 
-logger = logging.getLogger(__name__)
+# logger = logging.getLogger(__name__)
+from loguru import logger
 
 
 class BaseThinkingParser:
@@ -119,7 +120,9 @@ class BaseToolParser:
     
     def _set_content(self, res: Dict[str, Any], content: str) -> None:
         """Helper to set content only if non-empty."""
-        res["content"] = content if content else None
+        if content:
+          res["content"] = content
+        #res["content"] = content if content else None
     
     def _parse_tool_content(self, tool_content: str) -> Optional[Dict[str, Any]]:
         """
@@ -198,7 +201,7 @@ class BaseToolParser:
         res = {
             "name": None,
             "arguments": None,
-            "content": None,
+            #"content": None,
         }
         if chunk is None:
             return None, True
@@ -269,21 +272,31 @@ class BaseMessageConverter:
         if tool_calls and isinstance(tool_calls, list):
             self._convert_tool_calls(tool_calls)
 
+        # logger.info(f"BaseMessageConverter::_convert_single_message {message}")
         return message
 
     def _convert_tool_calls(self, tool_calls: List[Dict[str, Any]]) -> None:
         """Convert arguments format in tool calls"""
+        logger.info("BaseMessageConverter::_convert_tool_calls")
         for tool_call in tool_calls:
             if isinstance(tool_call, dict) and "function" in tool_call:
                 function = tool_call["function"]
+                logger.info(f"BaseMessageConverter::_convert_tool_calls function={function}")
                 if isinstance(function, dict) and "arguments" in function:
+                    #arguments = function.pop["arguments"]
                     arguments = function["arguments"]
                     if isinstance(arguments, str):
                         function["arguments"] = self._parse_arguments_string(arguments)
+                        #arguments = self._parse_arguments_string(arguments)
+                    #logger.info(f"BaseMessageConverter::_convert_tool_calls {tool_call}")
+                    #tool_call["arguments"] = arguments
+                    logger.info(f"BaseMessageConverter::_convert_tool_calls {tool_call}")
 
     def _parse_arguments_string(self, arguments_str: str) -> Any:
         """Parse arguments string to object, can be overridden by subclasses"""
         try:
             return json.loads(arguments_str)
+            #data_dict = json.loads(arguments_str)
+            #return list(data_dict.items())
         except json.JSONDecodeError:
             return arguments_str
