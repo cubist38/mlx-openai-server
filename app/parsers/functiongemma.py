@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+import json
 
 from .abstract_parser import AbstractToolParser, ToolParserState
 
@@ -45,15 +46,20 @@ class FunctionGemmaToolParser(AbstractToolParser):
         """
         matches = self.tool_call_regex.findall(model_output)
         if not matches:
-            return None
+            return {
+                "content": model_output
+            }
         tool_calls = []
         for match in matches:
             function_name = match[0]
             args_str = match[1]
             args_matches = self.arg_regex.findall(args_str)
             args_dict = {key: value for key, value in args_matches}
-            tool_calls.append({"name": function_name, "arguments": args_dict})
-        return {"tool_calls": tool_calls}
+            tool_calls.append({"name": function_name, "arguments": json.dumps(args_dict)})
+        return {
+            "tool_calls": tool_calls,
+        }
+        
 
     def extract_tool_calls_streaming(
         self, chunk: str

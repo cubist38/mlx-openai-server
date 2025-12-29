@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-import json
 import re
+import json
 
 from .abstract_parser import (
     AbstractReasoningParser,
@@ -28,6 +28,16 @@ class Qwen3MoEReasoningParser(AbstractReasoningParser):
         super().__init__(reasoning_open=THINKING_OPEN, reasoning_close=THINKING_CLOSE)
         self.reasoning_regex = re.compile(r"<think>(.*?)</think>", re.DOTALL)
 
+    def needs_redacted_reasoning_prefix(self) -> bool:
+        """Check if the reasoning parser needs a redacted reasoning prefix.
+        
+        Returns
+        -------
+        bool
+            True if the reasoning parser needs a redacted reasoning prefix, False otherwise.
+        """
+        return True
+
     def extract_reasoning(self, model_output: str) -> dict[str, str] | None:
         """Extract reasoning content from complete model output.
         
@@ -43,9 +53,17 @@ class Qwen3MoEReasoningParser(AbstractReasoningParser):
             or None if no reasoning found.
         """
         matches = self.reasoning_regex.findall(model_output)
+        after_reasoning_close_content = None
         if not matches:
-            return None
-        return {"reasoning_content": matches[0]}
+            return {
+                "content": model_output
+            }
+        reasoning_content_end_idx = model_output.rfind(self.reasoning_close)
+        after_reasoning_close_content = model_output[reasoning_content_end_idx + len(self.reasoning_close):]
+        return {
+            "reasoning_content": matches[0],
+            "after_reasoning_close_content": after_reasoning_close_content
+        }
 
     def extract_reasoning_streaming(
         self, chunk: str
@@ -122,7 +140,9 @@ class Qwen3MoEToolParser(AbstractToolParser):
         """
         matches = self.tool_regex.findall(model_output)
         if not matches:
-            return None
+            return {
+                "content": model_output
+            }
         tool_calls = []
         for match in matches:
             try:

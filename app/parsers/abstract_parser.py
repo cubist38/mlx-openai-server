@@ -57,6 +57,36 @@ class AbstractReasoningParser:
         """
         return self.reasoning_close
 
+    def needs_redacted_reasoning_prefix(self) -> bool:
+        """Check if the reasoning parser needs a redacted reasoning prefix.
+        
+        Returns
+        -------
+        bool
+            True if the reasoning parser needs a redacted reasoning prefix, False otherwise.
+        """
+        return False
+
+    def has_special_parsing(self) -> bool:
+        """Check if the reasoning parser has special parsing logic.
+        
+        Returns
+        -------
+        bool
+            True if the reasoning parser has special parsing logic, False otherwise.
+        """
+        return False
+
+    def respects_enable_thinking(self) -> bool:
+        """Check if the reasoning parser respects the enable_thinking flag.
+        
+        Returns
+        -------
+        bool
+            True if the reasoning parser respects the enable_thinking flag, False otherwise.
+        """
+        return False
+
     def extract_reasoning(self, model_output: str) -> dict[str, str] | None:
         """Extract reasoning content from complete model output.
         
