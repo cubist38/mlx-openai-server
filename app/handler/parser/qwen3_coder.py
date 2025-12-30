@@ -18,7 +18,7 @@ class Qwen3CoderToolParser(BaseToolParser):
     </function>
     </tool_call>
     """
-    
+
     def __init__(self):
         super().__init__(
             tool_open=TOOL_OPEN,
@@ -34,15 +34,15 @@ class Qwen3CoderToolParser(BaseToolParser):
             r"<parameter=([^>]+)>\s*(.*?)\s*</parameter>",
             re.DOTALL
         )
-    
+
     def _parse_tool_content(self, tool_content: str) -> Optional[Dict[str, Any]]:
         """Parse Qwen3 Coder's XML-style tool call format.
-        
+
         Parameters
         ----------
         tool_content : str
             The content between <tool_call> tags.
-            
+
         Returns
         -------
         Dict[str, Any] or None
@@ -53,17 +53,17 @@ class Qwen3CoderToolParser(BaseToolParser):
             function_match = self.function_regex.search(tool_content)
             if not function_match:
                 return None
-            
+
             function_name = function_match.group(1).strip()
             function_content = function_match.group(2)
-            
+
             # Extract all parameters
             arguments = {}
             for param_match in self.parameter_regex.finditer(function_content):
                 param_name = param_match.group(1).strip()
                 param_value = param_match.group(2).strip()
                 arguments[param_name] = param_value
-            
+
             return {
                 "name": function_name,
                 "arguments": json.dumps(arguments)
