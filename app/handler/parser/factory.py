@@ -253,7 +253,6 @@ class ParserFactory:
         Returns:
             Message converter instance or None if no converter needed
         """
-
         if converter_type not in CONVERTER_REGISTRY:
             return None
 

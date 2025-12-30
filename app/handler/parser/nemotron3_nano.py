@@ -1,5 +1,4 @@
 import re
-import json
 from typing import Any, Dict, Optional
 from .base import BaseToolParser, BaseThinkingParser
 
@@ -79,7 +78,7 @@ class Nemotron3NanoToolParser(BaseToolParser):
             
             return {
                 "name": function_name,
-                "arguments": json.dumps(arguments)
+                "arguments": arguments
             }
         except Exception as e:
             print(f"Error parsing Nemotron3 Nano tool call: {tool_content}, Error: {e}")

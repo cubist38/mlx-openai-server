@@ -223,11 +223,7 @@ class BaseToolParser:
                     logger.error("Error parsing tool call: %s", tool_call_content)
                     return res, False
                 res["name"] = str(json_output["name"])
-                arguments = json_output["arguments"]
-                if isinstance(arguments, dict):
-                    res["arguments"] = json.dumps(arguments)
-                else:
-                    res["arguments"] = arguments
+                res["arguments"] = str(json_output["arguments"])
                 # Calculate remaining content once and reset state
                 remaining = chunk[end_tool_index + self._tool_close_len:]
                 self.buffer = remaining

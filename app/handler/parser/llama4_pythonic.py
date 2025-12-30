@@ -1,5 +1,4 @@
 import ast
-import json
 import logging
 import re
 from typing import Any, Dict, List, Optional, Tuple
@@ -52,7 +51,7 @@ class Llama4PythonicToolParser(BaseToolParser):
         
         return {
             "name": function_name,
-            "arguments": json.dumps(arguments)
+            "arguments": arguments
         }
 
     def parse(self, content: str) -> Tuple[Optional[List[Dict[str, Any]]], str]:

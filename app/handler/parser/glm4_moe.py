@@ -78,7 +78,7 @@ class Glm4MoEToolParser(BaseToolParser):
             # Build tool call object
             return {
                 "name": func_name,
-                "arguments": json.dumps(arguments)
+                "arguments": arguments
             }
         except Exception as e:
             print(f"Error parsing GLM4 tool call content: {tool_content}, Error: {e}")
