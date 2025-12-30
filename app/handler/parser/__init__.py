@@ -1,6 +1,7 @@
 from .harmony import HarmonyParser
 from .qwen3 import Qwen3ToolParser, Qwen3ThinkingParser
 from .glm4_moe import Glm4MoEToolParser, Glm4MoEThinkingParser
+from .qwen3_coder import Qwen3CoderToolParser
 from .qwen3_moe import Qwen3MoEToolParser, Qwen3MoEThinkingParser
 from .qwen3_next import Qwen3NextToolParser, Qwen3NextThinkingParser
 from .qwen3_vl import Qwen3VLToolParser, Qwen3VLThinkingParser
@@ -11,15 +12,18 @@ from .llama4_pythonic import Llama4PythonicToolParser
 from .ministral3 import Ministral3ToolParser, Ministral3ThinkingParser
 from .nemotron3_nano import Nemotron3NanoToolParser, Nemotron3NanoThinkingParser
 from .factory import ParserFactory
+from .base import BaseMessageConverter
 
 __all__ = [
     'BaseToolParser',
     'BaseThinkingParser',
+    'BaseMessageConverter',
     'Qwen3ToolParser',
     'Qwen3ThinkingParser',
     'HarmonyParser',
     'Glm4MoEToolParser',
     'Glm4MoEThinkingParser',
+    'Qwen3CoderToolParser',
     'Qwen3MoEToolParser',
     'Qwen3MoEThinkingParser',
     'Qwen3NextToolParser',

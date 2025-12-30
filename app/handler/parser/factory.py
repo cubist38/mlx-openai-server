@@ -10,11 +10,13 @@ from typing import Any, Callable, Dict, Optional, Tuple
 from loguru import logger
 
 from . import (
+    BaseMessageConverter,
     Glm4MoEThinkingParser,
     Glm4MoEToolParser,
     HarmonyParser,
     MinimaxThinkingParser,
     MinimaxToolParser,
+    Qwen3CoderToolParser,
     Qwen3MoEThinkingParser,
     Qwen3MoEToolParser,
     Qwen3NextThinkingParser,
@@ -43,6 +45,10 @@ PARSER_REGISTRY: Dict[str, Dict[str, Callable]] = {
     "glm4_moe": {
         "thinking": Glm4MoEThinkingParser,
         "tool": Glm4MoEToolParser,
+    },
+    "qwen3_coder": {
+        # only non-thinking mode and does not generate <think></think> blocks in its output
+        "tool": Qwen3CoderToolParser,
     },
     "qwen3_moe": {
         "thinking": Qwen3MoEThinkingParser,
@@ -85,6 +91,7 @@ PARSER_REGISTRY: Dict[str, Dict[str, Callable]] = {
 CONVERTER_REGISTRY: Dict[str, Callable] = {
     "glm4_moe": Glm4MoEMessageConverter,
     "minimax": MiniMaxMessageConverter,
+    "qwen3_coder": BaseMessageConverter,
 }
 
 # Registry mapping parser names to their metadata/properties
@@ -112,6 +119,11 @@ PARSER_METADATA: Dict[str, Dict[str, Any]] = {
     "qwen3_vl": {
         "respects_enable_thinking": False,
         "needs_redacted_reasoning_prefix": True,  # Needs prefix for both stream and response
+        "has_special_parsing": False,
+    },
+    "qwen3_coder": {
+        "respects_enable_thinking": False,
+        "needs_redacted_reasoning_prefix": False,
         "has_special_parsing": False,
     },
     "harmony": {
@@ -231,20 +243,20 @@ class ParserFactory:
         return thinking_parser, tool_parser
 
     @staticmethod
-    def create_converter(model_type: str) -> Optional[Any]:
+    def create_converter(converter_type: str) -> Optional[Any]:
         """
         Create a message converter based on model type.
 
         Args:
-            model_type: The type of the model (e.g., "glm4_moe", "minimax")
+            converter_type: Converter type, fallback to model type (e.g., "glm4_moe", "minimax")
 
         Returns:
             Message converter instance or None if no converter needed
         """
-        if model_type not in CONVERTER_REGISTRY:
+        if converter_type not in CONVERTER_REGISTRY:
             return None
 
-        converter_class = CONVERTER_REGISTRY[model_type]
+        converter_class = CONVERTER_REGISTRY[converter_type]
         return converter_class()
 
     @staticmethod
