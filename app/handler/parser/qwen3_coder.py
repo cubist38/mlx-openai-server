@@ -8,7 +8,7 @@ TOOL_CLOSE = "</tool_call>"
 
 class Qwen3CoderToolParser(BaseToolParser):
     """Parser for Qwen3 Coder model's tool response format.
-    
+
     Handles tool calls in the format:
     <tool_call>
     <function=function_name>
@@ -22,11 +22,11 @@ class Qwen3CoderToolParser(BaseToolParser):
     def __init__(self):
         super().__init__(
             tool_open=TOOL_OPEN,
-            tool_close=TOOL_CLOSE   
+            tool_close=TOOL_CLOSE
         )
         # Regex pattern to extract function name and content
         self.function_regex = re.compile(
-            r"<function=([^>]+)>\s*(.*?)\s*</function>", 
+            r"<function=([^>]+)>\s*(.*?)\s*</function>",
             re.DOTALL
         )
         # Regex pattern to extract parameter key-value pairs

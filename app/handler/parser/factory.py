@@ -255,10 +255,8 @@ class ParserFactory:
         """
 
         if model_type not in CONVERTER_REGISTRY:
-            logger.info(f"create_converter: NO converter for {model_type}")
             return None
 
-        logger.info(f"create_converter: got converter for {model_type}")
         converter_class = CONVERTER_REGISTRY[model_type]
         return converter_class()
 
