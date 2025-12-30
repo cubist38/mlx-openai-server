@@ -422,6 +422,7 @@ mlx-openai-server launch \
 - `--enable-auto-tool-choice`: Enable automatic tool choice. Only works with language models (`lm` or `multimodal` model types).
 - `--tool-call-parser`: Specify tool call parser to use instead of auto-detection. Only works with language models (`lm` or `multimodal` model types). Available options: `qwen3`, `glm4_moe`, `qwen3_moe`, `qwen3_next`, `qwen3_vl`, `harmony`, `minimax`.
 - `--reasoning-parser`: Specify reasoning parser to use instead of auto-detection. Only works with language models (`lm` or `multimodal` model types). Available options: `qwen3`, `glm4_moe`, `qwen3_moe`, `qwen3_next`, `qwen3_vl`, `harmony`, `minimax`.
+- `--message-converter`: Specify a message converter to use instead of auto-detection. Only works with language models (`lm` or `multimodal` model types). Available options: `qwen3_coder` (required), `glm4_moe`, `minimax` (auto-detected).
 - `--trust-remote-code`: Enable `trust_remote_code` when loading models. This allows loading custom code from model repositories. Default: `False` (disabled). Only works with `lm` or `multimodal` model types.
 - `--chat-template-file`: Path to a custom chat template file. Only works with language models (`lm`) and multimodal models (`multimodal`). Default: `None` (uses model's default chat template).
 - `--log-file`: Path to log file. If not specified, logs will be written to 'logs/app.log' by default.
@@ -438,6 +439,7 @@ The following parsers are available for both tool call and reasoning parsing:
 
 - **`qwen3`**: Parser for Qwen3 model formats
 - **`glm4_moe`**: Parser for GLM4 MoE model formats
+- **`qwen3_coder`**: Parser for Qwen3 Coder models (note: only tool-parser, the model lacks `<think>` blocks)
 - **`qwen3_moe`**: Parser for Qwen3 MoE model formats
 - **`qwen3_next`**: Parser for Qwen3 Next model formats
 - **`qwen3_vl`**: Parser for Qwen3 Vision-Language model formats
