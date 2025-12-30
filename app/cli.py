@@ -185,6 +185,12 @@ def cli():
     type=str,
     help="Path to a custom chat template file. Only works with language models (lm) and multimodal models.",
 )
+@click.option(
+    "--message-converter",
+    default=None,
+    type=str,
+    help="Model type that requires message conversion (e.g., 'qwen3_coder').",
+)
 def launch(
     model_path,
     model_type,
@@ -207,6 +213,7 @@ def launch(
     reasoning_parser,
     trust_remote_code,
     chat_template_file,
+    message_converter,
 ) -> None:
     """Start the FastAPI/Uvicorn server with the supplied flags.
 
@@ -235,6 +242,7 @@ def launch(
         enable_auto_tool_choice=enable_auto_tool_choice,
         tool_call_parser=tool_call_parser,
         reasoning_parser=reasoning_parser,
+        message_converter=message_converter,
         trust_remote_code=trust_remote_code,
         chat_template_file=chat_template_file,
     )

@@ -47,6 +47,7 @@ PARSER_REGISTRY: Dict[str, Dict[str, Callable]] = {
         "tool": Glm4MoEToolParser,
     },
     "qwen3_coder": {
+        # only non-thinking mode and does not generate <think></think> blocks in its output
         "tool": Qwen3CoderToolParser,
     },
     "qwen3_moe": {
@@ -91,7 +92,6 @@ CONVERTER_REGISTRY: Dict[str, Callable] = {
     "glm4_moe": Glm4MoEMessageConverter,
     "minimax": MiniMaxMessageConverter,
     "qwen3_coder": BaseMessageConverter,
-    "qwen3_moe": BaseMessageConverter,
 }
 
 # Registry mapping parser names to their metadata/properties
@@ -122,8 +122,8 @@ PARSER_METADATA: Dict[str, Dict[str, Any]] = {
         "has_special_parsing": False,
     },
     "qwen3_coder": {
-        "respects_enable_thinking": True,
-        "needs_redacted_reasoning_prefix": True,
+        "respects_enable_thinking": False,
+        "needs_redacted_reasoning_prefix": False,
         "has_special_parsing": False,
     },
     "harmony": {
@@ -253,6 +253,7 @@ class ParserFactory:
         Returns:
             Message converter instance or None if no converter needed
         """
+
         if model_type not in CONVERTER_REGISTRY:
             logger.info(f"create_converter: NO converter for {model_type}")
             return None

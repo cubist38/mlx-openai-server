@@ -19,7 +19,18 @@ class MLXLMHandler:
     Provides request queuing, metrics tracking, and robust error handling.
     """
 
-    def __init__(self, model_path: str, context_length: int = 32768, max_concurrency: int = 1, enable_auto_tool_choice: bool = False, tool_call_parser: str = None, reasoning_parser: str = None, trust_remote_code: bool = False, chat_template_file: str = None):
+    def __init__(
+        self,
+        model_path: str,
+        context_length: int = 32768,
+        max_concurrency: int = 1,
+        enable_auto_tool_choice: bool = False,
+        tool_call_parser: str = None,
+        reasoning_parser: str = None,
+        message_converter: str = None,
+        trust_remote_code: bool = False,
+        chat_template_file: str = None,
+    ):
         """
         Initialize the handler with the specified model path.
         
@@ -30,6 +41,7 @@ class MLXLMHandler:
             enable_auto_tool_choice (bool): Enable automatic tool choice.
             tool_call_parser (str): Name of the tool call parser to use (qwen3, glm4_moe, harmony, minimax, ...)
             reasoning_parser (str): Name of the reasoning parser to use (qwen3, qwen3_next, glm4_moe, harmony, minimax, ...)
+            message_converter (str): Name of the message conversion parser to use (qwen3_coder, ...)
             trust_remote_code (bool): Enable trust_remote_code when loading models.
             chat_template_file (str): Path to a custom chat template file.
         """
@@ -47,7 +59,7 @@ class MLXLMHandler:
         self.request_queue = RequestQueue(max_concurrency=max_concurrency)
 
         # Initialize message converter for supported models
-        self.converter = ParserFactory.create_converter(self.model_type)
+        self.converter = ParserFactory.create_converter(message_converter = self.model_type)
 
         logger.info(f"Initialized MLXHandler with model path: {model_path}")
     
