@@ -59,7 +59,8 @@ class MLXLMHandler:
         self.request_queue = RequestQueue(max_concurrency=max_concurrency)
 
         # Initialize message converter for supported models
-        self.converter = ParserFactory.create_converter(message_converter = self.model_type)
+        converter_type = message_converter if message_converter is not None else self.model_type
+        self.converter = ParserFactory.create_converter(converter_type)
 
         logger.info(f"Initialized MLXHandler with model path: {model_path}")
     

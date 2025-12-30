@@ -243,21 +243,21 @@ class ParserFactory:
         return thinking_parser, tool_parser
 
     @staticmethod
-    def create_converter(model_type: str) -> Optional[Any]:
+    def create_converter(converter_type: str) -> Optional[Any]:
         """
         Create a message converter based on model type.
 
         Args:
-            model_type: The type of the model (e.g., "glm4_moe", "minimax")
+            converter_type: Converter type, fallback to model type (e.g., "glm4_moe", "minimax")
 
         Returns:
             Message converter instance or None if no converter needed
         """
 
-        if model_type not in CONVERTER_REGISTRY:
+        if converter_type not in CONVERTER_REGISTRY:
             return None
 
-        converter_class = CONVERTER_REGISTRY[model_type]
+        converter_class = CONVERTER_REGISTRY[converter_type]
         return converter_class()
 
     @staticmethod
