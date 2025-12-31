@@ -156,6 +156,9 @@ class MLXLMHandler:
                 if tool_parser:
                     parsed_content, is_complete = tool_parser.extract_tool_calls_streaming(text)
                     if parsed_content:
+                        content = parsed_content.get("content")
+                        if content:
+                            yield content
                         tool_calls = parsed_content.get("tool_calls")
                         if tool_calls:
                             for tool_call in tool_calls:
