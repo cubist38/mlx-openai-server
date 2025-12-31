@@ -70,7 +70,7 @@ class HermesReasoningParser(AbstractReasoningParser):
         tuple[dict[str, str] | str | None, bool]
             Tuple of (extracted_content, is_complete) where:
             - extracted_content: Reasoning dict if complete, chunk if passthrough, None if buffering
-            - is_complete: True if chunk should be sent, False if still buffering
+            - is_complete: False if not complete or in normal state, True if complete
         """
 
         if self.reasoning_open in chunk:
@@ -163,7 +163,7 @@ class HermesToolParser(AbstractToolParser):
         tuple[dict[str, list] | str | None, bool]
             Tuple of (extracted_content, is_complete) where:
             - extracted_content: Tool calls dict if complete, chunk if passthrough, None if buffering
-            - is_complete: True if chunk should be sent, False if still buffering
+            - is_complete: False if not complete or in normal state, True if complete
         """
         if self.tool_open in chunk:
             self.state = ToolParserState.FOUND_PREFIX
@@ -189,7 +189,7 @@ class HermesToolParser(AbstractToolParser):
                 self.buffer += chunk
                 return None, False
 
-        return chunk, True
+        return chunk, False
 
 if __name__ == "__main__":
     reasoning_parser = HermesReasoningParser()
