@@ -165,9 +165,10 @@ class MLXVLMHandler:
                 if tool_parser:
                     parsed_content, is_complete = tool_parser.extract_tool_calls_streaming(text)
                     if parsed_content:
-                        tool_calls = parsed_content.pop("tool_calls", None)
-                        for tool_call in tool_calls:
-                            yield tool_call
+                        tool_calls = parsed_content.get("tool_calls")
+                        if tool_calls:
+                            for tool_call in tool_calls:
+                                yield tool_call
                     if is_complete:
                         tool_parser = None
                     continue
