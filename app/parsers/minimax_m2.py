@@ -7,8 +7,8 @@ from .glm4_moe import GLM4MoEToolParser
 
 TOOL_OPEN = "<minimax:tool_call>"
 TOOL_CLOSE = "</minimax:tool_call>"
-THINKING_OPEN = "<think>"
-THINKING_CLOSE = "</think>"
+REASONING_OPEN = "<think>"
+REASONING_CLOSE = "</think>"
 
 class MiniMaxM2ReasoningParser(HermesReasoningParser):
     """Reasoning parser for MiniMax M2 model's reasoning response format.
@@ -19,7 +19,7 @@ class MiniMaxM2ReasoningParser(HermesReasoningParser):
 
     def __init__(self) -> None:
         """Initialize the Hermes4 reasoning parser with appropriate regex patterns."""
-        super().__init__(reasoning_open=THINKING_OPEN, reasoning_close=THINKING_CLOSE)
+        super().__init__(reasoning_open=REASONING_OPEN, reasoning_close=REASONING_CLOSE)
     
     def needs_redacted_reasoning_prefix(self) -> bool:
         return True
