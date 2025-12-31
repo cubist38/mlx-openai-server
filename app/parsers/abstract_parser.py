@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+from enum import Enum
 
-class ReasoningParserState:
+
+class ReasoningParserState(Enum):
     """State constants for reasoning parser streaming operations."""
 
-    NORMAL = 0
-    FOUND_PREFIX = 1
+    NORMAL = "normal"
+    FOUND_PREFIX = "found_prefix"
 
 
 class AbstractReasoningParser:
@@ -137,12 +139,12 @@ class AbstractReasoningParser:
         )
 
 
-class ToolParserState:
+class ToolParserState(Enum):
     """State constants for tool parser streaming operations."""
 
-    NORMAL = 0
-    FOUND_PREFIX = 1
-    FOUND_ARGUMENTS = 2
+    NORMAL = "normal"
+    FOUND_PREFIX = "found_prefix"
+    FOUND_ARGUMENTS = "found_arguments"
 
 
 class AbstractToolParser:
@@ -242,4 +244,3 @@ class AbstractToolParser:
         raise NotImplementedError(
             "AbstractToolParser.extract_tool_calls_streaming has not been implemented!"
         )
-  
