@@ -12,7 +12,7 @@ import click
 from loguru import logger
 
 from .config import MLXServerConfig
-from .handler.parser.factory import PARSER_REGISTRY
+from .parsers import REASONING_PARSER_MAP, TOOL_PARSER_MAP
 from .main import start
 from .version import __version__
 
@@ -165,13 +165,13 @@ def cli():
 @click.option(
     "--tool-call-parser",
     default=None,
-    type=click.Choice(list(PARSER_REGISTRY.keys())),
+    type=click.Choice(list(TOOL_PARSER_MAP.keys())),
     help="Specify tool call parser to use instead of auto-detection. Only works with language models.",
 )
 @click.option(
     "--reasoning-parser",
     default=None,
-    type=click.Choice(list(PARSER_REGISTRY.keys())),
+    type=click.Choice(list(REASONING_PARSER_MAP.keys())),
     help="Specify reasoning parser to use instead of auto-detection. Only works with language models.",
 )
 @click.option(
@@ -184,6 +184,11 @@ def cli():
     default=None,
     type=str,
     help="Path to a custom chat template file. Only works with language models (lm) and multimodal models.",
+)
+@click.option(
+    "--debug",
+    is_flag=True,
+    help="Enable debug mode for language models. Only works with language models (lm) and multimodal models.",
 )
 def launch(
     model_path,
@@ -207,6 +212,7 @@ def launch(
     reasoning_parser,
     trust_remote_code,
     chat_template_file,
+    debug,
 ) -> None:
     """Start the FastAPI/Uvicorn server with the supplied flags.
 
@@ -237,6 +243,7 @@ def launch(
         reasoning_parser=reasoning_parser,
         trust_remote_code=trust_remote_code,
         chat_template_file=chat_template_file,
+        debug=debug,
     )
 
     asyncio.run(start(args))

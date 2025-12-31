@@ -1,9 +1,11 @@
 import os
 import mlx.core as mx
+from loguru import logger
 from typing import List, Dict, Union, Generator
 from mlx_vlm.models.cache import make_prompt_cache
 from mlx_vlm import load, generate, stream_generate
 from mlx_vlm.video_generate import process_vision_info
+from ..utils.debug_logging import log_debug_prompt
 
 # Default model parameters
 DEFAULT_MAX_TOKENS = os.getenv("DEFAULT_MAX_TOKENS", 8192)
@@ -57,6 +59,7 @@ class MLX_VLM:
         audios: List[str] = None,
         videos: List[str] = None,
         stream: bool = False, 
+        verbose: bool = False,
         **kwargs
     ) -> Union[str, Generator[str, None, None]]:
         """
@@ -86,6 +89,8 @@ class MLX_VLM:
             add_generation_prompt=True,
             **kwargs.get("chat_template_kwargs", {})
         )
+        if verbose:
+            log_debug_prompt(text)
         
         image_inputs, video_inputs = process_vision_info(messages)
 
@@ -104,20 +109,20 @@ class MLX_VLM:
         }
 
         if images:
-            model_params["pixel_values"] = mx.array(inputs["pixel_values"])
+            if "pixel_values" in inputs:
+                model_params["pixel_values"] = mx.array(inputs["pixel_values"])
             if "image_grid_thw" in inputs:
                 model_params["image_grid_thw"] = mx.array(inputs["image_grid_thw"])
             if "image_sizes" in inputs:
                 model_params["image_sizes"] = mx.array(inputs["image_sizes"])
 
         if videos:
-            model_params["pixel_values"] = mx.array(inputs["pixel_values_videos"])
+            if "pixel_values" in inputs:
+                model_params["pixel_values"] = mx.array(inputs["pixel_values_videos"])
             if "video_grid_thw" in inputs:
                 model_params["video_grid_thw"] = mx.array(inputs["video_grid_thw"])
 
         prompt_cache = make_prompt_cache(self.model.language_model, self.max_kv_size)
-
-        prompt_tokens = len(inputs["input_ids"][0])
 
         if stream:
             return stream_generate(
@@ -126,7 +131,7 @@ class MLX_VLM:
                 prompt=text,
                 prompt_cache=prompt_cache,
                 **model_params
-            ), prompt_tokens
+            )
         else:
             return generate(
                 self.model,
@@ -134,13 +139,13 @@ class MLX_VLM:
                 prompt=text,
                 prompt_cache=prompt_cache,
                 **model_params
-            ), prompt_tokens
+            )
 
 
 if __name__ == "__main__":
     image_path = "examples/images/attention.png"
     video_path = "examples/videos/demo.mp4"
-    model_path = "mlx-community/Ministral-3-3B-Reasoning-2512-8bit"
+    model_path = "mlx-community/Qwen3-VL-2B-Thinking-8bit"
 
     model = MLX_VLM(model_path)
     print("MODEL TYPE: ", model.get_model_type())
@@ -178,52 +183,50 @@ if __name__ == "__main__":
             "content": [
                 {
                     "type": "text",
-                    "text": "Describe the image in detail"
+                    "text": "What is the weather in New York?"
                 },
                 {
                     "type": "image",
                     "image": image_path
                 }
             ]
-            # "content": "What is the weather in Tokyo?"
         }
     ]
-    from app.handler.parser.ministral3 import Ministral3ThinkingParser, Ministral3ToolParser
-    thinking_parser = Ministral3ThinkingParser()
-    tool_parser = Ministral3ToolParser()
 
-    # response = model(messages, stream=False, **kwargs)
-    # response = response[0].text
-    # thinking_content, remaining_content = thinking_parser.parse(response)
-    # print("THINKING CONTENT: ", thinking_content)
-    # parsed_tool_content, remaining_content = tool_parser.parse(remaining_content)
-    # print("TOOL CONTENT: ", parsed_tool_content)
+    from app.parsers.qwen3_vl import Qwen3VLReasoningParser, Qwen3VLToolParser
+    reasoning_parser = Qwen3VLReasoningParser()
+    tool_parser = Qwen3VLToolParser()
 
+    response = model(messages, stream=True, **kwargs)
     after_thinking_close_content = None
-
-    streaming_response, _ = model(messages, stream=True, **kwargs)
-    for chunk in streaming_response:
-        if not chunk or not chunk.text:
+    final_chunk = None
+    is_first_chunk = True
+    for chunk in response:
+        if chunk is None:
             continue
+        final_chunk = chunk
         text = chunk.text
-        if thinking_parser:
-            parsed_content, is_complete = thinking_parser.parse_stream(chunk.text)
-            after_thinking_close_content = None
+        if is_first_chunk:
+            if reasoning_parser and reasoning_parser.needs_redacted_reasoning_prefix():
+                text = reasoning_parser.get_reasoning_open() + text
+            is_first_chunk = False
+        if reasoning_parser:
+            parsed_content, is_complete = reasoning_parser.extract_reasoning_streaming(text)
+            
             if parsed_content:
                 if isinstance(parsed_content, dict):
                     after_thinking_close_content = parsed_content.pop("content", None)
                 print(f"Parsed content: {parsed_content}")
-                
             if is_complete:
-                thinking_parser = None
+                reasoning_parser = None
             if after_thinking_close_content:
                 text = after_thinking_close_content
             else:
-                continue       
-        
+                continue
         if tool_parser:
-            parsed_content, is_complete = tool_parser.parse_stream(text)
+            parsed_content, is_complete = tool_parser.extract_tool_calls_streaming(text)
             if parsed_content:
                 print(f"Parsed content: {parsed_content}")
             if is_complete:
                 tool_parser = None
+            continue

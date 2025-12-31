@@ -159,6 +159,7 @@ def create_lifespan(config_args: MLXServerConfig):
                     reasoning_parser=config_args.reasoning_parser,
                     trust_remote_code=config_args.trust_remote_code,
                     chat_template_file=config_args.chat_template_file,
+                    debug=config_args.debug,
                 )
             elif config_args.model_type == "image-generation":
                 if config_args.config_name not in ["flux-schnell", "flux-dev", "flux-krea-dev", "qwen-image", "z-image-turbo", "fibo"]:
@@ -204,6 +205,7 @@ def create_lifespan(config_args: MLXServerConfig):
                     reasoning_parser=config_args.reasoning_parser,
                     trust_remote_code=config_args.trust_remote_code,
                     chat_template_file=config_args.chat_template_file,
+                    debug=config_args.debug,
                 )
             # Initialize queue
             await handler.initialize(
