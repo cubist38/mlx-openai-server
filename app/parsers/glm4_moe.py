@@ -143,7 +143,9 @@ class GLM4MoEToolParser(AbstractToolParser):
                 self.buffer += chunk
                 return None, False
 
-        return chunk, True
+        return {
+            "content": chunk
+        }, True
 
 if __name__ == "__main__":
     reasoning_parser = GLM4MoEReasoningParser()
