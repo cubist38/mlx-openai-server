@@ -427,6 +427,7 @@ mlx-openai-server launch \
 - `--log-file`: Path to log file. If not specified, logs will be written to 'logs/app.log' by default.
 - `--no-log-file`: Disable file logging entirely. Only console output will be shown.
 - `--log-level`: Set the logging level. Choices: `DEBUG`, `INFO`, `WARNING`, `ERROR`, `CRITICAL`. Default: `INFO`.
+- `--debug`: Enable debug mode for language models. Only works with language models (`lm`) and multimodal models (`multimodal`). Default: `False` (disabled).
 
 ### Parser Configuration
 
@@ -538,6 +539,17 @@ python -m app.main \
   --model-path <path-to-model> \
   --model-type lm \
   --chat-template-file /path/to/custom_template.jinja \
+  --max-concurrency 1 \
+  --queue-timeout 300 \
+  --queue-size 100
+```
+
+**Model with debug mode enabled:**
+```bash
+python -m app.main \
+  --model-path <path-to-model> \
+  --model-type lm \
+  --debug \
   --max-concurrency 1 \
   --queue-timeout 300 \
   --queue-size 100
@@ -727,11 +739,18 @@ mlx-openai-server launch \
   --model-type lm \
   --chat-template-file /path/to/custom_template.jinja
 
+# With debug mode enabled
+mlx-openai-server launch \
+  --model-path <path-to-mlx-model> \
+  --model-type lm \
+  --debug
+
 # Using python -m app.main (alternative method)
 python -m app.main --model-path <path-to-mlx-model> --model-type lm --no-log-file
 python -m app.main --model-path <path-to-mlx-model> --model-type lm --log-file /tmp/custom.log
 python -m app.main --model-path <path-to-mlx-model> --model-type lm --trust-remote-code
 python -m app.main --model-path <path-to-mlx-model> --model-type lm --chat-template-file /path/to/custom_template.jinja
+python -m app.main --model-path <path-to-mlx-model> --model-type lm --debug
 ```
 
 > **Note:** Text embeddings via the `/v1/embeddings` endpoint are now available with both text-only models (`--model-type lm`) and multimodal models (`--model-type multimodal`).
