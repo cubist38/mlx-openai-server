@@ -98,7 +98,7 @@ class HermesReasoningParser(AbstractReasoningParser):
         
         return {
             "content": chunk
-        }, True
+        }, False
 
 
 
