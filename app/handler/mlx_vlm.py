@@ -14,7 +14,7 @@ from ..models.mlx_vlm import MLX_VLM
 from ..parsers import get_reasoning_parser, get_tool_parser
 from ..core import ImageProcessor, AudioProcessor, VideoProcessor
 from ..utils.errors import create_error_response
-from ..utils.debug_logging import log_debug_request, log_debug_stats
+from ..utils.debug_logging import log_debug_request, log_debug_stats, log_debug_raw_text_response
 from ..schemas.openai import ChatCompletionRequest, EmbeddingRequest, ChatCompletionContentPart, ChatCompletionContentPartImage, ChatCompletionContentPartInputAudio, ChatCompletionContentPartVideo, UsageInfo
 
 
@@ -140,11 +140,13 @@ class MLXVLMHandler:
             after_reasoning_close_content = None
             final_chunk = None
             is_first_chunk = True
+            raw_text = ""  # only use for debugging
             for chunk in response_generator:
                 if chunk is None:
                     continue
                 final_chunk = chunk
                 text = chunk.text
+                raw_text += text
                 if is_first_chunk:
                     if reasoning_parser and reasoning_parser.needs_redacted_reasoning_prefix():
                         text = reasoning_parser.get_reasoning_open() + text
@@ -176,6 +178,7 @@ class MLXVLMHandler:
             total_tokens = final_chunk.prompt_tokens + final_chunk.generation_tokens
             
             if self.debug:
+                log_debug_raw_text_response(raw_text)
                 log_debug_stats(
                     final_chunk.prompt_tokens,
                     final_chunk.generation_tokens,
@@ -265,6 +268,7 @@ class MLXVLMHandler:
             total_tokens = response.prompt_tokens + response.generation_tokens
 
             if self.debug:
+                log_debug_raw_text_response(response.text)
                 log_debug_stats(
                     response.prompt_tokens,
                     response.generation_tokens,

@@ -82,3 +82,18 @@ def log_debug_prompt(prompt: str) -> None:
     logger.info(prompt)
     logger.info("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
 
+
+def log_debug_raw_text_response(raw_text: str) -> None:
+    """Log raw text response in a beautiful format for debug mode.
+    
+    Parameters
+    ----------
+    raw_text : str
+        The raw text response to log.
+    """
+    logger.info("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+    logger.info("📝 DEBUG: Raw Text Response")
+    logger.info("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+    logger.info(f"Raw text: {raw_text}")
+    logger.info("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+
