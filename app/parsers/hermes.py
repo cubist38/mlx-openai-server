@@ -190,37 +190,3 @@ class HermesToolParser(AbstractToolParser):
                 return None, False
 
         return chunk, False
-
-if __name__ == "__main__":
-    reasoning_parser = HermesReasoningParser()
-    tool_parser = HermesToolParser()
-
-    chunks = [
-        "<think>I am ",
-        "thinking about the",
-        "problem",
-        ".</think><tool_call>",
-        "{\"name\": \"tool_name\",",
-        "\"arguments\": {\"argument_name\": \"argument_value\"}}",
-        "</tool_call>",
-    ]
-    after_thinking_close_content = None
-    for chunk in chunks:
-        if chunk is None:
-            continue
-        if reasoning_parser:
-            reasoning, is_complete = reasoning_parser.extract_reasoning_streaming(chunk)
-            print("Reasoning: ", reasoning)
-            if is_complete:
-                reasoning_parser = None
-                if reasoning.get("content"):
-                    after_thinking_close_content = reasoning.get("content")
-            continue
-        if after_thinking_close_content:
-            chunk = after_thinking_close_content + chunk
-            after_thinking_close_content = None
-        print("Chunk: ", chunk)
-        if tool_parser:
-            tool_calls, is_complete = tool_parser.extract_tool_calls_streaming(chunk)
-            print("Tool calls: ", tool_calls)
-            print("Is complete: ", is_complete)
