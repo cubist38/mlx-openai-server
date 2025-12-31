@@ -152,13 +152,13 @@ if __name__ == "__main__":
     tool_parser = GLM4MoEToolParser()
 
     chunks = [
-        "<think>I am ",
-        "thinking about the",
-        "problem",
-        ".</think><tool_call>",
-        "tool_name\n",
-        "<arg_key>argument_name</arg_key>\n",
-        "<arg_value>argument_value</arg_value>\n",
+        "<think>The user is asking",
+        "for the weather in Tokyo. I have a function available called \"get_weather\" that takes a city parameter and returns the weather information for that city. The user has provided \"Tokyo\" as the city they want weather information for, so I have all the required parameters to make the function call.",
+        "call.</think>",
+        "I'll get the current weather information for Tokyo for you.",
+        "<tool_call>get_weather",
+        "<arg_key>city</arg_key>",
+        "<arg_value>Tokyo</arg_value>",
         "</tool_call>",
     ]
     after_thinking_close_content = None
@@ -178,6 +178,9 @@ if __name__ == "__main__":
             after_thinking_close_content = None
         print("Chunk: ", chunk)
         if tool_parser:
-            tool_calls, is_complete = tool_parser.extract_tool_calls_streaming(chunk)
-            print("Tool calls: ", tool_calls)
-            print("Is complete: ", is_complete)
+            parsed_content, is_complete = tool_parser.extract_tool_calls_streaming(chunk)
+            if parsed_content:
+                tool_calls = parsed_content.get("tool_calls")
+                if tool_calls:
+                    for tool_call in tool_calls:
+                        print("Tool call: ", tool_call)

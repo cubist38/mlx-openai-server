@@ -160,8 +160,6 @@ class MLXLMHandler:
                         if tool_calls:
                             for tool_call in tool_calls:
                                 yield tool_call
-                    if is_complete:
-                        tool_parser = None
                     continue
 
             total_tokens = final_chunk.prompt_tokens + final_chunk.generation_tokens
