@@ -88,7 +88,6 @@ class GLM4MoEToolParser(AbstractToolParser):
         for match in matches:
             tc_detail = self.func_detail_regex.search(match)
             tc_name = tc_detail.group(1)
-            print("Tool call name: ", tc_name)
             tc_args = tc_detail.group(2)
             pairs = self.func_arg_regex.findall(tc_args)
             arg_dct = {}
@@ -100,7 +99,9 @@ class GLM4MoEToolParser(AbstractToolParser):
                 "name": tc_name,
                 "arguments": json.dumps(arg_dct, ensure_ascii=False)
             })
-        return {"tool_calls": tool_calls}
+        return {
+            "tool_calls": tool_calls
+        }
 
     def extract_tool_calls_streaming(
         self, chunk: str
