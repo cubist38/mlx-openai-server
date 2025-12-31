@@ -11,8 +11,8 @@ from .hermes import HermesReasoningParser
 
 TOOL_OPEN = "<tool_call>"
 TOOL_CLOSE = "</tool_call>"
-THINKING_OPEN = "<think>"
-THINKING_CLOSE = "</think>"
+REASONING_OPEN = "<think>"
+REASONING_CLOSE = "</think>"
 
 
 class GLM4MoEReasoningParser(HermesReasoningParser):
@@ -24,7 +24,7 @@ class GLM4MoEReasoningParser(HermesReasoningParser):
 
     def __init__(self) -> None:
         """Initialize the Hermes4 reasoning parser with appropriate regex patterns."""
-        super().__init__(reasoning_open=THINKING_OPEN, reasoning_close=THINKING_CLOSE)
+        super().__init__(reasoning_open=REASONING_OPEN, reasoning_close=REASONING_CLOSE)
     
     def respects_enable_thinking(self) -> bool:
         """Check if the reasoning parser respects the enable_thinking flag.
