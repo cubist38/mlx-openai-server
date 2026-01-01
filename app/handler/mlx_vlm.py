@@ -11,7 +11,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from ..core.queue import RequestQueue
 from ..models.mlx_vlm import MLX_VLM
-from ..parsers import get_reasoning_parser, get_tool_parser
+from ..parsers import ParserManager, ParsersResult
 from ..core import ImageProcessor, AudioProcessor, VideoProcessor
 from ..utils.errors import create_error_response
 from ..utils.debug_logging import log_debug_request, log_debug_stats, log_debug_raw_text_response
@@ -51,8 +51,8 @@ class MLXVLMHandler:
         
         # Store parser configuration
         self.enable_auto_tool_choice = enable_auto_tool_choice
-        self.reasoning_parser_class = get_reasoning_parser(reasoning_parser)
-        self.tool_parser_class = get_tool_parser(tool_call_parser)
+        self.reasoning_parser_name = reasoning_parser
+        self.tool_parser_name = tool_call_parser
 
         # Debug mode
         self.debug = debug
@@ -122,61 +122,88 @@ class MLXVLMHandler:
             # Submit to the multimodal queue and get the generator
             response_generator = await self.request_queue.submit(request_id, request_dict)    
 
-            reasoning_parser = None
-            tool_parser = None
-            
-            if self.reasoning_parser_class:
-                reasoning_parser = self.reasoning_parser_class()
-            if self.tool_parser_class:
-                tool_parser = self.tool_parser_class()
+            # Create parsers using ParserManager
+            parsers_result = ParserManager.create_parsers(
+                reasoning_parser_name=self.reasoning_parser_name,
+                tool_parser_name=self.tool_parser_name,
+            )
 
             chat_template_kwargs = request_dict.get("chat_template_kwargs", {})
             enable_thinking = chat_template_kwargs.get("enable_thinking", True)
 
-            if not enable_thinking:
-                if reasoning_parser and reasoning_parser.respects_enable_thinking():
-                    reasoning_parser = None
+            # Handle enable_thinking flag for separate reasoning parsers
+            if not enable_thinking and parsers_result.reasoning_parser:
+                if parsers_result.reasoning_parser.respects_enable_thinking():
+                    parsers_result.reasoning_parser = None
 
             after_reasoning_close_content = None
             final_chunk = None
             is_first_chunk = True
             raw_text = ""  # only use for debugging
-            for chunk in response_generator:
-                if chunk is None:
-                    continue
-                final_chunk = chunk
-                text = chunk.text
-                raw_text += text
-                if is_first_chunk:
-                    if reasoning_parser and reasoning_parser.needs_redacted_reasoning_prefix():
-                        text = reasoning_parser.get_reasoning_open() + text
-                    is_first_chunk = False
-                if reasoning_parser:
-                    parsed_content, is_complete = reasoning_parser.extract_reasoning_streaming(text)
-                    
-                    if parsed_content:
-                        after_reasoning_close_content = parsed_content.get("after_reasoning_close_content")
-                        yield parsed_content
-                    if is_complete:
-                        reasoning_parser = None
-                    if after_reasoning_close_content:
-                        text = after_reasoning_close_content
-                        after_reasoning_close_content = None
-                    else:
-                        continue
-                if tool_parser:
-                    parsed_content, is_complete = tool_parser.extract_tool_calls_streaming(text)
-                    if parsed_content:
-                        content = parsed_content.get("content")
-                        if content:
-                            yield content
-                        tool_calls = parsed_content.get("tool_calls")
-                        if tool_calls:
-                            for tool_call in tool_calls:
-                                yield tool_call
-                    continue
 
-                yield text
+            # Handle unified parser streaming
+            if parsers_result.is_unified:
+                unified_parser = parsers_result.unified_parser
+                for chunk in response_generator:
+                    if chunk is None:
+                        continue
+                    final_chunk = chunk
+                    text = chunk.text
+                    raw_text += text
+                    
+                    parsed_result, is_complete = unified_parser.parse_streaming(text)
+                    if parsed_result:
+                        # Unified parser returns dict with reasoning_content, tool_calls, content
+                        if parsed_result.get("reasoning_content"):
+                            yield {"reasoning_content": parsed_result["reasoning_content"]}
+                        if parsed_result.get("tool_calls"):
+                            for tool_call in parsed_result["tool_calls"]:
+                                yield tool_call
+                        if parsed_result.get("content"):
+                            yield parsed_result["content"]
+                    # Continue processing all chunks even if is_complete is True
+            else:
+                # Handle separate parsers streaming
+                reasoning_parser = parsers_result.reasoning_parser
+                tool_parser = parsers_result.tool_parser
+                
+                for chunk in response_generator:
+                    if chunk is None:
+                        continue
+                    final_chunk = chunk
+                    text = chunk.text
+                    raw_text += text
+                    if is_first_chunk:
+                        if reasoning_parser and hasattr(reasoning_parser, 'needs_redacted_reasoning_prefix'):
+                            if reasoning_parser.needs_redacted_reasoning_prefix():
+                                text = reasoning_parser.get_reasoning_open() + text
+                        is_first_chunk = False
+                    if reasoning_parser:
+                        parsed_content, is_complete = reasoning_parser.extract_reasoning_streaming(text)
+                        
+                        if parsed_content:
+                            after_reasoning_close_content = parsed_content.get("after_reasoning_close_content")
+                            yield parsed_content
+                        if is_complete:
+                            reasoning_parser = None
+                        if after_reasoning_close_content:
+                            text = after_reasoning_close_content
+                            after_reasoning_close_content = None
+                        else:
+                            continue
+                    if tool_parser:
+                        parsed_content, is_complete = tool_parser.extract_tool_calls_streaming(text)
+                        if parsed_content:
+                            content = parsed_content.get("content")
+                            if content:
+                                yield content
+                            tool_calls = parsed_content.get("tool_calls")
+                            if tool_calls:
+                                for tool_call in tool_calls:
+                                    yield tool_call
+                        continue
+
+                    yield text
 
             total_tokens = final_chunk.prompt_tokens + final_chunk.generation_tokens
             
@@ -231,20 +258,19 @@ class MLXVLMHandler:
         
             response = await self.request_queue.submit(request_id, request_dict)
 
-            reasoning_parser = None
-            tool_parser = None
-
-            if self.reasoning_parser_class:
-                reasoning_parser = self.reasoning_parser_class()
-            if self.tool_parser_class:
-                tool_parser = self.tool_parser_class()
+            # Create parsers using ParserManager
+            parsers_result = ParserManager.create_parsers(
+                reasoning_parser_name=self.reasoning_parser_name,
+                tool_parser_name=self.tool_parser_name,
+            )
 
             chat_template_kwargs = request_dict.get("chat_template_kwargs", {})
             enable_thinking = chat_template_kwargs.get("enable_thinking", True)
 
-            if not enable_thinking:
-                if reasoning_parser and reasoning_parser.respects_enable_thinking():
-                    reasoning_parser = None
+            # Handle enable_thinking flag for separate reasoning parsers
+            if not enable_thinking and parsers_result.reasoning_parser:
+                if parsers_result.reasoning_parser.respects_enable_thinking():
+                    parsers_result.reasoning_parser = None
 
             parsed_response = {
                 "reasoning_content": None,
@@ -253,11 +279,21 @@ class MLXVLMHandler:
             }
             response_text = response.text
 
-            if reasoning_parser and reasoning_parser.needs_redacted_reasoning_prefix():
-                response_text = reasoning_parser.get_reasoning_open() + response_text
+            # Handle unified parser
+            if parsers_result.is_unified:
+                unified_parser = parsers_result.unified_parser
+                parsed_result = unified_parser.parse(response_text)
+                if parsed_result:
+                    parsed_response["reasoning_content"] = parsed_result.get("reasoning_content")
+                    parsed_response["tool_calls"] = parsed_result.get("tool_calls")
+                    parsed_response["content"] = parsed_result.get("content")
+            # Handle separate parsers
+            elif parsers_result.reasoning_parser or parsers_result.tool_parser:
+                reasoning_parser = parsers_result.reasoning_parser
+                tool_parser = parsers_result.tool_parser
 
-
-            if reasoning_parser or tool_parser:
+                if reasoning_parser and reasoning_parser.needs_redacted_reasoning_prefix():
+                    response_text = reasoning_parser.get_reasoning_open() + response_text
 
                 if reasoning_parser:
                     parsed_content = reasoning_parser.extract_reasoning(response_text)
@@ -270,7 +306,6 @@ class MLXVLMHandler:
                         parsed_content = tool_parser.extract_tool_calls(response_text)
                         parsed_response["tool_calls"] = parsed_content.get("tool_calls")
                         parsed_response["content"] = parsed_content.get("content")
-
             else:
                 parsed_response["content"] = response_text
 
