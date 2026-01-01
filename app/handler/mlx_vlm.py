@@ -12,11 +12,11 @@ from typing import Any, Dict, List, Optional, Tuple
 from ..core.queue import RequestQueue
 from ..models.mlx_vlm import MLX_VLM
 from ..parsers import ParserManager
+from ..message_converters import MessageConverterManager
 from ..core import ImageProcessor, AudioProcessor, VideoProcessor
 from ..utils.errors import create_error_response
 from ..utils.debug_logging import log_debug_request, log_debug_stats, log_debug_raw_text_response
 from ..schemas.openai import ChatCompletionRequest, EmbeddingRequest, ChatCompletionContentPart, ChatCompletionContentPartImage, ChatCompletionContentPartInputAudio, ChatCompletionContentPartVideo, UsageInfo
-
 
 class MLXVLMHandler:
     """
@@ -24,7 +24,7 @@ class MLXVLMHandler:
     Provides caching, concurrent image processing, audio processing, and robust error handling.
     """
 
-    def __init__(self, model_path: str, context_length: int = 32768, max_workers: int = 4, max_concurrency: int = 1, disable_auto_resize: bool = False, enable_auto_tool_choice: bool = False, tool_call_parser: str = None, reasoning_parser: str = None, trust_remote_code: bool = False, chat_template_file: str = None, debug: bool = False):
+    def __init__(self, model_path: str, context_length: int = 32768, max_workers: int = 4, max_concurrency: int = 1, disable_auto_resize: bool = False, enable_auto_tool_choice: bool = False, tool_call_parser: str = None, reasoning_parser: str = None, message_converter: str = None, trust_remote_code: bool = False, chat_template_file: str = None, debug: bool = False):
         """
         Initialize the handler with the specified model path.
         
@@ -53,7 +53,7 @@ class MLXVLMHandler:
         self.enable_auto_tool_choice = enable_auto_tool_choice
         self.reasoning_parser_name = reasoning_parser
         self.tool_parser_name = tool_call_parser
-
+        self.message_converter = MessageConverterManager.create_converter(message_converter)
         # Debug mode
         self.debug = debug
 
@@ -442,6 +442,19 @@ class MLXVLMHandler:
             model_params.pop("videos", None)
             model_params.pop("messages", None)
             model_params.pop("stream", None)
+
+            if self.message_converter:
+                logger.info("Message converter is enabled, converting messages...")
+                messages = self.message_converter.convert_messages(messages)
+                logger.info("Messages converted successfully")
+
+            refined_messages = []
+            logger.info("Filtering out None values from messages...")
+            for message in messages:
+                cleaned_message = {k: v for k, v in message.items() if v is not None}
+                refined_messages.append(cleaned_message)
+            logger.info("Messages filtered successfully")
+            messages = refined_messages
             
             # Call the model
             response = self.model(

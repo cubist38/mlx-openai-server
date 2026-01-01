@@ -10,9 +10,9 @@ from ..core.queue import RequestQueue
 from ..utils.errors import create_error_response
 from ..utils.debug_logging import log_debug_request, log_debug_stats, log_debug_raw_text_response
 from ..parsers import ParserManager
+from ..message_converters import MessageConverterManager
 from typing import Any, AsyncGenerator, Dict, List, Optional, Tuple
 from ..schemas.openai import ChatCompletionRequest, EmbeddingRequest, UsageInfo
-
 
 class MLXLMHandler:
     """
@@ -20,7 +20,7 @@ class MLXLMHandler:
     Provides request queuing, metrics tracking, and robust error handling.
     """
 
-    def __init__(self, model_path: str, context_length: int = 32768, max_concurrency: int = 1, enable_auto_tool_choice: bool = False, tool_call_parser: str = None, reasoning_parser: str = None, trust_remote_code: bool = False, chat_template_file: str = None, debug: bool = False):
+    def __init__(self, model_path: str, context_length: int = 32768, max_concurrency: int = 1, enable_auto_tool_choice: bool = False, tool_call_parser: str = None, reasoning_parser: str = None, message_converter: str = None, trust_remote_code: bool = False, chat_template_file: str = None, debug: bool = False):
         """
         Initialize the handler with the specified model path.
         
@@ -45,6 +45,7 @@ class MLXLMHandler:
         self.debug = debug   
         self.reasoning_parser_name = reasoning_parser
         self.tool_parser_name = tool_call_parser
+        self.message_converter = MessageConverterManager.create_converter(message_converter)
         # Initialize request queue for text tasks
         self.request_queue = RequestQueue(max_concurrency=max_concurrency)
 
@@ -393,16 +394,23 @@ class MLXLMHandler:
             model_params.pop("stream", None)
 
             
-            # Reformat messages for models without conversion needs
+            # Apply message converter if one is configured
+            if self.message_converter:
+                logger.info("Message converter is enabled, converting messages...")
+                messages = self.message_converter.convert_messages(messages)
+                logger.info("Messages converted successfully")
+
             refined_messages = []
+            logger.info("Filtering out None values from messages...")
             for message in messages:
-                # Filter out None values
                 cleaned_message = {k: v for k, v in message.items() if v is not None}
                 refined_messages.append(cleaned_message)
-
+            logger.info("Messages filtered successfully")
+            messages = refined_messages
+            
             # Call the model
             response = self.model(
-                messages=refined_messages,
+                messages=messages,
                 stream=stream,
                 **model_params
             )            
