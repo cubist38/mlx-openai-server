@@ -176,6 +176,8 @@ class MLXVLMHandler:
                                 yield tool_call
                     continue
 
+                yield text
+
             total_tokens = final_chunk.prompt_tokens + final_chunk.generation_tokens
             
             if self.debug:
@@ -254,17 +256,23 @@ class MLXVLMHandler:
             if reasoning_parser and reasoning_parser.needs_redacted_reasoning_prefix():
                 response_text = reasoning_parser.get_reasoning_open() + response_text
 
-            if reasoning_parser:
-                parsed_content = reasoning_parser.extract_reasoning(response_text)
-                parsed_response["reasoning_content"] = parsed_content.get("reasoning_content")
-                parsed_response["content"] = parsed_content.get("content")
-                response_text = parsed_content.get("after_reasoning_close_content")
 
-            if response_text:
-                if tool_parser:
-                    parsed_content = tool_parser.extract_tool_calls(response_text)
-                    parsed_response["tool_calls"] = parsed_content.get("tool_calls")
+            if reasoning_parser or tool_parser:
+
+                if reasoning_parser:
+                    parsed_content = reasoning_parser.extract_reasoning(response_text)
+                    parsed_response["reasoning_content"] = parsed_content.get("reasoning_content")
                     parsed_response["content"] = parsed_content.get("content")
+                    response_text = parsed_content.get("after_reasoning_close_content")
+
+                if response_text:
+                    if tool_parser:
+                        parsed_content = tool_parser.extract_tool_calls(response_text)
+                        parsed_response["tool_calls"] = parsed_content.get("tool_calls")
+                        parsed_response["content"] = parsed_content.get("content")
+
+            else:
+                parsed_response["content"] = response_text
 
             total_tokens = response.prompt_tokens + response.generation_tokens
 
