@@ -102,27 +102,6 @@ class FunctionGemmaToolParser(AbstractToolParser):
                 self.buffer += chunk
                 return None, False
 
-        return chunk, True
-
-
-if __name__ == "__main__":
-    parser = FunctionGemmaToolParser()
-    tool_call_regex = parser.tool_call_regex
-    arg_regex = parser.arg_regex
-    # model_output = "I will call a function<start_function_call>call:get_weather{param:<escape>value<escape>}<end_function_call>\n\n I will call another function<start_function_call>call:get_time{}<end_function_call>"
-    # tool_calls = parser.extract_tool_calls(model_output)
-    # print(tool_calls)
-    chunks = [
-        "I will call a function",
-        "<start_function_call>call:",
-        "get_weather",
-        "{param:<escape>value<escape>}",
-        "<end_function_call>",
-        "\n\n",
-        "I will call another function",
-        "<start_function_call>call:get_time{}<end_function_call>",
-    ]
-    for chunk in chunks:
-        tool_calls, is_complete = parser.extract_tool_calls_streaming(chunk)
-        print("Tool calls: ", tool_calls)
-        print("Is complete: ", is_complete)
+        return {
+            "content": chunk
+        }, False
