@@ -146,4 +146,4 @@ class GLM4MoEToolParser(AbstractToolParser):
 
         return {
             "content": chunk
-        }, True
+        }, False

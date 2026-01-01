@@ -102,4 +102,6 @@ class FunctionGemmaToolParser(AbstractToolParser):
                 self.buffer += chunk
                 return None, False
 
-        return chunk, True
+        return {
+            "content": chunk
+        }, False

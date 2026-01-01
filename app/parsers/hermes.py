@@ -189,4 +189,6 @@ class HermesToolParser(AbstractToolParser):
                 self.buffer += chunk
                 return None, False
 
-        return chunk, False
+        return {
+            "content": chunk
+        }, False
