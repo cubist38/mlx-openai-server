@@ -12,7 +12,7 @@ import click
 from loguru import logger
 
 from .config import MLXServerConfig
-from .parsers import REASONING_PARSER_MAP, TOOL_PARSER_MAP
+from .parsers import REASONING_PARSER_MAP, TOOL_PARSER_MAP, UNIFIED_PARSER_MAP
 from .main import start
 from .version import __version__
 
@@ -165,13 +165,13 @@ def cli():
 @click.option(
     "--tool-call-parser",
     default=None,
-    type=click.Choice(list(TOOL_PARSER_MAP.keys())),
+    type=click.Choice(sorted(set(TOOL_PARSER_MAP.keys()) | set(UNIFIED_PARSER_MAP.keys()))),
     help="Specify tool call parser to use instead of auto-detection. Only works with language models.",
 )
 @click.option(
     "--reasoning-parser",
     default=None,
-    type=click.Choice(list(REASONING_PARSER_MAP.keys())),
+    type=click.Choice(sorted(set(REASONING_PARSER_MAP.keys()) | set(UNIFIED_PARSER_MAP.keys()))),
     help="Specify reasoning parser to use instead of auto-detection. Only works with language models.",
 )
 @click.option(
