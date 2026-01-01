@@ -9,7 +9,7 @@ from ..models.mlx_lm import MLX_LM
 from ..core.queue import RequestQueue
 from ..utils.errors import create_error_response
 from ..utils.debug_logging import log_debug_request, log_debug_stats, log_debug_raw_text_response
-from ..parsers import ParserManager, ParsersResult
+from ..parsers import ParserManager
 from typing import Any, AsyncGenerator, Dict, List, Optional, Tuple
 from ..schemas.openai import ChatCompletionRequest, EmbeddingRequest, UsageInfo
 

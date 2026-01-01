@@ -11,7 +11,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from ..core.queue import RequestQueue
 from ..models.mlx_vlm import MLX_VLM
-from ..parsers import ParserManager, ParsersResult
+from ..parsers import ParserManager
 from ..core import ImageProcessor, AudioProcessor, VideoProcessor
 from ..utils.errors import create_error_response
 from ..utils.debug_logging import log_debug_request, log_debug_stats, log_debug_raw_text_response
