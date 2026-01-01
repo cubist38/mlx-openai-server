@@ -67,6 +67,8 @@ def print_startup_banner(config_args):
             logger.info(f"🔧 Tool Call Parser: {config_args.tool_call_parser}")
         if config_args.reasoning_parser:
             logger.info(f"🔧 Reasoning Parser: {config_args.reasoning_parser}")
+        if config_args.message_converter:
+            logger.info(f"🔧 Message Converter: {config_args.message_converter}")
     logger.info(f"📝 Log Level: {config_args.log_level}")
     if config_args.no_log_file:
         logger.info("📝 File Logging: Disabled")

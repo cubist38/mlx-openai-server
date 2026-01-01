@@ -13,6 +13,7 @@ from loguru import logger
 
 from .config import MLXServerConfig
 from .parsers import REASONING_PARSER_MAP, TOOL_PARSER_MAP, UNIFIED_PARSER_MAP
+from .message_converters import MESSAGE_CONVERTER_MAP
 from .main import start
 from .version import __version__
 
@@ -175,6 +176,12 @@ def cli():
     help="Specify reasoning parser to use instead of auto-detection. Only works with language models.",
 )
 @click.option(
+    "--message-converter",
+    default=None,
+    type=click.Choice(sorted(MESSAGE_CONVERTER_MAP.keys())),
+    help="Specify message converter to use for preprocessing messages. Only works with language models.",
+)
+@click.option(
     "--trust-remote-code",
     is_flag=True,
     help="Enable trust_remote_code when loading models. This allows loading custom code from model repositories.",
@@ -210,6 +217,7 @@ def launch(
     enable_auto_tool_choice,
     tool_call_parser,
     reasoning_parser,
+    message_converter,
     trust_remote_code,
     chat_template_file,
     debug,
@@ -241,6 +249,7 @@ def launch(
         enable_auto_tool_choice=enable_auto_tool_choice,
         tool_call_parser=tool_call_parser,
         reasoning_parser=reasoning_parser,
+        message_converter=message_converter,
         trust_remote_code=trust_remote_code,
         chat_template_file=chat_template_file,
         debug=debug,

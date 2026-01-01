@@ -420,8 +420,9 @@ mlx-openai-server launch \
 - `--host`: Host to run the server on (default: 0.0.0.0)
 - `--disable-auto-resize`: Disable automatic model resizing. Only works for Vision Language Models.
 - `--enable-auto-tool-choice`: Enable automatic tool choice. Only works with language models (`lm` or `multimodal` model types).
-- `--tool-call-parser`: Specify tool call parser to use instead of auto-detection. Only works with language models (`lm` or `multimodal` model types). Available options: `qwen3`, `glm4_moe`, `qwen3_moe`, `qwen3_next`, `qwen3_vl`, `harmony`, `minimax`.
-- `--reasoning-parser`: Specify reasoning parser to use instead of auto-detection. Only works with language models (`lm` or `multimodal` model types). Available options: `qwen3`, `glm4_moe`, `qwen3_moe`, `qwen3_next`, `qwen3_vl`, `harmony`, `minimax`.
+- `--tool-call-parser`: Specify tool call parser to use instead of auto-detection. Only works with language models (`lm` or `multimodal` model types). Available options: `qwen3`, `glm4_moe`, `qwen3_moe`, `qwen3_next`, `qwen3_vl`, `harmony`, `minimax_m2`.
+- `--reasoning-parser`: Specify reasoning parser to use instead of auto-detection. Only works with language models (`lm` or `multimodal` model types). Available options: `qwen3`, `glm4_moe`, `qwen3_moe`, `qwen3_next`, `qwen3_vl`, `harmony`, `minimax_m2`.
+- `--message-converter`: Specify message converter to use for preprocessing messages. Only works with language models (`lm` or `multimodal` model types). Available options: `glm4_moe`, `minimax_m2`, `nemotron3_nano`. This converts OpenAI API format messages to model-specific format requirements.
 - `--trust-remote-code`: Enable `trust_remote_code` when loading models. This allows loading custom code from model repositories. Default: `False` (disabled). Only works with `lm` or `multimodal` model types.
 - `--chat-template-file`: Path to a custom chat template file. Only works with language models (`lm`) and multimodal models (`multimodal`). Default: `None` (uses model's default chat template).
 - `--log-file`: Path to log file. If not specified, logs will be written to 'logs/app.log' by default.
@@ -443,13 +444,36 @@ The following parsers are available for both tool call and reasoning parsing:
 - **`qwen3_next`**: Parser for Qwen3 Next model formats
 - **`qwen3_vl`**: Parser for Qwen3 Vision-Language model formats
 - **`harmony`**: Unified parser for Harmony/GPT-OSS models (handles both thinking and tools)
-- **`minimax`**: Parser for MiniMax model formats
+- **`minimax_m2`**: Parser for MiniMax model formats
 
 #### Parser Parameters
 
 - **`--tool-call-parser`**: Specify which parser to use for extracting tool calls from model responses
 - **`--reasoning-parser`**: Specify which parser to use for extracting reasoning/thinking content from model responses
 - **`--enable-auto-tool-choice`**: Enable automatic tool choice when using tool calling
+
+### Message Converter Configuration
+
+Message converters transform OpenAI API format messages into model-specific formats before they are processed. This is useful for models that have unique requirements for how messages should be structured, particularly for tool calls and function arguments.
+
+#### Available Message Converters
+
+- **`glm4_moe`**: Converter for GLM4 MoE models (converts function arguments from string to object format)
+- **`minimax`** or **`minimax_m2`**: Converter for MiniMax models (converts function arguments from string to object format)
+- **`nemotron3_nano`**: Converter for Nemotron3 Nano models (converts function arguments from string to object format)
+
+#### Message Converter Parameter
+
+- **`--message-converter`**: Specify which message converter to use for preprocessing messages before sending to the model
+
+#### When to Use Message Converters
+
+Use message converters when:
+- Your model requires function arguments in object format rather than JSON string format
+- The model's chat template expects specific message structure transformations
+- You need to preprocess messages for compatibility with model-specific requirements
+
+**Note:** Message converters are applied before parsers. The typical flow is: `Input Messages` → `Message Converter` → `Model` → `Parser` → `Output`
 
 #### Usage Examples
 
@@ -496,7 +520,27 @@ mlx-openai-server launch \
   --tool-call-parser harmony
 ```
 
-> **Note:** Parser configuration is only applicable to language models (`lm` or `multimodal` model types). If parsers are not specified, the server will not perform any parsing, and raw model responses will be returned.
+**With message converter for GLM4 MoE:**
+```bash
+mlx-openai-server launch \
+  --model-path /path/to/glm4-moe-model \
+  --model-type lm \
+  --tool-call-parser glm4_moe \
+  --reasoning-parser glm4_moe \
+  --message-converter glm4_moe
+```
+
+**With message converter for MiniMax-M2:**
+```bash
+mlx-openai-server launch \
+  --model-path /path/to/minimax-m2-model \
+  --model-type lm \
+  --tool-call-parser minimax_m2 \
+  --reasoning-parser minimax_m2 \
+  --message-converter minimax_m2
+```
+
+> **Note:** Parser configuration is only applicable to language models (`lm` or `multimodal` model types). If parsers are not specified, the server will not perform any parsing, and raw model responses will be returned. Message converters are optional and should only be used when the model requires specific message format transformations.
 
 #### Example Configurations
 
