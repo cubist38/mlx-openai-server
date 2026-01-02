@@ -34,7 +34,7 @@ class MLX_VLM:
         """
         try:
             self.model, self.processor = load(model_path, lazy=False, trust_remote_code=trust_remote_code)
-            self.max_kv_size = context_length
+            self.prompt_cache = make_prompt_cache(self.model.language_model, context_length)
             self.config = self.model.config
             if chat_template_file:
                 if not os.path.exists(chat_template_file):
@@ -122,14 +122,12 @@ class MLX_VLM:
             if "video_grid_thw" in inputs:
                 model_params["video_grid_thw"] = mx.array(inputs["video_grid_thw"])
 
-        prompt_cache = make_prompt_cache(self.model.language_model, self.max_kv_size)
-
         if stream:
             return stream_generate(
                 self.model,
                 self.processor,
                 prompt=text,
-                prompt_cache=prompt_cache,
+                prompt_cache=self.prompt_cache,
                 **model_params
             )
         else:
@@ -137,7 +135,7 @@ class MLX_VLM:
                 self.model,
                 self.processor,
                 prompt=text,
-                prompt_cache=prompt_cache,
+                prompt_cache=self.prompt_cache,
                 **model_params
             )
 
