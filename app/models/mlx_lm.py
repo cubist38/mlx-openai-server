@@ -37,7 +37,7 @@ class MLX_LM:
             self.pad_token_id = self.tokenizer.pad_token_id
             self.bos_token = self.tokenizer.bos_token
             self.model_type = self.model.model_type
-            self.max_kv_size = context_length
+            self.prompt_cache = make_prompt_cache(self.model, context_length)
             self.outlines_tokenizer = OutlinesTransformerTokenizer(self.tokenizer)
             if chat_template_file:
                 if not os.path.exists(chat_template_file):
@@ -186,7 +186,6 @@ class MLX_LM:
             )
         
         mx.random.seed(seed)
-        prompt_cache = make_prompt_cache(self.model, self.max_kv_size)
         
         input_prompt = self.tokenizer.apply_chat_template(
             messages,
@@ -208,7 +207,7 @@ class MLX_LM:
             input_prompt,
             sampler=sampler,
             max_tokens=max_tokens,
-            prompt_cache=prompt_cache,
+            prompt_cache=self.prompt_cache,
             logits_processors=logits_processors
         )
         if stream:
