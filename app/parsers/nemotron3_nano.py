@@ -96,7 +96,7 @@ class Nemotron3NanoToolParser(GLM4MoEToolParser):
                 try:
                     arguments[param_name] = json.loads(param_value)
                 except (json.JSONDecodeError, ValueError):
-                    pass
+                    arguments[param_name] = param_value
             
             tool_calls.append({
                 "name": function_name,
