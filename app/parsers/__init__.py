@@ -18,6 +18,7 @@ from .nemotron3_nano import Nemotron3NanoReasoningParser, Nemotron3NanoToolParse
 from .qwen3 import Qwen3ReasoningParser, Qwen3ToolParser
 from .qwen3_moe import Qwen3MoEReasoningParser, Qwen3MoEToolParser
 from .qwen3_vl import Qwen3VLReasoningParser, Qwen3VLToolParser
+from .iquest_coder_v1 import IQuestCoderV1ToolParser
 
 # Mapping from parser name strings to reasoning parser classes
 REASONING_PARSER_MAP: dict[str, type[AbstractReasoningParser]] = {
@@ -40,6 +41,7 @@ TOOL_PARSER_MAP: dict[str, type[AbstractToolParser]] = {
     "minimax_m2": MiniMaxM2ToolParser,
     "nemotron3_nano": Nemotron3NanoToolParser,
     "functiongemma": FunctionGemmaToolParser,
+    "iquest_coder_v1": IQuestCoderV1ToolParser,
 }
 
 # Unified parsers that handle BOTH reasoning and tool calls in one class
