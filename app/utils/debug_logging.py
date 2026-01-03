@@ -1,5 +1,6 @@
 """Debug logging utilities for request and generation statistics."""
 
+import time
 from typing import Any
 from loguru import logger
 
@@ -97,3 +98,26 @@ def log_debug_raw_text_response(raw_text: str) -> None:
     logger.info(f"Raw text: {raw_text}")
     logger.info("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
 
+def make_prompt_progress_callback(start_time: float | None = None) -> callable:
+    """Create a callback function for tracking prompt processing progress.
+    
+    Parameters
+    ----------
+    start_time : float | None
+        The start time for calculating speed. If None, uses current time.
+        
+    Returns
+    -------
+    callable
+        A callback function that logs processing progress.
+    """
+    if start_time is None:
+        start_time = time.time()
+    
+    def callback(processed: int, total_tokens: int) -> None:
+        """Log prompt processing progress with speed metrics."""
+        elapsed = time.time() - start_time
+        speed = processed / elapsed if elapsed > 0 else 0
+        logger.info(f"⚡ Processed {processed:6d}/{total_tokens} tokens ({speed:6.2f} tok/s)")
+    
+    return callback

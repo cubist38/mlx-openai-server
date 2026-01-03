@@ -12,7 +12,7 @@ from outlines.processors import JSONLogitsProcessor
 from mlx_lm.models.cache import make_prompt_cache
 from mlx_lm.sample_utils import make_sampler, make_logits_processors
 from ..utils.outlines_transformer_tokenizer import OutlinesTransformerTokenizer
-from ..utils.debug_logging import log_debug_prompt
+from ..utils.debug_logging import log_debug_prompt, make_prompt_progress_callback
 from typing import List, Dict, Union, Generator
 
 DEFAULT_TEMPERATURE = os.getenv("DEFAULT_TEMPERATURE", 0.7)
@@ -186,6 +186,8 @@ class MLX_LM:
             )
         
         mx.random.seed(seed)
+
+        prompt_progress_callback = make_prompt_progress_callback() if verbose else None
         
         input_prompt = self.tokenizer.apply_chat_template(
             messages,
@@ -208,7 +210,8 @@ class MLX_LM:
             sampler=sampler,
             max_tokens=max_tokens,
             prompt_cache=self.prompt_cache,
-            logits_processors=logits_processors
+            logits_processors=logits_processors,
+            prompt_progress_callback=prompt_progress_callback
         )
         if stream:
             return stream_response
@@ -263,3 +266,4 @@ if __name__ == "__main__":
     }
     response = model(messages, stream=False, **kwargs)
     print(response)
+
