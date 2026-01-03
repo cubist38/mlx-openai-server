@@ -224,9 +224,8 @@ class ChatCompletionRequestBase(OpenAIBaseModel):
     stop: list[str] | None = Field(None, description="List of stop sequences.")
     n: int | None = Field(1, description="Number of completions to generate.")
     response_format: dict[str, Any] | None = Field(None, description="Format for the response.")
-    seed: int | None = Field(
-        default_factory=lambda: random.randint(0, 1_000_000),
-        description="Random seed for reproducibility.",
+    seed: int = Field(
+        42, description="Seed for reproducibility.",
     )
     user: str | None = Field(None, description="User identifier.")
     repetition_penalty: float | None = Field(
