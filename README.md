@@ -420,7 +420,7 @@ mlx-openai-server launch \
 - `--host`: Host to run the server on (default: 0.0.0.0)
 - `--disable-auto-resize`: Disable automatic model resizing. Only works for Vision Language Models.
 - `--enable-auto-tool-choice`: Enable automatic tool choice. Only works with language models (`lm` or `multimodal` model types).
-- `--tool-call-parser`: Specify tool call parser to use instead of auto-detection. Only works with language models (`lm` or `multimodal` model types). Available options: `qwen3`, `glm4_moe`, `qwen3_moe`, `qwen3_next`, `qwen3_vl`, `harmony`, `minimax_m2`.
+- `--tool-call-parser`: Specify tool call parser to use instead of auto-detection. Only works with language models (`lm` or `multimodal` model types). Available options: `qwen3`, `glm4_moe`, `qwen3_coder`, `qwen3_moe`, `qwen3_next`, `qwen3_vl`, `harmony`, `minimax_m2`.
 - `--reasoning-parser`: Specify reasoning parser to use instead of auto-detection. Only works with language models (`lm` or `multimodal` model types). Available options: `qwen3`, `glm4_moe`, `qwen3_moe`, `qwen3_next`, `qwen3_vl`, `harmony`, `minimax_m2`.
 - `--message-converter`: Specify message converter to use for preprocessing messages. Only works with language models (`lm` or `multimodal` model types). Available options: `glm4_moe`, `minimax_m2`, `nemotron3_nano`. This converts OpenAI API format messages to model-specific format requirements.
 - `--trust-remote-code`: Enable `trust_remote_code` when loading models. This allows loading custom code from model repositories. Default: `False` (disabled). Only works with `lm` or `multimodal` model types.
@@ -440,6 +440,7 @@ The following parsers are available for both tool call and reasoning parsing:
 
 - **`qwen3`**: Parser for Qwen3 model formats
 - **`glm4_moe`**: Parser for GLM4 MoE model formats
+- **`qwen3_coder`**: Parser for Qwen3 Coder model formats (note: only tool-parser, the model lacks `<think>` blocks)
 - **`qwen3_moe`**: Parser for Qwen3 MoE model formats
 - **`qwen3_next`**: Parser for Qwen3 Next model formats
 - **`qwen3_vl`**: Parser for Qwen3 Vision-Language model formats
@@ -461,6 +462,7 @@ Message converters transform OpenAI API format messages into model-specific form
 - **`glm4_moe`**: Converter for GLM4 MoE models (converts function arguments from string to object format)
 - **`minimax`** or **`minimax_m2`**: Converter for MiniMax models (converts function arguments from string to object format)
 - **`nemotron3_nano`**: Converter for Nemotron3 Nano models (converts function arguments from string to object format)
+- **`qwen3_coder`**: Converter for Qwen3 Coder models (converts function arguments from string to object format)
 
 #### Message Converter Parameter
 
