@@ -16,6 +16,7 @@ from .hermes import HermesReasoningParser, HermesToolParser
 from .minimax_m2 import MiniMaxM2ReasoningParser, MiniMaxM2ToolParser
 from .nemotron3_nano import Nemotron3NanoReasoningParser, Nemotron3NanoToolParser
 from .qwen3 import Qwen3ReasoningParser, Qwen3ToolParser
+from .qwen3_coder import Qwen3CoderToolParser
 from .qwen3_moe import Qwen3MoEReasoningParser, Qwen3MoEToolParser
 from .qwen3_vl import Qwen3VLReasoningParser, Qwen3VLToolParser
 from .iquest_coder_v1 import IQuestCoderV1ToolParser
@@ -35,6 +36,7 @@ REASONING_PARSER_MAP: dict[str, type[AbstractReasoningParser]] = {
 TOOL_PARSER_MAP: dict[str, type[AbstractToolParser]] = {
     "hermes": HermesToolParser,
     "qwen3": Qwen3ToolParser,
+    "qwen3_coder": Qwen3CoderToolParser,
     "qwen3_moe": Qwen3MoEToolParser,
     "qwen3_vl": Qwen3VLToolParser,
     "glm4_moe": GLM4MoEToolParser,
@@ -295,6 +297,7 @@ __all__ = [
     # Tool parsers
     "HermesToolParser",
     "Qwen3ToolParser",
+    "Qwen3CoderToolParser",
     "Qwen3MoEToolParser",
     "Qwen3VLToolParser",
     "GLM4MoEToolParser",
