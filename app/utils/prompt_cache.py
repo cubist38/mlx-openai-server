@@ -174,7 +174,6 @@ class LRUPromptCache:
                     1,
                 )
                 prefix = min(len(tokens_ids) - 1, result.common_prefix)
-                print("PREFIX", prefix)
                 num_to_trim = len(result.longer) - prefix
                 trim_prompt_cache(trimmed_entry.prompt_cache, num_to_trim)
                 return trimmed_entry.prompt_cache, tokens_ids[prefix:]
