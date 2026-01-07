@@ -283,11 +283,13 @@ class MLXLMHandler:
 
         try:
             chat_messages, model_params = await self._prepare_text_request(request)
+            # Refine messages to remove None values and convert to the correct format
+            refined_messages = self.refine_messages(chat_messages)
 
             # Count prompt tokens
             chat_template_kwargs = model_params.get("chat_template_kwargs", {})
 
-            input_prompt = self.model.create_input_prompt(chat_messages, chat_template_kwargs)
+            input_prompt = self.model.create_input_prompt(refined_messages, chat_template_kwargs)
 
             if self.debug:
                 log_debug_prompt(input_prompt)
