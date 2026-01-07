@@ -8,11 +8,12 @@ from loguru import logger
 from ..models.mlx_lm import MLX_LM
 from ..core.queue import RequestQueue
 from ..utils.errors import create_error_response
-from ..utils.debug_logging import log_debug_request, log_debug_stats, log_debug_raw_text_response
 from ..parsers import ParserManager
 from ..message_converters import MessageConverterManager
 from typing import Any, AsyncGenerator, Dict, List, Optional, Tuple
-from ..schemas.openai import ChatCompletionRequest, EmbeddingRequest, UsageInfo
+from ..schemas.openai import ChatCompletionRequest, UsageInfo
+from ..utils.prompt_cache import LRUPromptCache
+from ..utils.debug_logging import log_debug_request, log_debug_stats, log_debug_raw_text_response, log_debug_prompt, make_prompt_progress_callback, log_debug_cache_stats
 
 class MLXLMHandler:
     """
@@ -45,6 +46,7 @@ class MLXLMHandler:
         self.debug = debug   
         self.reasoning_parser_name = reasoning_parser
         self.tool_parser_name = tool_call_parser
+        self.prompt_cache = LRUPromptCache()
         self.message_converter = MessageConverterManager.create_converter(message_converter)
         # Initialize request queue for text tasks
         self.request_queue = RequestQueue(max_concurrency=max_concurrency)
@@ -82,6 +84,24 @@ class MLXLMHandler:
         await self.request_queue.start(self._process_request)
         logger.info("Initialized MLXHandler and started request queue")
 
+    def refine_messages(self, messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """
+        Refine the messages to be more suitable for the model.
+        """
+        refined_messages = []
+
+        if self.message_converter:
+            logger.info("Message converter is enabled, converting messages...")
+            messages = self.message_converter.convert_messages(messages)
+            logger.info("Messages converted successfully")
+        
+        logger.info("Filtering out None values from messages...")
+        for message in messages:
+            cleaned_message = {k: v for k, v in message.items() if v is not None}
+            refined_messages.append(cleaned_message)
+        logger.info("Messages filtered successfully")
+        return refined_messages
+
     async def generate_text_stream(self, request: ChatCompletionRequest) -> AsyncGenerator[str, None]:
         """
         Generate a streaming response for text-only chat completion requests.
@@ -97,10 +117,28 @@ class MLXLMHandler:
 
         try:
             chat_messages, model_params = await self._prepare_text_request(request)
-            
-            # Count prompt tokens
+
+            refined_messages = self.refine_messages(chat_messages)
             chat_template_kwargs = model_params.get("chat_template_kwargs", {})
 
+            input_prompt = self.model.create_input_prompt(refined_messages, chat_template_kwargs)
+
+            if self.debug:
+                log_debug_prompt(input_prompt)
+
+            input_ids = self.model.encode_prompt(input_prompt)
+
+            cache, rest_input_ids = self.prompt_cache.fetch_nearest_cache(input_ids)
+
+            cache_key = rest_input_ids[:]
+
+            if cache is None:
+                cache = self.model.create_prompt_cache()
+
+            if self.debug:
+                log_debug_cache_stats(len(input_ids), len(rest_input_ids))
+
+                
             enable_thinking = chat_template_kwargs.get("enable_thinking", True)
 
             # Create parsers using ParserManager
@@ -114,9 +152,13 @@ class MLXLMHandler:
                 if parsers_result.reasoning_parser.respects_enable_thinking():
                     parsers_result.reasoning_parser = None
 
+            prompt_progress_callback = make_prompt_progress_callback() if self.debug else None
+
             request_data = {
-                "messages": chat_messages,
+                "input_ids": rest_input_ids,
+                "prompt_cache": cache,
                 "stream": True,
+                "prompt_progress_callback": prompt_progress_callback,
                 **model_params
             }
             
@@ -140,6 +182,7 @@ class MLXLMHandler:
                     final_chunk = chunk
                     text = chunk.text
                     raw_text += text
+                    cache_key.append(chunk.token)
                     
                     parsed_result, is_complete = unified_parser.parse_streaming(text)
                     if parsed_result:
@@ -163,6 +206,7 @@ class MLXLMHandler:
                     final_chunk = chunk
                     text = chunk.text
                     raw_text += text
+                    cache_key.append(chunk.token)
                     if is_first_chunk:
                         if reasoning_parser and hasattr(reasoning_parser, 'needs_redacted_reasoning_prefix'):
                             if reasoning_parser.needs_redacted_reasoning_prefix():
@@ -195,6 +239,7 @@ class MLXLMHandler:
                     yield text
 
             total_tokens = final_chunk.prompt_tokens + final_chunk.generation_tokens
+            self.prompt_cache.insert_cache(cache_key, cache)
 
             if self.debug:
                 log_debug_raw_text_response(raw_text)
@@ -242,18 +287,32 @@ class MLXLMHandler:
             # Count prompt tokens
             chat_template_kwargs = model_params.get("chat_template_kwargs", {})
 
+            input_prompt = self.model.create_input_prompt(chat_messages, chat_template_kwargs)
+
+            if self.debug:
+                log_debug_prompt(input_prompt)
+
+            input_ids = self.model.encode_prompt(input_prompt)
+
+            cache, rest_input_ids = self.prompt_cache.fetch_nearest_cache(input_ids)
+
+            cache_key = rest_input_ids[:]
+                        
+            if cache is None:
+                cache = self.model.create_prompt_cache()
+
+            if self.debug:
+                log_debug_cache_stats(len(input_ids), len(rest_input_ids))
+
             request_data = {
-                "messages": chat_messages,
+                "input_ids": rest_input_ids,
+                "prompt_cache": cache,
                 "stream": False,
                 **model_params
             }
 
-            if self.debug:
-                log_debug_request(request_data)
-                request_data["verbose"] = True
-
             response = await self.request_queue.submit(request_id, request_data)
-
+            
             # Create parsers using ParserManager
             parsers_result = ParserManager.create_parsers(
                 reasoning_parser_name=self.reasoning_parser_name,
@@ -268,6 +327,9 @@ class MLXLMHandler:
                     parsers_result.reasoning_parser = None
 
             response_text = response.text
+            cache_key += response.tokens
+
+            self.prompt_cache.insert_cache(cache_key, cache)
 
             parsed_response = {
                 "reasoning_content": None,
@@ -334,37 +396,6 @@ class MLXLMHandler:
             content = create_error_response(f"Failed to generate text response: {str(e)}", "server_error", HTTPStatus.INTERNAL_SERVER_ERROR)
             raise HTTPException(status_code=500, detail=content)
         
-    async def generate_embeddings_response(self, request: EmbeddingRequest):
-        """
-        Generate embeddings for a given text input.
-        
-        Args:
-            request: EmbeddingRequest object containing the text input.
-        
-        Returns:
-            List[float]: Embeddings for the input text.
-        """
-        try:
-            # Create a unique request ID
-            request_id = f"embeddings-{uuid.uuid4()}"
-            if isinstance(request.input, str):
-                request.input = [request.input]
-            request_data = {
-                "type": "embeddings",
-                "input": request.input,
-                "model": request.model
-            }
-
-            # Submit to the request queue
-            response = await self.request_queue.submit(request_id, request_data)
-
-            return response
-
-        except Exception as e:
-            logger.error(f"Error in embeddings generation: {str(e)}")
-            content = create_error_response(f"Failed to generate embeddings: {str(e)}", "server_error", HTTPStatus.INTERNAL_SERVER_ERROR)
-            raise HTTPException(status_code=500, detail=content)
-        
 
     async def _process_request(self, request_data: Dict[str, Any]) -> str:
         """
@@ -376,48 +407,22 @@ class MLXLMHandler:
         Returns:
             str: The model's response.
         """
-        try:
-            # Check if the request is for embeddings
-            if request_data.get("type") == "embeddings":
-                result = self.model.get_embeddings(request_data["input"])
-                # Force garbage collection after embeddings
-                gc.collect()
-                return result
+        try:            
+            input_ids = request_data.pop("input_ids")
+            prompt_cache = request_data.pop("prompt_cache")
+            stream = request_data.pop("stream")
 
-            # Extract request parameters
-            messages = request_data.get("messages", [])
-            stream = request_data.get("stream", False)
-            
-            # Remove these keys from model_params
-            model_params = request_data.copy()
-            model_params.pop("messages", None)
-            model_params.pop("stream", None)
-
-            
-            # Apply message converter if one is configured
-            if self.message_converter:
-                logger.info("Message converter is enabled, converting messages...")
-                messages = self.message_converter.convert_messages(messages)
-                logger.info("Messages converted successfully")
-
-            refined_messages = []
-            logger.info("Filtering out None values from messages...")
-            for message in messages:
-                cleaned_message = {k: v for k, v in message.items() if v is not None}
-                refined_messages.append(cleaned_message)
-            logger.info("Messages filtered successfully")
-            messages = refined_messages
-            
             # Call the model
             response = self.model(
-                messages=messages,
+                input_ids=input_ids,
+                prompt_cache=prompt_cache,
                 stream=stream,
-                **model_params
+                **request_data
             )            
             # Force garbage collection after model inference
             gc.collect()
             return response
-            
+
         except Exception as e:
             logger.error(f"Error processing text request: {str(e)}")
             # Clean up on error

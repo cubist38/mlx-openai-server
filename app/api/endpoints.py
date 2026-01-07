@@ -13,7 +13,7 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from loguru import logger
 import numpy as np
 
-from ..handler import MFLUX_AVAILABLE, MLXFluxHandler
+from ..handler import MLXFluxHandler, MLXEmbeddingsHandler
 from ..handler.mlx_lm import MLXLMHandler
 from ..handler.mlx_vlm import MLXVLMHandler
 from ..schemas.openai import (
@@ -223,6 +223,14 @@ async def embeddings(
             ),
             status_code=HTTPStatus.SERVICE_UNAVAILABLE,
         )
+    
+    if not isinstance(handler, MLXEmbeddingsHandler):
+        return JSONResponse(
+            content=create_error_response(
+                "Unsupported model type", "unsupported_request", HTTPStatus.BAD_REQUEST
+            ),
+            status_code=HTTPStatus.BAD_REQUEST,
+        )
 
     try:
         embeddings = await handler.generate_embeddings_response(request)
@@ -253,7 +261,7 @@ async def image_generations(
         )
 
     # Check if the handler is an MLXFluxHandler
-    if not MFLUX_AVAILABLE or not isinstance(handler, MLXFluxHandler):
+    if not isinstance(handler, MLXFluxHandler):
         return JSONResponse(
             content=create_error_response(
                 "Image generation requests require an image generation model. Use --model-type image-generation.",
@@ -293,10 +301,10 @@ async def create_image_edit(
         )
 
     # Check if the handler is an MLXFluxHandler
-    if not MFLUX_AVAILABLE or not isinstance(handler, MLXFluxHandler):
+    if not isinstance(handler, MLXFluxHandler):
         return JSONResponse(
             content=create_error_response(
-                "Image editing requests require an image generation model. Use --model-type image-generation.",
+                "Image editing requests require an image editing model. Use --model-type image-edit.",
                 "unsupported_request",
                 HTTPStatus.BAD_REQUEST,
             ),
