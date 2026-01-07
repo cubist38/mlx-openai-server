@@ -13,7 +13,7 @@ from ..message_converters import MessageConverterManager
 from typing import Any, AsyncGenerator, Dict, List, Optional, Tuple
 from ..schemas.openai import ChatCompletionRequest, UsageInfo
 from ..utils.prompt_cache import LRUPromptCache
-from ..utils.debug_logging import log_debug_request, log_debug_stats, log_debug_raw_text_response, log_debug_prompt, make_prompt_progress_callback
+from ..utils.debug_logging import log_debug_request, log_debug_stats, log_debug_raw_text_response, log_debug_prompt, make_prompt_progress_callback, log_debug_cache_stats
 
 class MLXLMHandler:
     """
@@ -134,6 +134,10 @@ class MLXLMHandler:
 
             if cache is None:
                 cache = self.model.create_prompt_cache()
+
+            if self.debug:
+                log_debug_cache_stats(len(input_ids), len(rest_input_ids))
+
                 
             enable_thinking = chat_template_kwargs.get("enable_thinking", True)
 
@@ -296,6 +300,9 @@ class MLXLMHandler:
                         
             if cache is None:
                 cache = self.model.create_prompt_cache()
+
+            if self.debug:
+                log_debug_cache_stats(len(input_ids), len(rest_input_ids))
 
             request_data = {
                 "input_ids": rest_input_ids,

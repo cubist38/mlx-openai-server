@@ -98,6 +98,28 @@ def log_debug_raw_text_response(raw_text: str) -> None:
     logger.info(f"Raw text: {raw_text}")
     logger.info("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
 
+
+def log_debug_cache_stats(total_input_tokens: int, remaining_tokens: int) -> None:
+    """Log prompt cache statistics in a beautiful format for debug mode.
+    
+    Parameters
+    ----------
+    total_input_tokens : int
+        Total number of input tokens before cache lookup.
+    remaining_tokens : int
+        Number of tokens remaining after cache hit.
+    """
+    cached_tokens = total_input_tokens - remaining_tokens
+    cache_hit_ratio = (cached_tokens / total_input_tokens * 100) if total_input_tokens > 0 else 0.0
+    logger.info("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+    logger.info("💾 DEBUG: Prompt Cache Statistics")
+    logger.info("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+    logger.info(f"📊 Total Input Tokens:  {total_input_tokens:,}")
+    logger.info(f"✅ Cached Tokens:       {cached_tokens:,}")
+    logger.info(f"🔄 Remaining Tokens:    {remaining_tokens:,}")
+    logger.info(f"📈 Cache Hit Ratio:     {cache_hit_ratio:.1f}%")
+    logger.info("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+
 def make_prompt_progress_callback(start_time: float | None = None) -> callable:
     """Create a callback function for tracking prompt processing progress.
     
