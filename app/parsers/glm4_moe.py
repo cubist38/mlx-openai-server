@@ -96,7 +96,7 @@ class GLM4MoEToolParser(AbstractToolParser):
                 arg_value = value.strip()
                 arg_dct[arg_key] = arg_value
             tool_calls.append({
-                "name": tc_name,
+                "name": tc_name.strip(),
                 "arguments": json.dumps(arg_dct, ensure_ascii=False)
             })
         return {
