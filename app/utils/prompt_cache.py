@@ -310,36 +310,39 @@ if __name__ == "__main__":
     from app.models.mlx_lm import MLX_LM
     model = MLX_LM("mlx-community/MiniMax-M2.1-4bit")
     prompt_cache = LRUPromptCache()
+
+    import time
+
+    start_time = time.time()
+    first_token = True
+
     prompt_1 = "Hello, how are you? I'm fine, thank you."
     input_prompt = model.create_input_prompt([{"role": "user", "content": prompt_1}], {})
     input_ids = model.encode_prompt(input_prompt)
-    # input_ids = [10, 25708, 1010, 11, 1010, 10, 3263, 1010, 58324, 4433, 1294, 1032, 1049, 1048, 6619, 11, 1010, 10, 1503, 19464, 1010, 12, 1010]
+
     cache, rest_input_ids = prompt_cache.fetch_nearest_cache(input_ids)
     if cache is None:
         cache = model.create_prompt_cache()
     cache_key = rest_input_ids[:]
 
-    print("REST INPUT IDS", rest_input_ids[:100])
-
-    import time
-    start_time = time.time()
-
     response_1 = model(rest_input_ids, cache, stream=True)
     for chunk in response_1:
         if chunk:
+            if first_token:
+                print("TIME TO FIRST TOKEN", time.time() - start_time)
+                first_token = False
             cache_key.append(chunk.token)
 
-    print(f"Time taken: {time.time() - start_time} seconds")
 
     prompt_cache.insert_cache(cache_key, cache)
 
+    start_time = time.time()
+    first_token = True
     prompt_2 = "Hello, how are you? I'm fine, thank you."
     input_prompt_2 = model.create_input_prompt([{"role": "user", "content": prompt_2}], {})
     input_ids_2 = model.encode_prompt(input_prompt_2)
-    # input_ids_2 = [10, 25708, 1010, 11, 1010, 10, 3263, 1010, 58324, 4433, 1294, 1032, 1049, 1048, 6619, 1044, 1294, 12859, 4453, 11, 1010, 10, 1503, 19464, 1010, 12, 1010]
     cache, rest_input_ids_2 = prompt_cache.fetch_nearest_cache(input_ids_2)
    
-    print("REST INPUT IDS 2", rest_input_ids_2[:100])
     if cache is None:
         cache = model.create_prompt_cache()
     cache_key_2 = rest_input_ids_2[:]
@@ -348,8 +351,9 @@ if __name__ == "__main__":
     response_2 = model(rest_input_ids_2, cache, stream=True)
     for chunk in response_2:
         if chunk:
+            if first_token:
+                print("TIME TO FIRST TOKEN", time.time() - start_time)
+                first_token = False
             cache_key_2.append(chunk.token)
-
-    print(f"Time taken: {time.time() - start_time} seconds")
 
     prompt_cache.insert_cache(cache_key_2, cache)
