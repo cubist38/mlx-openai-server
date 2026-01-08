@@ -108,7 +108,9 @@ The server supports six types of MLX models:
 
 ### Flux-Series Image Models
 
-The server supports multiple Flux and Qwen model configurations for advanced image generation and editing:
+> **⚠️ Note:** Image generation and editing capabilities require installation of `mflux`: `pip install mlx-openai-server[image-generation]` or `pip install git+https://github.com/cubist38/mflux.git`
+
+The server supports multiple Flux model configurations for advanced image generation and editing:
 
 #### Image Generation Models
 - **`flux-schnell`** - Fast generation with 4 default steps, no guidance (best for quick iterations)
@@ -202,6 +204,9 @@ Follow these steps to set up the MLX-powered server:
     git clone https://github.com/cubist38/mlx-openai-server.git
     cd mlx-openai-server
     pip install -e .
+    
+    # Optional: For image generation/editing support
+    pip install -e .[image-generation]
     ```
 
 ### Using Conda (Recommended)
@@ -236,6 +241,9 @@ For better environment management and to avoid architecture issues, we recommend
     git clone https://github.com/cubist38/mlx-openai-server.git
     cd mlx-openai-server
     pip install -e .
+    
+    # Optional: For image generation/editing support
+    pip install -e .[image-generation]
     ```
 
 ### Optional Dependencies
@@ -253,14 +261,43 @@ pip install mlx-openai-server
 - All core API endpoints and functionality
 
 #### Image Generation & Editing Support
-The server includes support for image generation and editing capabilities:
+For image generation and editing capabilities, install with the image-generation extra:
 
-**Additional features:**
+```bash
+# Install with image generation support
+pip install mlx-openai-server[image-generation]
+```
+
+Or install manually:
+```bash
+# First install the base server
+pip install mlx-openai-server
+
+# Then install mflux for image generation/editing support
+pip install git+https://github.com/cubist38/mflux.git
+```
+
+**Additional features with mflux:**
 - Image generation models (`--model-type image-generation`)
 - Image editing models (`--model-type image-edit`)
 - MLX Flux-series model support
 - Qwen Image model support
 - LoRA adapter support for fine-tuned generation and editing
+
+#### Enhanced Caching Support
+For enhanced caching and performance when working with complex ML models and objects, install with the enhanced-caching extra:
+
+```bash
+# Install with enhanced caching support
+pip install mlx-openai-server[enhanced-caching]
+```
+
+This enables better serialization and caching of objects from:
+- spaCy (NLP processing)
+- regex (regular expressions)
+- tiktoken (tokenization)
+- torch (PyTorch tensors and models)
+- transformers (Hugging Face models)
 
 #### Whisper Models Support
 For whisper models to work properly, you need to install ffmpeg:
