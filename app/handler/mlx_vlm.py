@@ -20,7 +20,7 @@ from ..core import ImageProcessor, AudioProcessor, VideoProcessor
 from ..utils.errors import create_error_response
 from ..utils.prompt_cache import LRUPromptCache
 from ..utils.debug_logging import log_debug_request, log_debug_stats, log_debug_raw_text_response, log_debug_prompt, log_debug_cache_stats
-from ..schemas.openai import ChatCompletionRequest, EmbeddingRequest, ChatCompletionContentPart, ChatCompletionContentPartImage, ChatCompletionContentPartInputAudio, ChatCompletionContentPartVideo, UsageInfo
+from ..schemas.openai import ChatCompletionRequest, ChatCompletionContentPart, ChatCompletionContentPartImage, ChatCompletionContentPartInputAudio, ChatCompletionContentPartVideo, UsageInfo
 
 class MLXVLMHandler:
     """
@@ -431,45 +431,6 @@ class MLXVLMHandler:
             logger.error(f"Error in multimodal response generation: {str(e)}")
             content = create_error_response(f"Failed to generate multimodal response: {str(e)}", "server_error", HTTPStatus.INTERNAL_SERVER_ERROR)
             raise HTTPException(status_code=500, detail=content)
-        
-    async def generate_embeddings_response(self, request: EmbeddingRequest):
-        """
-        Generate embeddings for a given text input.
-        
-        Args:
-            request: EmbeddingRequest object containing the text input.
-        
-        Returns:
-            List[float]: Embeddings for the input text or images
-        """
-        try:
-            # Create a unique request ID
-            image_url = request.image_url
-            # Process the image URL to get a local file path
-            images = []
-            if request.image_url:
-                image_result = await self.image_processor.process_image_url(image_url, resize=not self.disable_auto_resize)
-                images.append(image_result["path"])
-            request_id = f"embeddings-{uuid.uuid4()}"
-            if isinstance(request.input, str):
-                request.input = [request.input]
-            request_data = {
-                "type": "embeddings",
-                "input": request.input,
-                "model": request.model,
-                "images": images
-            }
-
-            # Submit to the request queue
-            response = await self.request_queue.submit(request_id, request_data)
-
-            return response
-
-        except Exception as e:
-            logger.error(f"Error in embeddings generation: {str(e)}")
-            content = create_error_response(f"Failed to generate embeddings: {str(e)}", "server_error", HTTPStatus.INTERNAL_SERVER_ERROR)
-            raise HTTPException(status_code=500, detail=content)
-
 
     def __del__(self):
         """Cleanup resources on deletion."""
