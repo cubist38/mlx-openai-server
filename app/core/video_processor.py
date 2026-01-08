@@ -1,141 +1,231 @@
-import os
-import gc
+"""Video processing utilities for MLX OpenAI server."""
+
+from __future__ import annotations
+
 import asyncio
+import gc
+from pathlib import Path
+from typing import Any
+from urllib.parse import urlparse
+
 from loguru import logger
-from typing import List
+
 from .base_processor import BaseProcessor
 
 
 class VideoProcessor(BaseProcessor):
     """Video processor for handling video files with caching, validation, and processing."""
-    
-    def __init__(self, max_workers: int = 4, cache_size: int = 1000):
+
+    def __init__(self, max_workers: int = 4, cache_size: int = 1000) -> None:
         super().__init__(max_workers, cache_size)
         # Supported video formats
-        self._supported_formats = {'.mp4', '.avi', '.mov'}
+        self._supported_formats = {".mp4", ".avi", ".mov", ".webm", ".mkv", ".flv"}
 
-    def _get_media_format(self, media_url: str, data: bytes = None) -> str:
-        """Determine video format from URL or data."""
+    def _get_media_format(self, media_url: str, _data: bytes | None = None) -> str:
+        """
+        Determine video format from URL or data.
+
+        Parameters
+        ----------
+        media_url : str
+            The URL or data URL of the video.
+        _data : bytes | None, optional
+            Optional raw bytes to aid detection.
+
+        Returns
+        -------
+        str
+            Video format string (e.g., 'mp4', 'mov').
+        """
         if media_url.startswith("data:"):
             # Extract format from data URL
             mime_type = media_url.split(";")[0].split(":")[1]
             if "mp4" in mime_type:
                 return "mp4"
-            elif "quicktime" in mime_type or "mov" in mime_type:
+            if "quicktime" in mime_type or "mov" in mime_type:
                 return "mov"
-            elif "x-msvideo" in mime_type or "avi" in mime_type:
+            if "x-msvideo" in mime_type or "avi" in mime_type:
                 return "avi"
+            if "webm" in mime_type:
+                return "webm"
+            if "x-matroska" in mime_type or "matroska" in mime_type:
+                return "mkv"
+            if "x-flv" in mime_type or "flv" in mime_type:
+                return "flv"
         else:
             # Extract format from file extension
-            ext = os.path.splitext(media_url.lower())[1]
+            parsed = urlparse(media_url)
+            if parsed.scheme:
+                # It's a URL, get the path part
+                path = parsed.path
+            else:
+                path = media_url
+            ext = Path(path.lower()).suffix
             if ext in self._supported_formats:
                 return ext[1:]  # Remove the dot
-        
+
         # Default to mp4 if format cannot be determined
         return "mp4"
 
     def _validate_media_data(self, data: bytes) -> bool:
-        """Basic validation of video data."""
+        """
+        Validate basic video data.
+
+        Parameters
+        ----------
+        data : bytes
+            Raw video bytes to validate.
+
+        Returns
+        -------
+        bool
+            True if the data appears to match a supported video format, False otherwise.
+        """
         if len(data) < 100:  # Too small to be a valid video file
             return False
-        
+
         # Check for common video file signatures
         video_signatures = [
             # MP4/M4V/MOV (ISO Base Media File Format)
-            (b'\x00\x00\x00\x14ftypisom', 0),  # MP4
-            (b'\x00\x00\x00\x18ftyp', 0),       # MP4/MOV
-            (b'\x00\x00\x00\x1cftyp', 0),       # MP4/MOV
-            (b'\x00\x00\x00\x20ftyp', 0),       # MP4/MOV
-            (b'ftyp', 4),                        # MP4/MOV (ftyp at offset 4)
-            
+            (b"\x00\x00\x00\x14ftypisom", 0),  # MP4
+            (b"\x00\x00\x00\x18ftyp", 0),  # MP4/MOV
+            (b"\x00\x00\x00\x1cftyp", 0),  # MP4/MOV
+            (b"\x00\x00\x00\x20ftyp", 0),  # MP4/MOV
+            (b"ftyp", 4),  # MP4/MOV (ftyp at offset 4)
             # AVI
-            (b'RIFF', 0),  # AVI (also check for 'AVI ' at offset 8)
-            
+            (b"RIFF", 0),  # AVI (also check for 'AVI ' at offset 8)
             # WebM/MKV (Matroska)
-            (b'\x1a\x45\xdf\xa3', 0),  # Matroska/WebM
-            
+            (b"\x1a\x45\xdf\xa3", 0),  # Matroska/WebM
             # FLV
-            (b'FLV\x01', 0),  # Flash Video
-            
+            (b"FLV\x01", 0),  # Flash Video
             # MPEG
-            (b'\x00\x00\x01\xba', 0),  # MPEG PS
-            (b'\x00\x00\x01\xb3', 0),  # MPEG PS
-            
+            (b"\x00\x00\x01\xba", 0),  # MPEG PS
+            (b"\x00\x00\x01\xb3", 0),  # MPEG PS
             # QuickTime
-            (b'moov', 0),  # QuickTime
-            (b'mdat', 0),  # QuickTime
+            (b"moov", 0),  # QuickTime
+            (b"mdat", 0),  # QuickTime
         ]
-        
+
         for sig, offset in video_signatures:
-            if len(data) > offset + len(sig):
-                if data[offset:offset+len(sig)] == sig:
+            if len(data) >= offset + len(sig):
+                if data[offset : offset + len(sig)] == sig:
                     # Additional validation for AVI
-                    if sig == b'RIFF' and len(data) > 12:
-                        if data[8:12] == b'AVI ':
+                    if sig == b"RIFF" and len(data) > 12:
+                        if data[8:12] == b"AVI ":
                             return True
-                    elif sig == b'RIFF':
+                    elif sig == b"RIFF":
                         continue  # Not AVI, might be WAV
                     else:
                         return True
-        
+
         # Check for ftyp box anywhere in first 32 bytes (MP4/MOV)
-        if b'ftyp' in data[:32]:
+        if b"ftyp" in data[:32]:
             return True
-        
+
         # Allow unknown formats to pass through for flexibility
         return True
 
     def _get_timeout(self) -> int:
-        """Get timeout for HTTP requests."""
+        """
+        Get timeout for HTTP requests.
+
+        Returns
+        -------
+        int
+            Timeout in seconds for video file requests.
+        """
         return 120  # Longer timeout for video files (2 minutes)
 
     def _get_max_file_size(self) -> int:
-        """Get maximum file size in bytes."""
+        """
+        Get maximum file size in bytes.
+
+        Returns
+        -------
+        int
+            Maximum allowed file size in bytes for videos.
+        """
         return 1024 * 1024 * 1024  # 1 GB limit for videos
 
-    def _process_media_data(self, data: bytes, cached_path: str, **kwargs) -> str:
-        """Process video data and save to cached path."""
+    def _process_media_data(self, data: bytes, cached_path: str, **_kwargs: Any) -> str:
+        """
+        Process video data and save to cached path.
+
+        Parameters
+        ----------
+        data : bytes
+            Raw video bytes to write to disk.
+        cached_path : str
+            Destination path to save the video file.
+        **_kwargs : Any
+            Additional keyword arguments (unused).
+
+        Returns
+        -------
+        str
+            Path to the saved cached video file.
+
+        Raises
+        ------
+        Exception
+            If writing the file to disk fails.
+        """
         try:
-            with open(cached_path, 'wb') as f:
+            with Path(cached_path).open("wb") as f:
                 f.write(data)
-            
+        except Exception as e:
+            logger.error(f"Failed to save video data. {type(e).__name__}: {e}")
+            raise
+        else:
             logger.info(f"Saved video to {cached_path} ({len(data)} bytes)")
             self._cleanup_old_files()
             return cached_path
-        except Exception as e:
-            logger.error(f"Failed to save video data: {str(e)}")
-            raise
 
     def _get_media_type_name(self) -> str:
-        """Get media type name for logging."""
+        """
+        Get media type name for logging.
+
+        Returns
+        -------
+        str
+            Human-readable media type name (e.g., 'video').
+        """
         return "video"
 
     async def process_video_url(self, video_url: str) -> str:
         """
         Process a single video URL and return path to cached file.
-        
+
         Supports:
         - HTTP/HTTPS URLs (downloads video)
         - Local file paths (copies to cache)
         - Data URLs (base64 encoded videos)
-        
-        Args:
-            video_url: URL, file path, or data URL of the video
-            
-        Returns:
-            Path to the cached video file in temp directory
+
+        Parameters
+        ----------
+        video_url : str
+            URL, file path, or data URL of the video.
+
+        Returns
+        -------
+        str
+            Path to the cached video file in the temporary directory.
         """
         return await self._process_single_media(video_url)
 
-    async def process_video_urls(self, video_urls: List[str]) -> List[str]:
+    async def process_video_urls(self, video_urls: list[str]) -> list[str | BaseException]:
         """
         Process multiple video URLs and return paths to cached files.
-        
-        Args:
-            video_urls: List of URLs, file paths, or data URLs of videos
-            
-        Returns:
-            List of paths to cached video files
+
+        Parameters
+        ----------
+        video_urls : list[str]
+            List of URLs, file paths, or data URLs of videos.
+
+        Returns
+        -------
+        list[str | BaseException]
+            List of cached file paths or BaseException instances for failed items.
         """
         tasks = [self.process_video_url(url) for url in video_urls]
         results = await asyncio.gather(*tasks, return_exceptions=True)
