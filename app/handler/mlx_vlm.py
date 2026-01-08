@@ -1,54 +1,104 @@
+"""MLX vision-language model handler for multimodal chat completions."""
+
+from __future__ import annotations
+
 import asyncio
 import base64
-import time
-import uuid
+from collections.abc import AsyncGenerator
 import gc
-
-from loguru import logger
 from http import HTTPStatus
-from fastapi import HTTPException
-from typing import Any, Dict, List, Optional, Tuple
+import time
+from typing import Any, NoReturn
+import uuid
 
+from fastapi import HTTPException
+from loguru import logger
+
+from ..core import AudioProcessor, ImageProcessor, VideoProcessor
 from ..core.queue import RequestQueue
+from ..message_converters import MessageConverterManager
 from ..models.mlx_vlm import MLX_VLM
 from ..parsers import ParserManager
-from ..message_converters import MessageConverterManager
-from ..core import ImageProcessor, AudioProcessor, VideoProcessor
+from ..schemas.openai import (
+    ChatCompletionContentPart,
+    ChatCompletionContentPartImage,
+    ChatCompletionContentPartInputAudio,
+    ChatCompletionContentPartText,
+    ChatCompletionContentPartVideo,
+    ChatCompletionRequest,
+    EmbeddingRequest,
+    UsageInfo,
+)
+from ..utils.debug_logging import log_debug_raw_text_response, log_debug_request, log_debug_stats
 from ..utils.errors import create_error_response
-from ..utils.debug_logging import log_debug_request, log_debug_stats, log_debug_raw_text_response
-from ..schemas.openai import ChatCompletionRequest, EmbeddingRequest, ChatCompletionContentPart, ChatCompletionContentPartImage, ChatCompletionContentPartInputAudio, ChatCompletionContentPartVideo, UsageInfo
+
 
 class MLXVLMHandler:
     """
     Handler class for making requests to the underlying MLX multimodal model service.
+
     Provides caching, concurrent image processing, audio processing, and robust error handling.
     """
 
-    def __init__(self, model_path: str, context_length: int = 32768, max_workers: int = 4, max_concurrency: int = 1, disable_auto_resize: bool = False, enable_auto_tool_choice: bool = False, tool_call_parser: str = None, reasoning_parser: str = None, message_converter: str = None, trust_remote_code: bool = False, chat_template_file: str = None, debug: bool = False):
-        """
-        Initialize the handler with the specified model path.
-        
-        Args:
-            model_path (str): Path to the model directory.
-            context_length (int): Maximum context length for the model.
-            max_workers (int): Maximum number of worker threads for image processing.
-            max_concurrency (int): Maximum number of concurrent model inference tasks.
-            disable_auto_resize (bool): Whether to disable automatic image resizing.
-            enable_auto_tool_choice (bool): Enable automatic tool choice.
-            tool_call_parser (str): Name of the tool call parser to use (qwen3, glm4_moe, harmony, minimax, ...)
-            reasoning_parser (str): Name of the reasoning parser to use (qwen3, qwen3_next, glm4_moe, harmony, minimax, ...).
-            trust_remote_code (bool): Enable trust_remote_code when loading models.
-            chat_template_file (str): Path to a custom chat template file.
+    def __init__(
+        self,
+        model_path: str,
+        *,
+        context_length: int = 32768,
+        max_workers: int = 4,
+        max_concurrency: int = 1,
+        disable_auto_resize: bool = False,
+        enable_auto_tool_choice: bool = False,
+        tool_call_parser: str | None = None,
+        reasoning_parser: str | None = None,
+        message_converter: str | None = None,
+        trust_remote_code: bool = False,
+        chat_template_file: str | None = None,
+        debug: bool = False,
+    ) -> None:
+        """Initialize the handler with the specified model path.
+
+        Parameters
+        ----------
+        model_path : str
+            Path to the model directory.
+        context_length : int, optional
+            Maximum context length for the model. Default is 32768.
+        max_workers : int, optional
+            Maximum number of worker threads for image processing. Default is 4.
+        max_concurrency : int, optional
+            Maximum number of concurrent model inference tasks. Default is 1.
+        disable_auto_resize : bool, optional
+            Whether to disable automatic image resizing. Default is False.
+        enable_auto_tool_choice : bool, optional
+            Enable automatic tool choice. Default is False.
+        tool_call_parser : str | None, optional
+            Tool call parser name.
+        reasoning_parser : str | None, optional
+            Reasoning parser name.
+        message_converter : str | None, optional
+            Message converter name.
+        trust_remote_code : bool, optional
+            Whether to trust remote code. Default is False.
+        chat_template_file : str | None, optional
+            Path to a custom chat template file.
+        debug : bool, optional
+            Enable debug mode. Default is False.
         """
         self.model_path = model_path
-        self.model = MLX_VLM(model_path, context_length=context_length, trust_remote_code=trust_remote_code, chat_template_file=chat_template_file)
+        self.model = MLX_VLM(
+            model_path,
+            context_length=context_length,
+            trust_remote_code=trust_remote_code,
+            chat_template_file=chat_template_file or "",
+        )
         self.image_processor = ImageProcessor(max_workers)
         self.audio_processor = AudioProcessor(max_workers)
         self.video_processor = VideoProcessor(max_workers)
         self.disable_auto_resize = disable_auto_resize
         self.model_created = int(time.time())  # Store creation time when model is loaded
         self.model_type = self.model.get_model_type()
-        
+
         # Store parser configuration
         self.enable_auto_tool_choice = enable_auto_tool_choice
         self.reasoning_parser_name = reasoning_parser
@@ -61,66 +111,85 @@ class MLXVLMHandler:
         # We use the same queue for both multimodal and text tasks for simplicity
         # and to ensure we don't overload the model with too many concurrent requests
         self.request_queue = RequestQueue(max_concurrency=max_concurrency)
-        
-        logger.info(f"Initialized MLXHandler with model path: {model_path}")
+
+        logger.info(f"Initialized MLXVLMHandler with model path: {model_path}")
         if disable_auto_resize:
             logger.info("Auto-resize is disabled for image processing")
 
-    async def get_models(self) -> List[Dict[str, Any]]:
-        """
-        Get list of available models with their metadata.
+    async def get_models(self) -> list[dict[str, Any]]:
+        """Get list of available models with their metadata.
+
+        Returns
+        -------
+        list[dict[str, Any]]
+            List of available models with their metadata.
         """
         try:
-            return [{
-                "id": self.model_path,
-                "object": "model",
-                "created": self.model_created,
-                "owned_by": "local"
-            }]
+            return [
+                {
+                    "id": self.model_path,
+                    "object": "model",
+                    "created": self.model_created,
+                    "owned_by": "local",
+                }
+            ]
         except Exception as e:
-            logger.error(f"Error getting models: {str(e)}")
+            logger.error(f"Error getting models. {type(e).__name__}: {e}")
             return []
-    
-    async def initialize(self, queue_config: Optional[Dict[str, Any]] = None):
-        """Initialize the handler and start the request queue."""
-        
+
+    async def initialize(self, queue_config: dict[str, Any] | None = None) -> None:
+        """Initialize the handler and start the request queue.
+
+        Parameters
+        ----------
+        queue_config : dict[str, Any] | None, optional
+            Configuration for the request queue. Expected keys include
+            ``max_concurrency``, ``timeout``, and ``queue_size``. If None,
+            the current request queue defaults are used.
+        """
         if not queue_config:
-            queue_config = {
-                "max_concurrency": 1,
-                "timeout": 300,
-                "queue_size": 100
-            }
+            queue_config = {"max_concurrency": self.request_queue.max_concurrency}
         self.request_queue = RequestQueue(
-            max_concurrency=queue_config.get("max_concurrency"),
-            timeout=queue_config.get("timeout"),
-            queue_size=queue_config.get("queue_size")
+            max_concurrency=queue_config.get("max_concurrency", self.request_queue.max_concurrency),
+            timeout=queue_config.get("timeout", self.request_queue.timeout),
+            queue_size=queue_config.get("queue_size", self.request_queue.queue_size),
         )
         await self.request_queue.start(self._process_request)
-        logger.info("Initialized MLXHandler and started request queue")
+        logger.info("Initialized MLXVLMHandler and started request queue")
 
-    async def generate_multimodal_stream(self, request: ChatCompletionRequest):
+    async def generate_multimodal_stream(
+        self, request: ChatCompletionRequest
+    ) -> AsyncGenerator[Any, None]:
+        """Generate a streaming response for multimodal chat completion requests.
+
+        Parameters
+        ----------
+        request : ChatCompletionRequest
+            ChatCompletionRequest object containing the messages and parameters.
+
+        Yields
+        ------
+        Any
+            Streaming response chunks. Typically strings for text chunks or dicts
+            when parsers produce structured output. A usage dict with token counts
+            is yielded at the end of the stream.
         """
-        Generate a streaming response for multimodal chat completion requests.
-        
-        Args:
-            request: ChatCompletionRequest object containing the messages.
-        
-        Returns:
-            AsyncGenerator: Yields response chunks.
-        """
-        
-        # Create a unique request ID
-        request_id = f"multimodal-{uuid.uuid4()}"
-        
         try:
+            # Enforce streaming mode for queued multimodal requests to ensure
+            # the underlying model returns a generator instead of a full string.
+            request.stream = True
+
+            # Create a unique request ID
+            request_id = f"multimodal-{uuid.uuid4()}"
+
             request_dict = await self._prepare_multimodal_request(request)
 
             if self.debug:
                 log_debug_request(request_dict)
                 request_dict["verbose"] = True
-            
+
             # Submit to the multimodal queue and get the generator
-            response_generator = await self.request_queue.submit(request_id, request_dict)    
+            response_generator = await self.request_queue.submit(request_id, request_dict)
 
             # Create parsers using ParserManager
             parsers_result = ParserManager.create_parsers(
@@ -150,23 +219,31 @@ class MLXVLMHandler:
                     final_chunk = chunk
                     text = chunk.text
                     raw_text += text
-                    
-                    parsed_result, is_complete = unified_parser.parse_streaming(text)
-                    if parsed_result:
-                        # Unified parser returns dict with reasoning_content, tool_calls, content
-                        if parsed_result.get("reasoning_content"):
-                            yield {"reasoning_content": parsed_result["reasoning_content"]}
-                        if parsed_result.get("tool_calls"):
-                            for tool_call in parsed_result["tool_calls"]:
-                                yield tool_call
-                        if parsed_result.get("content"):
-                            yield parsed_result["content"]
-                    # Continue processing all chunks even if is_complete is True
+
+                    if unified_parser:
+                        parsed_result, is_complete = unified_parser.parse_streaming(text)
+                        if parsed_result:
+                            # Unified parser may return a dict or a passthrough string
+                            if isinstance(parsed_result, dict):
+                                reasoning = parsed_result.get("reasoning_content")
+                                if reasoning:
+                                    yield {"reasoning_content": reasoning}
+                                tool_calls = parsed_result.get("tool_calls")
+                                if tool_calls:
+                                    for tool_call in tool_calls:
+                                        yield tool_call
+                                content = parsed_result.get("content")
+                                if content:
+                                    yield content
+                            else:
+                                # passthrough string chunk
+                                yield parsed_result
+                        # Continue processing all chunks even if is_complete is True
             else:
                 # Handle separate parsers streaming
                 reasoning_parser = parsers_result.reasoning_parser
                 tool_parser = parsers_result.tool_parser
-                
+
                 for chunk in response_generator:
                     if chunk is None:
                         continue
@@ -174,16 +251,22 @@ class MLXVLMHandler:
                     text = chunk.text
                     raw_text += text
                     if is_first_chunk:
-                        if reasoning_parser and hasattr(reasoning_parser, 'needs_redacted_reasoning_prefix'):
+                        if reasoning_parser and hasattr(
+                            reasoning_parser, "needs_redacted_reasoning_prefix"
+                        ):
                             if reasoning_parser.needs_redacted_reasoning_prefix():
                                 text = reasoning_parser.get_reasoning_open() + text
                         is_first_chunk = False
                     if reasoning_parser:
-                        parsed_content, is_complete = reasoning_parser.extract_reasoning_streaming(text)
-                        
-                        if parsed_content:
-                            after_reasoning_close_content = parsed_content.get("after_reasoning_close_content")
-                            yield parsed_content
+                        parsed_reasoning_content, is_complete = (
+                            reasoning_parser.extract_reasoning_streaming(text)
+                        )
+
+                        if isinstance(parsed_reasoning_content, dict):
+                            after_reasoning_close_content = parsed_reasoning_content.get(
+                                "after_reasoning_close_content"
+                            )
+                            yield parsed_reasoning_content
                         if is_complete:
                             reasoning_parser = None
                         if after_reasoning_close_content:
@@ -192,12 +275,14 @@ class MLXVLMHandler:
                         else:
                             continue
                     if tool_parser:
-                        parsed_content, is_complete = tool_parser.extract_tool_calls_streaming(text)
-                        if parsed_content:
-                            content = parsed_content.get("content")
+                        parsed_tool_content, is_complete = tool_parser.extract_tool_calls_streaming(
+                            text
+                        )
+                        if isinstance(parsed_tool_content, dict):
+                            content = parsed_tool_content.get("content")
                             if content:
                                 yield content
-                            tool_calls = parsed_content.get("tool_calls")
+                            tool_calls = parsed_tool_content.get("tool_calls")
                             if tool_calls:
                                 for tool_call in tool_calls:
                                     yield tool_call
@@ -205,57 +290,74 @@ class MLXVLMHandler:
 
                     yield text
 
-            total_tokens = final_chunk.prompt_tokens + final_chunk.generation_tokens
-            
-            if self.debug:
-                log_debug_raw_text_response(raw_text)
-                log_debug_stats(
-                    final_chunk.prompt_tokens,
-                    final_chunk.generation_tokens,
-                    total_tokens,
-                    final_chunk.generation_tps,
-                    final_chunk.peak_memory
-                )
+            if final_chunk is not None:
+                prompt_tokens = getattr(final_chunk, "prompt_tokens", 0)
+                generation_tokens = getattr(final_chunk, "generation_tokens", 0)
+                total_tokens = prompt_tokens + generation_tokens
 
-            yield {
-                "__usage__": UsageInfo(
-                    prompt_tokens=final_chunk.prompt_tokens,
-                    completion_tokens=final_chunk.generation_tokens,
-                    total_tokens=total_tokens
-                )
-            }
-        
-        except asyncio.QueueFull:
+                if self.debug:
+                    log_debug_raw_text_response(raw_text)
+                    log_debug_stats(
+                        prompt_tokens,
+                        generation_tokens,
+                        total_tokens,
+                        getattr(final_chunk, "generation_tps", 0.0),
+                        getattr(final_chunk, "peak_memory", 0.0),
+                    )
+
+                yield {
+                    "__usage__": UsageInfo(
+                        prompt_tokens=prompt_tokens,
+                        completion_tokens=generation_tokens,
+                        total_tokens=total_tokens,
+                    )
+                }
+
+        except asyncio.QueueFull as e:
             logger.error("Too many requests. Service is at capacity.")
-            content = create_error_response("Too many requests. Service is at capacity.", "rate_limit_exceeded", HTTPStatus.TOO_MANY_REQUESTS)
-            raise HTTPException(status_code=429, detail=content)
-
+            detail = create_error_response(
+                "Too many requests. Service is at capacity.",
+                "rate_limit_exceeded",
+                HTTPStatus.TOO_MANY_REQUESTS,
+            )
+            raise HTTPException(status_code=HTTPStatus.TOO_MANY_REQUESTS, detail=detail) from e
+        except HTTPException:
+            # Preserve existing HTTP error semantics from request prep
+            raise
         except Exception as e:
-            logger.error(f"Error in multimodal stream generation for request {request_id}: {str(e)}")
-            content = create_error_response(f"Failed to generate multimodal stream: {str(e)}", "server_error", HTTPStatus.INTERNAL_SERVER_ERROR)
-            raise HTTPException(status_code=500, detail=content)
+            logger.error(
+                f"Error in multimodal stream generation for request {request_id}. {type(e).__name__}: {e}"
+            )
+            detail = create_error_response(
+                f"Failed to generate multimodal stream: {e}",
+                "server_error",
+                HTTPStatus.INTERNAL_SERVER_ERROR,
+            )
+            raise HTTPException(status_code=HTTPStatus.INTERNAL_SERVER_ERROR, detail=detail) from e
 
-    async def generate_multimodal_response(self, request: ChatCompletionRequest):
-        """
-        Generate a complete response for multimodal chat completion requests.
-        Uses the request queue for handling concurrent requests.
-        
-        Args:
-            request: ChatCompletionRequest object containing the messages.
-        
-        Returns:
-            str: Complete response.
+    async def generate_multimodal_response(self, request: ChatCompletionRequest) -> dict[str, Any]:
+        """Generate a complete response for multimodal chat completion requests.
+
+        Parameters
+        ----------
+        request : ChatCompletionRequest
+            The incoming chat completion request.
+
+        Returns
+        -------
+        dict[str, Any]
+            Dictionary with keys ``response`` (parsed response dict) and ``usage`` (UsageInfo).
         """
         try:
             # Create a unique request ID
             request_id = f"multimodal-{uuid.uuid4()}"
-            
+
             request_dict = await self._prepare_multimodal_request(request)
 
             if self.debug:
                 log_debug_request(request_dict)
                 request_dict["verbose"] = True
-        
+
             response = await self.request_queue.submit(request_id, request_dict)
 
             # Create parsers using ParserManager
@@ -272,21 +374,30 @@ class MLXVLMHandler:
                 if parsers_result.reasoning_parser.respects_enable_thinking():
                     parsers_result.reasoning_parser = None
 
-            parsed_response = {
+            parsed_response: dict[str, Any] = {
                 "reasoning_content": None,
                 "tool_calls": None,
-                "content": None
+                "content": None,
             }
-            response_text = response.text
+
+            response_text = getattr(response, "text", "")
 
             # Handle unified parser
             if parsers_result.is_unified:
                 unified_parser = parsers_result.unified_parser
-                parsed_result = unified_parser.parse(response_text)
-                if parsed_result:
-                    parsed_response["reasoning_content"] = parsed_result.get("reasoning_content")
-                    parsed_response["tool_calls"] = parsed_result.get("tool_calls")
-                    parsed_response["content"] = parsed_result.get("content")
+                if unified_parser:
+                    parsed_result = unified_parser.parse(response_text)
+                    if parsed_result is not None:
+                        if isinstance(parsed_result, dict):
+                            parsed_response["reasoning_content"] = parsed_result.get(
+                                "reasoning_content"
+                            )
+                            parsed_response["tool_calls"] = parsed_result.get("tool_calls")
+                            parsed_response["content"] = parsed_result.get("content")
+                        elif isinstance(parsed_result, str):
+                            parsed_response["content"] = parsed_result
+
+            # (later) compute tokens safely
             # Handle separate parsers
             elif parsers_result.reasoning_parser or parsers_result.tool_parser:
                 reasoning_parser = parsers_result.reasoning_parser
@@ -296,150 +407,154 @@ class MLXVLMHandler:
                     response_text = reasoning_parser.get_reasoning_open() + response_text
 
                 if reasoning_parser:
-                    parsed_content = reasoning_parser.extract_reasoning(response_text)
-                    parsed_response["reasoning_content"] = parsed_content.get("reasoning_content")
-                    parsed_response["content"] = parsed_content.get("content")
-                    response_text = parsed_content.get("after_reasoning_close_content")
+                    parsed_reasoning_content = reasoning_parser.extract_reasoning(response_text)
+                    if isinstance(parsed_reasoning_content, dict):
+                        parsed_response["reasoning_content"] = parsed_reasoning_content.get(
+                            "reasoning_content"
+                        )
+                        parsed_response["content"] = parsed_reasoning_content.get("content")
+                        response_text = parsed_reasoning_content.get(
+                            "after_reasoning_close_content"
+                        )
 
                 if response_text:
                     if tool_parser:
-                        parsed_content = tool_parser.extract_tool_calls(response_text)
-                        parsed_response["tool_calls"] = parsed_content.get("tool_calls")
-                        parsed_response["content"] = parsed_content.get("content")
+                        parsed_tool_content = tool_parser.extract_tool_calls(response_text)
+                        if isinstance(parsed_tool_content, dict):
+                            parsed_response["tool_calls"] = parsed_tool_content.get("tool_calls")
+                            parsed_response["content"] = parsed_tool_content.get("content")
             else:
                 parsed_response["content"] = response_text
 
-            total_tokens = response.prompt_tokens + response.generation_tokens
+            prompt_tokens = getattr(response, "prompt_tokens", 0)
+            generation_tokens = getattr(response, "generation_tokens", 0)
+            total_tokens = prompt_tokens + generation_tokens
 
             if self.debug:
-                log_debug_raw_text_response(response.text)
+                log_debug_raw_text_response(getattr(response, "text", ""))
                 log_debug_stats(
-                    response.prompt_tokens,
-                    response.generation_tokens,
+                    prompt_tokens,
+                    generation_tokens,
                     total_tokens,
-                    response.generation_tps,
-                    response.peak_memory
+                    getattr(response, "generation_tps", 0.0),
+                    getattr(response, "peak_memory", 0.0),
                 )
-            
+
             usage = UsageInfo(
-                prompt_tokens=response.prompt_tokens,
-                completion_tokens=response.generation_tokens,
-                total_tokens=total_tokens
+                prompt_tokens=prompt_tokens,
+                completion_tokens=generation_tokens,
+                total_tokens=total_tokens,
             )
-            
+
+        except Exception as e:
+            logger.error(f"Error in multimodal response generation: {e!s}")
+            content = create_error_response(
+                f"Failed to generate multimodal response: {e!s}",
+                "server_error",
+                HTTPStatus.INTERNAL_SERVER_ERROR,
+            )
+            raise HTTPException(status_code=500, detail=content) from e
+        else:
             return {"response": parsed_response, "usage": usage}
-                        
-        except asyncio.QueueFull:
-            logger.error("Too many requests. Service is at capacity.")
-            content = create_error_response("Too many requests. Service is at capacity.", "rate_limit_exceeded", HTTPStatus.TOO_MANY_REQUESTS)
-            raise HTTPException(status_code=429, detail=content)
-        except Exception as e:
-            logger.error(f"Error in multimodal response generation: {str(e)}")
-            content = create_error_response(f"Failed to generate multimodal response: {str(e)}", "server_error", HTTPStatus.INTERNAL_SERVER_ERROR)
-            raise HTTPException(status_code=500, detail=content)
-        
-    async def generate_embeddings_response(self, request: EmbeddingRequest):
+
+    async def generate_embeddings_response(self, _request: EmbeddingRequest) -> NoReturn:
+        """Generate embeddings for a given text input.
+
+        Notes
+        -----
+        Embeddings are not supported for VLM models.
+
+        Parameters
+        ----------
+        _request : EmbeddingRequest
+            EmbeddingRequest object (not used).
+
+        Raises
+        ------
+        HTTPException
+            Always raises HTTP 400 indicating embeddings are not supported.
         """
-        Generate embeddings for a given text input.
-        
-        Args:
-            request: EmbeddingRequest object containing the text input.
-        
-        Returns:
-            List[float]: Embeddings for the input text or images
+        # Embeddings are not supported for VLM models
+        content = create_error_response(
+            "Embeddings are not supported for VLM models",
+            "bad_request",
+            HTTPStatus.BAD_REQUEST,
+        )
+        raise HTTPException(status_code=HTTPStatus.BAD_REQUEST, detail=content)
+
+    async def close(self) -> None:
+        """Clean up resources asynchronously.
+
+        Returns
+        -------
+        None
         """
-        try:
-            # Create a unique request ID
-            image_url = request.image_url
-            # Process the image URL to get a local file path
-            images = []
-            if request.image_url:
-                image_result = await self.image_processor.process_image_url(image_url, resize=not self.disable_auto_resize)
-                images.append(image_result["path"])
-            request_id = f"embeddings-{uuid.uuid4()}"
-            if isinstance(request.input, str):
-                request.input = [request.input]
-            request_data = {
-                "type": "embeddings",
-                "input": request.input,
-                "model": request.model,
-                "images": images
-            }
-
-            # Submit to the request queue
-            response = await self.request_queue.submit(request_id, request_data)
-
-            return response
-
-        except Exception as e:
-            logger.error(f"Error in embeddings generation: {str(e)}")
-            content = create_error_response(f"Failed to generate embeddings: {str(e)}", "server_error", HTTPStatus.INTERNAL_SERVER_ERROR)
-            raise HTTPException(status_code=500, detail=content)
-
-
-    def __del__(self):
-        """Cleanup resources on deletion."""
-        # Removed async cleanup from __del__; use close() instead
-        pass
-
-    async def close(self):
-        """Explicitly cleanup resources asynchronously."""
-        if hasattr(self, 'image_processor'):
+        if hasattr(self, "image_processor"):
             await self.image_processor.cleanup()
-        if hasattr(self, 'audio_processor'):
+        if hasattr(self, "audio_processor"):
             await self.audio_processor.cleanup()
-        if hasattr(self, 'video_processor'):
+        if hasattr(self, "video_processor"):
             await self.video_processor.cleanup()
 
-    async def cleanup(self):
+    async def cleanup(self) -> None:
+        """Cleanup resources and stop the request queue before shutdown.
+
+        Notes
+        -----
+        Ensures pending requests are cancelled and resources such as
+        the image, audio, and video processors are released.
+
+        Returns
+        -------
+        None
         """
-        Cleanup resources and stop the request queue before shutdown.
-        
-        This method ensures all pending requests are properly cancelled
-        and resources are released, including the image processor.
-        """
-        try:
-            logger.info("Cleaning up MLXVLMHandler resources")
-            if hasattr(self, 'request_queue'):
+        logger.info("Cleaning up MLXVLMHandler resources")
+        if hasattr(self, "request_queue"):
+            try:
                 await self.request_queue.stop()
-            if hasattr(self, 'image_processor'):
+            except Exception as e:
+                logger.error(f"Error stopping request queue: {e}")
+        if hasattr(self, "image_processor"):
+            try:
                 await self.image_processor.cleanup()
-            if hasattr(self, 'audio_processor'):
+            except Exception as e:
+                logger.error(f"Error cleaning up image processor: {e}")
+        if hasattr(self, "audio_processor"):
+            try:
                 await self.audio_processor.cleanup()
-            if hasattr(self, 'video_processor'):
+            except Exception as e:
+                logger.error(f"Error cleaning up audio processor: {e}")
+        if hasattr(self, "video_processor"):
+            try:
                 await self.video_processor.cleanup()
+            except Exception as e:
+                logger.error(f"Error cleaning up video processor: {e}")
 
-            # Force garbage collection after cleanup
-            gc.collect()
-            logger.info("MLXVLMHandler cleanup completed successfully")
-        except Exception as e:
-            logger.error(f"Error during MLXVLMHandler cleanup: {str(e)}")
-            raise
+        # Force garbage collection after cleanup
+        gc.collect()
+        logger.info("MLXVLMHandler cleanup completed successfully")
 
-    async def _process_request(self, request_data: Dict[str, Any]) -> str:
-        """
-        Process a multimodal request. This is the worker function for the request queue.
-        
-        Args:
-            request_data: Dictionary containing the request data.
-            
-        Returns:
-            str: The model's response.
+    async def _process_request(self, request_data: dict[str, Any]) -> tuple[Any, int]:
+        """Process a multimodal request (worker for the request queue).
+
+        Parameters
+        ----------
+        request_data : dict[str, Any]
+            Dictionary containing the request data. Expected keys include ``messages`` and ``stream``.
+
+        Returns
+        -------
+        tuple[Any, int]
+            Tuple (response, prompt_tokens) where ``response`` is the model response
+            and ``prompt_tokens`` is the number of prompt tokens used.
         """
         try:
-            
             # Extract request parameters
-            images = request_data.get("images", [])
-            audios = request_data.get("audios", [])
-            videos = request_data.get("videos", [])
             messages = request_data.get("messages", [])
             stream = request_data.get("stream", False)
-         
+
             # Remove these keys from model_params
             model_params = request_data.copy()
-            model_params.pop("images", None)
-            model_params.pop("audios", None)
-            model_params.pop("videos", None)
             model_params.pop("messages", None)
             model_params.pop("stream", None)
 
@@ -455,104 +570,112 @@ class MLXVLMHandler:
                 refined_messages.append(cleaned_message)
             logger.info("Messages filtered successfully")
             messages = refined_messages
-            
+
             # Call the model
             response = self.model(
-                images=images,
-                audios=audios,
-                videos=videos,
                 messages=messages,
                 stream=stream,
-                **model_params
+                **model_params,
             )
             # Force garbage collection after model inference
             gc.collect()
-            return response
-            
+
         except Exception as e:
-            logger.error(f"Error processing multimodal request: {str(e)}")
+            logger.error(f"Error processing multimodal request. {type(e).__name__}: {e}")
             # Clean up on error
             gc.collect()
             raise
+        else:
+            return response, getattr(response, "prompt_tokens", 0)
 
-    async def get_queue_stats(self) -> Dict[str, Any]:
-        """
-        Get statistics from the request queue and performance metrics.
-        
-        Returns:
-            Dict with queue and performance statistics.
-        """
-        queue_stats = self.request_queue.get_queue_stats()
-        
-        return {
-            "queue_stats": queue_stats,
-        }
+    async def get_queue_stats(self) -> dict[str, Any]:
+        """Get statistics from the request queue.
 
-    async def _reformat_multimodal_content_part(self, content_part: ChatCompletionContentPart) -> Tuple[Dict[str, Any], bool]:
+        Returns
+        -------
+        dict[str, Any]
+            Queue statistics.
         """
-        Reformat a multimodal message content part into a dictionary.
+        return self.request_queue.get_queue_stats()
+
+    async def _reformat_multimodal_content_part(
+        self, content_part: ChatCompletionContentPart
+    ) -> dict[str, Any]:
+        """Reformat a multimodal message content part into a dictionary.
+
+        Parameters
+        ----------
+        content_part : ChatCompletionContentPart
+            The content part to reformat.
+
+        Returns
+        -------
+        dict[str, Any]
+            Processed content part dictionary and optional path info.
         """
-        if isinstance(content_part, ChatCompletionContentPartImage):
+        if (
+            isinstance(content_part, ChatCompletionContentPartImage)
+            and content_part.image_url is not None
+        ):
             image_url = content_part.image_url.url
-            image_path = await self.image_processor.process_image_url(image_url, resize=not self.disable_auto_resize)
-            return {
-                "content_part": {
-                    "type": "image",
-                    "image": image_path
-                },
-                "path": image_path
-            }
+            # Validate base64 data URLs before processing
+            self._validate_image_url(image_url)
+            image_path = await self.image_processor.process_image_url(
+                image_url, resize=not self.disable_auto_resize
+            )
+            return {"content_part": {"type": "image", "image": image_path}, "path": image_path}
 
-        if isinstance(content_part, ChatCompletionContentPartInputAudio):
-            audio_url = content_part.input_audio.data
-            audio_path = await self.audio_processor.process_audio_url(audio_url)
-            return {
-                "content_part": {
-                    "type": "audio",
-                    "audio": audio_path
-                },
-                "path": audio_path
-            }
+        if (
+            isinstance(content_part, ChatCompletionContentPartInputAudio)
+            and content_part.input_audio is not None
+        ):
+            content = create_error_response(
+                "Audio input is not supported for VLM models",
+                "bad_request",
+                HTTPStatus.BAD_REQUEST,
+            )
+            raise HTTPException(status_code=HTTPStatus.BAD_REQUEST, detail=content)
 
-        if isinstance(content_part, ChatCompletionContentPartVideo):
+        if (
+            isinstance(content_part, ChatCompletionContentPartVideo)
+            and content_part.video_url is not None
+        ):
             video_url = content_part.video_url.url
+            # Note: Video validation could be added here if needed
             video_path = await self.video_processor.process_video_url(video_url)
             return {
                 "content_part": {
                     "type": "video",
                     "video": video_path,
                 },
-                "path": video_path
+                "path": video_path,
             }
 
-        return {
-            "content_part": {
-                "type": "text",
-                "text": content_part.text
-            }
-        }
+        if isinstance(content_part, ChatCompletionContentPartText):
+            return {"content_part": {"type": "text", "text": content_part.text}}
 
+        # Fallback for unknown types
+        return {"content_part": {"type": "text", "text": str(content_part)}}
 
-    async def _prepare_multimodal_request(self, request: ChatCompletionRequest) -> Tuple[List[Dict[str, Any]], List[str], List[str], Dict[str, Any]]:
-        """
-        Prepare the multimodal request by processing messages with text, images, and audio.
-        
-        This method:
-        1. Extracts text messages, image URLs, and audio data from the request
-        2. Processes image URLs and audio data to get local file paths
-        3. Prepares model parameters
-        4. Returns processed data ready for model inference
-        
-        Args:
-            request (ChatCompletionRequest): The incoming request containing messages and parameters.
-            
-        Returns:
-            Tuple[List[Dict[str, Any]], List[str], List[str], Dict[str, Any]]: A tuple containing:
-                - List of processed chat messages
-                - List of processed image paths
-                - List of processed audio paths
-                - List of processed video paths
-                - Dictionary of model parameters
+    async def _prepare_multimodal_request(self, request: ChatCompletionRequest) -> dict[str, Any]:
+        """Prepare the multimodal request by processing messages with text, images, and videos.
+
+        Parameters
+        ----------
+        request : ChatCompletionRequest
+            The incoming request containing messages and parameters.
+
+        Returns
+        -------
+        dict[str, Any]
+            A dictionary containing processed request data with keys such as
+            ``messages``, ``images``, ``videos``, and model parameters
+            (e.g., temperature, top_p, max_tokens).
+
+        Raises
+        ------
+        HTTPException
+            If the request is invalid or processing fails.
         """
         chat_messages = []
         images = []
@@ -573,13 +696,15 @@ class MLXVLMHandler:
                     if isinstance(message.content, str):
                         chat_messages.append({"role": "user", "content": message.content})
                         continue
-                        
+
                     # Case 2: Content is a list of dictionaries or objects
                     if isinstance(message.content, list):
                         formatted_content_parts = []
 
                         for content_part in message.content:
-                            formatted_content_part = await self._reformat_multimodal_content_part(content_part)
+                            formatted_content_part = await self._reformat_multimodal_content_part(
+                                content_part
+                            )
                             if isinstance(content_part, ChatCompletionContentPartImage):
                                 images.append(formatted_content_part["path"])
                             elif isinstance(content_part, ChatCompletionContentPartInputAudio):
@@ -590,9 +715,17 @@ class MLXVLMHandler:
                             formatted_content_parts.append(formatted_content_part["content_part"])
                         chat_messages.append({"role": "user", "content": formatted_content_parts})
                     else:
-                        content = create_error_response("Invalid message content format", "invalid_request_error", HTTPStatus.BAD_REQUEST)
-                        raise HTTPException(status_code=400, detail=content)
+                        content = create_error_response(
+                            "Invalid message content format",
+                            "invalid_request_error",
+                            HTTPStatus.BAD_REQUEST,
+                        )
+                        raise HTTPException(status_code=HTTPStatus.BAD_REQUEST, detail=content)
+                elif message.role == "tool":
+                    chat_messages.append({"role": "tool", "content": message.content})
+                    continue
 
+            chat_template_kwargs = request.chat_template_kwargs.model_dump()
             request_dict = {
                 "messages": chat_messages,
                 "images": images,
@@ -603,8 +736,8 @@ class MLXVLMHandler:
                 "frequency_penalty": request.frequency_penalty,
                 "presence_penalty": request.presence_penalty,
                 "max_tokens": request.max_tokens,
-                "chat_template_kwargs": request.chat_template_kwargs.model_dump(),
-                "stream": request.stream
+                "chat_template_kwargs": chat_template_kwargs,
+                "stream": request.stream,
             }
 
             tools = request.tools or None
@@ -613,33 +746,41 @@ class MLXVLMHandler:
             if tools:
                 # Enable auto tool choice if requested via CLI flag
                 if self.enable_auto_tool_choice and tool_choice == "auto":
-                    request_dict["chat_template_kwargs"]["tool_choice"] = "auto"
+                    chat_template_kwargs["tool_choice"] = "auto"
                 elif tool_choice:
                     logger.warning("Tool choice has not supported yet, will be ignored.")
-                request_dict["chat_template_kwargs"]["tools"] = tools
-            return request_dict
+                chat_template_kwargs["tools"] = tools
 
         except HTTPException:
             raise
         except Exception as e:
-            logger.error(f"Failed to prepare multimodal request: {str(e)}")
-            content = create_error_response(f"Failed to process request: {str(e)}", "bad_request", HTTPStatus.BAD_REQUEST)
-            raise HTTPException(status_code=400, detail=content)
-            
+            logger.error(f"Failed to prepare multimodal request. {type(e).__name__}: {e}")
+            content = create_error_response(
+                f"Failed to process request: {e}", "bad_request", HTTPStatus.BAD_REQUEST
+            )
+            raise HTTPException(status_code=HTTPStatus.BAD_REQUEST, detail=content) from e
+        else:
+            return request_dict
+
     def _validate_image_url(self, url: str) -> None:
-        """
-        Validate image URL format.
-        
-        Args:
-            url: The image URL to validate
-            
-        Raises:
-            HTTPException: If URL is invalid
+        """Validate image URL format.
+
+        Parameters
+        ----------
+        url : str
+            The image URL to validate.
+
+        Raises
+        ------
+        HTTPException
+            If the URL is invalid or base64 decoding fails.
         """
         if not url:
-            content = create_error_response("Empty image URL provided", "invalid_request_error", HTTPStatus.BAD_REQUEST)
-            raise HTTPException(status_code=400, detail=content)
-            
+            content = create_error_response(
+                "Empty image URL provided", "invalid_request_error", HTTPStatus.BAD_REQUEST
+            )
+            raise HTTPException(status_code=HTTPStatus.BAD_REQUEST, detail=content)
+
         # Validate base64 images
         if url.startswith("data:"):
             try:
@@ -648,23 +789,30 @@ class MLXVLMHandler:
                     raise ValueError("Invalid image format")
                 base64.b64decode(encoded)
             except Exception as e:
-                content = create_error_response(f"Invalid base64 image: {str(e)}", "invalid_request_error", HTTPStatus.BAD_REQUEST)
-                raise HTTPException(status_code=400, detail=content)
-                
+                content = create_error_response(
+                    f"Invalid base64 image: {e}", "invalid_request_error", HTTPStatus.BAD_REQUEST
+                )
+                raise HTTPException(status_code=HTTPStatus.BAD_REQUEST, detail=content) from e
+
     def _validate_audio_data(self, url: str) -> None:
-        """
-        Validate audio data URL format.
-        
-        Args:
-            url: The audio data URL to validate
-            
-        Raises:
-            HTTPException: If audio data is invalid
+        """Validate audio data URL format.
+
+        Parameters
+        ----------
+        url : str
+            The audio data URL to validate.
+
+        Raises
+        ------
+        HTTPException
+            If the audio data is invalid or base64 decoding fails.
         """
         if not url:
-            content = create_error_response("Empty audio data provided", "invalid_request_error", HTTPStatus.BAD_REQUEST)
-            raise HTTPException(status_code=400, detail=content)
-            
+            content = create_error_response(
+                "Empty audio data provided", "invalid_request_error", HTTPStatus.BAD_REQUEST
+            )
+            raise HTTPException(status_code=HTTPStatus.BAD_REQUEST, detail=content)
+
         # Validate base64 audio
         if url.startswith("data:"):
             try:
@@ -673,5 +821,7 @@ class MLXVLMHandler:
                     raise ValueError("Invalid audio format")
                 base64.b64decode(encoded)
             except Exception as e:
-                content = create_error_response(f"Invalid base64 audio: {str(e)}", "invalid_request_error", HTTPStatus.BAD_REQUEST)
-                raise HTTPException(status_code=400, detail=content)
+                content = create_error_response(
+                    f"Invalid base64 audio: {e}", "invalid_request_error", HTTPStatus.BAD_REQUEST
+                )
+                raise HTTPException(status_code=HTTPStatus.BAD_REQUEST, detail=content) from e
