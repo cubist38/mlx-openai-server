@@ -1,17 +1,41 @@
 import os
+import torch
 import mlx.core as mx
-from loguru import logger
-from typing import List, Dict, Union, Generator
+from dataclasses import dataclass
+from typing import List, Dict, Union, Generator, Any
 from mlx_vlm.models.cache import make_prompt_cache
-from mlx_vlm import load, generate, stream_generate
+from mlx_vlm import load, stream_generate
 from mlx_vlm.video_generate import process_vision_info
-from ..utils.debug_logging import log_debug_prompt
+from ..utils.prompt_cache import LRUPromptCache
 
 # Default model parameters
 DEFAULT_MAX_TOKENS = os.getenv("DEFAULT_MAX_TOKENS", 8192)
 DEFAULT_TEMPERATURE = os.getenv("DEFAULT_TEMPERATURE", 0.0)
 DEFAULT_TOP_P = os.getenv("DEFAULT_TOP_P", 1.0)
 DEFAULT_SEED = os.getenv("DEFAULT_SEED", 0)
+
+@dataclass
+class CompletionResponse:
+    """
+    The output of :func:`__call__` when stream is False.
+
+    Args:
+        text (str): The next segment of decoded text. This can be an empty string.
+        tokens (List[int]): The list of tokens in the response.
+        peak_memory (float): The peak memory used so far in GB.
+        generation_tps (float): The tokens-per-second for generation.
+        generation_tokens (int): The number of generated tokens.
+        prompt_tps (float): The prompt processing tokens-per-second.
+        prompt_tokens (int): The number of tokens in the prompt.
+    """
+
+    text: str = None
+    tokens: List[int] = None
+    peak_memory: float = None
+    generation_tps: float = None
+    prompt_tps: float = None
+    prompt_tokens: int = None
+    generation_tokens: int = None
 
 class MLX_VLM:
     """
@@ -34,8 +58,8 @@ class MLX_VLM:
         """
         try:
             self.model, self.processor = load(model_path, lazy=False, trust_remote_code=trust_remote_code)
-            self.prompt_cache = make_prompt_cache(self.model.language_model, context_length)
             self.config = self.model.config
+            self.context_length = context_length
             if chat_template_file:
                 if not os.path.exists(chat_template_file):
                     raise ValueError(f"Chat template file {chat_template_file} does not exist")
@@ -52,24 +76,40 @@ class MLX_VLM:
     def get_model_type(self):
         return self.config.model_type
 
+    def create_prompt_cache(self) -> List[Any]:
+        return make_prompt_cache(self.model.language_model, self.context_length)
+
+    def create_input_prompt(self, messages: List[Dict[str, str]], chat_template_kwargs: Dict[str, Any]) -> str:
+        return self.processor.apply_chat_template(
+            messages,
+            tokenize=False,
+            add_generation_prompt=True,
+            **chat_template_kwargs
+        )
+
+    def create_inputs(self, text: str, images: List[str] = None, videos: List[str] = None) -> Dict[str, Any]:
+        return self.processor(
+            text=[text],
+            images=images,
+            videos=videos,
+            padding=True,
+            return_tensors="pt"
+        )
+
     def __call__(
         self, 
-        messages: List[Dict[str, str]], 
-        images: List[str] = None,
-        audios: List[str] = None,
-        videos: List[str] = None,
+        prompt: str,
+        prompt_cache: List[Any] = None,
         stream: bool = False, 
-        verbose: bool = False,
         **kwargs
-    ) -> Union[str, Generator[str, None, None]]:
+    ) -> Union[CompletionResponse, Generator[str, None, None]]:
         """
         Generate text response from images and messages.
         
         Args:
-            images (List[str]): List of image paths to process.
-            messages (List[Dict[str, str]]): List of message dictionaries with 'role' and 'content' keys.
+            inputs (Dict[str, Any]): Dictionary containing the inputs for the model.
             stream (bool, optional): Whether to stream the response. Defaults to False.
-            **kwargs: Additional model parameters (chat_template_kwargs, temperature, max_tokens, etc.)
+            **kwargs: Additional model parameters (temperature, max_tokens, etc.)
             
         Returns:
             Union[str, Generator[str, None, None]]: 
@@ -77,76 +117,46 @@ class MLX_VLM:
                 - If stream=True: Generator yielding response chunks
         """
 
-        if images and videos:
-            raise ValueError("Cannot process both images and videos in the same request")
-
-        if videos and not self._is_video_model():
-            raise ValueError("Model is not a video model")
-
-        text = self.processor.apply_chat_template(
-            messages,
-            tokenize=False,
-            add_generation_prompt=True,
-            **kwargs.get("chat_template_kwargs", {})
-        )
-        if verbose:
-            log_debug_prompt(text)
-        
-        image_inputs, video_inputs = process_vision_info(messages)
-
-        inputs = self.processor(
-            text=[text],
-            images=image_inputs,
-            videos=video_inputs,
-            padding=True,
-            return_tensors="pt"
-        )
-
-        model_params = {
-            "input_ids": mx.array(inputs["input_ids"]),
-            "mask": mx.array(inputs["attention_mask"]),
+        response_generator = stream_generate(
+            self.model,
+            self.processor,
+            prompt=prompt,
+            prompt_cache=prompt_cache,
             **kwargs
-        }
-
-        if images:
-            if "pixel_values" in inputs:
-                model_params["pixel_values"] = mx.array(inputs["pixel_values"])
-            if "image_grid_thw" in inputs:
-                model_params["image_grid_thw"] = mx.array(inputs["image_grid_thw"])
-            if "image_sizes" in inputs:
-                model_params["image_sizes"] = mx.array(inputs["image_sizes"])
-
-        if videos:
-            if "pixel_values" in inputs:
-                model_params["pixel_values"] = mx.array(inputs["pixel_values_videos"])
-            if "video_grid_thw" in inputs:
-                model_params["video_grid_thw"] = mx.array(inputs["video_grid_thw"])
+        )
 
         if stream:
-            return stream_generate(
-                self.model,
-                self.processor,
-                prompt=text,
-                prompt_cache=self.prompt_cache,
-                **model_params
-            )
-        else:
-            return generate(
-                self.model,
-                self.processor,
-                prompt=text,
-                prompt_cache=self.prompt_cache,
-                **model_params
-            )
+            return response_generator
+
+        text = ""
+        tokens = []
+        final_chunk = None
+
+        for chunk in response_generator:
+            if chunk and chunk.text:
+                text += chunk.text
+                tokens.append(chunk.token)
+                final_chunk = chunk
+
+        return CompletionResponse(
+            text=text,
+            tokens=tokens,
+            peak_memory=final_chunk.peak_memory,
+            generation_tps=final_chunk.generation_tps,
+            prompt_tps=final_chunk.prompt_tps,
+            prompt_tokens=final_chunk.prompt_tokens,
+            generation_tokens=final_chunk.generation_tokens,
+        )
 
 
 if __name__ == "__main__":
+    import time
+
     image_path = "examples/images/attention.png"
     video_path = "examples/videos/demo.mp4"
     model_path = "mlx-community/Qwen3-VL-2B-Thinking-8bit"
 
-    model = MLX_VLM(model_path)
-    print("MODEL TYPE: ", model.get_model_type())
+    model = MLX_VLM(model_path, context_length=2048)
 
     tools = [{
         "type": "function",
@@ -162,18 +172,9 @@ if __name__ == "__main__":
             "required": ["city"]
         }}   
     ]
-    kwargs = {
-        "chat_template_kwargs": {
-            "tools": tools,
-            "enable_thinking": True,
-        },
-        "temperature": 0.0,
-        "top_p": 1.0,
-        "seed": 0,
-        "max_tokens": 8192,
-        "frequency_penalty": 0.0,
-        "presence_penalty": 0.0,
-        "images": [image_path],
+    chat_template_kwargs = {
+        "tools": tools,
+        "enable_thinking": True,
     }
     messages = [
         {
@@ -190,41 +191,33 @@ if __name__ == "__main__":
             ]
         }
     ]
+    prompt_cache = LRUPromptCache()
 
-    from app.parsers.qwen3_vl import Qwen3VLReasoningParser, Qwen3VLToolParser
-    reasoning_parser = Qwen3VLReasoningParser()
-    tool_parser = Qwen3VLToolParser()
+    input_prompt = model.create_input_prompt(messages, chat_template_kwargs)
 
-    response = model(messages, stream=True, **kwargs)
-    after_thinking_close_content = None
-    final_chunk = None
-    is_first_chunk = True
-    for chunk in response:
-        if chunk is None:
-            continue
-        final_chunk = chunk
-        text = chunk.text
-        if is_first_chunk:
-            if reasoning_parser and reasoning_parser.needs_redacted_reasoning_prefix():
-                text = reasoning_parser.get_reasoning_open() + text
-            is_first_chunk = False
-        if reasoning_parser:
-            parsed_content, is_complete = reasoning_parser.extract_reasoning_streaming(text)
-            
-            if parsed_content:
-                if isinstance(parsed_content, dict):
-                    after_thinking_close_content = parsed_content.pop("content", None)
-                print(f"Parsed content: {parsed_content}")
-            if is_complete:
-                reasoning_parser = None
-            if after_thinking_close_content:
-                text = after_thinking_close_content
-            else:
-                continue
-        if tool_parser:
-            parsed_content, is_complete = tool_parser.extract_tool_calls_streaming(text)
-            if parsed_content:
-                print(f"Parsed content: {parsed_content}")
-            if is_complete:
-                tool_parser = None
-            continue
+    image_inputs, video_inputs = process_vision_info(messages)
+
+    inputs = model.create_inputs(input_prompt, image_inputs, video_inputs)
+
+    inputs["prompt"] = input_prompt
+
+    list_input_ids = inputs["input_ids"][0].tolist()
+
+    for key, value in inputs.items():
+        if isinstance(value, torch.Tensor):
+            inputs[key] = mx.array(value)
+
+    cache, rest_input_ids = prompt_cache.fetch_nearest_cache(list_input_ids)
+    if cache is None:
+        cache = model.create_prompt_cache()
+    
+    cache_key = rest_input_ids[:]
+
+    print("TOTAL CACHED TOKENS: ", len(list_input_ids) - len(rest_input_ids))
+
+    first_token = True
+
+    start_time = time.time()
+    response = model(inputs, cache, stream=False)
+    
+    print("RESPONSE: ", response)

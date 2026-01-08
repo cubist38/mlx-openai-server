@@ -3,11 +3,14 @@ import base64
 import time
 import uuid
 import gc
+import torch
+import mlx.core as mx
 
 from loguru import logger
 from http import HTTPStatus
 from fastapi import HTTPException
 from typing import Any, Dict, List, Optional, Tuple
+from mlx_vlm.video_generate import process_vision_info
 
 from ..core.queue import RequestQueue
 from ..models.mlx_vlm import MLX_VLM
@@ -15,7 +18,8 @@ from ..parsers import ParserManager
 from ..message_converters import MessageConverterManager
 from ..core import ImageProcessor, AudioProcessor, VideoProcessor
 from ..utils.errors import create_error_response
-from ..utils.debug_logging import log_debug_request, log_debug_stats, log_debug_raw_text_response
+from ..utils.prompt_cache import LRUPromptCache
+from ..utils.debug_logging import log_debug_request, log_debug_stats, log_debug_raw_text_response, log_debug_prompt, log_debug_cache_stats
 from ..schemas.openai import ChatCompletionRequest, EmbeddingRequest, ChatCompletionContentPart, ChatCompletionContentPartImage, ChatCompletionContentPartInputAudio, ChatCompletionContentPartVideo, UsageInfo
 
 class MLXVLMHandler:
@@ -56,6 +60,8 @@ class MLXVLMHandler:
         self.message_converter = MessageConverterManager.create_converter(message_converter)
         # Debug mode
         self.debug = debug
+        # Initialize prompt cache
+        self.prompt_cache = LRUPromptCache()
 
         # Initialize request queue for multimodal and text tasks
         # We use the same queue for both multimodal and text tasks for simplicity
@@ -114,7 +120,47 @@ class MLXVLMHandler:
         
         try:
             request_dict = await self._prepare_multimodal_request(request)
+            
+            # Extract messages, images, videos, audios for prompt cache preparation
+            messages = request_dict["messages"]
+            chat_template_kwargs = request_dict["chat_template_kwargs"]
+            
+            # Create input prompt
+            input_prompt = self.model.create_input_prompt(messages, chat_template_kwargs)
+            
+            if self.debug:
+                log_debug_prompt(input_prompt)
+            
+            # Process vision info and create inputs
+            image_inputs, video_inputs = process_vision_info(messages)
+            inputs = self.model.create_inputs(input_prompt, image_inputs, video_inputs)
+            
+            request_dict["prompt"] = input_prompt
+            
+            # Extract input_ids for cache lookup
+            list_input_ids = inputs["input_ids"][0].tolist()
+            
+            # Convert torch tensors to mlx arrays
+            for key, value in inputs.items():
+                if isinstance(value, torch.Tensor):
+                    inputs[key] = mx.array(value)
 
+            # merge all keys from inputs to request_dict
+            request_dict.update(inputs)
+            
+            # Fetch nearest cache
+            cache, rest_input_ids = self.prompt_cache.fetch_nearest_cache(list_input_ids)
+            cache_key = rest_input_ids[:]
+            
+            if cache is None:
+                cache = self.model.create_prompt_cache()
+            
+            if self.debug:
+                log_debug_cache_stats(len(list_input_ids), len(rest_input_ids))
+            
+            request_dict["prompt_cache"] = cache
+            request_dict["stream"] = True
+            
             if self.debug:
                 log_debug_request(request_dict)
                 request_dict["verbose"] = True
@@ -128,7 +174,6 @@ class MLXVLMHandler:
                 tool_parser_name=self.tool_parser_name,
             )
 
-            chat_template_kwargs = request_dict.get("chat_template_kwargs", {})
             enable_thinking = chat_template_kwargs.get("enable_thinking", True)
 
             # Handle enable_thinking flag for separate reasoning parsers
@@ -150,6 +195,7 @@ class MLXVLMHandler:
                     final_chunk = chunk
                     text = chunk.text
                     raw_text += text
+                    cache_key.append(chunk.token)
                     
                     parsed_result, is_complete = unified_parser.parse_streaming(text)
                     if parsed_result:
@@ -173,6 +219,7 @@ class MLXVLMHandler:
                     final_chunk = chunk
                     text = chunk.text
                     raw_text += text
+                    cache_key.append(chunk.token)
                     if is_first_chunk:
                         if reasoning_parser and hasattr(reasoning_parser, 'needs_redacted_reasoning_prefix'):
                             if reasoning_parser.needs_redacted_reasoning_prefix():
@@ -206,6 +253,9 @@ class MLXVLMHandler:
                     yield text
 
             total_tokens = final_chunk.prompt_tokens + final_chunk.generation_tokens
+            
+            # Insert cache after generation completes
+            self.prompt_cache.insert_cache(cache_key, cache)
             
             if self.debug:
                 log_debug_raw_text_response(raw_text)
@@ -251,6 +301,46 @@ class MLXVLMHandler:
             request_id = f"multimodal-{uuid.uuid4()}"
             
             request_dict = await self._prepare_multimodal_request(request)
+            
+            # Extract messages, images, videos, audios for prompt cache preparation
+            messages = request_dict["messages"]
+            chat_template_kwargs = request_dict["chat_template_kwargs"]
+            
+            # Create input prompt
+            input_prompt = self.model.create_input_prompt(messages, chat_template_kwargs)
+            
+            if self.debug:
+                log_debug_prompt(input_prompt)
+            
+            # Process vision info and create inputs
+            image_inputs, video_inputs = process_vision_info(messages)
+            inputs = self.model.create_inputs(input_prompt, image_inputs, video_inputs)
+
+            request_dict["prompt"] = input_prompt
+            
+            # Extract input_ids for cache lookup
+            list_input_ids = inputs["input_ids"][0].tolist()
+            
+            # Convert torch tensors to mlx arrays
+            for key, value in inputs.items():
+                if isinstance(value, torch.Tensor):
+                    inputs[key] = mx.array(value)
+
+            # merge all keys from inputs to request_dict
+            request_dict.update(inputs)
+            
+            # Fetch nearest cache
+            cache, rest_input_ids = self.prompt_cache.fetch_nearest_cache(list_input_ids)
+            cache_key = rest_input_ids[:]
+            
+            if cache is None:
+                cache = self.model.create_prompt_cache()
+            
+            if self.debug:
+                log_debug_cache_stats(len(list_input_ids), len(rest_input_ids))
+            
+            request_dict["prompt_cache"] = cache
+            request_dict["stream"] = False
 
             if self.debug:
                 log_debug_request(request_dict)
@@ -278,6 +368,10 @@ class MLXVLMHandler:
                 "content": None
             }
             response_text = response.text
+            
+            # Update cache_key with generated tokens and insert cache
+            cache_key += response.tokens
+            self.prompt_cache.insert_cache(cache_key, cache)
 
             # Handle unified parser
             if parsers_result.is_unified:
@@ -427,44 +521,18 @@ class MLXVLMHandler:
             str: The model's response.
         """
         try:
-            
-            # Extract request parameters
-            images = request_data.get("images", [])
-            audios = request_data.get("audios", [])
-            videos = request_data.get("videos", [])
-            messages = request_data.get("messages", [])
-            stream = request_data.get("stream", False)
-         
-            # Remove these keys from model_params
-            model_params = request_data.copy()
-            model_params.pop("images", None)
-            model_params.pop("audios", None)
-            model_params.pop("videos", None)
-            model_params.pop("messages", None)
-            model_params.pop("stream", None)
+            prompt = request_data.pop("prompt")
+            prompt_cache = request_data.pop("prompt_cache")
+            stream = request_data.pop("stream")      
 
-            if self.message_converter:
-                logger.info("Message converter is enabled, converting messages...")
-                messages = self.message_converter.convert_messages(messages)
-                logger.info("Messages converted successfully")
-
-            refined_messages = []
-            logger.info("Filtering out None values from messages...")
-            for message in messages:
-                cleaned_message = {k: v for k, v in message.items() if v is not None}
-                refined_messages.append(cleaned_message)
-            logger.info("Messages filtered successfully")
-            messages = refined_messages
-            
-            # Call the model
+            # Call the model with inputs and cache
             response = self.model(
-                images=images,
-                audios=audios,
-                videos=videos,
-                messages=messages,
+                prompt=prompt,
+                prompt_cache=prompt_cache,
                 stream=stream,
-                **model_params
+                **request_data
             )
+
             # Force garbage collection after model inference
             gc.collect()
             return response
