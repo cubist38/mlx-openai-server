@@ -224,6 +224,9 @@ class AbstractToolParser:
     ) -> tuple[dict[str, list] | str | None, bool]:
         """Extract tool calls from streaming chunks.
         
+        Default implementation that buffers content between tool_open and tool_close
+        tags. Subclasses can override this for custom streaming behavior.
+        
         Parameters
         ----------
         chunk : str
@@ -235,12 +238,29 @@ class AbstractToolParser:
             Tuple of (extracted_content, is_complete) where:
             - extracted_content: Tool calls dict, passthrough chunk, or None
             - is_complete: True if chunk should be sent, False if buffering
-            
-        Raises
-        ------
-        NotImplementedError
-            This method must be implemented by derived classes.
         """
-        raise NotImplementedError(
-            "AbstractToolParser.extract_tool_calls_streaming has not been implemented!"
-        )
+        if self.tool_open in chunk:
+            self.state = ToolParserState.FOUND_PREFIX
+
+            if self.tool_close in chunk:
+                self.buffer += chunk
+                result = self.extract_tool_calls(self.buffer)
+                self.buffer = ""
+                self.state = ToolParserState.NORMAL
+                return result, True
+            else:
+                self.buffer += chunk
+                return None, False
+
+        if self.state == ToolParserState.FOUND_PREFIX:
+            if self.tool_close in chunk:
+                self.buffer += chunk
+                result = self.extract_tool_calls(self.buffer)
+                self.buffer = ""
+                self.state = ToolParserState.NORMAL
+                return result, True
+            else:
+                self.buffer += chunk
+                return None, False
+
+        return {"content": chunk}, False

@@ -7,7 +7,6 @@ from .abstract_parser import (
     AbstractReasoningParser,
     AbstractToolParser,
     ReasoningParserState,
-    ToolParserState,
 )
 
 TOOL_OPEN = "<tool_call>"
@@ -26,7 +25,7 @@ class HermesReasoningParser(AbstractReasoningParser):
     def __init__(self, reasoning_open: str = REASONING_OPEN, reasoning_close: str = REASONING_CLOSE) -> None:
         """Initialize the Hermes reasoning parser with appropriate regex patterns."""
         super().__init__(reasoning_open=reasoning_open, reasoning_close=reasoning_close)
-        self.reasoning_regex = re.compile(r"<think>(.*?)</think>", re.DOTALL)
+        self.reasoning_regex = re.compile(f"{re.escape(reasoning_open)}(.*?){re.escape(reasoning_close)}", re.DOTALL)
 
     def extract_reasoning(self, model_output: str) -> dict[str, str] | None:
         """Extract reasoning content from complete model output.
@@ -112,7 +111,7 @@ class HermesToolParser(AbstractToolParser):
     def __init__(self, tool_open: str = TOOL_OPEN, tool_close: str = TOOL_CLOSE) -> None:
         """Initialize the Hermes4 tool parser with appropriate regex patterns."""
         super().__init__(tool_open=tool_open, tool_close=tool_close)
-        self.tool_regex = re.compile(r"<tool_call>(.*?)</tool_call>", re.DOTALL)
+        self.tool_regex = re.compile(f"{re.escape(tool_open)}(.*?){re.escape(tool_close)}", re.DOTALL)
 
     def extract_tool_calls(self, model_output: str) -> dict[str, list] | None:
         """Extract tool calls from complete model output.
@@ -147,48 +146,3 @@ class HermesToolParser(AbstractToolParser):
                 # Skip malformed tool calls
                 continue
         return {"tool_calls": tool_calls}
-
-    def extract_tool_calls_streaming(
-        self, chunk: str
-    ) -> tuple[dict[str, list] | str | None, bool]:
-        """Extract tool calls from streaming chunks.
-        
-        Parameters
-        ----------
-        chunk : str
-            Chunk of model output to process.
-            
-        Returns
-        -------
-        tuple[dict[str, list] | str | None, bool]
-            Tuple of (extracted_content, is_complete) where:
-            - extracted_content: Tool calls dict if complete, chunk if passthrough, None if buffering
-            - is_complete: False if not complete or in normal state, True if complete
-        """
-        if self.tool_open in chunk:
-            self.state = ToolParserState.FOUND_PREFIX
-
-            if self.tool_close in chunk:
-                self.buffer += chunk
-                result = self.extract_tool_calls(self.buffer)
-                self.buffer = ""
-                self.state = ToolParserState.NORMAL
-                return result, True
-            else:
-                self.buffer += chunk
-                return None, False
-
-        if self.state == ToolParserState.FOUND_PREFIX:
-            if self.tool_close in chunk:
-                self.buffer += chunk
-                result = self.extract_tool_calls(self.buffer)
-                self.buffer = ""
-                self.state = ToolParserState.NORMAL
-                return result, True
-            else:
-                self.buffer += chunk
-                return None, False
-
-        return {
-            "content": chunk
-        }, False

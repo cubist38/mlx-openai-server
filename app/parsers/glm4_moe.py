@@ -3,10 +3,7 @@ from __future__ import annotations
 import re
 import json
 
-from .abstract_parser import (
-    AbstractToolParser,
-    ToolParserState,
-)
+from .abstract_parser import AbstractToolParser
 from .hermes import HermesReasoningParser
 
 TOOL_OPEN = "<tool_call>"
@@ -53,7 +50,7 @@ class GLM4MoEToolParser(AbstractToolParser):
     """
 
     def __init__(self, tool_open: str = TOOL_OPEN, tool_close: str = TOOL_CLOSE) -> None:
-        """Initialize the Qwen3 VL tool parser with appropriate regex patterns."""
+        """Initialize the GLM4 MoE tool parser with appropriate regex patterns."""
         super().__init__(tool_open=tool_open, tool_close=tool_close)
         
         self.func_call_regex = re.compile(r"<tool_call>.*?</tool_call>", re.DOTALL)
@@ -102,48 +99,3 @@ class GLM4MoEToolParser(AbstractToolParser):
         return {
             "tool_calls": tool_calls
         }
-
-    def extract_tool_calls_streaming(
-        self, chunk: str
-    ) -> tuple[dict[str, list] | str | None, bool]:
-        """Extract tool calls from streaming chunks.
-        
-        Parameters
-        ----------
-        chunk : str
-            Chunk of model output to process.
-            
-        Returns
-        -------
-        tuple[dict[str, list] | str | None, bool]
-            Tuple of (extracted_content, is_complete) where:
-            - extracted_content: Tool calls dict if complete, chunk if passthrough, None if buffering
-            - is_complete: True if chunk should be sent, False if still buffering
-        """
-        if self.tool_open in chunk:
-            self.state = ToolParserState.FOUND_PREFIX
-
-            if self.tool_close in chunk:
-                self.buffer += chunk
-                result = self.extract_tool_calls(self.buffer)
-                self.buffer = ""
-                self.state = ToolParserState.NORMAL
-                return result, True
-            else:
-                self.buffer += chunk
-                return None, False
-
-        if self.state == ToolParserState.FOUND_PREFIX:
-            if self.tool_close in chunk:
-                self.buffer += chunk
-                result = self.extract_tool_calls(self.buffer)
-                self.buffer = ""
-                self.state = ToolParserState.NORMAL
-                return result, True
-            else:
-                self.buffer += chunk
-                return None, False
-
-        return {
-            "content": chunk
-        }, False        
