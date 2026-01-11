@@ -9,6 +9,7 @@ from .abstract_parser import (
     ReasoningParserState,
     ToolParserState,
 )
+from .function_parameter import FunctionParameterToolParser
 from .functiongemma import FunctionGemmaToolParser
 from .glm4_moe import GLM4MoEReasoningParser, GLM4MoEToolParser
 from .harmony import HarmonyParser
@@ -307,6 +308,7 @@ __all__ = [
     "MiniMaxM2ToolParser",
     "Nemotron3NanoToolParser",
     "FunctionGemmaToolParser",
+    "FunctionParameterToolParser",
     # Unified parsers
     "HarmonyParser",
     # Mappings and helper functions

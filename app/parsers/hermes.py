@@ -7,7 +7,6 @@ from .abstract_parser import (
     AbstractReasoningParser,
     AbstractToolParser,
     ReasoningParserState,
-    ToolParserState,
 )
 
 TOOL_OPEN = "<tool_call>"
@@ -147,48 +146,3 @@ class HermesToolParser(AbstractToolParser):
                 # Skip malformed tool calls
                 continue
         return {"tool_calls": tool_calls}
-
-    def extract_tool_calls_streaming(
-        self, chunk: str
-    ) -> tuple[dict[str, list] | str | None, bool]:
-        """Extract tool calls from streaming chunks.
-        
-        Parameters
-        ----------
-        chunk : str
-            Chunk of model output to process.
-            
-        Returns
-        -------
-        tuple[dict[str, list] | str | None, bool]
-            Tuple of (extracted_content, is_complete) where:
-            - extracted_content: Tool calls dict if complete, chunk if passthrough, None if buffering
-            - is_complete: False if not complete or in normal state, True if complete
-        """
-        if self.tool_open in chunk:
-            self.state = ToolParserState.FOUND_PREFIX
-
-            if self.tool_close in chunk:
-                self.buffer += chunk
-                result = self.extract_tool_calls(self.buffer)
-                self.buffer = ""
-                self.state = ToolParserState.NORMAL
-                return result, True
-            else:
-                self.buffer += chunk
-                return None, False
-
-        if self.state == ToolParserState.FOUND_PREFIX:
-            if self.tool_close in chunk:
-                self.buffer += chunk
-                result = self.extract_tool_calls(self.buffer)
-                self.buffer = ""
-                self.state = ToolParserState.NORMAL
-                return result, True
-            else:
-                self.buffer += chunk
-                return None, False
-
-        return {
-            "content": chunk
-        }, False
