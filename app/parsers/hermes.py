@@ -26,7 +26,7 @@ class HermesReasoningParser(AbstractReasoningParser):
     def __init__(self, reasoning_open: str = REASONING_OPEN, reasoning_close: str = REASONING_CLOSE) -> None:
         """Initialize the Hermes reasoning parser with appropriate regex patterns."""
         super().__init__(reasoning_open=reasoning_open, reasoning_close=reasoning_close)
-        self.reasoning_regex = re.compile(r"<think>(.*?)</think>", re.DOTALL)
+        self.reasoning_regex = re.compile(f"{re.escape(reasoning_open)}(.*?){re.escape(reasoning_close)}", re.DOTALL)
 
     def extract_reasoning(self, model_output: str) -> dict[str, str] | None:
         """Extract reasoning content from complete model output.
@@ -112,7 +112,7 @@ class HermesToolParser(AbstractToolParser):
     def __init__(self, tool_open: str = TOOL_OPEN, tool_close: str = TOOL_CLOSE) -> None:
         """Initialize the Hermes4 tool parser with appropriate regex patterns."""
         super().__init__(tool_open=tool_open, tool_close=tool_close)
-        self.tool_regex = re.compile(r"<tool_call>(.*?)</tool_call>", re.DOTALL)
+        self.tool_regex = re.compile(f"{re.escape(tool_open)}(.*?){re.escape(tool_close)}", re.DOTALL)
 
     def extract_tool_calls(self, model_output: str) -> dict[str, list] | None:
         """Extract tool calls from complete model output.
