@@ -153,8 +153,9 @@ class MLXLMHandler:
                     parsers_result.reasoning_parser = None
 
             if model_params.get("schema"):
-                logger.info("JSON schema is enabled, disabling reasoning parser")
+                logger.info("JSON schema is enabled, disabling reasoning parser and tool parser")
                 parsers_result.reasoning_parser = None
+                parsers_result.tool_parser = None
 
             prompt_progress_callback = make_prompt_progress_callback() if self.debug else None
 
@@ -336,8 +337,9 @@ class MLXLMHandler:
                     parsers_result.reasoning_parser = None
 
             if model_params.get("schema"):
-                logger.info("JSON schema is enabled, disabling reasoning parser")
+                logger.info("JSON schema is enabled, disabling reasoning parser and tool parser")
                 parsers_result.reasoning_parser = None
+                parsers_result.tool_parser = None
 
             response_text = response.text
             cache_key += response.tokens
