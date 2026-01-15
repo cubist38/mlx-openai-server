@@ -23,7 +23,7 @@ class MLXServerConfig:
 
     model_path: str
     model_type: str = "lm"
-    context_length: int = 32768
+    context_length: int | None = None
     port: int = 8000
     host: str = "0.0.0.0"
     max_concurrency: int = 1

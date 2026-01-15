@@ -45,13 +45,13 @@ class MLX_VLM:
     supporting both streaming and non-streaming modes.
     """
     
-    def __init__(self, model_path: str, context_length: int = 32768, trust_remote_code: bool = False, chat_template_file: str = None):
+    def __init__(self, model_path: str, context_length: int | None = None, trust_remote_code: bool = False, chat_template_file: str = None):
         """
         Initialize the MLX_VLM model.
         
         Args:
             model_path (str): Path to the model directory containing model weights and configuration.
-            context_length (int): Maximum context length for the model. Defaults to 32768.
+            context_length (int | None): Maximum context length for the model. If None, uses model default.
             trust_remote_code (bool): Enable trust_remote_code when loading models. Defaults to False.
         Raises:
             ValueError: If model loading fails.
@@ -77,7 +77,7 @@ class MLX_VLM:
         return self.config.model_type
 
     def create_prompt_cache(self) -> List[Any]:
-        return make_prompt_cache(self.model.language_model, self.context_length)
+        return make_prompt_cache(self.model.language_model, max_kv_size=self.context_length)
 
     def create_input_prompt(self, messages: List[Dict[str, str]], chat_template_kwargs: Dict[str, Any]) -> str:
         return self.processor.apply_chat_template(
