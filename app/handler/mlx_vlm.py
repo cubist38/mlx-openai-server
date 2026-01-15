@@ -28,13 +28,13 @@ class MLXVLMHandler:
     Provides caching, concurrent image processing, audio processing, and robust error handling.
     """
 
-    def __init__(self, model_path: str, context_length: int = 32768, max_workers: int = 4, max_concurrency: int = 1, disable_auto_resize: bool = False, enable_auto_tool_choice: bool = False, tool_call_parser: str = None, reasoning_parser: str = None, message_converter: str = None, trust_remote_code: bool = False, chat_template_file: str = None, debug: bool = False):
+    def __init__(self, model_path: str, context_length: int | None = None, max_workers: int = 4, max_concurrency: int = 1, disable_auto_resize: bool = False, enable_auto_tool_choice: bool = False, tool_call_parser: str = None, reasoning_parser: str = None, message_converter: str = None, trust_remote_code: bool = False, chat_template_file: str = None, debug: bool = False):
         """
         Initialize the handler with the specified model path.
         
         Args:
             model_path (str): Path to the model directory.
-            context_length (int): Maximum context length for the model.
+            context_length (int | None): Maximum context length for the model. If None, uses model default.
             max_workers (int): Maximum number of worker threads for image processing.
             max_concurrency (int): Maximum number of concurrent model inference tasks.
             disable_auto_resize (bool): Whether to disable automatic image resizing.

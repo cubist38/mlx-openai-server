@@ -51,7 +51,7 @@ class MLX_LM:
     supporting both streaming and non-streaming modes.
     """
 
-    def __init__(self, model_path: str, context_length: int = 32768, trust_remote_code: bool = False, chat_template_file: str = None):
+    def __init__(self, model_path: str, context_length: int | None = None, trust_remote_code: bool = False, chat_template_file: str = None):
         try:
             self.model, self.tokenizer = load(model_path, lazy=False, tokenizer_config = {"trust_remote_code": trust_remote_code})
             self.pad_token_id = self.tokenizer.pad_token_id
@@ -68,7 +68,7 @@ class MLX_LM:
             raise ValueError(f"Error loading model: {str(e)}")
 
     def create_prompt_cache(self) -> List[Any]:
-        return make_prompt_cache(self.model, self.context_length)
+        return make_prompt_cache(self.model, max_kv_size=self.context_length)
         
     def get_model_type(self) -> str:
         return self.model_type

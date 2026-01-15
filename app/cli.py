@@ -101,9 +101,9 @@ def cli():
 )
 @click.option(
     "--context-length",
-    default=32768,
+    default=None,
     type=int,
-    help="Context length for language models. Only works with `lm` or `multimodal` model types.",
+    help="Context length for language models. If not specified, uses model default. Only works with `lm` or `multimodal` model types.",
 )
 @click.option("--port", default=8000, type=int, help="Port to run the server on")
 @click.option("--host", default="0.0.0.0", help="Host to run the server on")
