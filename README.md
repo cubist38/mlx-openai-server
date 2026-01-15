@@ -50,33 +50,22 @@ This repository hosts a high-performance API server that provides OpenAI-compati
 
 ### 🚀 See It In Action
 
-Check out our [video demonstration](https://youtu.be/-h-AwPNvKiw) to see the server in action! The demo showcases:
+Watch our comprehensive [video demonstration](https://youtu.be/J1gkEMvmTSE) to see how easy it is to get started with `mlx-openai-server`! This hands-on tutorial demonstrates:
 
-- Deploy GLM4.5-Air with `mlx-openai-server` and test code abilities
+- **Quick Setup**: Deploy Qwen3-coder locally in minutes with minimal configuration
+- **OpenAI Compatibility**: Drop-in replacement that works seamlessly with existing OpenAI-compatible tools
+- **Real-World Integration**: Connect with OpenCode IDE for an enhanced coding experience
+- **Performance on Apple Silicon**: See native MLX performance leveraging M-series chip capabilities
 
-<p align="center">
-  <a href="https://youtu.be/-h-AwPNvKiw">
-    <img src="https://img.youtube.com/vi/-h-AwPNvKiw/0.jpg" alt="MLX Server OAI-Compatible Demo" width="600">
-  </a>
-</p>
-
-### 🧠 **NEW: GPT-OSS-20B (MXFP4-Q8) Integration with Opencode**
-
-We're excited to announce our latest integration demo featuring **GPT-OSS-20B (MXFP4-Q8)** deployed with mlx-openai-server and integrated into **Opencode** to power advanced coding tasks! 
-
-This demonstration showcases:
-- **Large Language Model Deployment**: Running GPT-OSS-20B locally with MLX optimization
-- **Advanced Coding Capabilities**: Leveraging the 20B parameter model for complex programming tasks
-- **Seamless Integration**: Drop-in replacement for OpenAI API in Opencode workflows
-- **Performance Optimization**: MXFP4-Q8 quantization for optimal speed and memory usage
+Perfect for developers looking to run powerful language models locally while maintaining full API compatibility with the OpenAI ecosystem.
 
 <p align="center">
-  <a href="https://youtu.be/MTmR_mPSs6k">
-    <img src="https://img.youtube.com/vi/MTmR_mPSs6k/0.jpg" alt="GPT-OSS-20B Integration Demo" width="600">
+  <a href="https://youtu.be/J1gkEMvmTSE">
+    <img src="https://img.youtube.com/vi/J1gkEMvmTSE/0.jpg" alt="MLX OpenAI Server Demo - Deploy Qwen3-coder with OpenCode Integration" width="600">
   </a>
+  <br>
+  <em>Click to watch the full demonstration ▶️</em>
 </p>
-
-**Watch the full demo**: [GPT-OSS-20B + Opencode Integration](https://youtu.be/MTmR_mPSs6k)
 
 ---
 
@@ -1612,7 +1601,7 @@ We're thrilled by the incredible community that has grown around this project! J
 #### 📚 Learning Resources
 - **📖 Documentation**: This README and comprehensive API docs
 - **🎥 Video Tutorials**: 
-  - [Setup & Installation Demo](https://youtu.be/-h-AwPNvKiw)
+  - [Setup & Installation Demo](https://youtu.be/J1gkEMvmTSE)
   - [RAG Implementation Demo](https://youtu.be/ANUEZkmR-0s)
 - **📓 Example Notebooks**: Check out our `examples/` directory for practical use cases
 - **🔍 Search Issues**: Your question might already be answered!
@@ -1800,7 +1789,7 @@ Need help with MLX OpenAI Server? We're here to support you! Here are the best w
 1. **Check the documentation** - This README and example notebooks
 2. **Search existing issues** - Your question might already be answered
 3. **Review the examples** - Check the `examples/` directory for use cases
-4. **Watch the demos** - Our [setup video](https://youtu.be/-h-AwPNvKiw), [RAG demo](https://youtu.be/ANUEZkmR-0s), and [GPT-OSS-20B + Opencode integration](https://youtu.be/MTmR_mPSs6k)
+4. **Watch the demos** - Our [setup video](https://youtu.be/J1gkEMvmTSE), [RAG demo](https://youtu.be/ANUEZkmR-0s), and [GPT-OSS-20B + Opencode integration](https://youtu.be/MTmR_mPSs6k)
 
 #### 🐛 Reporting Issues
 - **GitHub Issues**: [Create a new issue](https://github.com/cubist38/mlx-openai-server/issues/new) with:
