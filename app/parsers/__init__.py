@@ -12,7 +12,7 @@ from .abstract_parser import (
 from .function_parameter import FunctionParameterToolParser
 from .functiongemma import FunctionGemmaToolParser
 from .glm4_moe import GLM4MoEReasoningParser, GLM4MoEToolParser
-from .glm47_flash import GLM47FlashReasoningParser, GLM47FlashToolParser
+from .glm47_flash import GLM47FlashReasoningParser
 from .harmony import HarmonyParser
 from .hermes import HermesReasoningParser, HermesToolParser
 from .minimax_m2 import MiniMaxM2ReasoningParser, MiniMaxM2ToolParser
@@ -45,7 +45,6 @@ TOOL_PARSER_MAP: dict[str, type[AbstractToolParser]] = {
     "qwen3_moe": Qwen3MoEToolParser,
     "qwen3_vl": Qwen3VLToolParser,
     "glm4_moe": GLM4MoEToolParser,
-    "glm47_flash": GLM47FlashToolParser,
     "minimax_m2": MiniMaxM2ToolParser,
     "nemotron3_nano": Nemotron3NanoToolParser,
     "functiongemma": FunctionGemmaToolParser,

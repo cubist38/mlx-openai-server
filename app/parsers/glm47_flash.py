@@ -31,5 +31,3 @@ class GLM47FlashReasoningParser(GLM4MoEReasoningParser):
             True if the reasoning parser needs a redacted reasoning prefix, False otherwise.
         """
         return True 
-
-GLM47FlashToolParser = GLM4MoEToolParser
