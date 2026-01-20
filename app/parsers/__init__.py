@@ -12,6 +12,7 @@ from .abstract_parser import (
 from .function_parameter import FunctionParameterToolParser
 from .functiongemma import FunctionGemmaToolParser
 from .glm4_moe import GLM4MoEReasoningParser, GLM4MoEToolParser
+from .glm47_flash import GLM47FlashReasoningParser
 from .harmony import HarmonyParser
 from .hermes import HermesReasoningParser, HermesToolParser
 from .minimax_m2 import MiniMaxM2ReasoningParser, MiniMaxM2ToolParser
@@ -30,6 +31,7 @@ REASONING_PARSER_MAP: dict[str, type[AbstractReasoningParser]] = {
     "qwen3_moe": Qwen3MoEReasoningParser,
     "qwen3_vl": Qwen3VLReasoningParser,
     "glm4_moe": GLM4MoEReasoningParser,
+    "glm47_flash": GLM47FlashReasoningParser,
     "minimax_m2": MiniMaxM2ReasoningParser,
     "nemotron3_nano": Nemotron3NanoReasoningParser,
     "solar_open": SolarOpenReasoningParser,
