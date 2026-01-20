@@ -34,9 +34,9 @@ class SolarOpenReasoningParser(HermesReasoningParser):
     Handles reasoning content in format: <|think|>reasoning_content<|end|>
     """
 
-    def __init__(self) -> None:
+    def __init__(self, reasoning_open: str = REASONING_OPEN, reasoning_close: str = REASONING_CLOSE) -> None:
         """Initialize Solar Open reasoning parser."""
-        super().__init__(reasoning_open=REASONING_OPEN, reasoning_close=REASONING_CLOSE)
+        super().__init__(reasoning_open=reasoning_open, reasoning_close=reasoning_close)
 
 
 class SolarOpenToolParser(AbstractToolParser):
@@ -46,9 +46,9 @@ class SolarOpenToolParser(AbstractToolParser):
     <|tool_call:begin|><tool-call-id><|tool_call:name|><tool-name><|tool_call:args|><args-json-object><|tool_call:end|>
     """
 
-    def __init__(self) -> None:
+    def __init__(self, tool_open: str = TOOL_OPEN, tool_close: str = TOOL_CLOSE) -> None:
         """Initialize Solar Open tool parser."""
-        super().__init__(tool_open=TOOL_OPEN, tool_close=TOOL_CLOSE)
+        super().__init__(tool_open=tool_open, tool_close=tool_close)
         self.state = SolarOpenToolState.NORMAL
         self.content_response_token = CONTENT_RESPONSE_TOKEN
         self.tool_name_prefix = TOOL_NAME_PREFIX
