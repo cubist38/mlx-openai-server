@@ -114,7 +114,7 @@ def cli():
 @click.option("--queue-size", default=100, type=int, help="Maximum queue size for pending requests")
 @click.option(
     "--quantize",
-    default=8,
+    default=None,
     type=int,
     help="Quantization level for the model. Only used for image-generation and image-edit Flux models.",
 )

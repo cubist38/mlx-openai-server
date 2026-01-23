@@ -30,7 +30,7 @@ class MLXServerConfig:
     queue_timeout: int = 300
     queue_size: int = 100
     disable_auto_resize: bool = False
-    quantize: int = 8
+    quantize: int | None = None
     config_name: str | None = None
     lora_paths: list[str] | None = field(default=None, init=False)
     lora_scales: list[float] | None = field(default=None, init=False)

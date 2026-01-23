@@ -399,7 +399,7 @@ mlx-openai-server launch \
   - For `image-generation`: `flux-schnell`, `flux-dev`, `flux-krea-dev`, `qwen-image`, `z-image-turbo`, `fibo`
   - For `image-edit`: `flux-kontext-dev`, `qwen-image-edit`
   - Default: `flux-schnell` for image-generation, `flux-kontext-dev` for image-edit
-- `--quantize`: Quantization level for Flux models. Available options: `4`, `8`, `16`. Default: `8`
+- `--quantize`: Quantization level for Flux models. Available options: `4`, `8`, `16`. Optional. Default: `None`
 - `--lora-paths`: Comma-separated paths to LoRA adapter files.
 - `--lora-scales`: Comma-separated scale factors for LoRA adapters. Must match the number of LoRA paths.
 - `--max-concurrency`: Maximum number of concurrent requests (default: 1)
