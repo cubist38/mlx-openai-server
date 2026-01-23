@@ -292,20 +292,22 @@ python -m app.main \
   --queue-size 100
 
 # For image generation models (Flux-series, Qwen, Z-Image Turbo, or Fibo)
+# Model path can be a local path or HuggingFace repository ID
 python -m app.main \
   --model-type image-generation \
-  --model-path <path-to-local-model> \
-  --config-name <flux-schnell|flux-dev|flux-krea-dev|qwen-image|z-image-turbo|fibo> \
+  --model-path <path-to-local-model-or-hf-repo-id> \
+  --config-name <flux-schnell|flux-dev|flux-krea-dev|qwen-image|z-image-turbo|fibo|flux2-klein-4b|flux2-klein-9b> \
   --quantize <4|8|16> \
   --max-concurrency 1 \
   --queue-timeout 300 \
   --queue-size 100
 
 # For image editing models (Flux-series or Qwen)
+# Model path can be a local path or HuggingFace repository ID
 python -m app.main \
   --model-type image-edit \
-  --model-path <path-to-local-model> \
-  --config-name <flux-kontext-dev|qwen-image-edit> \
+  --model-path <path-to-local-model-or-hf-repo-id> \
+  --config-name <flux-kontext-dev|qwen-image-edit|flux2-klein-edit-4b|flux2-klein-edit-9b> \
   --quantize <4|8|16> \
   --max-concurrency 1 \
   --queue-timeout 300 \
@@ -350,18 +352,26 @@ mlx-openai-server launch \
 
 
 # For image generation models (Flux-series, Qwen, Z-Image Turbo, or Fibo)
+# Model path can be a local path or HuggingFace repository ID
 mlx-openai-server launch \
   --model-type image-generation \
-  --model-path <path-to-local-model> \
-  --config-name <flux-schnell|flux-dev|flux-krea-dev|qwen-image|z-image-turbo|fibo> \
+  --model-path <path-to-local-model-or-hf-repo-id> \
+  --config-name <flux-schnell|flux-dev|flux-krea-dev|qwen-image|z-image-turbo|fibo|flux2-klein-4b|flux2-klein-9b> \
   --quantize 8 \
+
+# Example with HuggingFace repository:
+mlx-openai-server launch \
+  --model-path black-forest-labs/FLUX.2-klein-4B \
+  --config-name flux2-klein-4b \
+  --model-type image-generation
 
 
 # For image editing models (Flux-series or Qwen)
+# Model path can be a local path or HuggingFace repository ID
 mlx-openai-server launch \
   --model-type image-edit \
-  --model-path <path-to-local-model> \
-  --config-name <flux-kontext-dev|qwen-image-edit> \
+  --model-path <path-to-local-model-or-hf-repo-id> \
+  --config-name <flux-kontext-dev|qwen-image-edit|flux2-klein-edit-4b|flux2-klein-edit-9b> \
   --quantize 8 \
 
 
@@ -396,8 +406,8 @@ mlx-openai-server launch \
   - Default: `lm`
 - `--context-length`: Context length for language models. Controls the maximum sequence length for text processing and memory usage optimization. Default: `None` (uses model's default context length).
 - `--config-name`: Model configuration to use. Only used for `image-generation` and `image-edit` model types:
-  - For `image-generation`: `flux-schnell`, `flux-dev`, `flux-krea-dev`, `qwen-image`, `z-image-turbo`, `fibo`
-  - For `image-edit`: `flux-kontext-dev`, `qwen-image-edit`
+  - For `image-generation`: `flux-schnell`, `flux-dev`, `flux-krea-dev`, `qwen-image`, `z-image-turbo`, `fibo`, `flux2-klein-4b`, `flux2-klein-9b`
+  - For `image-edit`: `flux-kontext-dev`, `qwen-image-edit`, `flux2-klein-edit-4b`, `flux2-klein-edit-9b`
   - Default: `flux-schnell` for image-generation, `flux-kontext-dev` for image-edit
 - `--quantize`: Quantization level for Flux models. Available options: `4`, `8`, `16`. Optional. Default: `None`
 - `--lora-paths`: Comma-separated paths to LoRA adapter files.
@@ -731,10 +741,10 @@ mlx-openai-server launch --help
 mlx-openai-server launch --model-path <path-to-mlx-model> --model-type <lm|multimodal> --context-length 8192
 
 # For image generation models (Flux-series, Qwen, Z-Image Turbo, or Fibo)
-mlx-openai-server launch --model-type image-generation --model-path <path-to-local-model> --config-name <flux-schnell|flux-dev|flux-krea-dev|qwen-image|z-image-turbo|fibo>
+mlx-openai-server launch --model-type image-generation --model-path <path-to-local-model-or-hf-repo-id> --config-name <flux-schnell|flux-dev|flux-krea-dev|qwen-image|z-image-turbo|fibo|flux2-klein-4b|flux2-klein-9b>
 
 # For image editing models (Flux-series or Qwen)
-mlx-openai-server launch --model-type image-edit --model-path <path-to-local-model> --config-name <flux-kontext-dev|qwen-image-edit>
+mlx-openai-server launch --model-type image-edit --model-path <path-to-local-model> --config-name <flux-kontext-dev|qwen-image-edit|flux2-klein-edit-4b|flux2-klein-edit-9b>
 
 # For whisper models
 mlx-openai-server launch --model-path mlx-community/whisper-large-v3-mlx --model-type whisper
