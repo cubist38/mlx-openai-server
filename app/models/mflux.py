@@ -540,17 +540,10 @@ class ImageGenerationModel:
         return hasattr(self.model_instance, '_is_loaded') and self.model_instance._is_loaded
 
 if __name__ == "__main__":
-    from huggingface_hub import hf_hub_download
-    lightning_lora_path = hf_hub_download(
-        repo_id="lightx2v/Qwen-Image-2512-Lightning",
-        filename="Qwen-Image-2512-Lightning-8steps-V1.0-fp32.safetensors"
-    )
     model = ImageGenerationModel(
-        model_path="mlx-community/Qwen-Image-2512-4bit",
-        config_name="qwen-image",
-        lora_paths=[lightning_lora_path],
-        lora_scales=[1.0]
+        model_path="black-forest-labs/FLUX.2-klein-4B",
+        config_name="flux2-klein-4b"
     )
     prompt = "A beautiful sunset over a calm ocean, with a small boat in the distance."
-    image = model(prompt, num_inference_steps = 8)
+    image = model(prompt, num_inference_steps = 4, width = 1024, height = 1024, guidance = 1.0)
     image.save("test.png")
