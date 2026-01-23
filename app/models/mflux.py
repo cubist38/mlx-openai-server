@@ -1,16 +1,20 @@
-import os
 import logging
 import inspect
-from pyexpat import model
 from PIL import Image
+from pyexpat import model
 from abc import ABC, abstractmethod
 from mflux.models.common.config import ModelConfig
+
+# supported models
 from mflux.models.flux.variants.txt2img.flux import Flux1
 from mflux.models.qwen.variants.txt2img.qwen_image import QwenImage
 from mflux.models.flux.variants.kontext.flux_kontext import Flux1Kontext
 from mflux.models.qwen.variants.edit.qwen_image_edit import QwenImageEdit
 from mflux.models.z_image.variants.turbo import ZImageTurbo
 from mflux.models.fibo.variants.txt2img.fibo import FIBO
+from mflux.models.flux2.variants.txt2img.flux2_klein import Flux2Klein
+from mflux.models.flux2.variants.edit.flux2_klein_edit import Flux2KleinEdit
+
 from typing import Dict, Type, Any, Optional, Union, List
 
 
@@ -41,13 +45,13 @@ class ModelConfiguration:
     def __init__(self, 
         model_type: str,
         model_config: ModelConfig,
-        quantize: int = 8,
+        quantize: Optional[int] = None,
         lora_paths: Optional[List[str]] = None,
         lora_scales: Optional[List[float]] = None
     ):
         
         # Validate quantization level
-        if quantize not in [4, 8, 16]:
+        if quantize and quantize not in [4, 8, 16]:
             raise InvalidConfigurationError(f"Invalid quantization level: {quantize}. Must be 4, 8, or 16.")
         
         # Validate LoRA parameters: both must be provided together and have matching lengths
@@ -67,7 +71,7 @@ class ModelConfiguration:
         self.lora_scales = lora_scales
     
     @classmethod
-    def schnell(cls, quantize: int = 8, lora_paths: Optional[List[str]] = None, lora_scales: Optional[List[float]] = None) -> 'ModelConfiguration':
+    def schnell(cls, quantize: Optional[int] = None, lora_paths: Optional[List[str]] = None, lora_scales: Optional[List[float]] = None) -> 'ModelConfiguration':
         """Create configuration for Flux Schnell model."""
         return cls(
             model_type="schnell",
@@ -78,7 +82,7 @@ class ModelConfiguration:
         )
     
     @classmethod
-    def dev(cls, quantize: int = 8, lora_paths: Optional[List[str]] = None, lora_scales: Optional[List[float]] = None) -> 'ModelConfiguration':
+    def dev(cls, quantize: Optional[int] = None, lora_paths: Optional[List[str]] = None, lora_scales: Optional[List[float]] = None) -> 'ModelConfiguration':
         """Create configuration for Flux Dev model."""
         return cls(
             model_type="dev",
@@ -89,7 +93,7 @@ class ModelConfiguration:
         )
 
     @classmethod
-    def krea_dev(cls, quantize: int = 8, lora_paths: Optional[List[str]] = None, lora_scales: Optional[List[float]] = None) -> 'ModelConfiguration':
+    def krea_dev(cls, quantize: Optional[int] = None, lora_paths: Optional[List[str]] = None, lora_scales: Optional[List[float]] = None) -> 'ModelConfiguration':
         """Create configuration for Flux Krea Dev model."""
         return cls(
             model_type="krea-dev",
@@ -100,7 +104,7 @@ class ModelConfiguration:
         )
     
     @classmethod
-    def kontext(cls, quantize: int = 8, lora_paths: Optional[List[str]] = None, lora_scales: Optional[List[float]] = None) -> 'ModelConfiguration':
+    def kontext(cls, quantize: Optional[int] = None, lora_paths: Optional[List[str]] = None, lora_scales: Optional[List[float]] = None) -> 'ModelConfiguration':
         """Create configuration for Flux Kontext model."""
         return cls(
             model_type="kontext",
@@ -111,7 +115,7 @@ class ModelConfiguration:
         )
 
     @classmethod
-    def qwen_image(cls, quantize: int = 8, lora_paths: Optional[List[str]] = None, lora_scales: Optional[List[float]] = None) -> 'ModelConfiguration':
+    def qwen_image(cls, quantize: Optional[int] = None, lora_paths: Optional[List[str]] = None, lora_scales: Optional[List[float]] = None) -> 'ModelConfiguration':
         """Create configuration for Qwen Image model."""
         return cls(
             model_type="qwen-image",
@@ -122,7 +126,7 @@ class ModelConfiguration:
         )
 
     @classmethod
-    def qwen_image_edit(cls, quantize: int = 8, lora_paths: Optional[List[str]] = None, lora_scales: Optional[List[float]] = None) -> 'ModelConfiguration':
+    def qwen_image_edit(cls, quantize: Optional[int] = None, lora_paths: Optional[List[str]] = None, lora_scales: Optional[List[float]] = None) -> 'ModelConfiguration':
         """Create configuration for Qwen Image Edit model."""
         return cls(
             model_type="qwen-image-edit",
@@ -133,7 +137,7 @@ class ModelConfiguration:
         )
 
     @classmethod
-    def fibo(cls, quantize: int = 8, lora_paths: Optional[List[str]] = None, lora_scales: Optional[List[float]] = None) -> 'ModelConfiguration':
+    def fibo(cls, quantize: Optional[int] = None, lora_paths: Optional[List[str]] = None, lora_scales: Optional[List[float]] = None) -> 'ModelConfiguration':
         """Create configuration for Fibo model."""
         return cls(
             model_type="fibo",
@@ -144,7 +148,7 @@ class ModelConfiguration:
         )
 
     @classmethod
-    def z_image_turbo(cls, quantize: int = 8, lora_paths: Optional[List[str]] = None, lora_scales: Optional[List[float]] = None) -> 'ModelConfiguration':
+    def z_image_turbo(cls, quantize: Optional[int] = None, lora_paths: Optional[List[str]] = None, lora_scales: Optional[List[float]] = None) -> 'ModelConfiguration':
         """Create configuration for Z Image Turbo model."""
         return cls(
             model_type="z-image-turbo",
@@ -153,6 +157,52 @@ class ModelConfiguration:
             lora_paths=lora_paths,
             lora_scales=lora_scales
         )
+    
+    @classmethod
+    def flux2_klein_4b(cls, quantize: Optional[int] = None, lora_paths: Optional[List[str]] = None, lora_scales: Optional[List[float]] = None) -> 'ModelConfiguration':
+        """Create configuration for Flux2 Klein model."""
+        return cls(
+            model_type="flux2-klein",
+            model_config=ModelConfig.flux2_klein_4b(),
+            quantize=quantize,
+            lora_paths=lora_paths,
+            lora_scales=lora_scales
+        )
+
+    @classmethod
+    def flux2_klein_edit_4b(cls, quantize: Optional[int] = None, lora_paths: Optional[List[str]] = None, lora_scales: Optional[List[float]] = None) -> 'ModelConfiguration':
+        """Create configuration for Flux2 Klein Edit model."""
+        return cls(
+            model_type="flux2-klein-edit",
+            model_config=ModelConfig.flux2_klein_4b(),
+            quantize=quantize,
+            lora_paths=lora_paths,
+            lora_scales=lora_scales
+        )
+    
+    @classmethod
+    def flux2_klein_9b(cls, quantize: Optional[int] = None, lora_paths: Optional[List[str]] = None, lora_scales: Optional[List[float]] = None) -> 'ModelConfiguration':
+        """Create configuration for Flux2 Klein model."""
+        return cls(
+            model_type="flux2-klein",
+            model_config=ModelConfig.flux2_klein_9b(),
+            quantize=quantize,
+            lora_paths=lora_paths,
+            lora_scales=lora_scales
+        )
+    
+    @classmethod
+    def flux2_klein_edit_9b(cls, quantize: Optional[int] = None, lora_paths: Optional[List[str]] = None, lora_scales: Optional[List[float]] = None) -> 'ModelConfiguration':
+        """Create configuration for Flux2 Klein Edit model."""
+        return cls(
+            model_type="flux2-klein-edit",
+            model_config=ModelConfig.flux2_klein_9b(),
+            quantize=quantize,
+            lora_paths=lora_paths,
+            lora_scales=lora_scales
+        )
+
+
 
 class BaseImageModel(ABC):
     """Abstract base class for image generation models with common functionality."""
@@ -163,32 +213,8 @@ class BaseImageModel(ABC):
         self.logger = logging.getLogger(self.__class__.__name__)
         self._model = None
         self._is_loaded = False
-        
-        # Validate model path
-        if not self._validate_model_path():
-            raise ModelLoadError(f"Invalid model path: {model_path}")
             
         self._load_model()
-    
-    def _validate_model_path(self) -> bool:
-        """Validate that the model path exists or is a valid model name."""
-        # Check if it's a file path
-        if os.path.exists(self.model_path):
-            return True
-        
-        # Check if it's a valid model name (for downloading)
-        # This list should be kept in sync with ImageGenerationModel._MODEL_CONFIGS
-        valid_model_names = [
-            "flux-dev", 
-            "flux-schnell", 
-            "flux-krea-dev",
-            "flux-kontext-dev", 
-            "qwen-image", 
-            "qwen-image-edit",
-            "fibo",
-            "z-image-turbo",
-        ]
-        return self.model_path in valid_model_names
     
     @abstractmethod
     def _load_model(self):
@@ -377,6 +403,46 @@ class FIBOModel(BaseImageModel):
             self.logger.error(error_msg)
             raise ModelLoadError(error_msg) from e
 
+class Flux2KleinModel(BaseImageModel):
+    """Flux2 Klein model implementation."""
+    
+    def _load_model(self):
+        """Load the Flux2 Klein model."""
+        try:
+            self.logger.info(f"Loading Flux2 Klein model from {self.model_path}")
+            self._model = Flux2Klein(
+                quantize=self.config.quantize,
+                model_path=self.model_path,
+                lora_paths=self.config.lora_paths,
+                lora_scales=self.config.lora_scales,
+            )
+            self._is_loaded = True
+            self.logger.info("Flux2 Klein model loaded successfully")
+        except Exception as e:
+            error_msg = f"Failed to load Flux2 Klein model: {e}"
+            self.logger.error(error_msg)
+            raise ModelLoadError(error_msg) from e
+
+class Flux2KleinEditModel(BaseImageModel):
+    """Flux2 Klein Edit model implementation."""
+    
+    def _load_model(self):
+        """Load the Flux2 Klein Edit model."""
+        try:
+            self.logger.info(f"Loading Flux2 Klein Edit model from {self.model_path}")
+            self._model = Flux2KleinEdit(
+                quantize=self.config.quantize,
+                model_path=self.model_path,
+                lora_paths=self.config.lora_paths,
+                lora_scales=self.config.lora_scales,
+            )
+            self._is_loaded = True
+            self.logger.info("Flux2 Klein Edit model loaded successfully")
+        except Exception as e:
+            error_msg = f"Failed to load Flux2 Klein Edit model: {e}"
+            self.logger.error(error_msg)
+            raise ModelLoadError(error_msg) from e
+
 class ImageGenerationModel:
     """Factory class for creating and managing image generation models."""
     
@@ -389,6 +455,10 @@ class ImageGenerationModel:
         "qwen-image-edit": ModelConfiguration.qwen_image_edit,
         "fibo": ModelConfiguration.fibo,
         "z-image-turbo": ModelConfiguration.z_image_turbo,
+        "flux2-klein-4b": ModelConfiguration.flux2_klein_4b,
+        "flux2-klein-9b": ModelConfiguration.flux2_klein_9b,
+        "flux2-klein-edit-4b": ModelConfiguration.flux2_klein_edit_4b,
+        "flux2-klein-edit-9b": ModelConfiguration.flux2_klein_edit_9b,
     }
     
     _MODEL_CLASSES = {
@@ -400,9 +470,13 @@ class ImageGenerationModel:
         "qwen-image-edit": QwenImageEditModel,
         "fibo": FIBOModel,
         "z-image-turbo": ZImageTurboModel,
+        "flux2-klein-4b": Flux2KleinModel,
+        "flux2-klein-9b": Flux2KleinModel,
+        "flux2-klein-edit-4b": Flux2KleinEditModel,
+        "flux2-klein-edit-9b": Flux2KleinEditModel,
     }
     
-    def __init__(self, model_path: str, config_name: str, quantize: int = 8, 
+    def __init__(self, model_path: str, config_name: str, quantize: Optional[int] = None, 
                  lora_paths: Optional[List[str]] = None, lora_scales: Optional[List[float]] = None):
        
         self.model_path = model_path
@@ -467,12 +541,9 @@ class ImageGenerationModel:
 
 if __name__ == "__main__":
     model = ImageGenerationModel(
-        model_path="z-image",
-        config_name="z-image-turbo",
-        quantize=8,
-        lora_paths=None,
-        lora_scales=None,
+        model_path="black-forest-labs/FLUX.2-klein-4B",
+        config_name="flux2-klein-4b"
     )
     prompt = "A beautiful sunset over a calm ocean, with a small boat in the distance."
-    image = model(prompt)
+    image = model(prompt, num_inference_steps = 4, width = 1024, height = 1024, guidance = 1.0)
     image.save("test.png")

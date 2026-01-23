@@ -163,9 +163,9 @@ def create_lifespan(config_args: MLXServerConfig):
                     debug=config_args.debug,
                 )
             elif config_args.model_type == "image-generation":
-                if config_args.config_name not in ["flux-schnell", "flux-dev", "flux-krea-dev", "qwen-image", "z-image-turbo", "fibo"]:
+                if config_args.config_name not in ["flux-schnell", "flux-dev", "flux-krea-dev", "qwen-image", "z-image-turbo", "fibo", "flux2-klein-4b", "flux2-klein-9b"]:
                     raise ValueError(
-                        f"Invalid config name: {config_args.config_name}. Only flux-schnell, flux-dev, flux-krea-dev, qwen-image, z-image-turbo, and fibo are supported for image generation."
+                        f"Invalid config name: {config_args.config_name}. Only flux-schnell, flux-dev, flux-krea-dev, qwen-image, z-image-turbo, fibo, flux2-klein-4b, and flux2-klein-9b are supported for image generation."
                     )
                 handler = MLXFluxHandler(
                     model_path=model_identifier,

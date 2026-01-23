@@ -114,14 +114,14 @@ def cli():
 @click.option("--queue-size", default=100, type=int, help="Maximum queue size for pending requests")
 @click.option(
     "--quantize",
-    default=8,
+    default=None,
     type=int,
     help="Quantization level for the model. Only used for image-generation and image-edit Flux models.",
 )
 @click.option(
     "--config-name",
     default=None,
-    type=click.Choice(["flux-schnell", "flux-dev", "flux-krea-dev", "flux-kontext-dev", "qwen-image", "qwen-image-edit", "z-image-turbo", "fibo"]),
+    type=click.Choice(["flux-schnell", "flux-dev", "flux-krea-dev", "flux-kontext-dev", "qwen-image", "qwen-image-edit", "z-image-turbo", "fibo", "flux2-klein-4b", "flux2-klein-9b", "flux2-klein-edit-4b", "flux2-klein-edit-9b"]),
     help="Config name of the model. Only used for image-generation and image-edit models.",
 )
 @click.option(
