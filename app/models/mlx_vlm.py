@@ -7,6 +7,8 @@ from mlx_vlm.models.cache import make_prompt_cache
 from mlx_vlm import load, stream_generate
 from mlx_vlm.video_generate import process_vision_info
 from ..utils.prompt_cache import LRUPromptCache
+from outlines.processors import JSONLogitsProcessor
+from ..utils.outlines_transformer_tokenizer import OutlinesTransformerTokenizer
 
 # Default model parameters
 DEFAULT_MAX_TOKENS = os.getenv("DEFAULT_MAX_TOKENS", 8192)
@@ -60,6 +62,10 @@ class MLX_VLM:
             self.model, self.processor = load(model_path, lazy=False, trust_remote_code=trust_remote_code)
             self.config = self.model.config
             self.context_length = context_length
+            if OutlinesTransformerTokenizer is not None:
+                self.outlines_tokenizer = OutlinesTransformerTokenizer(self.processor.tokenizer)
+            else:
+                self.outlines_tokenizer = None
             if chat_template_file:
                 if not os.path.exists(chat_template_file):
                     raise ValueError(f"Chat template file {chat_template_file} does not exist")
@@ -107,15 +113,36 @@ class MLX_VLM:
         Generate text response from images and messages.
         
         Args:
-            inputs (Dict[str, Any]): Dictionary containing the inputs for the model.
+            prompt (str): The input prompt text.
+            prompt_cache (List[Any], optional): Prompt cache for faster inference.
             stream (bool, optional): Whether to stream the response. Defaults to False.
             **kwargs: Additional model parameters (temperature, max_tokens, etc.)
+                - schema (dict, optional): JSON schema for structured output generation.
             
         Returns:
-            Union[str, Generator[str, None, None]]: 
-                - If stream=False: Complete response as string
+            Union[CompletionResponse, Generator[str, None, None]]: 
+                - If stream=False: Complete response as CompletionResponse
                 - If stream=True: Generator yielding response chunks
         """
+        # Extract logits_processors from kwargs if present, otherwise initialize empty list
+        logits_processors = kwargs.pop("logits_processors", [])
+        
+        # Handle JSON schema for structured outputs
+        json_schema = kwargs.get("schema", None)
+        if json_schema and JSONLogitsProcessor is not None and self.outlines_tokenizer is not None:
+            logits_processors.append(
+                JSONLogitsProcessor(
+                    schema=json_schema,
+                    tokenizer=self.outlines_tokenizer,
+                    tensor_library_name="mlx"
+                )
+            )
+            # Remove schema from kwargs as it's now handled via logits_processors
+            kwargs.pop("schema", None)
+        
+        # Pass logits_processors to stream_generate if any were added
+        if logits_processors:
+            kwargs["logits_processors"] = logits_processors
 
         response_generator = stream_generate(
             self.model,
@@ -199,25 +226,10 @@ if __name__ == "__main__":
 
     inputs = model.create_inputs(input_prompt, image_inputs, video_inputs)
 
-    inputs["prompt"] = input_prompt
-
-    list_input_ids = inputs["input_ids"][0].tolist()
-
     for key, value in inputs.items():
         if isinstance(value, torch.Tensor):
             inputs[key] = mx.array(value)
 
-    cache, rest_input_ids = prompt_cache.fetch_nearest_cache(list_input_ids)
-    if cache is None:
-        cache = model.create_prompt_cache()
-    
-    cache_key = rest_input_ids[:]
-
-    print("TOTAL CACHED TOKENS: ", len(list_input_ids) - len(rest_input_ids))
-
-    first_token = True
-
-    start_time = time.time()
-    response = model(inputs, cache, stream=False)
+    response = model(input_prompt, stream=False, **inputs)
     
     print("RESPONSE: ", response)
