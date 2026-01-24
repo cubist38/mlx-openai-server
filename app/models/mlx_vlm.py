@@ -62,10 +62,7 @@ class MLX_VLM:
             self.model, self.processor = load(model_path, lazy=False, trust_remote_code=trust_remote_code)
             self.config = self.model.config
             self.context_length = context_length
-            if OutlinesTransformerTokenizer is not None:
-                self.outlines_tokenizer = OutlinesTransformerTokenizer(self.processor.tokenizer)
-            else:
-                self.outlines_tokenizer = None
+            self.outlines_tokenizer = OutlinesTransformerTokenizer(self.processor.tokenizer)
             if chat_template_file:
                 if not os.path.exists(chat_template_file):
                     raise ValueError(f"Chat template file {chat_template_file} does not exist")
@@ -129,7 +126,7 @@ class MLX_VLM:
         
         # Handle JSON schema for structured outputs
         json_schema = kwargs.get("schema", None)
-        if json_schema and JSONLogitsProcessor is not None and self.outlines_tokenizer is not None:
+        if json_schema:
             logits_processors.append(
                 JSONLogitsProcessor(
                     schema=json_schema,
