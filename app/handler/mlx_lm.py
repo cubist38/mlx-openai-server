@@ -200,6 +200,16 @@ class MLXLMHandler:
                         if parsed_result.get("content"):
                             yield parsed_result["content"]
                     # Continue processing all chunks even if is_complete is True
+                
+                # After stream completes, finalize any pending tool calls for unified parser
+                if parsers_result.unified_parser:
+                    final_parsed, _ = parsers_result.unified_parser.parse_streaming("<|call|>")
+                    if final_parsed:
+                        if final_parsed.get("tool_calls"):
+                            for tool_call in final_parsed["tool_calls"]:
+                                # Only yield valid tool calls (must have a non-empty name)
+                                if tool_call.get("name"):
+                                    yield tool_call
             else:
                 # Handle separate parsers streaming
                 reasoning_parser = parsers_result.reasoning_parser
@@ -242,6 +252,16 @@ class MLXLMHandler:
                         continue
                     
                     yield text
+
+            # After stream completes, finalize any pending tool calls
+            if parsers_result.tool_parser:
+                # Force finalize by sending end marker
+                final_parsed, _ = parsers_result.tool_parser.parse_streaming("<|call|>")
+                if final_parsed and final_parsed.get("tool_calls"):
+                    for tool_call in final_parsed["tool_calls"]:
+                        # Only yield valid tool calls (must have a non-empty name)
+                        if tool_call.get("name"):
+                            yield tool_call
 
             total_tokens = final_chunk.prompt_tokens + final_chunk.generation_tokens
             self.prompt_cache.insert_cache(cache_key, cache)
