@@ -7,7 +7,6 @@ from openai_harmony import (
     StreamableParser,
     Role
 )
-from sympy import true    
 
 class ChannelType(Enum):
     """Enumeration of harmony channel types."""
