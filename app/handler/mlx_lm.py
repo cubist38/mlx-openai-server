@@ -11,7 +11,7 @@ from ..utils.errors import create_error_response
 from ..parsers import ParserManager
 from ..message_converters import MessageConverterManager
 from typing import Any, AsyncGenerator, Dict, List, Optional, Tuple
-from ..schemas.openai import ChatCompletionRequest, UsageInfo
+from ..schemas.openai import ChatCompletionRequest, UsageInfo, PromptTokenUsageInfo
 from ..utils.prompt_cache import LRUPromptCache
 from ..utils.debug_logging import log_debug_request, log_debug_stats, log_debug_raw_text_response, log_debug_prompt, make_prompt_progress_callback, log_debug_cache_stats
 
@@ -135,8 +135,12 @@ class MLXLMHandler:
             if cache is None:
                 cache = self.model.create_prompt_cache()
 
+            total_input_tokens = len(input_ids)
+            total_remaining_tokens = len(rest_input_ids)
+            total_cached_tokens = total_input_tokens - total_remaining_tokens
+
             if self.debug:
-                log_debug_cache_stats(len(input_ids), len(rest_input_ids))
+                log_debug_cache_stats(total_input_tokens, total_remaining_tokens)
 
                 
             enable_thinking = chat_template_kwargs.get("enable_thinking", True)
@@ -259,7 +263,10 @@ class MLXLMHandler:
                 "__usage__": UsageInfo(
                     prompt_tokens=final_chunk.prompt_tokens,
                     completion_tokens=final_chunk.generation_tokens,
-                    total_tokens=total_tokens
+                    total_tokens=total_tokens,
+                    prompt_tokens_details=PromptTokenUsageInfo(
+                        cached_tokens=total_cached_tokens
+                    )
                 )
             }
 
@@ -307,9 +314,13 @@ class MLXLMHandler:
             if cache is None:
                 cache = self.model.create_prompt_cache()
 
-            if self.debug:
-                log_debug_cache_stats(len(input_ids), len(rest_input_ids))
+            total_input_tokens = len(input_ids)
+            total_remaining_tokens = len(rest_input_ids)
+            total_cached_tokens = total_input_tokens - total_remaining_tokens
 
+            if self.debug:
+                log_debug_cache_stats(total_input_tokens, total_remaining_tokens)
+            
             prompt_progress_callback = make_prompt_progress_callback() if self.debug else None
 
             request_data = {
@@ -396,7 +407,10 @@ class MLXLMHandler:
             usage = UsageInfo(
                 prompt_tokens=response.prompt_tokens,
                 completion_tokens=response.generation_tokens,
-                total_tokens=total_tokens
+                total_tokens=total_tokens,
+                prompt_tokens_details=PromptTokenUsageInfo(
+                    cached_tokens=total_cached_tokens
+                )
             )
 
             return {"response": parsed_response, "usage": usage}
