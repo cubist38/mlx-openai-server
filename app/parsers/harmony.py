@@ -38,7 +38,8 @@ class HarmonyParser:
         Parse the text and return the parsed content.
         """
         if self.end_tool_chunk in text:
-            text = text.split(self.end_tool_chunk)[0]
+            end_tool_index = text.find(self.end_tool_chunk)
+            text = text[:end_tool_index + len(self.end_tool_chunk)]
 
         result = {
             "content": None,
@@ -83,7 +84,8 @@ class HarmonyParser:
 
         # Check for end marker and truncate
         if self.end_tool_chunk in chunk:
-            chunk = chunk[:chunk.find(self.end_tool_chunk)]
+            end_tool_index = chunk.find(self.end_tool_chunk)
+            chunk = chunk[:end_tool_index + len(self.end_tool_chunk)]
             end_stream_state = True
         
         # Process chunk tokens
