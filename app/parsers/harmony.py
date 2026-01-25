@@ -6,7 +6,7 @@ from openai_harmony import (
     HarmonyEncodingName,
     StreamableParser,
     Role
-)    
+)
 
 class ChannelType(Enum):
     """Enumeration of harmony channel types."""
@@ -125,3 +125,9 @@ class HarmonyParser:
             return self._build_result(reasoning_contents, tool_calls, contents), True
         
         return self._build_result(reasoning_contents, None, contents), False
+
+    def handle_parse_streaming_end(self) -> tuple[dict[str, str | list | None] | None, bool]:
+        """Handle the end of the parse_streaming."""
+        if self.state == ToolParserState.FOUND_ARGUMENTS:
+            return self.parse_streaming(self.end_tool_chunk)
+        return None, False

@@ -203,6 +203,18 @@ class MLXLMHandler:
                                 yield tool_call
                         if parsed_result.get("content"):
                             yield parsed_result["content"]
+
+                if hasattr(unified_parser, "handle_parse_streaming_end"):
+                    parsed_result, is_complete = unified_parser.handle_parse_streaming_end()
+                    if parsed_result:
+                        # Unified parser returns dict with reasoning_content, tool_calls, content
+                        if parsed_result.get("reasoning_content"):
+                            yield {"reasoning_content": parsed_result["reasoning_content"]}
+                        if parsed_result.get("tool_calls"):
+                            for tool_call in parsed_result["tool_calls"]:
+                                yield tool_call
+                        if parsed_result.get("content"):
+                            yield parsed_result["content"]
             else:
                 # Handle separate parsers streaming
                 reasoning_parser = parsers_result.reasoning_parser
