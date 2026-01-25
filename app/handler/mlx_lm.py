@@ -199,7 +199,6 @@ class MLXLMHandler:
                                 yield tool_call
                         if parsed_result.get("content"):
                             yield parsed_result["content"]
-                    # Continue processing all chunks even if is_complete is True
             else:
                 # Handle separate parsers streaming
                 reasoning_parser = parsers_result.reasoning_parser

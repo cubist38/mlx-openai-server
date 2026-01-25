@@ -43,6 +43,25 @@ class CompletionResponse:
     prompt_tokens: int = None
     generation_tokens: int = None
 
+@dataclass
+class SpecialModelConfig:
+    """Configuration for special model handling.
+    
+    Parameters
+    ----------
+    eos_token_ids_to_remove : list[int] | None
+        List of EOS token IDs to remove from the tokenizer's EOS token list.
+    """
+    eos_token_ids_to_remove: list[int] | None = None
+
+
+# Registry for special model configurations
+_SPECIAL_MODEL_CONFIGS: dict[str, SpecialModelConfig] = {
+    "gpt_oss": SpecialModelConfig(
+        eos_token_ids_to_remove=[200012],  # <|call|> should be handled in the parser
+    ),
+}
+
 class MLX_LM:
     """
     A wrapper class for MLX Language Model that handles both streaming and non-streaming inference.
@@ -57,6 +76,7 @@ class MLX_LM:
             self.pad_token_id = self.tokenizer.pad_token_id
             self.bos_token = self.tokenizer.bos_token
             self.model_type = self.model.model_type
+            self._handle_special_models()
             self.context_length = context_length
             self.outlines_tokenizer = OutlinesTransformerTokenizer(self.tokenizer)
             if chat_template_file:
@@ -66,6 +86,17 @@ class MLX_LM:
                     self.tokenizer.chat_template = f.read()
         except Exception as e:
             raise ValueError(f"Error loading model: {str(e)}")
+
+    def _handle_special_models(self) -> None:
+        """Apply special handling for specific model types."""
+        config = _SPECIAL_MODEL_CONFIGS.get(self.model_type)
+        if config is None:
+            return
+        
+        if config.eos_token_ids_to_remove:
+            for token_id in config.eos_token_ids_to_remove:
+                if hasattr(self.tokenizer, "_eos_token_ids") and token_id in self.tokenizer._eos_token_ids:
+                    self.tokenizer._eos_token_ids.remove(token_id)
 
     def create_prompt_cache(self) -> List[Any]:
         return make_prompt_cache(self.model, max_kv_size=self.context_length)
