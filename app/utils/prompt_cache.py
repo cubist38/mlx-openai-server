@@ -102,12 +102,11 @@ class LRUPromptCache:
         if last_cache_index == len(tokens_ids) - 1:
             return self.SearchResult(tokens_ids, None, None, 0)
 
-        # Find the shorter cache (fixed: should include index 0)
-        shorter = None
-        if last_cache_index >= 0:
-            shorter = tokens_ids[: last_cache_index + 1]
-
-        # Find the shorter cache
+        # Find the shorter cache (must be > 0, not >= 0)
+        # A cache at index 0 is a single-token match, which provides minimal benefit
+        # and likely represents a degenerate case. The longer search (which triggers
+        # when last_cache_index <= 0) may find a healthier cache to trim, or we
+        # fall back to no cache rather than using a potentially problematic entry.
         shorter = None
         if last_cache_index > 0:
             shorter = tokens_ids[: last_cache_index + 1]
