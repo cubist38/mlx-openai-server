@@ -130,7 +130,12 @@ class MLXLMHandler:
 
             cache, rest_input_ids = self.prompt_cache.fetch_nearest_cache(input_ids)
 
-            cache_key = rest_input_ids[:]
+            # Cache key must be the FULL input_ids, not rest_input_ids.
+            # Using rest_input_ids causes memory leaks: on "longer" cache hits,
+            # rest_input_ids is a suffix (e.g., [B] from input [A,B]), creating
+            # new cache entries [B,X,Y,Z] instead of updating [A,B,X,Y,Z].
+            # The original entry is never evicted and duplicates accumulate.
+            cache_key = input_ids[:]
 
             if cache is None:
                 cache = self.model.create_prompt_cache()
@@ -321,8 +326,10 @@ class MLXLMHandler:
 
             cache, rest_input_ids = self.prompt_cache.fetch_nearest_cache(input_ids)
 
-            cache_key = rest_input_ids[:]
-                        
+            # Cache key must be the FULL input_ids, not rest_input_ids.
+            # See generate_text_stream for detailed explanation.
+            cache_key = input_ids[:]
+
             if cache is None:
                 cache = self.model.create_prompt_cache()
 

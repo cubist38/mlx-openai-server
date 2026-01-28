@@ -107,7 +107,7 @@ class MLX_LM:
                 - max_tokens: Maximum number of tokens to generate (default: 256)
         """
         # Set default parameters if not provided
-        seed = kwargs.get("seed", DEFAULT_SEED)
+        seed = kwargs.get("seed")
         max_tokens = kwargs.get("max_tokens", DEFAULT_MAX_TOKENS)
 
         sampler_kwargs = {
@@ -129,8 +129,11 @@ class MLX_LM:
                     tensor_library_name = "mlx"
                 )
             )
-        
-        mx.random.seed(seed)
+
+        # Only seed RNG when an explicit non-negative seed is provided
+        # None or negative values (e.g., -1) result in non-deterministic generation
+        if seed is not None and seed >= 0:
+            mx.random.seed(seed)
         
         prompt_progress_callback = kwargs.get("prompt_progress_callback")
         

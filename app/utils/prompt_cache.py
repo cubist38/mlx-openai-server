@@ -102,12 +102,11 @@ class LRUPromptCache:
         if last_cache_index == len(tokens_ids) - 1:
             return self.SearchResult(tokens_ids, None, None, 0)
 
-        # Find the shorter cache (fixed: should include index 0)
-        shorter = None
-        if last_cache_index >= 0:
-            shorter = tokens_ids[: last_cache_index + 1]
-
-        # Find the shorter cache
+        # Find the shorter cache (must be > 0, not >= 0)
+        # A cache at index 0 is a single-token match, which provides minimal benefit
+        # and likely represents a degenerate case. The longer search (which triggers
+        # when last_cache_index <= 0) may find a healthier cache to trim, or we
+        # fall back to no cache rather than using a potentially problematic entry.
         shorter = None
         if last_cache_index > 0:
             shorter = tokens_ids[: last_cache_index + 1]
@@ -166,17 +165,19 @@ class LRUPromptCache:
 
         # Longer sequence match - try to trim it down to our prefix
         if result.longer is not None:
+            # Check trimmability first with _get (non-destructive)
             cache_entry = self._get(result.longer)
             if can_trim_prompt_cache(cache_entry.prompt_cache):
-                # Deep copy is necessary to avoid modifying the cached version
-                trimmed_entry = self.CacheEntry(
-                    copy.deepcopy(cache_entry.prompt_cache),
-                    1,
-                )
+                # Use _extract to decrement/remove the original entry.
+                # On "swipe" (regeneration with same input), we're replacing the old
+                # generation with a new one. Without extraction, old entries accumulate
+                # since each swipe creates a new cache_key with different generated tokens.
+                # _extract handles deep copy when count > 1, returns original when count == 1.
+                cache_entry = self._extract(result.longer)
                 prefix = min(len(tokens_ids) - 1, result.common_prefix)
                 num_to_trim = len(result.longer) - prefix
-                trim_prompt_cache(trimmed_entry.prompt_cache, num_to_trim)
-                return trimmed_entry.prompt_cache, tokens_ids[prefix:]
+                trim_prompt_cache(cache_entry.prompt_cache, num_to_trim)
+                return cache_entry.prompt_cache, tokens_ids[prefix:]
 
         # No match found
         return None, tokens_ids
@@ -323,7 +324,8 @@ if __name__ == "__main__":
     cache, rest_input_ids = prompt_cache.fetch_nearest_cache(input_ids)
     if cache is None:
         cache = model.create_prompt_cache()
-    cache_key = rest_input_ids[:]
+    # Use full input_ids for cache_key, not rest_input_ids
+    cache_key = input_ids[:]
 
     response_1 = model(rest_input_ids, cache, stream=True)
     for chunk in response_1:
@@ -345,7 +347,8 @@ if __name__ == "__main__":
    
     if cache is None:
         cache = model.create_prompt_cache()
-    cache_key_2 = rest_input_ids_2[:]
+    # Use full input_ids for cache_key, not rest_input_ids
+    cache_key_2 = input_ids_2[:]
 
     start_time = time.time()
     response_2 = model(rest_input_ids_2, cache, stream=True)
