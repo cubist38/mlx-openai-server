@@ -51,5 +51,5 @@ class MiniMaxM2ToolParser(GLM4MoEToolParser):
             r'<invoke name="([^"]+)"\s*>(.*)', re.DOTALL
         )
         self.func_arg_regex = re.compile(
-            r'<parameter name="([^"]+)"\s*>([^<]*)</parameter>', re.DOTALL
+            r'<parameter name="([^"]+)"\s*>(.*?)</parameter>', re.DOTALL
         )
