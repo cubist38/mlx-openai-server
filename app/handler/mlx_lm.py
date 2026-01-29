@@ -165,6 +165,7 @@ class MLXLMHandler:
                 logger.info("JSON schema is enabled, disabling reasoning parser and tool parser")
                 parsers_result.reasoning_parser = None
                 parsers_result.tool_parser = None
+                parsers_result.unified_parser = None
 
             prompt_progress_callback = make_prompt_progress_callback() if self.debug else None
 
@@ -197,19 +198,22 @@ class MLXLMHandler:
                     text = chunk.text
                     raw_text += text
                     cache_key.append(chunk.token)
-                    
-                    parsed_result, is_complete = unified_parser.parse_streaming(text)
-                    if parsed_result:
-                        # Unified parser returns dict with reasoning_content, tool_calls, content
-                        if parsed_result.get("reasoning_content"):
-                            yield {"reasoning_content": parsed_result["reasoning_content"]}
-                        if parsed_result.get("tool_calls"):
-                            for tool_call in parsed_result["tool_calls"]:
-                                yield tool_call
-                        if parsed_result.get("content"):
-                            yield parsed_result["content"]
 
-                if hasattr(unified_parser, "handle_parse_streaming_end"):
+                    if unified_parser:
+                        parsed_result, is_complete = unified_parser.parse_streaming(text)
+                        if parsed_result:
+                            # Unified parser returns dict with reasoning_content, tool_calls, content
+                            if parsed_result.get("reasoning_content"):
+                                yield {"reasoning_content": parsed_result["reasoning_content"]}
+                            if parsed_result.get("tool_calls"):
+                                for tool_call in parsed_result["tool_calls"]:
+                                    yield tool_call
+                            if parsed_result.get("content"):
+                                yield parsed_result["content"]
+                    else:
+                        yield text
+
+                if unified_parser and hasattr(unified_parser, "handle_parse_streaming_end"):
                     parsed_result, is_complete = unified_parser.handle_parse_streaming_end()
                     if parsed_result:
                         # Unified parser returns dict with reasoning_content, tool_calls, content
@@ -369,6 +373,7 @@ class MLXLMHandler:
                 logger.info("JSON schema is enabled, disabling reasoning parser and tool parser")
                 parsers_result.reasoning_parser = None
                 parsers_result.tool_parser = None
+                parsers_result.unified_parser = None
 
             response_text = response.text
             cache_key += response.tokens
@@ -384,11 +389,14 @@ class MLXLMHandler:
             # Handle unified parser
             if parsers_result.is_unified:
                 unified_parser = parsers_result.unified_parser
-                parsed_result = unified_parser.parse(response_text)
-                if parsed_result:
-                    parsed_response["reasoning_content"] = parsed_result.get("reasoning_content")
-                    parsed_response["tool_calls"] = parsed_result.get("tool_calls")
-                    parsed_response["content"] = parsed_result.get("content")
+                if unified_parser:
+                    parsed_result = unified_parser.parse(response_text)
+                    if parsed_result:
+                        parsed_response["reasoning_content"] = parsed_result.get("reasoning_content")
+                        parsed_response["tool_calls"] = parsed_result.get("tool_calls")
+                        parsed_response["content"] = parsed_result.get("content")
+                else:
+                    parsed_response["content"] = response_text
             # Handle separate parsers
             elif parsers_result.reasoning_parser or parsers_result.tool_parser:
                 reasoning_parser = parsers_result.reasoning_parser
