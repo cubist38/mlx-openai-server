@@ -234,6 +234,15 @@ class ChatCompletionRequestBase(OpenAIBaseModel):
     repetition_context_size: int | None = Field(
         20, description="Repetition context size for token generation."
     )
+    xtc_probability: float | None = Field(
+        0.0, description="XTC (eXclude Top Choices) sampling probability (0.0-1.0)."
+    )
+    xtc_threshold: float | None = Field(
+        0.0, description="XTC sampling threshold (0.0-0.5)."
+    )
+    logit_bias: dict[str, float] | None = Field(
+        None, description="Modify the likelihood of specified tokens appearing in the completion. Maps token IDs (as strings) to bias values from -100 to 100."
+    )
 
     @field_validator("messages")
     @classmethod
@@ -269,6 +278,36 @@ class ChatCompletionRequestBase(OpenAIBaseModel):
         if v is not None:
             if v <= 0:
                 raise ValueError("max_tokens must be positive")
+        return v
+
+    @field_validator("xtc_probability")
+    @classmethod
+    def check_xtc_probability(cls, v: float | None) -> float | None:
+        """Validate xtc_probability is between 0 and 1."""
+        if v is not None and (v < 0 or v > 1):
+            raise ValueError("xtc_probability must be between 0 and 1")
+        return v
+
+    @field_validator("xtc_threshold")
+    @classmethod
+    def check_xtc_threshold(cls, v: float | None) -> float | None:
+        """Validate xtc_threshold is between 0 and 0.5."""
+        if v is not None and (v < 0 or v > 0.5):
+            raise ValueError("xtc_threshold must be between 0 and 0.5")
+        return v
+
+    @field_validator("logit_bias")
+    @classmethod
+    def check_logit_bias(cls, v: dict[str, float] | None) -> dict[str, float] | None:
+        """Validate logit_bias keys are valid token IDs and values are within range."""
+        if v is not None:
+            for key, value in v.items():
+                try:
+                    int(key)
+                except ValueError:
+                    raise ValueError(f"logit_bias keys must be valid token IDs (integers as strings), got: {key}")
+                if not isinstance(value, (int, float)) or value < -100 or value > 100:
+                    raise ValueError(f"logit_bias values must be between -100 and 100, got: {value}")
         return v
 
 
