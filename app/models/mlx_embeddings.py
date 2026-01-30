@@ -41,9 +41,11 @@ class MLX_Embeddings:
         outputs = None
         try:
             # Tokenize inputs
-            inputs = self.tokenizer.batch_encode_plus(
+            tokenizer = getattr(self.tokenizer, "_tokenizer", self.tokenizer)
+            
+            inputs = tokenizer(
                 texts, 
-                return_tensors="mlx", 
+                return_tensors="np", 
                 padding=True, 
                 truncation=True, 
                 max_length=max_length
@@ -51,8 +53,8 @@ class MLX_Embeddings:
             
             # Generate embeddings
             outputs = self.model(
-                inputs["input_ids"],
-                attention_mask=inputs["attention_mask"]
+                mx.array(inputs["input_ids"]),
+                attention_mask=mx.array(inputs["attention_mask"])
             ).text_embeds
             
             # Return a copy to ensure the result persists after cleanup
