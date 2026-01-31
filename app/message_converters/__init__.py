@@ -1,20 +1,16 @@
 from __future__ import annotations
 
-from typing import Any
-
 from .abstract_converter import AbstractMessageConverter
 from .glm4_moe import GLM4MoEMessageConverter
-from .minimax_m2 import MiniMaxM2MessageConverter
-from .nemontron3_nano import Nemotron3NanoMessageConverter
-from .qwen3_coder import Qwen3CoderMessageConverter
 
 # Mapping from converter name strings to converter classes
 MESSAGE_CONVERTER_MAP: dict[str, type[AbstractMessageConverter]] = {
     "glm4_moe": GLM4MoEMessageConverter,
-    "minimax_m2": MiniMaxM2MessageConverter,
-    "minimax": MiniMaxM2MessageConverter,  # Alias for minimax_m2
-    "nemotron3_nano": Nemotron3NanoMessageConverter,
-    "qwen3_coder": Qwen3CoderMessageConverter,
+    "minimax_m2": GLM4MoEMessageConverter, # use the same converter as glm4_moe
+    "minimax": GLM4MoEMessageConverter, # use the same converter as glm4_moe
+    "nemotron3_nano": GLM4MoEMessageConverter, # use the same converter as glm4_moe
+    "qwen3_coder": GLM4MoEMessageConverter, # use the same converter as glm4_moe
+    "longcat_flash_lite": GLM4MoEMessageConverter, # use the same converter as glm4_moe
 }
 
 
@@ -77,9 +73,6 @@ __all__ = [
     "AbstractMessageConverter",
     # Converter implementations
     "GLM4MoEMessageConverter",
-    "MiniMaxM2MessageConverter",
-    "Nemotron3NanoMessageConverter",
-    "Qwen3CoderMessageConverter",
     # Mapping and helper functions
     "MESSAGE_CONVERTER_MAP",
     "get_message_converter",
