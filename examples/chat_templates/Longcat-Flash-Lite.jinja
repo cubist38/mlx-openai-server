@@ -1,0 +1,68 @@
+    {%- set tool_choice = tool_choice | default('auto') %}
+{%- set ns = namespace(tool_types = [], last_query_index = -1) %}
+
+{%- if tools and tool_choice != 'none' %}
+    {{- "<longcat_tool_declare>\n"-}}
+    {{- "# Tools\n" }}
+    {{- "You have access to the following tools:\n\n" }}
+    {%- for tool in tools %}
+        {%- if tool.type not in ns.tool_types %}
+            {%- set ns.tool_types = ns.tool_types + [tool.type] %}
+            {{- "## Tool namespace: " ~ tool.type ~ "\n\n" }}
+        {%- endif %}
+        {%- if tool.type == 'code_interpreter' %}
+            {%- set tool = {"type":"code_interpreter","function":{"name":"code_interpreter_preview","description":"The code will be executed in a stateful Jupyter notebook sandbox environment, only supports local computation, data processing, and file operations.\nCode sandbox environment (network isolated) Any external network requests or online API calls are prohibited.\nIf online functionality is needed, please use other permitted tools.\nCode will respond with the output of the execution or time out after 60.0 seconds. ","parameters":{"type":"object","properties":{"language":{"type":"string","description":"The programming language of the code to be executed. Available values: python (Default), java, go, js, ts, c, c++."},"code":{"type":"string","description":"Python code to be executed must not include the following:\n- Importing network libraries such as requests, httplib, etc.\n- Any form of HTTP requests.\n- External API calls.\n- Network port operations. Example: ```python\nimport pandas as pd\npd.DataFrame({'A':[1,2]})\n```"},"timeout":{"type":"number","description":"The maximum execution time of the code, in seconds. Default is 60.0."}}},"required":["code"]}} %}
+        {%- endif %}
+        {{- "### Tool name: " + tool.function.name + "\n" }}
+        {{- "Description: " + tool.function.description + "\n\n" }}
+        {{- "InputSchema: " + tool.function.parameters | tojson(ensure_ascii=False) + "\n\n" }}
+    {%- endfor %}
+    {{- '**Note**: For each function call, output the function name and arguments within the following XML format:\n<longcat_tool_call>{function-name}\n<longcat_arg_key>{arg-key-1}</longcat_arg_key>\n<longcat_arg_value>{arg-value-1}</longcat_arg_value>\n<longcat_arg_key>{arg-key-2}</longcat_arg_key>\n<longcat_arg_value>{arg-value-2}</longcat_arg_value>\n...\n</longcat_tool_call>\n' }}
+    {{- "</longcat_tool_declare>"-}}
+    {%- for idx in range(messages|length - 1) %}
+        {%- set msg = messages[idx] %}
+        {%- if msg.role == 'assistant' and not msg.tool_calls %}
+            {%- set ns.last_query_index = idx %}
+        {%- endif %}
+    {%- endfor%}
+{%- endif %}
+
+{%- for msg in messages %}
+    {%- if msg.role == "system" %}
+        {{- "<longcat_system>" + msg.content }}
+    {%- elif msg.role == "user" %}
+        {{- "<longcat_user>" }}
+        {%- if msg["files"] %}
+            {{- '<longcat_files>\n' ~ msg.files | tojson(indent=2) ~ '\n</longcat_files>' }}
+        {%- endif %}
+        {{- msg.content }}
+    {%- elif msg.role == "assistant" %}
+        {{- "<longcat_assistant>" }}
+        {%- if enable_thinking == true and msg.reasoning_content and ns.tool_types != [] and loop.index0 > ns.last_query_index %}
+            {{- "\n<longcat_think>\n" ~ msg.reasoning_content ~ "\n</longcat_think>\n" }}
+        {%- endif %}
+        {%- if msg.content%}
+            {{- msg.content }}
+        {%- endif %}
+        {%- if msg.tool_calls %}
+            {%- for tool_call in msg.tool_calls -%}
+                {{- "<longcat_tool_call>" ~ tool_call.function.name ~ "\n" -}}
+                {% set _args = tool_call.function.arguments %}
+                {% for k, v in _args.items() %}
+                    {{- "<longcat_arg_key>" ~ k ~ "</longcat_arg_key>\n" -}}
+                    {{- "<longcat_arg_value>" ~ (v if v is string else v | tojson(ensure_ascii=False)) ~ "</longcat_arg_value>\n" -}}
+                {% endfor %}
+                {{- "</longcat_tool_call>\n" }}
+            {%- endfor %}
+        {%- endif %}
+        {{- "</longcat_s>" -}}
+    {%- elif msg.role == "tool" %}
+        {%- if messages[loop.index0 - 1].role != "tool"%}
+            {{- "<longcat_user>" -}}
+        {%- endif %}
+        {{- "<longcat_tool_response>" ~ msg.content ~ "</longcat_tool_response>"-}}
+    {%- endif %}
+{%- endfor %}
+{%- if add_generation_prompt %}
+    {{- "<longcat_assistant>" }}
+{%- endif %}
