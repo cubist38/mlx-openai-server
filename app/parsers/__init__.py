@@ -23,6 +23,7 @@ from .qwen3_moe import Qwen3MoEReasoningParser, Qwen3MoEToolParser
 from .qwen3_vl import Qwen3VLReasoningParser, Qwen3VLToolParser
 from .iquest_coder_v1 import IQuestCoderV1ToolParser
 from .solar_open import SolarOpenReasoningParser, SolarOpenToolParser
+from .longcat_flash_lite import LongCatFlashLiteToolParser
 
 # Mapping from parser name strings to reasoning parser classes
 REASONING_PARSER_MAP: dict[str, type[AbstractReasoningParser]] = {
@@ -50,6 +51,7 @@ TOOL_PARSER_MAP: dict[str, type[AbstractToolParser]] = {
     "functiongemma": FunctionGemmaToolParser,
     "iquest_coder_v1": IQuestCoderV1ToolParser,
     "solar_open": SolarOpenToolParser,
+    "longcat_flash_lite": LongCatFlashLiteToolParser,
 }
 
 # Unified parsers that handle BOTH reasoning and tool calls in one class
