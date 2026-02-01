@@ -13,6 +13,7 @@ from ..message_converters import MessageConverterManager
 from typing import Any, AsyncGenerator, Dict, List, Optional, Tuple
 from ..schemas.openai import ChatCompletionRequest, UsageInfo, PromptTokenUsageInfo
 from ..utils.prompt_cache import LRUPromptCache
+from ..utils.harmony_prompt import render_harmony_prompt
 from ..utils.debug_logging import log_debug_request, log_debug_stats, log_debug_raw_text_response, log_debug_prompt, make_prompt_progress_callback, log_debug_cache_stats
 
 class MLXLMHandler:
@@ -36,7 +37,10 @@ class MLXLMHandler:
             chat_template_file (str): Path to a custom chat template file.
         """
         self.model_path = model_path
-        self.model = MLX_LM(model_path, context_length, trust_remote_code=trust_remote_code, chat_template_file=chat_template_file)
+        
+        # GPT-OSS/Harmony models need to stop on <|call|> (200012) and <|return|> (200002)
+        extra_stop_tokens = [200002, 200012] if tool_call_parser == "harmony" or reasoning_parser == "harmony" else None
+        self.model = MLX_LM(model_path, context_length, trust_remote_code=trust_remote_code, chat_template_file=chat_template_file, extra_stop_tokens=extra_stop_tokens)
         self.model_created = int(time.time())  # Store creation time when model is loaded
         self.model_type = self.model.get_model_type()
         
@@ -121,7 +125,13 @@ class MLXLMHandler:
             refined_messages = self.refine_messages(chat_messages)
             chat_template_kwargs = model_params.get("chat_template_kwargs", {})
 
-            input_prompt = self.model.create_input_prompt(refined_messages, chat_template_kwargs)
+            # Use Harmony renderer for proper token formatting when harmony parser is active
+            if self.reasoning_parser_name == "harmony":
+                tools = chat_template_kwargs.get("tools")
+                reasoning_effort = chat_template_kwargs.get("reasoning_effort", "medium")
+                input_prompt = render_harmony_prompt(refined_messages, tools, reasoning_effort)
+            else:
+                input_prompt = self.model.create_input_prompt(refined_messages, chat_template_kwargs)
 
             if self.debug:
                 log_debug_prompt(input_prompt)
@@ -321,7 +331,13 @@ class MLXLMHandler:
             # Count prompt tokens
             chat_template_kwargs = model_params.get("chat_template_kwargs", {})
 
-            input_prompt = self.model.create_input_prompt(refined_messages, chat_template_kwargs)
+            # Use Harmony renderer for proper token formatting when harmony parser is active
+            if self.reasoning_parser_name == "harmony":
+                tools = chat_template_kwargs.get("tools")
+                reasoning_effort = chat_template_kwargs.get("reasoning_effort", "medium")
+                input_prompt = render_harmony_prompt(refined_messages, tools, reasoning_effort)
+            else:
+                input_prompt = self.model.create_input_prompt(refined_messages, chat_template_kwargs)
 
             if self.debug:
                 log_debug_prompt(input_prompt)
