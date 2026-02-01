@@ -4,6 +4,21 @@ from typing import Any, Dict, Optional, Callable, Awaitable, TypeVar, Generic
 import gc
 from loguru import logger
 
+try:
+    import mlx.core as mx
+    HAS_MLX = True
+except ImportError:
+    HAS_MLX = False
+
+def _safe_gc():
+    """
+    Safely run garbage collection with Metal synchronization.
+    Avoids [_MTLCommandBuffer addCompletedHandler:]:976: failed assertion `Completed handler provided after commit call'
+    """
+    if HAS_MLX:
+        mx.synchronize()
+    gc.collect()
+
 T = TypeVar('T')
 
 class RequestItem(Generic[T]):
@@ -102,8 +117,8 @@ class RequestQueue:
             except asyncio.QueueEmpty:
                 break
         
-        # Force garbage collection after cleanup
-        gc.collect()
+        # Safely run garbage collection with Metal synchronization
+        _safe_gc()
         logger.info("Stopped request queue")
         
     async def _worker_loop(self, processor: Callable[[Any], Awaitable[Any]]):
@@ -167,9 +182,9 @@ class RequestQueue:
                             del removed_request.data
                     except:
                         pass
-                # Force garbage collection periodically to prevent memory buildup
+                # Safely run garbage collection with Metal synchronization
                 if len(self.active_requests) % 10 == 0:  # Every 10 requests
-                    gc.collect()
+                    _safe_gc()
                 
     async def enqueue(self, request_id: str, data: Any) -> RequestItem:
         """
