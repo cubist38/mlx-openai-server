@@ -57,6 +57,17 @@ class MLXLMHandler:
 
         logger.info(f"Initialized MLXHandler with model path: {model_path}")
 
+    def get_default_sampling_params(self) -> Dict[str, Any]:
+        """
+        Get model-specific default sampling parameters.
+        """
+        # GPT-OSS/Harmony models need top_k=0 (disabled)
+        if self.reasoning_parser_name == "harmony":
+            return {"top_k": 0, "temperature": 1}
+
+        # Standard defaults for other models (default of mlx-openai-server)
+        return {"top_k": 20, "temperature": 0.7}
+
     async def get_models(self) -> List[Dict[str, Any]]:
         """
         Get list of available models with their metadata.
