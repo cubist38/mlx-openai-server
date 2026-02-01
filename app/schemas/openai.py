@@ -211,9 +211,9 @@ class ChatCompletionRequestBase(OpenAIBaseModel):
         "auto", description="Tool choice for the request."
     )
     max_tokens: int | None = Field(None, description="The maximum number of tokens to generate.")
-    temperature: float | None = Field(0.7, description="Sampling temperature.")
+    temperature: float | None = Field(None, description="Sampling temperature.")
     top_p: float | None = Field(1.0, description="Nucleus sampling probability.")
-    top_k: int | None = Field(20, description="Top-k sampling parameter.")
+    top_k: int | None = Field(None, description="Top-k sampling. Limits token selection to the k most probable.")
     min_p: float | None = Field(0.0, description="Minimum probability for token generation.")
     frequency_penalty: float | None = Field(
         0.0, description="Frequency penalty for token generation."
