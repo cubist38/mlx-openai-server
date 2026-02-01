@@ -461,17 +461,23 @@ class MLXVLMHandler:
             prompt = request_data.pop("prompt")
             stream = request_data.pop("stream")      
 
-            # Run model inference in a thread pool to prevent blocking the event loop
             # This allows /v1/queue/stats and other async endpoints to respond during inference
-            loop = asyncio.get_running_loop()
-            response = await loop.run_in_executor(
-                self._executor,
-                lambda: self.model(
+            if stream:
+                response = self.model(
                     prompt=prompt,
                     stream=stream,
                     **request_data
                 )
-            )
+            else:
+                loop = asyncio.get_running_loop()
+                response = await loop.run_in_executor(
+                    self._executor,
+                    lambda: self.model(
+                        prompt=prompt,
+                        stream=stream,
+                        **request_data
+                    )
+                )
 
             # Force garbage collection after model inference
             gc.collect()
