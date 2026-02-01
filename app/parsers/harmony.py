@@ -46,18 +46,24 @@ class HarmonyParser:
             "tool_calls": [],
             "reasoning_content": None,
         }
-        tokens = self.encoding.encode(text, allowed_special="all")
-        parsed_messages = self.encoding.parse_messages_from_completion_tokens(tokens, role=Role.ASSISTANT)
-        for message in parsed_messages:
-            if message.channel == ChannelType.ANALYSIS.value:
-                result["reasoning_content"] = message.content[0].text
-            elif message.channel == ChannelType.COMMENTARY.value:
-                result["tool_calls"].append({
-                    "name": message.recipient.replace("functions.", ""),
-                    "arguments": message.content[0].text
-                })
-            elif message.channel == ChannelType.FINAL.value:
-                result["content"] = message.content[0].text
+        
+        try:
+            tokens = self.encoding.encode(text, allowed_special="all")
+            parsed_messages = self.encoding.parse_messages_from_completion_tokens(tokens, role=Role.ASSISTANT)
+            for message in parsed_messages:
+                if message.channel == ChannelType.ANALYSIS.value:
+                    result["reasoning_content"] = message.content[0].text
+                elif message.channel == ChannelType.COMMENTARY.value:
+                    result["tool_calls"].append({
+                        "name": message.recipient.replace("functions.", ""),
+                        "arguments": message.content[0].text
+                    })
+                elif message.channel == ChannelType.FINAL.value:
+                    result["content"] = message.content[0].text
+        except Exception as e:
+            # Fallback for parsing errors (e.g. truncated output)
+            result["content"] = text
+            
         return result
     
     def _build_result(
