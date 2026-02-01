@@ -2,7 +2,6 @@ import gc
 import time
 import uuid
 import asyncio
-import mlx.core as mx
 from http import HTTPStatus
 from fastapi import HTTPException
 from loguru import logger
@@ -495,22 +494,20 @@ class MLXLMHandler:
             prompt_cache = request_data.pop("prompt_cache")
             stream = request_data.pop("stream")
 
-            # Call the model directly
+            # Call the model
             response = self.model(
                 input_ids=input_ids,
                 prompt_cache=prompt_cache,
                 stream=stream,
                 **request_data
-            )
-            # Synchronize Metal before GC to prevent race conditions
-            mx.synchronize()
+            )            
+            # Force garbage collection after model inference
             gc.collect()
             return response
 
         except Exception as e:
             logger.error(f"Error processing text request: {str(e)}")
-            # Synchronize Metal before GC to prevent race conditions
-            mx.synchronize()
+            # Clean up on error
             gc.collect()
             raise
 
