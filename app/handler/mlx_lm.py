@@ -2,6 +2,7 @@ import gc
 import time
 import uuid
 import asyncio
+from concurrent.futures import ThreadPoolExecutor
 from http import HTTPStatus
 from fastapi import HTTPException
 from loguru import logger
@@ -54,6 +55,9 @@ class MLXLMHandler:
         self.message_converter = MessageConverterManager.create_converter(message_converter)
         # Initialize request queue for text tasks
         self.request_queue = RequestQueue(max_concurrency=max_concurrency)
+        # ThreadPoolExecutor for running model inference in a separate thread
+        # This prevents blocking the asyncio event loop during inference
+        self._executor = ThreadPoolExecutor(max_workers=max_concurrency)
 
         logger.info(f"Initialized MLXHandler with model path: {model_path}")
 
@@ -483,13 +487,18 @@ class MLXLMHandler:
             prompt_cache = request_data.pop("prompt_cache")
             stream = request_data.pop("stream")
 
-            # Call the model
-            response = self.model(
-                input_ids=input_ids,
-                prompt_cache=prompt_cache,
-                stream=stream,
-                **request_data
-            )            
+            # Run model inference in a thread pool to prevent blocking the event loop
+            # This allows /v1/queue/stats and other async endpoints to respond during inference
+            loop = asyncio.get_running_loop()
+            response = await loop.run_in_executor(
+                self._executor,
+                lambda: self.model(
+                    input_ids=input_ids,
+                    prompt_cache=prompt_cache,
+                    stream=stream,
+                    **request_data
+                )
+            )
             # Force garbage collection after model inference
             gc.collect()
             return response
@@ -524,6 +533,8 @@ class MLXLMHandler:
             logger.info("Cleaning up MLXLMHandler resources")
             if hasattr(self, 'request_queue'):
                 await self.request_queue.stop()
+            if hasattr(self, '_executor'):
+                self._executor.shutdown(wait=False)
             logger.info("MLXLMHandler cleanup completed successfully")
         except Exception as e:
             logger.error(f"Error during MLXLMHandler cleanup: {str(e)}")
@@ -556,6 +567,12 @@ class MLXLMHandler:
                 response_format = request_dict.pop("response_format", None)
                 if response_format.get("type") == "json_schema":
                     request_dict["schema"] = response_format.get("json_schema", None).get("schema", None)
+            
+            # Apply model-specific default sampling parameters
+            model_defaults = self.get_default_sampling_params()
+            for param, value in model_defaults.items():
+                if request_dict.get(param) is None:
+                    request_dict[param] = value
             
             # Format chat messages and merge system messages into index 0
             chat_messages = []
