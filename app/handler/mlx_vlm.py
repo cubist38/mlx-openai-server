@@ -434,7 +434,8 @@ class MLXVLMHandler:
             if hasattr(self, 'video_processor'):
                 await self.video_processor.cleanup()
 
-            # Force garbage collection after cleanup
+            # Synchronize Metal before GC to prevent race conditions
+            mx.synchronize()
             gc.collect()
             logger.info("MLXVLMHandler cleanup completed successfully")
         except Exception as e:
@@ -455,20 +456,24 @@ class MLXVLMHandler:
             prompt = request_data.pop("prompt")
             stream = request_data.pop("stream")      
 
-            # Call the model with inputs
-            response = self.model(
+            # Run model inference in a thread to avoid blocking the event loop
+            # This allows other endpoints (like /v1/queue/stats) to respond during inference
+            response = await asyncio.to_thread(
+                self.model,
                 prompt=prompt,
                 stream=stream,
                 **request_data
             )
 
-            # Force garbage collection after model inference
+            # Synchronize Metal before GC to prevent race conditions
+            mx.synchronize()
             gc.collect()
             return response
             
         except Exception as e:
             logger.error(f"Error processing multimodal request: {str(e)}")
-            # Clean up on error
+            # Synchronize Metal before GC to prevent race conditions
+            mx.synchronize()
             gc.collect()
             raise
 
