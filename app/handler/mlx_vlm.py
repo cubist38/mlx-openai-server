@@ -5,6 +5,7 @@ import uuid
 import gc
 import torch
 import mlx.core as mx
+from concurrent.futures import ThreadPoolExecutor
 
 from loguru import logger
 from http import HTTPStatus
@@ -64,6 +65,9 @@ class MLXVLMHandler:
         # We use the same queue for both multimodal and text tasks for simplicity
         # and to ensure we don't overload the model with too many concurrent requests
         self.request_queue = RequestQueue(max_concurrency=max_concurrency)
+        # ThreadPoolExecutor for running model inference in a separate thread
+        # This prevents blocking the asyncio event loop during inference
+        self._executor = ThreadPoolExecutor(max_workers=max_concurrency)
         
         logger.info(f"Initialized MLXHandler with model path: {model_path}")
         if disable_auto_resize:
@@ -427,6 +431,8 @@ class MLXVLMHandler:
             logger.info("Cleaning up MLXVLMHandler resources")
             if hasattr(self, 'request_queue'):
                 await self.request_queue.stop()
+            if hasattr(self, '_executor'):
+                self._executor.shutdown(wait=False)
             if hasattr(self, 'image_processor'):
                 await self.image_processor.cleanup()
             if hasattr(self, 'audio_processor'):
@@ -455,11 +461,16 @@ class MLXVLMHandler:
             prompt = request_data.pop("prompt")
             stream = request_data.pop("stream")      
 
-            # Call the model with inputs
-            response = self.model(
-                prompt=prompt,
-                stream=stream,
-                **request_data
+            # Run model inference in a thread pool to prevent blocking the event loop
+            # This allows /v1/queue/stats and other async endpoints to respond during inference
+            loop = asyncio.get_running_loop()
+            response = await loop.run_in_executor(
+                self._executor,
+                lambda: self.model(
+                    prompt=prompt,
+                    stream=stream,
+                    **request_data
+                )
             )
 
             # Force garbage collection after model inference
