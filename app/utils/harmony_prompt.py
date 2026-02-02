@@ -122,12 +122,21 @@ def render_harmony_prompt(
     encoding = get_harmony_encoding()
     harmony_messages = []
     
-    # Build system message
+    # First pass: collect system message content from user messages
+    system_instructions = []
+    for msg in messages:
+        if msg.get("role") == "system":
+            content = msg.get("content", "")
+            if content:
+                system_instructions.append(content)
+    
+    # Build system message (with Harmony metadata)
     system_message = _build_system_message(tools, reasoning_effort)
     harmony_messages.append(system_message)
     
-    # Build developer message with tools
-    developer_message = _build_developer_message(tools)
+    # Build developer message with tools AND user's system instructions
+    combined_instructions = "\n\n".join(system_instructions)
+    developer_message = _build_developer_message(tools, combined_instructions)
     if developer_message:
         harmony_messages.append(developer_message)
     
@@ -137,7 +146,7 @@ def render_harmony_prompt(
         content = msg.get("content", "")
         
         if role == "system":
-            # Skip - we already added our system message
+            # Already handled above - merged into developer message
             continue
             
         elif role == "developer":
