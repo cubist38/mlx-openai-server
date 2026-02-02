@@ -57,6 +57,17 @@ class MLXLMHandler:
 
         logger.info(f"Initialized MLXHandler with model path: {model_path}")
 
+    def get_default_sampling_params(self) -> Dict[str, Any]:
+        """
+        Get model-specific default sampling parameters.
+        """
+        # GPT-OSS/Harmony models need top_k=0 (disabled)
+        if self.reasoning_parser_name == "harmony":
+            return {"top_k": 0, "temperature": 1}
+
+        # Standard defaults for other models (default of mlx-openai-server)
+        return {"top_k": 20, "temperature": 0.7}
+
     async def get_models(self) -> List[Dict[str, Any]]:
         """
         Get list of available models with their metadata.
@@ -556,6 +567,12 @@ class MLXLMHandler:
                 response_format = request_dict.pop("response_format", None)
                 if response_format.get("type") == "json_schema":
                     request_dict["schema"] = response_format.get("json_schema", None).get("schema", None)
+            
+            # Apply model-specific default sampling parameters
+            model_defaults = self.get_default_sampling_params()
+            for param, value in model_defaults.items():
+                if request_dict.get(param) is None:
+                    request_dict[param] = value
             
             # Format chat messages and merge system messages into index 0
             chat_messages = []
