@@ -51,19 +51,27 @@ class HarmonyParser:
             tokens = self.encoding.encode(text, allowed_special="all")
             parsed_messages = self.encoding.parse_messages_from_completion_tokens(tokens, role=Role.ASSISTANT)
             for message in parsed_messages:
-                if message.channel == ChannelType.ANALYSIS.value:
-                    result["reasoning_content"] = message.content[0].text
-                elif message.channel == ChannelType.COMMENTARY.value:
+                recipient = getattr(message, 'recipient', '') or ''
+                # Detect tool calls by checking if it contains 'functions.'
+                # Not a fan of this at all, but it works for now.
+                # TODO: Add a better way.
+                is_tool_call = (
+                    message.channel == ChannelType.COMMENTARY.value or
+                    (recipient and "functions." in recipient)
+                )
+                
+                if is_tool_call and recipient:
                     result["tool_calls"].append({
-                        "name": message.recipient.replace("functions.", ""),
+                        "name": recipient.replace("functions.", ""),
                         "arguments": message.content[0].text
                     })
+                elif message.channel == ChannelType.ANALYSIS.value:
+                    result["reasoning_content"] = message.content[0].text
                 elif message.channel == ChannelType.FINAL.value:
                     result["content"] = message.content[0].text
         except Exception as e:
             # Fallback for parsing errors (e.g. truncated output)
             result["content"] = text
-            
         return result
     
     def _build_result(
@@ -110,12 +118,22 @@ class HarmonyParser:
 
             # Handle different channels
             current_channel = stream_text.current_channel
-            if current_channel == ChannelType.ANALYSIS.value:
-                reasoning_contents.append(content)
-            elif current_channel == ChannelType.COMMENTARY.value:
+            current_recipient = stream_text.current_recipient or ""
+            
+            # Detect tool calls by checking if it contains `functions.`
+            # It's also needed here, to make sure it's out of the `analysis` channel
+            # TODO: Add a better way.
+            is_tool_call = (
+                current_channel == ChannelType.COMMENTARY.value or
+                (current_recipient and "functions." in current_recipient)
+            )
+            
+            if is_tool_call:
                 self.state = ToolParserState.FOUND_ARGUMENTS
                 self.arguments_buffer.append(content)
-                self.function_name_buffer = stream_text.current_recipient.replace("functions.", "")
+                self.function_name_buffer = current_recipient.replace("functions.", "")
+            elif current_channel == ChannelType.ANALYSIS.value:
+                reasoning_contents.append(content)
             elif current_channel == ChannelType.FINAL.value:
                 contents.append(content)
 
