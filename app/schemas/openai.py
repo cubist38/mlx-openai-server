@@ -252,8 +252,8 @@ class ChatCompletionRequestBase(OpenAIBaseModel):
             raise ValueError("messages cannot be empty")
 
         # Validate message history length
-        if len(v) > 100:  # OpenAI's limit is typically around 100 messages
-            raise ValueError("message history too long")
+        if len(v) > 1000:
+            raise ValueError("message history is too long")
 
         # Validate message roles
         valid_roles = {"user", "assistant", "system", "tool"}
