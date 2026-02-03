@@ -9,7 +9,7 @@ TOOL_CALL_SECTION_BEGIN = "<|tool_calls_section_begin|>"
 TOOL_CALL_SECTION_END = "<|tool_calls_section_end|>"
 TOOL_CALL_BEGIN = "<|tool_call_begin|>"
 TOOL_CALL_END = "<|tool_call_end|>"
-TOOL_CALL_ARGUMENTS_BEGIN = "<|tool_call_arguments_begin|>"
+TOOL_CALL_ARGUMENTS_BEGIN = "<|tool_call_argument_begin|>"
 
 
 class KimiK2ToolState(Enum):
