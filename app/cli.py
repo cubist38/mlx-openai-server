@@ -197,6 +197,12 @@ def cli():
     is_flag=True,
     help="Enable debug mode for language models. Only works with language models (lm) and multimodal models.",
 )
+@click.option(
+    "--prompt-cache-size",
+    default=10,
+    type=int,
+    help="Maximum number of prompt KV cache entries to store. Only works with language models (lm). Default is 10.",
+)
 def launch(
     model_path,
     model_type,
@@ -221,6 +227,7 @@ def launch(
     trust_remote_code,
     chat_template_file,
     debug,
+    prompt_cache_size,
 ) -> None:
     """Start the FastAPI/Uvicorn server with the supplied flags.
 
@@ -253,6 +260,7 @@ def launch(
         trust_remote_code=trust_remote_code,
         chat_template_file=chat_template_file,
         debug=debug,
+        prompt_cache_size=prompt_cache_size,
     )
 
     asyncio.run(start(args))

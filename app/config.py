@@ -44,6 +44,7 @@ class MLXServerConfig:
     trust_remote_code: bool = False
     chat_template_file: str | None = None
     debug: bool = False
+    prompt_cache_size: int = 10
 
     # Used to capture raw CLI input before processing
     lora_paths_str: str | None = None
