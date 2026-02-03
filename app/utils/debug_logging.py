@@ -120,6 +120,41 @@ def log_debug_cache_stats(total_input_tokens: int, remaining_tokens: int) -> Non
     logger.info(f"📈 Cache Hit Ratio:     {cache_hit_ratio:.1f}%")
     logger.info("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
 
+
+def log_debug_chat_template(
+    chat_template_file: str | None = None,
+    template_content: str | None = None,
+    preview_lines: int = 15,
+) -> None:
+    """Log chat template source, size, and a preview of content.
+
+    Parameters
+    ----------
+    chat_template_file : str | None
+        Path to custom chat template file, or None if using model default.
+    template_content : str | None
+        Content of the template (for size and preview). Only used when chat_template_file is set.
+    preview_lines : int
+        Maximum number of template lines to show in the log (default 15).
+    """
+    logger.info("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+    logger.info("✦ DEBUG: Chat Template")
+    logger.info("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+    if chat_template_file:
+        logger.info(f"✦ Loaded custom chat template from: {chat_template_file}")
+        if template_content:
+            logger.info(f"✦ Chat template size: {len(template_content)} characters")
+            lines = template_content.strip().splitlines()
+            show = lines[:preview_lines]
+            logger.info("✦ Template preview:")
+            for i, line in enumerate(show, 1):
+                logger.info(f"   {i:2d} | {line}")
+            if len(lines) > preview_lines:
+                logger.info(f"   ... ({len(lines) - preview_lines} more lines)")
+    else:
+        logger.info("✦ Using default chat template from model")
+    logger.info("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+
 def make_prompt_progress_callback(start_time: float | None = None) -> callable:
     """Create a callback function for tracking prompt processing progress.
     

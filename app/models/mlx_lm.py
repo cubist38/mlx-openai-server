@@ -1,6 +1,5 @@
 import os
 import mlx.core as mx
-from loguru import logger
 from mlx_lm.utils import load
 from mlx_lm.generate import (
     stream_generate
@@ -11,6 +10,7 @@ from outlines.processors import JSONLogitsProcessor
 from mlx_lm.models.cache import make_prompt_cache
 from mlx_lm.sample_utils import make_sampler, make_logits_processors
 from ..utils.outlines_transformer_tokenizer import OutlinesTransformerTokenizer
+from ..utils.debug_logging import log_debug_chat_template
 from typing import List, Dict, Union, Generator, Any
 
 DEFAULT_TEMPERATURE = os.getenv("DEFAULT_TEMPERATURE", 0.7)
@@ -54,13 +54,14 @@ class MLX_LM:
     supporting both streaming and non-streaming modes.
     """
 
-    def __init__(self, model_path: str, context_length: int | None = None, trust_remote_code: bool = False, chat_template_file: str = None):
+    def __init__(self, model_path: str, context_length: int | None = None, trust_remote_code: bool = False, chat_template_file: str = None, debug: bool = False):
         try:
             self.model, self.tokenizer = load(model_path, lazy=False, tokenizer_config = {"trust_remote_code": trust_remote_code})
             self.pad_token_id = self.tokenizer.pad_token_id
             self.bos_token = self.tokenizer.bos_token
             self.model_type = self.model.model_type
             self.context_length = context_length
+            self.debug = debug
             self.outlines_tokenizer = OutlinesTransformerTokenizer(self.tokenizer)
             if chat_template_file:
                 if not os.path.exists(chat_template_file):
@@ -68,10 +69,8 @@ class MLX_LM:
                 with open(chat_template_file, "r") as f:
                     template_content = f.read()
                     self.tokenizer.chat_template = template_content
-                    logger.info(f"✦ Loaded custom chat template from: {chat_template_file}")
-                    logger.info(f"✦ Chat template size: {len(template_content)} characters")
-            else:
-                logger.info("✦ Using default chat template from model")
+                if self.debug:
+                    log_debug_chat_template(chat_template_file=chat_template_file, template_content=template_content)
         except Exception as e:
             raise ValueError(f"Error loading model: {str(e)}")
 

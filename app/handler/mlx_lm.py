@@ -36,7 +36,7 @@ class MLXLMHandler:
             chat_template_file (str): Path to a custom chat template file.
         """
         self.model_path = model_path
-        self.model = MLX_LM(model_path, context_length, trust_remote_code=trust_remote_code, chat_template_file=chat_template_file)
+        self.model = MLX_LM(model_path, context_length, trust_remote_code=trust_remote_code, chat_template_file=chat_template_file, debug=debug)
         self.model_created = int(time.time())  # Store creation time when model is loaded
         self.model_type = self.model.get_model_type()
         
