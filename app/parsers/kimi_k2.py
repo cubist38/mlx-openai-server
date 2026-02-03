@@ -80,7 +80,7 @@ class KimiK2ToolParser(HermesToolParser):
                     arguments = json.loads(args_str) if args_str else {}
                 except json.JSONDecodeError:
                     arguments = {}
-                tool_calls.append({"name": name, "arguments": arguments})
+                tool_calls.append({"name": name, "arguments": json.dumps(arguments)})
         if not tool_calls:
             return None
         return {"tool_calls": tool_calls}
