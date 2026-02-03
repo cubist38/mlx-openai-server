@@ -89,10 +89,7 @@ class MLX_LM:
         )
 
     def encode_prompt(self, input_prompt: str) -> List[int]:
-        add_special_tokens = self.tokenizer.bos_token is None or not input_prompt.startswith(
-            self.tokenizer.bos_token
-        )
-        return self.tokenizer.encode(input_prompt, add_special_tokens=add_special_tokens)
+        return self.tokenizer.encode(input_prompt)
 
     def __call__(
         self, 
