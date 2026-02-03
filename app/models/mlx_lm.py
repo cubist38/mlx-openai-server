@@ -1,5 +1,6 @@
 import os
 import mlx.core as mx
+from loguru import logger
 from mlx_lm.utils import load
 from mlx_lm.generate import (
     stream_generate
@@ -65,7 +66,12 @@ class MLX_LM:
                 if not os.path.exists(chat_template_file):
                     raise ValueError(f"Chat template file {chat_template_file} does not exist")
                 with open(chat_template_file, "r") as f:
-                    self.tokenizer.chat_template = f.read()
+                    template_content = f.read()
+                    self.tokenizer.chat_template = template_content
+                    logger.info(f"✦ Loaded custom chat template from: {chat_template_file}")
+                    logger.info(f"✦ Chat template size: {len(template_content)} characters")
+            else:
+                logger.info("✦ Using default chat template from model")
         except Exception as e:
             raise ValueError(f"Error loading model: {str(e)}")
 
