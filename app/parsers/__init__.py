@@ -24,7 +24,7 @@ from .qwen3_vl import Qwen3VLReasoningParser, Qwen3VLToolParser
 from .iquest_coder_v1 import IQuestCoderV1ToolParser
 from .solar_open import SolarOpenReasoningParser, SolarOpenToolParser
 from .longcat_flash_lite import LongCatFlashLiteToolParser
-
+from .kimi_k2 import KimiK2ToolParser
 # Mapping from parser name strings to reasoning parser classes
 REASONING_PARSER_MAP: dict[str, type[AbstractReasoningParser]] = {
     "hermes": HermesReasoningParser,
@@ -36,6 +36,7 @@ REASONING_PARSER_MAP: dict[str, type[AbstractReasoningParser]] = {
     "minimax_m2": MiniMaxM2ReasoningParser,
     "nemotron3_nano": Nemotron3NanoReasoningParser,
     "solar_open": SolarOpenReasoningParser,
+    "kimi_k2": HermesReasoningParser,
 }
 
 # Mapping from parser name strings to tool parser classes
@@ -52,6 +53,7 @@ TOOL_PARSER_MAP: dict[str, type[AbstractToolParser]] = {
     "iquest_coder_v1": IQuestCoderV1ToolParser,
     "solar_open": SolarOpenToolParser,
     "longcat_flash_lite": LongCatFlashLiteToolParser,
+    "kimi_k2": KimiK2ToolParser,
 }
 
 # Unified parsers that handle BOTH reasoning and tool calls in one class
