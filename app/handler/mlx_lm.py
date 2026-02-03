@@ -245,18 +245,6 @@ class MLXLMHandler:
                                 yield tool_call
                         if parsed_result.get("content"):
                             yield parsed_result["content"]
-                    
-                    # Continue processing all chunks even if is_complete is True
-                
-                # After stream completes, finalize any pending tool calls for unified parser
-                if parsers_result.unified_parser:
-                    final_parsed, _ = parsers_result.unified_parser.parse_streaming("<|call|>")
-                    if final_parsed:
-                        if final_parsed.get("tool_calls"):
-                            for tool_call in final_parsed["tool_calls"]:
-                                # Only yield valid tool calls (must have a non-empty name)
-                                if tool_call.get("name"):
-                                    yield tool_call
             else:
                 # Handle separate parsers streaming
                 reasoning_parser = parsers_result.reasoning_parser
@@ -299,16 +287,6 @@ class MLXLMHandler:
                         continue
                     
                     yield text
-
-            # After stream completes, finalize any pending tool calls
-            if parsers_result.tool_parser:
-                # Force finalize by sending end marker
-                final_parsed, _ = parsers_result.tool_parser.parse_streaming("<|call|>")
-                if final_parsed and final_parsed.get("tool_calls"):
-                    for tool_call in final_parsed["tool_calls"]:
-                        # Only yield valid tool calls (must have a non-empty name)
-                        if tool_call.get("name"):
-                            yield tool_call
 
             total_tokens = final_chunk.prompt_tokens + final_chunk.generation_tokens
             self.prompt_cache.insert_cache(cache_key, cache)
@@ -589,6 +567,12 @@ class MLXLMHandler:
                 response_format = request_dict.pop("response_format", None)
                 if response_format.get("type") == "json_schema":
                     request_dict["schema"] = response_format.get("json_schema", None).get("schema", None)
+            
+            # Apply model-specific default sampling parameters
+            model_defaults = self.get_default_sampling_params()
+            for param, value in model_defaults.items():
+                if request_dict.get(param) is None:
+                    request_dict[param] = value
             
             # Format chat messages and merge system messages into index 0
             chat_messages = []
