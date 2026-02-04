@@ -21,7 +21,7 @@ class MLXLMHandler:
     Provides request queuing, metrics tracking, and robust error handling.
     """
 
-    def __init__(self, model_path: str, context_length: int | None = None, max_concurrency: int = 1, enable_auto_tool_choice: bool = False, tool_call_parser: str = None, reasoning_parser: str = None, message_converter: str = None, trust_remote_code: bool = False, chat_template_file: str = None, debug: bool = False):
+    def __init__(self, model_path: str, context_length: int | None = None, max_concurrency: int = 1, enable_auto_tool_choice: bool = False, tool_call_parser: str = None, reasoning_parser: str = None, message_converter: str = None, trust_remote_code: bool = False, chat_template_file: str = None, debug: bool = False, prompt_cache_size: int = 10):
         """
         Initialize the handler with the specified model path.
         
@@ -34,6 +34,7 @@ class MLXLMHandler:
             reasoning_parser (str): Name of the reasoning parser to use (qwen3, qwen3_next, glm4_moe, harmony, minimax, ...)
             trust_remote_code (bool): Enable trust_remote_code when loading models.
             chat_template_file (str): Path to a custom chat template file.
+            prompt_cache_size (int): Maximum number of prompt KV cache entries to store. Default is 10.
         """
         self.model_path = model_path
         self.model = MLX_LM(model_path, context_length, trust_remote_code=trust_remote_code, chat_template_file=chat_template_file, debug=debug)
@@ -46,7 +47,7 @@ class MLXLMHandler:
         self.debug = debug   
         self.reasoning_parser_name = reasoning_parser
         self.tool_parser_name = tool_call_parser
-        self.prompt_cache = LRUPromptCache()
+        self.prompt_cache = LRUPromptCache(max_size=prompt_cache_size)
         self.message_converter = MessageConverterManager.create_converter(message_converter)
         # Initialize request queue for text tasks
         self.request_queue = RequestQueue(max_concurrency=max_concurrency)
