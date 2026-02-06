@@ -157,12 +157,12 @@ def log_debug_chat_template(
 
 def make_prompt_progress_callback(start_time: float | None = None) -> callable:
     """Create a callback function for tracking prompt processing progress.
-    
+
     Parameters
     ----------
     start_time : float | None
         The start time for calculating speed. If None, uses current time.
-        
+
     Returns
     -------
     callable
@@ -170,11 +170,33 @@ def make_prompt_progress_callback(start_time: float | None = None) -> callable:
     """
     if start_time is None:
         start_time = time.time()
-    
+
     def callback(processed: int, total_tokens: int) -> None:
         """Log prompt processing progress with speed metrics."""
         elapsed = time.time() - start_time
         speed = processed / elapsed if elapsed > 0 else 0
         logger.info(f"⚡ Processed {processed:6d}/{total_tokens} tokens ({speed:6.2f} tok/s)")
-    
+
     return callback
+
+
+def log_debug_streaming_token(text: str, is_first_token: bool = False) -> None:
+    """Log a streaming token to the console in debug mode.
+
+    This prints tokens as they're generated, providing real-time feedback.
+    Uses print with flush=True to ensure immediate output.
+
+    Parameters
+    ----------
+    text : str
+        The token text to display.
+    is_first_token : bool
+        Whether this is the first token (adds a header).
+    """
+    if is_first_token:
+        print("\n" + "━" * 80, flush=True)
+        print("🔄 DEBUG: Streaming Response", flush=True)
+        print("━" * 80, flush=True)
+
+    # Print the token immediately without buffering
+    print(text, end='', flush=True)
