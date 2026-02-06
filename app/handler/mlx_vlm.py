@@ -604,8 +604,8 @@ class MLXVLMHandler:
                 "stream": request.stream
             }
 
-            tools = request_dict.pop("tools")
-            tool_choice = request_dict.pop("tool_choice")
+            tools = request.tools 
+            tool_choice = request.tool_choice
             
             if tools:
                 request_dict["chat_template_kwargs"]["tools"] = tools
