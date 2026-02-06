@@ -13,7 +13,7 @@ from ..message_converters import MessageConverterManager
 from typing import Any, AsyncGenerator, Dict, List, Optional, Tuple
 from ..schemas.openai import ChatCompletionRequest, UsageInfo, PromptTokenUsageInfo
 from ..utils.prompt_cache import LRUPromptCache
-from ..utils.debug_logging import log_debug_request, log_debug_stats, log_debug_raw_text_response, log_debug_prompt, make_prompt_progress_callback, log_debug_cache_stats, log_debug_streaming_token, log_debug_streaming_section_end
+from ..utils.debug_logging import log_debug_request, log_debug_stats, log_debug_prompt, make_prompt_progress_callback, log_debug_cache_stats, log_debug_streaming_token, log_debug_streaming_section_end
 
 class MLXLMHandler:
     """
@@ -189,7 +189,6 @@ class MLXLMHandler:
             is_first_chunk = True
             is_first_reasoning_token = True
             is_first_output_token = True
-            raw_text = "" # only use for debugging
 
             # Handle unified parser streaming
             if parsers_result.is_unified:
@@ -199,7 +198,7 @@ class MLXLMHandler:
                         continue
                     final_chunk = chunk
                     text = chunk.text
-                    raw_text += text
+
                     cache_key.append(chunk.token)
 
                     if unified_parser:
@@ -260,7 +259,7 @@ class MLXLMHandler:
                         continue
                     final_chunk = chunk
                     text = chunk.text
-                    raw_text += text
+
                     cache_key.append(chunk.token)
                     if is_first_chunk:
                         if reasoning_parser and hasattr(reasoning_parser, 'needs_redacted_reasoning_prefix'):
@@ -313,8 +312,7 @@ class MLXLMHandler:
             if self.debug:
                 # Add newline after streaming output
                 if not is_first_output_token:
-                    print("\n" + "━" * 80 + "\n", flush=True)
-                log_debug_raw_text_response(raw_text)
+                    print("\n", flush=True)
                 log_debug_stats(
                     final_chunk.prompt_tokens,
                     final_chunk.generation_tokens,
@@ -465,7 +463,6 @@ class MLXLMHandler:
             total_tokens = response.prompt_tokens + response.generation_tokens
 
             if self.debug:
-                log_debug_raw_text_response(response.text)
                 log_debug_stats(
                     response.prompt_tokens,
                     response.generation_tokens,
