@@ -195,11 +195,8 @@ def log_debug_streaming_token(text: str, is_first_token: bool = False, is_reason
     is_reasoning : bool
         Whether this token is reasoning/thinking content.
     """
-    if is_first_token:
-        label = "Thinking" if is_reasoning else "Streaming Response"
-        print("\n" + "━" * 80, flush=True)
-        print(f"🔄 DEBUG: {label}", flush=True)
-        print("━" * 80, flush=True)
+    if is_first_token and is_reasoning:
+        print("\n--- thinking ---", flush=True)
 
     # Print the token immediately without buffering
     print(text, end='', flush=True)
@@ -207,4 +204,4 @@ def log_debug_streaming_token(text: str, is_first_token: bool = False, is_reason
 
 def log_debug_streaming_section_end() -> None:
     """Print a closing separator after a streaming section ends."""
-    print("\n" + "━" * 80, flush=True)
+    print("\n--- end thinking ---\n", flush=True)
