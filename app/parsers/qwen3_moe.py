@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from .hermes import HermesReasoningParser, HermesToolParser
+from .hermes import HermesReasoningParser
 
 TOOL_OPEN = "<tool_call>"
 TOOL_CLOSE = "</tool_call>"
@@ -12,7 +12,7 @@ class Qwen3MoEReasoningParser(HermesReasoningParser):
     """Reasoning parser for Qwen3 MoE model's reasoning response format.
 
     Handles the Qwen3 MoE model's reasoning response format:
-    <think>reasoning_content</think>
+    reasoning_content</think>
     """
 
     def __init__(self, reasoning_open: str = REASONING_OPEN, reasoning_close: str = REASONING_CLOSE) -> None:
@@ -28,5 +28,3 @@ class Qwen3MoEReasoningParser(HermesReasoningParser):
             True if the reasoning parser needs a redacted reasoning prefix, False otherwise.
         """
         return True
-
-Qwen3MoEToolParser = HermesToolParser

@@ -12,48 +12,45 @@ from .abstract_parser import (
 from .function_parameter import FunctionParameterToolParser
 from .functiongemma import FunctionGemmaToolParser
 from .glm4_moe import GLM4MoEReasoningParser, GLM4MoEToolParser
-from .glm47_flash import GLM47FlashReasoningParser
 from .harmony import HarmonyParser
 from .hermes import HermesReasoningParser, HermesToolParser
-from .minimax_m2 import MiniMaxM2ReasoningParser, MiniMaxM2ToolParser
-from .nemotron3_nano import Nemotron3NanoReasoningParser, Nemotron3NanoToolParser
-from .qwen3 import Qwen3ReasoningParser, Qwen3ToolParser
-from .qwen3_coder import Qwen3CoderToolParser
-from .qwen3_moe import Qwen3MoEReasoningParser, Qwen3MoEToolParser
-from .qwen3_vl import Qwen3VLReasoningParser, Qwen3VLToolParser
-from .iquest_coder_v1 import IQuestCoderV1ToolParser
+from .minimax_m2 import MiniMaxM2ToolParser
+from .qwen3_moe import Qwen3MoEReasoningParser
 from .solar_open import SolarOpenReasoningParser, SolarOpenToolParser
 from .longcat_flash_lite import LongCatFlashLiteToolParser
 from .kimi_k2 import KimiK2ToolParser
+
 # Mapping from parser name strings to reasoning parser classes
 REASONING_PARSER_MAP: dict[str, type[AbstractReasoningParser]] = {
     "hermes": HermesReasoningParser,
-    "qwen3": Qwen3ReasoningParser,
+    "qwen3": HermesReasoningParser, # use HermesReasoningParser for Qwen3
     "qwen3_moe": Qwen3MoEReasoningParser,
-    "qwen3_vl": Qwen3VLReasoningParser,
+    "qwen3_vl": Qwen3MoEReasoningParser, # use Qwen3MoEReasoningParser for Qwen3 VL
     "glm4_moe": GLM4MoEReasoningParser,
-    "glm47_flash": GLM47FlashReasoningParser,
-    "minimax_m2": MiniMaxM2ReasoningParser,
-    "nemotron3_nano": Nemotron3NanoReasoningParser,
-    "solar_open": SolarOpenReasoningParser,
+    "glm47_flash": Qwen3MoEReasoningParser, # use Qwen3MoEReasoningParser for GLM47 Flash
+    "minimax_m2": Qwen3MoEReasoningParser, # use Qwen3MoEReasoningParser for MiniMax M2
+    "nemotron3_nano": Qwen3MoEReasoningParser, # use Qwen3MoEReasoningParser for Nemotron3 Nano
+    "solar_open": SolarOpenReasoningParser, 
     "kimi_k2": HermesReasoningParser,
+    "step_35": Qwen3MoEReasoningParser, # use Qwen3MoEReasoningParser for Step 35
 }
 
 # Mapping from parser name strings to tool parser classes
 TOOL_PARSER_MAP: dict[str, type[AbstractToolParser]] = {
     "hermes": HermesToolParser,
-    "qwen3": Qwen3ToolParser,
-    "qwen3_coder": Qwen3CoderToolParser,
-    "qwen3_moe": Qwen3MoEToolParser,
-    "qwen3_vl": Qwen3VLToolParser,
+    "qwen3": HermesToolParser, # use HermesToolParser for Qwen3
+    "qwen3_coder": FunctionParameterToolParser, # use FunctionParameterToolParser for Qwen3 Coder
+    "qwen3_moe": HermesToolParser, # use HermesToolParser for Qwen3 MoE
+    "qwen3_vl": HermesToolParser, # use HermesToolParser for Qwen3 VL
     "glm4_moe": GLM4MoEToolParser,
     "minimax_m2": MiniMaxM2ToolParser,
-    "nemotron3_nano": Nemotron3NanoToolParser,
+    "nemotron3_nano": FunctionParameterToolParser, # use FunctionParameterToolParser for Nemotron3 Nano
     "functiongemma": FunctionGemmaToolParser,
-    "iquest_coder_v1": IQuestCoderV1ToolParser,
+    "iquest_coder_v1": HermesToolParser, # use HermesToolParser for IQuest Coder V1
     "solar_open": SolarOpenToolParser,
     "longcat_flash_lite": LongCatFlashLiteToolParser,
     "kimi_k2": KimiK2ToolParser,
+    "step_35": FunctionParameterToolParser, # use FunctionParameterToolParser for Step 35
 }
 
 # Unified parsers that handle BOTH reasoning and tool calls in one class
