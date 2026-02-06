@@ -180,7 +180,7 @@ def make_prompt_progress_callback(start_time: float | None = None) -> callable:
     return callback
 
 
-def log_debug_streaming_token(text: str, is_first_token: bool = False) -> None:
+def log_debug_streaming_token(text: str, is_first_token: bool = False, is_reasoning: bool = False) -> None:
     """Log a streaming token to the console in debug mode.
 
     This prints tokens as they're generated, providing real-time feedback.
@@ -192,11 +192,19 @@ def log_debug_streaming_token(text: str, is_first_token: bool = False) -> None:
         The token text to display.
     is_first_token : bool
         Whether this is the first token (adds a header).
+    is_reasoning : bool
+        Whether this token is reasoning/thinking content.
     """
     if is_first_token:
+        label = "Thinking" if is_reasoning else "Streaming Response"
         print("\n" + "━" * 80, flush=True)
-        print("🔄 DEBUG: Streaming Response", flush=True)
+        print(f"🔄 DEBUG: {label}", flush=True)
         print("━" * 80, flush=True)
 
     # Print the token immediately without buffering
     print(text, end='', flush=True)
+
+
+def log_debug_streaming_section_end() -> None:
+    """Print a closing separator after a streaming section ends."""
+    print("\n" + "━" * 80, flush=True)

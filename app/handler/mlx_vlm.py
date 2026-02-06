@@ -18,7 +18,7 @@ from ..parsers import ParserManager
 from ..message_converters import MessageConverterManager
 from ..core import ImageProcessor, AudioProcessor, VideoProcessor
 from ..utils.errors import create_error_response
-from ..utils.debug_logging import log_debug_request, log_debug_stats, log_debug_raw_text_response, log_debug_prompt, log_debug_streaming_token
+from ..utils.debug_logging import log_debug_request, log_debug_stats, log_debug_raw_text_response, log_debug_prompt, log_debug_streaming_token, log_debug_streaming_section_end
 from ..schemas.openai import ChatCompletionRequest, ChatCompletionContentPart, ChatCompletionContentPartImage, ChatCompletionContentPartInputAudio, ChatCompletionContentPartVideo, UsageInfo
 
 class MLXVLMHandler:
@@ -172,6 +172,7 @@ class MLXVLMHandler:
             after_reasoning_close_content = None
             final_chunk = None
             is_first_chunk = True
+            is_first_reasoning_token = True
             is_first_output_token = True
             raw_text = ""  # only use for debugging
 
@@ -189,6 +190,9 @@ class MLXVLMHandler:
                     if parsed_result:
                         # Unified parser returns dict with reasoning_content, tool_calls, content
                         if parsed_result.get("reasoning_content"):
+                            if self.debug:
+                                log_debug_streaming_token(parsed_result["reasoning_content"], is_first_reasoning_token, is_reasoning=True)
+                                is_first_reasoning_token = False
                             yield {"reasoning_content": parsed_result["reasoning_content"]}
                         if parsed_result.get("tool_calls"):
                             for tool_call in parsed_result["tool_calls"]:
@@ -196,6 +200,9 @@ class MLXVLMHandler:
                         if parsed_result.get("content"):
                             content_text = parsed_result["content"]
                             if self.debug:
+                                if not is_first_reasoning_token:
+                                    log_debug_streaming_section_end()
+                                    is_first_reasoning_token = True
                                 log_debug_streaming_token(content_text, is_first_output_token)
                                 is_first_output_token = False
                             yield content_text
@@ -220,10 +227,18 @@ class MLXVLMHandler:
                         parsed_content, is_complete = reasoning_parser.extract_reasoning_streaming(text)
 
                         if parsed_content:
+                            if self.debug:
+                                reasoning_text = parsed_content.get("reasoning_content", "")
+                                if reasoning_text:
+                                    log_debug_streaming_token(reasoning_text, is_first_reasoning_token, is_reasoning=True)
+                                    is_first_reasoning_token = False
                             after_reasoning_close_content = parsed_content.get("after_reasoning_close_content")
                             yield parsed_content
                         if is_complete:
                             reasoning_parser = None
+                            if self.debug and not is_first_reasoning_token:
+                                log_debug_streaming_section_end()
+                                is_first_reasoning_token = True
                         if after_reasoning_close_content:
                             text = after_reasoning_close_content
                             after_reasoning_close_content = None
