@@ -526,16 +526,17 @@ class MLXLMHandler:
         """
         try:
             request_dict = request.model_dump()
-            tools = request_dict.pop("tools", None)
-            tool_choice = request_dict.pop("tool_choice", None)
+            tools = request_dict.pop("tools")
+            tool_choice = request_dict.pop("tool_choice")
             
             if tools:
-                # Enable auto tool choice if requested via CLI flag
-                if self.enable_auto_tool_choice and tool_choice == "auto":
-                    request_dict["chat_template_kwargs"]["tool_choice"] = "auto"
-                elif tool_choice:
-                    logger.warning("Tool choice has not supported yet, will be ignored.")
                 request_dict["chat_template_kwargs"]["tools"] = tools
+                if tool_choice:
+                    if isinstance(tool_choice, str):
+                        if tool_choice == "auto":
+                            if not self.enable_auto_tool_choice:
+                                raise ValueError("Auto tool choice is not enabled. Please enable it via CLI flag --enable-auto-tool-choice")
+                    request_dict["chat_template_kwargs"]["tool_choice"] = tool_choice
 
             if request_dict.get("response_format", None):
                 response_format = request_dict.pop("response_format", None)
