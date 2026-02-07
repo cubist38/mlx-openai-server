@@ -604,16 +604,13 @@ class MLXVLMHandler:
                 "stream": request.stream
             }
 
-            tools = request.tools or None
-            tool_choice = request.tool_choice or None
-
+            tools = request.tools 
+            tool_choice = request.tool_choice
+            
             if tools:
-                # Enable auto tool choice if requested via CLI flag
-                if self.enable_auto_tool_choice and tool_choice == "auto":
-                    request_dict["chat_template_kwargs"]["tool_choice"] = "auto"
-                elif tool_choice:
-                    logger.warning("Tool choice has not supported yet, will be ignored.")
                 request_dict["chat_template_kwargs"]["tools"] = tools
+                if tool_choice:
+                    request_dict["chat_template_kwargs"]["tool_choice"] = tool_choice
 
             # Extract response_format for JSON schema structured outputs
             if request.response_format:

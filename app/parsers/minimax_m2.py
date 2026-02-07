@@ -2,27 +2,10 @@ from __future__ import annotations
 
 import re
 
-from .hermes import HermesReasoningParser
 from .glm4_moe import GLM4MoEToolParser
 
 TOOL_OPEN = "<minimax:tool_call>"
 TOOL_CLOSE = "</minimax:tool_call>"
-REASONING_OPEN = "<think>"
-REASONING_CLOSE = "</think>"
-
-class MiniMaxM2ReasoningParser(HermesReasoningParser):
-    """Reasoning parser for MiniMax M2 model's reasoning response format.
-
-    Handles the MiniMax M2 model's reasoning response format:
-    <think>reasoning_content</think>
-    """
-
-    def __init__(self) -> None:
-        """Initialize the Hermes4 reasoning parser with appropriate regex patterns."""
-        super().__init__(reasoning_open=REASONING_OPEN, reasoning_close=REASONING_CLOSE)
-    
-    def needs_redacted_reasoning_prefix(self) -> bool:
-        return True
 
 
 class MiniMaxM2ToolParser(GLM4MoEToolParser):
