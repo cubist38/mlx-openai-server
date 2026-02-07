@@ -610,10 +610,6 @@ class MLXVLMHandler:
             if tools:
                 request_dict["chat_template_kwargs"]["tools"] = tools
                 if tool_choice:
-                    if isinstance(tool_choice, str):
-                        if tool_choice == "auto":
-                            if not self.enable_auto_tool_choice:
-                                raise ValueError("Auto tool choice is not enabled. Please enable it via CLI flag --enable-auto-tool-choice")
                     request_dict["chat_template_kwargs"]["tool_choice"] = tool_choice
 
             # Extract response_format for JSON schema structured outputs
