@@ -59,7 +59,7 @@ def configure_logging(
 
     # Add console handler
     logger.add(
-        lambda msg: print(msg),
+        lambda msg: print(msg, end=''),
         level=log_level,
         format="<green>{time:YYYY-MM-DD HH:mm:ss}</green> | "
         "<level>{level: <8}</level> | "

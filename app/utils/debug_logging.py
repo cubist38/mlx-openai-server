@@ -84,20 +84,6 @@ def log_debug_prompt(prompt: str) -> None:
     logger.info("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
 
 
-def log_debug_raw_text_response(raw_text: str) -> None:
-    """Log raw text response in a beautiful format for debug mode.
-    
-    Parameters
-    ----------
-    raw_text : str
-        The raw text response to log.
-    """
-    logger.info("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
-    logger.info("📝 DEBUG: Raw Text Response")
-    logger.info("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
-    logger.info(f"Raw text: {raw_text}")
-    logger.info("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
-
 
 def log_debug_cache_stats(total_input_tokens: int, remaining_tokens: int) -> None:
     """Log prompt cache statistics in a beautiful format for debug mode.
@@ -157,12 +143,12 @@ def log_debug_chat_template(
 
 def make_prompt_progress_callback(start_time: float | None = None) -> callable:
     """Create a callback function for tracking prompt processing progress.
-    
+
     Parameters
     ----------
     start_time : float | None
         The start time for calculating speed. If None, uses current time.
-        
+
     Returns
     -------
     callable
@@ -170,11 +156,38 @@ def make_prompt_progress_callback(start_time: float | None = None) -> callable:
     """
     if start_time is None:
         start_time = time.time()
-    
+
     def callback(processed: int, total_tokens: int) -> None:
         """Log prompt processing progress with speed metrics."""
         elapsed = time.time() - start_time
         speed = processed / elapsed if elapsed > 0 else 0
         logger.info(f"⚡ Processed {processed:6d}/{total_tokens} tokens ({speed:6.2f} tok/s)")
-    
+
     return callback
+
+
+def log_debug_streaming_token(text: str, is_first_token: bool = False, is_reasoning: bool = False) -> None:
+    """Log a streaming token to the console in debug mode.
+
+    This prints tokens as they're generated, providing real-time feedback.
+    Uses print with flush=True to ensure immediate output.
+
+    Parameters
+    ----------
+    text : str
+        The token text to display.
+    is_first_token : bool
+        Whether this is the first token (adds a header).
+    is_reasoning : bool
+        Whether this token is reasoning/thinking content.
+    """
+    if is_first_token and is_reasoning:
+        print("\n--- thinking ---", flush=True)
+
+    # Print the token immediately without buffering
+    print(text, end='', flush=True)
+
+
+def log_debug_streaming_section_end() -> None:
+    """Print a closing separator after a streaming section ends."""
+    print("\n--- end thinking ---\n", flush=True)

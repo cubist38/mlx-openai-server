@@ -18,7 +18,7 @@ from ..parsers import ParserManager
 from ..message_converters import MessageConverterManager
 from ..core import ImageProcessor, AudioProcessor, VideoProcessor
 from ..utils.errors import create_error_response
-from ..utils.debug_logging import log_debug_request, log_debug_stats, log_debug_raw_text_response, log_debug_prompt
+from ..utils.debug_logging import log_debug_request, log_debug_stats, log_debug_prompt, log_debug_streaming_token, log_debug_streaming_section_end
 from ..schemas.openai import ChatCompletionRequest, ChatCompletionContentPart, ChatCompletionContentPartImage, ChatCompletionContentPartInputAudio, ChatCompletionContentPartVideo, UsageInfo
 
 class MLXVLMHandler:
@@ -172,7 +172,8 @@ class MLXVLMHandler:
             after_reasoning_close_content = None
             final_chunk = None
             is_first_chunk = True
-            raw_text = ""  # only use for debugging
+            is_first_reasoning_token = True
+            is_first_output_token = True
 
             # Handle unified parser streaming
             if parsers_result.is_unified:
@@ -182,30 +183,40 @@ class MLXVLMHandler:
                         continue
                     final_chunk = chunk
                     text = chunk.text
-                    raw_text += text
-                    
+
+
                     parsed_result, is_complete = unified_parser.parse_streaming(text)
                     if parsed_result:
                         # Unified parser returns dict with reasoning_content, tool_calls, content
                         if parsed_result.get("reasoning_content"):
+                            if self.debug:
+                                log_debug_streaming_token(parsed_result["reasoning_content"], is_first_reasoning_token, is_reasoning=True)
+                                is_first_reasoning_token = False
                             yield {"reasoning_content": parsed_result["reasoning_content"]}
                         if parsed_result.get("tool_calls"):
                             for tool_call in parsed_result["tool_calls"]:
                                 yield tool_call
                         if parsed_result.get("content"):
-                            yield parsed_result["content"]
+                            content_text = parsed_result["content"]
+                            if self.debug:
+                                if not is_first_reasoning_token:
+                                    log_debug_streaming_section_end()
+                                    is_first_reasoning_token = True
+                                log_debug_streaming_token(content_text, is_first_output_token)
+                                is_first_output_token = False
+                            yield content_text
                     # Continue processing all chunks even if is_complete is True
             else:
                 # Handle separate parsers streaming
                 reasoning_parser = parsers_result.reasoning_parser
                 tool_parser = parsers_result.tool_parser
-                
+
                 for chunk in response_generator:
                     if chunk is None:
                         continue
                     final_chunk = chunk
                     text = chunk.text
-                    raw_text += text
+
                     if is_first_chunk:
                         if reasoning_parser and hasattr(reasoning_parser, 'needs_redacted_reasoning_prefix'):
                             if reasoning_parser.needs_redacted_reasoning_prefix():
@@ -213,12 +224,20 @@ class MLXVLMHandler:
                         is_first_chunk = False
                     if reasoning_parser:
                         parsed_content, is_complete = reasoning_parser.extract_reasoning_streaming(text)
-                        
+
                         if parsed_content:
+                            if self.debug:
+                                reasoning_text = parsed_content.get("reasoning_content", "")
+                                if reasoning_text:
+                                    log_debug_streaming_token(reasoning_text, is_first_reasoning_token, is_reasoning=True)
+                                    is_first_reasoning_token = False
                             after_reasoning_close_content = parsed_content.get("after_reasoning_close_content")
                             yield parsed_content
                         if is_complete:
                             reasoning_parser = None
+                            if self.debug and not is_first_reasoning_token:
+                                log_debug_streaming_section_end()
+                                is_first_reasoning_token = True
                         if after_reasoning_close_content:
                             text = after_reasoning_close_content
                             after_reasoning_close_content = None
@@ -229,6 +248,9 @@ class MLXVLMHandler:
                         if parsed_content:
                             content = parsed_content.get("content")
                             if content:
+                                if self.debug:
+                                    log_debug_streaming_token(content, is_first_output_token)
+                                    is_first_output_token = False
                                 yield content
                             tool_calls = parsed_content.get("tool_calls")
                             if tool_calls:
@@ -236,12 +258,17 @@ class MLXVLMHandler:
                                     yield tool_call
                         continue
 
+                    if self.debug:
+                        log_debug_streaming_token(text, is_first_output_token)
+                        is_first_output_token = False
                     yield text
 
             total_tokens = final_chunk.prompt_tokens + final_chunk.generation_tokens
-            
+
             if self.debug:
-                log_debug_raw_text_response(raw_text)
+                # Add newline after streaming output
+                if not is_first_output_token:
+                    print("\n", flush=True)
                 log_debug_stats(
                     final_chunk.prompt_tokens,
                     final_chunk.generation_tokens,
@@ -376,7 +403,6 @@ class MLXVLMHandler:
             total_tokens = response.prompt_tokens + response.generation_tokens
 
             if self.debug:
-                log_debug_raw_text_response(response.text)
                 log_debug_stats(
                     response.prompt_tokens,
                     response.generation_tokens,
