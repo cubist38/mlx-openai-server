@@ -54,7 +54,19 @@ class MLX_LM:
     supporting both streaming and non-streaming modes.
     """
 
-    def __init__(self, model_path: str, context_length: int | None = None, trust_remote_code: bool = False, chat_template_file: str = None, debug: bool = False):
+    def __init__(self, model_path: str, context_length: int | None = None, trust_remote_code: bool = False, chat_template_file: str = None, extra_stop_tokens: List[int] | None = None, debug: bool = False):
+        """
+        Initialize the MLX Language Model wrapper.
+        
+        Args:
+            model_path: Path to the model.
+            context_length: Maximum context length for the model.
+            trust_remote_code: Whether to trust remote code in the model.
+            chat_template_file: Path to a custom chat template file.
+            extra_stop_tokens: Additional token IDs that should stop generation.
+                               For GPT-OSS/Harmony models, pass HARMONY_STOP_TOKENS.
+            debug: Whether to enable debug mode.
+        """
         try:
             self.model, self.tokenizer = load(model_path, lazy=False, tokenizer_config = {"trust_remote_code": trust_remote_code})
             self.pad_token_id = self.tokenizer.pad_token_id
@@ -63,6 +75,22 @@ class MLX_LM:
             self.context_length = context_length
             self.debug = debug
             self.outlines_tokenizer = OutlinesTransformerTokenizer(self.tokenizer)
+            
+            # Extend eos_token_ids with extra stop tokens (e.g., Harmony <|call|>, <|return|>)
+            if extra_stop_tokens:
+                existing_eos = getattr(self.tokenizer, 'eos_token_ids', [])
+                if existing_eos is None:
+                    existing_eos = []
+                elif isinstance(existing_eos, int):
+                    existing_eos = [existing_eos]
+                else:
+                    existing_eos = list(existing_eos)
+                # Add extra stop tokens, avoiding duplicates
+                for token_id in extra_stop_tokens:
+                    if token_id not in existing_eos:
+                        existing_eos.append(token_id)
+                self.tokenizer.eos_token_ids = existing_eos
+            
             if chat_template_file:
                 if not os.path.exists(chat_template_file):
                     raise ValueError(f"Chat template file {chat_template_file} does not exist")

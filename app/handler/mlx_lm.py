@@ -13,6 +13,7 @@ from ..message_converters import MessageConverterManager
 from typing import Any, AsyncGenerator, Dict, List, Optional, Tuple
 from ..schemas.openai import ChatCompletionRequest, UsageInfo, PromptTokenUsageInfo
 from ..utils.prompt_cache import LRUPromptCache
+from ..utils.harmony_prompt import render_harmony_prompt
 from ..utils.debug_logging import log_debug_request, log_debug_stats, log_debug_raw_text_response, log_debug_prompt, make_prompt_progress_callback, log_debug_cache_stats
 
 class MLXLMHandler:
@@ -37,7 +38,10 @@ class MLXLMHandler:
             prompt_cache_size (int): Maximum number of prompt KV cache entries to store. Default is 10.
         """
         self.model_path = model_path
-        self.model = MLX_LM(model_path, context_length, trust_remote_code=trust_remote_code, chat_template_file=chat_template_file, debug=debug)
+        
+        # GPT-OSS/Harmony models need to stop on <|call|> (200012) and <|return|> (200002)
+        extra_stop_tokens = [200002, 200012] if tool_call_parser == "harmony" or reasoning_parser == "harmony" else None
+        self.model = MLX_LM(model_path, context_length, trust_remote_code=trust_remote_code, chat_template_file=chat_template_file, extra_stop_tokens=extra_stop_tokens, debug=debug)
         self.model_created = int(time.time())  # Store creation time when model is loaded
         self.model_type = self.model.get_model_type()
         
@@ -53,6 +57,17 @@ class MLXLMHandler:
         self.request_queue = RequestQueue(max_concurrency=max_concurrency)
 
         logger.info(f"Initialized MLXHandler with model path: {model_path}")
+
+    def get_default_sampling_params(self) -> Dict[str, Any]:
+        """
+        Get model-specific default sampling parameters.
+        """
+        # GPT-OSS/Harmony models need top_k=0 (disabled)
+        if self.reasoning_parser_name == "harmony":
+            return {"top_k": 0, "temperature": 1}
+
+        # Standard defaults for other models (default of mlx-openai-server)
+        return {"top_k": 20, "temperature": 0.7}
 
     async def get_models(self) -> List[Dict[str, Any]]:
         """
@@ -122,7 +137,13 @@ class MLXLMHandler:
             refined_messages = self.refine_messages(chat_messages)
             chat_template_kwargs = model_params.get("chat_template_kwargs", {})
 
-            input_prompt = self.model.create_input_prompt(refined_messages, chat_template_kwargs)
+            # Use Harmony renderer for proper token formatting when harmony parser is active
+            if self.reasoning_parser_name == "harmony":
+                tools = chat_template_kwargs.get("tools")
+                reasoning_effort = chat_template_kwargs.get("reasoning_effort", "medium")
+                input_prompt = render_harmony_prompt(refined_messages, tools, reasoning_effort)
+            else:
+                input_prompt = self.model.create_input_prompt(refined_messages, chat_template_kwargs)
 
             if self.debug:
                 log_debug_prompt(input_prompt)
@@ -322,7 +343,13 @@ class MLXLMHandler:
             # Count prompt tokens
             chat_template_kwargs = model_params.get("chat_template_kwargs", {})
 
-            input_prompt = self.model.create_input_prompt(refined_messages, chat_template_kwargs)
+            # Use Harmony renderer for proper token formatting when harmony parser is active
+            if self.reasoning_parser_name == "harmony":
+                tools = chat_template_kwargs.get("tools")
+                reasoning_effort = chat_template_kwargs.get("reasoning_effort", "medium")
+                input_prompt = render_harmony_prompt(refined_messages, tools, reasoning_effort)
+            else:
+                input_prompt = self.model.create_input_prompt(refined_messages, chat_template_kwargs)
 
             if self.debug:
                 log_debug_prompt(input_prompt)
@@ -538,6 +565,12 @@ class MLXLMHandler:
                 response_format = request_dict.pop("response_format", None)
                 if response_format.get("type") == "json_schema":
                     request_dict["schema"] = response_format.get("json_schema", None).get("schema", None)
+            
+            # Apply model-specific default sampling parameters
+            model_defaults = self.get_default_sampling_params()
+            for param, value in model_defaults.items():
+                if request_dict.get(param) is None:
+                    request_dict[param] = value
             
             # Format chat messages and merge system messages into index 0
             chat_messages = []
