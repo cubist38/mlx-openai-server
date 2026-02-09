@@ -391,7 +391,7 @@ Follow [Conventional Commits](https://www.conventionalcommits.org/) for commit m
 - **Documentation**: This README and example notebooks
 - **Issues**: [GitHub Issues](https://github.com/cubist38/mlx-openai-server/issues)
 - **Discussions**: [GitHub Discussions](https://github.com/cubist38/mlx-openai-server/discussions)
-- **Video Tutorials**: [Setup Demo](https://youtu.be/J1gkEMvmTSE), [RAG Demo](https://youtu.be/ANUEZkmR-0s)
+- **Video Tutorials**: [Setup Demo](https://youtu.be/J1gkEMvmTSE), [RAG Demo](https://youtu.be/ANUEZkmR-0s), [Testing Qwen3-Coder-Next-4bit with Qwen-Code](https://youtu.be/X5Hsd3QR_E8)
 
 ## License
 
