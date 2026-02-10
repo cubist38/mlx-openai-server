@@ -7,6 +7,7 @@ from fastapi import HTTPException
 from loguru import logger
 from ..models.mlx_lm import MLX_LM
 from ..core.queue import RequestQueue
+from ..core.inference_worker import InferenceWorker
 from ..utils.errors import create_error_response
 from ..parsers import ParserManager
 from ..message_converters import MessageConverterManager
@@ -51,6 +52,9 @@ class MLXLMHandler:
         self.message_converter = MessageConverterManager.create_converter(message_converter)
         # Initialize request queue for text tasks
         self.request_queue = RequestQueue(max_concurrency=max_concurrency)
+        # Dedicated inference thread — keeps the event loop free during
+        # blocking MLX model computation (mirrors upstream mlx-lm pattern).
+        self.inference_worker = InferenceWorker()
 
         logger.info(f"Initialized MLXHandler with model path: {model_path}")
 
@@ -82,6 +86,7 @@ class MLXLMHandler:
             timeout=queue_config.get("timeout"),
             queue_size=queue_config.get("queue_size")
         )
+        self.inference_worker.start()
         await self.request_queue.start(self._process_request)
         logger.info("Initialized MLXHandler and started request queue")
 
@@ -192,7 +197,7 @@ class MLXLMHandler:
             # Handle unified parser streaming
             if parsers_result.is_unified:
                 unified_parser = parsers_result.unified_parser
-                for chunk in response_generator:
+                async for chunk in response_generator:
                     if chunk is None:
                         continue
                     final_chunk = chunk
@@ -230,7 +235,7 @@ class MLXLMHandler:
                 reasoning_parser = parsers_result.reasoning_parser
                 tool_parser = parsers_result.tool_parser
                 
-                for chunk in response_generator:
+                async for chunk in response_generator:
                     if chunk is None:
                         continue
                     final_chunk = chunk
@@ -453,28 +458,49 @@ class MLXLMHandler:
             raise HTTPException(status_code=500, detail=content)
         
 
-    async def _process_request(self, request_data: Dict[str, Any]) -> str:
+    async def _process_request(self, request_data: Dict[str, Any]) -> Any:
+        """Process a text request on the dedicated inference thread.
+
+        This is the worker function for the request queue.  All blocking
+        MLX model work is offloaded to ``self.inference_worker`` so the
+        asyncio event loop stays responsive.
+
+        Parameters
+        ----------
+        request_data : Dict[str, Any]
+            Dictionary containing the request data.
+
+        Returns
+        -------
+        Any
+            For ``stream=False``: a ``CompletionResponse``.
+            For ``stream=True``: an async generator of ``GenerationResponse`` chunks.
         """
-        Process a text request. This is the worker function for the request queue.
-        
-        Args:
-            request_data: Dictionary containing the request data.
-            
-        Returns:
-            str: The model's response.
-        """
-        try:            
+        try:
             input_ids = request_data.pop("input_ids")
             prompt_cache = request_data.pop("prompt_cache")
             stream = request_data.pop("stream")
 
-            # Call the model
-            response = self.model(
+            if stream:
+                # Streaming: iterate the sync generator on the inference
+                # thread and yield chunks back as an async generator.
+                return self.inference_worker.submit_stream(
+                    self.model,
+                    input_ids=input_ids,
+                    prompt_cache=prompt_cache,
+                    stream=True,
+                    **request_data,
+                )
+
+            # Non-streaming: run the full generation on the inference
+            # thread and await the result.
+            response = await self.inference_worker.submit(
+                self.model,
                 input_ids=input_ids,
                 prompt_cache=prompt_cache,
-                stream=stream,
-                **request_data
-            )            
+                stream=False,
+                **request_data,
+            )
             # Force garbage collection after model inference
             gc.collect()
             return response
@@ -509,6 +535,8 @@ class MLXLMHandler:
             logger.info("Cleaning up MLXLMHandler resources")
             if hasattr(self, 'request_queue'):
                 await self.request_queue.stop()
+            if hasattr(self, 'inference_worker'):
+                self.inference_worker.stop()
             logger.info("MLXLMHandler cleanup completed successfully")
         except Exception as e:
             logger.error(f"Error during MLXLMHandler cleanup: {str(e)}")
