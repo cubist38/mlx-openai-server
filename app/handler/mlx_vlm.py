@@ -1,25 +1,36 @@
 import asyncio
 import base64
+import gc
 import time
 import uuid
-import gc
-import torch
-import mlx.core as mx
-
-from loguru import logger
 from http import HTTPStatus
-from fastapi import HTTPException
 from typing import Any, Dict, List, Optional, Tuple
+
+import mlx.core as mx
+import torch
+from fastapi import HTTPException
+from loguru import logger
 from mlx_vlm.video_generate import process_vision_info
 
-from ..core.queue import RequestQueue
+from ..core import AudioProcessor, ImageProcessor, InferenceWorker, VideoProcessor
+from ..message_converters import MessageConverterManager
 from ..models.mlx_vlm import MLX_VLM
 from ..parsers import ParserManager
-from ..message_converters import MessageConverterManager
-from ..core import ImageProcessor, AudioProcessor, VideoProcessor
+from ..schemas.openai import (
+    ChatCompletionContentPart,
+    ChatCompletionContentPartImage,
+    ChatCompletionContentPartInputAudio,
+    ChatCompletionContentPartVideo,
+    ChatCompletionRequest,
+    UsageInfo,
+)
+from ..utils.debug_logging import (
+    log_debug_prompt,
+    log_debug_raw_text_response,
+    log_debug_request,
+    log_debug_stats,
+)
 from ..utils.errors import create_error_response
-from ..utils.debug_logging import log_debug_request, log_debug_stats, log_debug_raw_text_response, log_debug_prompt
-from ..schemas.openai import ChatCompletionRequest, ChatCompletionContentPart, ChatCompletionContentPartImage, ChatCompletionContentPartInputAudio, ChatCompletionContentPartVideo, UsageInfo
 
 class MLXVLMHandler:
     """
@@ -60,10 +71,9 @@ class MLXVLMHandler:
         # Debug mode
         self.debug = debug
 
-        # Initialize request queue for multimodal and text tasks
-        # We use the same queue for both multimodal and text tasks for simplicity
-        # and to ensure we don't overload the model with too many concurrent requests
-        self.request_queue = RequestQueue(max_concurrency=max_concurrency)
+        # Dedicated inference thread — keeps the event loop free during
+        # blocking MLX model computation.
+        self.inference_worker = InferenceWorker()
         
         logger.info(f"Initialized MLXHandler with model path: {model_path}")
         if disable_auto_resize:
@@ -84,22 +94,26 @@ class MLXVLMHandler:
             logger.error(f"Error getting models: {str(e)}")
             return []
     
-    async def initialize(self, queue_config: Optional[Dict[str, Any]] = None):
-        """Initialize the handler and start the request queue."""
-        
+    async def initialize(self, queue_config: Optional[Dict[str, Any]] = None) -> None:
+        """Initialize the handler and start the inference worker.
+
+        Parameters
+        ----------
+        queue_config : dict, optional
+            Dictionary with ``queue_size`` and ``timeout`` keys used
+            to configure the inference worker's internal queue.
+        """
         if not queue_config:
             queue_config = {
-                "max_concurrency": 1,
                 "timeout": 300,
-                "queue_size": 100
+                "queue_size": 100,
             }
-        self.request_queue = RequestQueue(
-            max_concurrency=queue_config.get("max_concurrency"),
-            timeout=queue_config.get("timeout"),
-            queue_size=queue_config.get("queue_size")
+        self.inference_worker = InferenceWorker(
+            queue_size=queue_config.get("queue_size", 100),
+            timeout=queue_config.get("timeout", 300),
         )
-        await self.request_queue.start(self._process_request)
-        logger.info("Initialized MLXHandler and started request queue")
+        self.inference_worker.start()
+        logger.info("Initialized MLXVLMHandler and started inference worker")
 
     async def generate_multimodal_stream(self, request: ChatCompletionRequest):
         """
@@ -147,8 +161,17 @@ class MLXVLMHandler:
                 log_debug_request(request_dict)
                 request_dict["verbose"] = True
             
-            # Submit to the multimodal queue and get the generator
-            response_generator = await self.request_queue.submit(request_id, request_dict)    
+            # Extract explicit model args; remaining kwargs are forwarded
+            # to the model on the inference thread.
+            prompt = request_dict.pop("prompt")
+            request_dict.pop("stream")
+
+            response_generator = self.inference_worker.submit_stream(
+                self.model,
+                prompt=prompt,
+                stream=True,
+                **request_dict,
+            )
 
             # Create parsers using ParserManager
             parsers_result = ParserManager.create_parsers(
@@ -177,7 +200,7 @@ class MLXVLMHandler:
             # Handle unified parser streaming
             if parsers_result.is_unified:
                 unified_parser = parsers_result.unified_parser
-                for chunk in response_generator:
+                async for chunk in response_generator:
                     if chunk is None:
                         continue
                     final_chunk = chunk
@@ -200,7 +223,7 @@ class MLXVLMHandler:
                 reasoning_parser = parsers_result.reasoning_parser
                 tool_parser = parsers_result.tool_parser
                 
-                for chunk in response_generator:
+                async for chunk in response_generator:
                     if chunk is None:
                         continue
                     final_chunk = chunk
@@ -308,13 +331,20 @@ class MLXVLMHandler:
 
             # merge all keys from inputs to request_dict
             request_dict.update(inputs)
-            request_dict["stream"] = False
-
             if self.debug:
                 log_debug_request(request_dict)
                 request_dict["verbose"] = True
-        
-            response = await self.request_queue.submit(request_id, request_dict)
+
+            # Extract explicit model args; remaining kwargs are forwarded.
+            prompt = request_dict.pop("prompt")
+            request_dict.pop("stream", None)
+
+            response = await self.inference_worker.submit(
+                self.model,
+                prompt=prompt,
+                stream=False,
+                **request_dict,
+            )
 
             # Create parsers using ParserManager
             parsers_result = ParserManager.create_parsers(
@@ -416,17 +446,16 @@ class MLXVLMHandler:
         if hasattr(self, 'video_processor'):
             await self.video_processor.cleanup()
 
-    async def cleanup(self):
-        """
-        Cleanup resources and stop the request queue before shutdown.
-        
-        This method ensures all pending requests are properly cancelled
-        and resources are released, including the image processor.
+    async def cleanup(self) -> None:
+        """Cleanup resources and stop the inference worker before shutdown.
+
+        This method ensures all pending requests are properly completed
+        and resources are released, including media processors.
         """
         try:
             logger.info("Cleaning up MLXVLMHandler resources")
-            if hasattr(self, 'request_queue'):
-                await self.request_queue.stop()
+            if hasattr(self, 'inference_worker'):
+                self.inference_worker.stop()
             if hasattr(self, 'image_processor'):
                 await self.image_processor.cleanup()
             if hasattr(self, 'audio_processor'):
@@ -441,48 +470,16 @@ class MLXVLMHandler:
             logger.error(f"Error during MLXVLMHandler cleanup: {str(e)}")
             raise
 
-    async def _process_request(self, request_data: Dict[str, Any]) -> str:
-        """
-        Process a multimodal request. This is the worker function for the request queue.
-        
-        Args:
-            request_data: Dictionary containing the request data.
-            
-        Returns:
-            str: The model's response.
-        """
-        try:
-            prompt = request_data.pop("prompt")
-            stream = request_data.pop("stream")      
-
-            # Call the model with inputs
-            response = self.model(
-                prompt=prompt,
-                stream=stream,
-                **request_data
-            )
-
-            # Force garbage collection after model inference
-            gc.collect()
-            return response
-            
-        except Exception as e:
-            logger.error(f"Error processing multimodal request: {str(e)}")
-            # Clean up on error
-            gc.collect()
-            raise
-
     async def get_queue_stats(self) -> Dict[str, Any]:
+        """Get statistics from the inference worker.
+
+        Returns
+        -------
+        dict[str, Any]
+            Dictionary with ``queue_stats`` sub-dictionary.
         """
-        Get statistics from the request queue and performance metrics.
-        
-        Returns:
-            Dict with queue and performance statistics.
-        """
-        queue_stats = self.request_queue.get_queue_stats()
-        
         return {
-            "queue_stats": queue_stats,
+            "queue_stats": self.inference_worker.get_stats(),
         }
 
     async def _reformat_multimodal_content_part(self, content_part: ChatCompletionContentPart) -> Tuple[Dict[str, Any], bool]:

@@ -1,19 +1,28 @@
-import gc
+import asyncio
 import time
 import uuid
-import asyncio
+import gc
 from http import HTTPStatus
+from typing import Any, AsyncGenerator, Dict, List, Optional, Tuple
+
 from fastapi import HTTPException
 from loguru import logger
-from ..models.mlx_lm import MLX_LM
-from ..core.queue import RequestQueue
-from ..utils.errors import create_error_response
-from ..parsers import ParserManager
+
+from ..core import InferenceWorker
 from ..message_converters import MessageConverterManager
-from typing import Any, AsyncGenerator, Dict, List, Optional, Tuple
-from ..schemas.openai import ChatCompletionRequest, UsageInfo, PromptTokenUsageInfo
+from ..models.mlx_lm import MLX_LM
+from ..parsers import ParserManager
+from ..schemas.openai import ChatCompletionRequest, PromptTokenUsageInfo, UsageInfo
+from ..utils.debug_logging import (
+    log_debug_cache_stats,
+    log_debug_prompt,
+    log_debug_raw_text_response,
+    log_debug_request,
+    log_debug_stats,
+    make_prompt_progress_callback,
+)
+from ..utils.errors import create_error_response
 from ..utils.prompt_cache import LRUPromptCache
-from ..utils.debug_logging import log_debug_request, log_debug_stats, log_debug_raw_text_response, log_debug_prompt, make_prompt_progress_callback, log_debug_cache_stats
 
 class MLXLMHandler:
     """
@@ -49,8 +58,9 @@ class MLXLMHandler:
         self.tool_parser_name = tool_call_parser
         self.prompt_cache = LRUPromptCache(max_size=prompt_cache_size)
         self.message_converter = MessageConverterManager.create_converter(message_converter)
-        # Initialize request queue for text tasks
-        self.request_queue = RequestQueue(max_concurrency=max_concurrency)
+        # Dedicated inference thread — keeps the event loop free during
+        # blocking MLX model computation.
+        self.inference_worker = InferenceWorker()
 
         logger.info(f"Initialized MLXHandler with model path: {model_path}")
 
@@ -69,21 +79,26 @@ class MLXLMHandler:
             logger.error(f"Error getting models: {str(e)}")
             return []
     
-    async def initialize(self, queue_config: Optional[Dict[str, Any]] = None):
-        """Initialize the handler and start the request queue."""
+    async def initialize(self, queue_config: Optional[Dict[str, Any]] = None) -> None:
+        """Initialize the handler and start the inference worker.
+
+        Parameters
+        ----------
+        queue_config : dict, optional
+            Dictionary with ``queue_size`` and ``timeout`` keys used
+            to configure the inference worker's internal queue.
+        """
         if not queue_config:
             queue_config = {
-                "max_concurrency": 1,
                 "timeout": 300,
-                "queue_size": 100
+                "queue_size": 100,
             }
-        self.request_queue = RequestQueue(
-            max_concurrency=queue_config.get("max_concurrency"),
-            timeout=queue_config.get("timeout"),
-            queue_size=queue_config.get("queue_size")
+        self.inference_worker = InferenceWorker(
+            queue_size=queue_config.get("queue_size", 100),
+            timeout=queue_config.get("timeout", 300),
         )
-        await self.request_queue.start(self._process_request)
-        logger.info("Initialized MLXHandler and started request queue")
+        self.inference_worker.start()
+        logger.info("Initialized MLXHandler and started inference worker")
 
     def refine_messages(self, messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """
@@ -182,7 +197,18 @@ class MLXLMHandler:
                 log_debug_request(request_data)
                 request_data["verbose"] = True
 
-            response_generator = await self.request_queue.submit(request_id, request_data)
+            # Extract explicit model args; remaining kwargs are forwarded.
+            input_ids = request_data.pop("input_ids")
+            prompt_cache = request_data.pop("prompt_cache")
+            request_data.pop("stream")
+
+            response_generator = self.inference_worker.submit_stream(
+                self.model,
+                input_ids=input_ids,
+                prompt_cache=prompt_cache,
+                stream=True,
+                **request_data,
+            )
 
             after_reasoning_close_content = None
             final_chunk = None
@@ -192,7 +218,7 @@ class MLXLMHandler:
             # Handle unified parser streaming
             if parsers_result.is_unified:
                 unified_parser = parsers_result.unified_parser
-                for chunk in response_generator:
+                async for chunk in response_generator:
                     if chunk is None:
                         continue
                     final_chunk = chunk
@@ -230,7 +256,7 @@ class MLXLMHandler:
                 reasoning_parser = parsers_result.reasoning_parser
                 tool_parser = parsers_result.tool_parser
                 
-                for chunk in response_generator:
+                async for chunk in response_generator:
                     if chunk is None:
                         continue
                     final_chunk = chunk
@@ -355,7 +381,18 @@ class MLXLMHandler:
                 **model_params
             }
 
-            response = await self.request_queue.submit(request_id, request_data)
+            # Extract explicit model args; remaining kwargs are forwarded.
+            input_ids = request_data.pop("input_ids")
+            prompt_cache = request_data.pop("prompt_cache")
+            request_data.pop("stream")
+
+            response = await self.inference_worker.submit(
+                self.model,
+                input_ids=input_ids,
+                prompt_cache=prompt_cache,
+                stream=False,
+                **request_data,
+            )
             
             # Create parsers using ParserManager
             parsers_result = ParserManager.create_parsers(
@@ -453,62 +490,31 @@ class MLXLMHandler:
             raise HTTPException(status_code=500, detail=content)
         
 
-    async def _process_request(self, request_data: Dict[str, Any]) -> str:
-        """
-        Process a text request. This is the worker function for the request queue.
-        
-        Args:
-            request_data: Dictionary containing the request data.
-            
-        Returns:
-            str: The model's response.
-        """
-        try:            
-            input_ids = request_data.pop("input_ids")
-            prompt_cache = request_data.pop("prompt_cache")
-            stream = request_data.pop("stream")
-
-            # Call the model
-            response = self.model(
-                input_ids=input_ids,
-                prompt_cache=prompt_cache,
-                stream=stream,
-                **request_data
-            )            
-            # Force garbage collection after model inference
-            gc.collect()
-            return response
-
-        except Exception as e:
-            logger.error(f"Error processing text request: {str(e)}")
-            # Clean up on error
-            gc.collect()
-            raise
-
     async def get_queue_stats(self) -> Dict[str, Any]:
+        """Get statistics from the inference worker.
+
+        Returns
+        -------
+        dict[str, Any]
+            Dictionary with ``queue_stats`` sub-dictionary.
         """
-        Get statistics from the request queue and performance metrics.
-        
-        Returns:
-            Dict with queue and performance statistics.
-        """
-        queue_stats = self.request_queue.get_queue_stats()
-        
         return {
-            "queue_stats": queue_stats,
+            "queue_stats": self.inference_worker.get_stats(),
         }
         
-    async def cleanup(self):
-        """
-        Cleanup resources and stop the request queue before shutdown.
-        
-        This method ensures all pending requests are properly cancelled
+    async def cleanup(self) -> None:
+        """Cleanup resources and stop the inference worker before shutdown.
+
+        This method ensures all pending requests are properly completed
         and resources are released.
         """
         try:
             logger.info("Cleaning up MLXLMHandler resources")
-            if hasattr(self, 'request_queue'):
-                await self.request_queue.stop()
+            if hasattr(self, 'inference_worker'):
+                self.inference_worker.stop()
+
+            # Force garbage collection
+            gc.collect()
             logger.info("MLXLMHandler cleanup completed successfully")
         except Exception as e:
             logger.error(f"Error during MLXLMHandler cleanup: {str(e)}")
