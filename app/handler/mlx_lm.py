@@ -30,23 +30,49 @@ class MLXLMHandler:
     Provides request queuing, metrics tracking, and robust error handling.
     """
 
-    def __init__(self, model_path: str, context_length: int | None = None, max_concurrency: int = 1, enable_auto_tool_choice: bool = False, tool_call_parser: str = None, reasoning_parser: str = None, message_converter: str = None, trust_remote_code: bool = False, chat_template_file: str = None, debug: bool = False, prompt_cache_size: int = 10):
+    def __init__(self, model_path: str, draft_model_path: str | None = None, num_draft_tokens: int = 2, context_length: int | None = None, max_concurrency: int = 1, enable_auto_tool_choice: bool = False, tool_call_parser: str = None, reasoning_parser: str = None, message_converter: str = None, trust_remote_code: bool = False, chat_template_file: str = None, debug: bool = False, prompt_cache_size: int = 10):
         """
         Initialize the handler with the specified model path.
-        
-        Args:
-            model_path (str): Path to the model directory.
-            context_length (int | None): Maximum context length for the model. If None, uses model default.
-            max_concurrency (int): Maximum number of concurrent model inference tasks.
-            enable_auto_tool_choice (bool): Enable automatic tool choice.
-            tool_call_parser (str): Name of the tool call parser to use (qwen3, glm4_moe, harmony, minimax, ...)
-            reasoning_parser (str): Name of the reasoning parser to use (qwen3, qwen3_next, glm4_moe, harmony, minimax, ...)
-            trust_remote_code (bool): Enable trust_remote_code when loading models.
-            chat_template_file (str): Path to a custom chat template file.
-            prompt_cache_size (int): Maximum number of prompt KV cache entries to store. Default is 10.
+
+        Parameters
+        ----------
+        model_path : str
+            Path to the model directory.
+        draft_model_path : str | None
+            Path to the draft model for speculative decoding. If None, speculative decoding is disabled.
+        num_draft_tokens : int
+            Number of draft tokens per step when using speculative decoding. Default is 2.
+        context_length : int | None
+            Maximum context length for the model. If None, uses model default.
+        max_concurrency : int
+            Maximum number of concurrent model inference tasks.
+        enable_auto_tool_choice : bool
+            Enable automatic tool choice.
+        tool_call_parser : str | None
+            Name of the tool call parser to use (qwen3, glm4_moe, harmony, minimax, ...).
+        reasoning_parser : str | None
+            Name of the reasoning parser to use (qwen3, qwen3_next, glm4_moe, harmony, minimax, ...).
+        message_converter : str | None
+            Name of the message converter to use.
+        trust_remote_code : bool
+            Enable trust_remote_code when loading models.
+        chat_template_file : str | None
+            Path to a custom chat template file.
+        debug : bool
+            Enable debug mode.
+        prompt_cache_size : int
+            Maximum number of prompt KV cache entries to store. Default is 10.
         """
         self.model_path = model_path
-        self.model = MLX_LM(model_path, context_length, trust_remote_code=trust_remote_code, chat_template_file=chat_template_file, debug=debug)
+        self.model = MLX_LM(
+            model_path,
+            draft_model_path=draft_model_path,
+            num_draft_tokens=num_draft_tokens,
+            context_length=context_length,
+            trust_remote_code=trust_remote_code,
+            chat_template_file=chat_template_file,
+            debug=debug,
+        )
         self.model_created = int(time.time())  # Store creation time when model is loaded
         self.model_type = self.model.get_model_type()
         

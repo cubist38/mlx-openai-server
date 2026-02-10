@@ -1,5 +1,6 @@
 import os
 import mlx.core as mx
+from loguru import logger
 from mlx_lm.utils import load
 from mlx_lm.generate import (
     stream_generate
@@ -54,13 +55,18 @@ class MLX_LM:
     supporting both streaming and non-streaming modes.
     """
 
-    def __init__(self, model_path: str, context_length: int | None = None, trust_remote_code: bool = False, chat_template_file: str = None, debug: bool = False):
+    def __init__(self, model_path: str, draft_model_path: str = None, num_draft_tokens: int = 2, context_length: int | None = None, trust_remote_code: bool = False, chat_template_file: str = None, debug: bool = False):
         try:
             self.model, self.tokenizer = load(model_path, lazy=False, tokenizer_config = {"trust_remote_code": trust_remote_code})
+            self.context_length = context_length
+            self.draft_model = None
+            self.draft_tokenizer = None
+            self.num_draft_tokens = num_draft_tokens
+            if draft_model_path:
+                self._load_draft_model(draft_model_path, trust_remote_code)
             self.pad_token_id = self.tokenizer.pad_token_id
             self.bos_token = self.tokenizer.bos_token
             self.model_type = self.model.model_type
-            self.context_length = context_length
             self.debug = debug
             self.outlines_tokenizer = OutlinesTransformerTokenizer(self.tokenizer)
             if chat_template_file:
@@ -74,9 +80,27 @@ class MLX_LM:
         except Exception as e:
             raise ValueError(f"Error loading model: {str(e)}")
 
+    def _load_draft_model(self, draft_model_path: str, trust_remote_code: bool) -> None:
+        try:
+            self.draft_model, self.draft_tokenizer = load(draft_model_path, lazy=False, tokenizer_config = {"trust_remote_code": trust_remote_code})
+            self.context_length = None # speculative decoding does not support context length, should be set to None
+            self._validate_draft_tokenizer()
+        except Exception as e:
+            raise ValueError(f"Error loading draft model: {str(e)}")
+
+    def _validate_draft_tokenizer(self) -> None:
+        if self.draft_tokenizer.vocab_size != self.tokenizer.vocab_size:
+            logger.warning(
+                "Draft model tokenizer does not match model tokenizer. "
+                "Speculative decoding may not work as expected."
+            )
+
     def create_prompt_cache(self) -> List[Any]:
-        return make_prompt_cache(self.model, max_kv_size=self.context_length)
-        
+        cache = make_prompt_cache(self.model, max_kv_size=self.context_length)
+        if self.draft_model:
+            cache += make_prompt_cache(self.draft_model, max_kv_size=self.context_length)
+        return cache
+
     def get_model_type(self) -> str:
         return self.model_type
 
@@ -165,8 +189,10 @@ class MLX_LM:
             self.model,
             self.tokenizer,
             input_ids,
+            draft_model=self.draft_model,
             sampler=sampler,
             max_tokens=max_tokens,
+            num_draft_tokens=self.num_draft_tokens,
             prompt_cache=prompt_cache,
             logits_processors=logits_processors,
             prompt_progress_callback=prompt_progress_callback

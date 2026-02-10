@@ -203,6 +203,18 @@ def cli():
     type=int,
     help="Maximum number of prompt KV cache entries to store. Only works with language models (lm). Default is 10.",
 )
+@click.option(
+    "--draft-model",
+    default=None,
+    type=str,
+    help="Path to the draft model for speculative decoding. Only supported with model type 'lm'. When set, --num-draft-tokens controls how many tokens the draft model generates per step.",
+)
+@click.option(
+    "--num-draft-tokens",
+    default=2,
+    type=int,
+    help="Number of draft tokens per step when using speculative decoding (--draft-model). Only supported with model type 'lm'. Default is 2.",
+)
 def launch(
     model_path,
     model_type,
@@ -228,6 +240,8 @@ def launch(
     chat_template_file,
     debug,
     prompt_cache_size,
+    draft_model,
+    num_draft_tokens,
 ) -> None:
     """Start the FastAPI/Uvicorn server with the supplied flags.
 
@@ -261,6 +275,8 @@ def launch(
         chat_template_file=chat_template_file,
         debug=debug,
         prompt_cache_size=prompt_cache_size,
+        draft_model_path=draft_model,
+        num_draft_tokens=num_draft_tokens,
     )
 
     asyncio.run(start(args))

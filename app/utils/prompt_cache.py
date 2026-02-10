@@ -309,7 +309,9 @@ class LRUPromptCache:
 
 if __name__ == "__main__":
     from app.models.mlx_lm import MLX_LM
-    model = MLX_LM("mlx-community/MiniMax-M2.1-4bit")
+    model_path = "mlx-community/Qwen3-Coder-Next-8bit"
+    draft_model_path = "mlx-community/Qwen3-Coder-Next-4bit"
+    model = MLX_LM(model_path, draft_model_path)
     prompt_cache = LRUPromptCache()
 
     import time
@@ -352,11 +354,15 @@ if __name__ == "__main__":
 
     start_time = time.time()
     response_2 = model(rest_input_ids_2, cache, stream=True)
+    raw_text = ""
     for chunk in response_2:
         if chunk:
             if first_token:
                 print("TIME TO FIRST TOKEN", time.time() - start_time)
                 first_token = False
+            raw_text += chunk.text
             cache_key_2.append(chunk.token)
+
+    print("RAW TEXT", raw_text)
 
     prompt_cache.insert_cache(cache_key_2, cache)
