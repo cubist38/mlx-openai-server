@@ -209,6 +209,8 @@ def create_lifespan(config_args: MLXServerConfig):
                     chat_template_file=config_args.chat_template_file,
                     debug=config_args.debug,
                     prompt_cache_size=config_args.prompt_cache_size,
+                    draft_model_path=config_args.draft_model_path,
+                    num_draft_tokens=config_args.num_draft_tokens,
                 )
             # Initialize queue
             await handler.initialize(

@@ -45,6 +45,8 @@ class MLXServerConfig:
     chat_template_file: str | None = None
     debug: bool = False
     prompt_cache_size: int = 10
+    draft_model_path: str | None = None
+    num_draft_tokens: int = 2
 
     # Used to capture raw CLI input before processing
     lora_paths_str: str | None = None
@@ -95,6 +97,15 @@ class MLXServerConfig:
                 "specified. Using default 'flux-kontext-dev'."
             )
             self.config_name = "flux-kontext-dev"
+
+        # Speculative decoding (draft model) is only supported for lm model type
+        if self.draft_model_path and self.model_type != "lm":
+            logger.warning(
+                "Draft model / num-draft-tokens are only supported for model type 'lm'. "
+                "Ignoring speculative decoding options."
+            )
+            self.draft_model_path = None
+            self.num_draft_tokens = 2
 
     @property
     def model_identifier(self) -> str:
