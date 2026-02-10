@@ -7,10 +7,10 @@ from typing import Any, Dict, List
 from fastapi import HTTPException
 from loguru import logger
 
-from ..core.queue import RequestQueue
+from ..core import InferenceWorker
+from ..models.mlx_embeddings import MLX_Embeddings
 from ..schemas.openai import EmbeddingRequest
 from ..utils.errors import create_error_response
-from ..models.mlx_embeddings import MLX_Embeddings
 
 class MLXEmbeddingsHandler:
     """
@@ -29,9 +29,10 @@ class MLXEmbeddingsHandler:
         self.model_path = model_path
         self.model = MLX_Embeddings(model_path)
         self.model_created = int(time.time())  # Store creation time when model is loaded
-        
-        # Initialize request queue for embedding tasks
-        self.request_queue = RequestQueue(max_concurrency=max_concurrency)
+
+        # Dedicated inference thread — keeps the event loop free during
+        # blocking MLX model computation.
+        self.inference_worker = InferenceWorker()
 
         logger.info(f"Initialized MLXEmbeddingsHandler with model path: {model_path}")
     
@@ -50,14 +51,21 @@ class MLXEmbeddingsHandler:
             logger.error(f"Error getting models: {str(e)}")
             return []
 
-    async def initialize(self, config: Dict[str, Any]):
+    async def initialize(self, config: Dict[str, Any]) -> None:
+        """Initialize the handler and start the inference worker.
+
+        Parameters
+        ----------
+        config : dict[str, Any]
+            Dictionary with ``queue_size`` and ``timeout`` keys used
+            to configure the inference worker's internal queue.
         """
-        Initialize the request queue with configuration.
-        
-        Args:
-            config: Dictionary containing queue configuration.
-        """
-        await self.request_queue.start(self._process_request)
+        self.inference_worker = InferenceWorker(
+            queue_size=config.get("queue_size", 100),
+            timeout=config.get("timeout", 300),
+        )
+        self.inference_worker.start()
+        logger.info("Initialized MLXEmbeddingsHandler and started inference worker")
 
     async def generate_embeddings_response(self, request: EmbeddingRequest):
         """
@@ -74,14 +82,12 @@ class MLXEmbeddingsHandler:
             request_id = f"embeddings-{uuid.uuid4()}"
             if isinstance(request.input, str):
                 request.input = [request.input]
-            request_data = {
-                "type": "embeddings",
-                "input": request.input,
-                "max_length": getattr(request, 'max_length', 512)
-            }
-
-            # Submit to the request queue
-            response = await self.request_queue.submit(request_id, request_data)
+            # Submit directly to the inference thread
+            response = await self.inference_worker.submit(
+                self.model,
+                texts=request.input,
+                max_length=getattr(request, 'max_length', 512),
+            )
             
             return response
 
@@ -90,59 +96,28 @@ class MLXEmbeddingsHandler:
             content = create_error_response(f"Failed to generate embeddings: {str(e)}", "server_error", HTTPStatus.INTERNAL_SERVER_ERROR)
             raise HTTPException(status_code=500, detail=content)
 
-    async def _process_request(self, request_data: Dict[str, Any]) -> List[List[float]]:
-        """
-        Process an embeddings request. This is the worker function for the request queue.
-        
-        Args:
-            request_data: Dictionary containing the request data.
-            
-        Returns:
-            List[List[float]]: The embeddings for the input texts.
-        """
-        try:
-            # Check if the request is for embeddings
-            if request_data.get("type") == "embeddings":
-                result = self.model(
-                    texts=request_data["input"],
-                    max_length=request_data.get("max_length", 512)
-                )
-                # Force garbage collection after embeddings
-                gc.collect()
-                return result
-            
-            raise ValueError(f"Unknown request type: {request_data.get('type')}")
-            
-        except Exception as e:
-            logger.error(f"Error processing embeddings request: {str(e)}")
-            # Clean up on error
-            gc.collect()
-            raise
-
     async def get_queue_stats(self) -> Dict[str, Any]:
+        """Get statistics from the inference worker.
+
+        Returns
+        -------
+        dict[str, Any]
+            Dictionary with ``queue_stats`` sub-dictionary.
         """
-        Get statistics from the request queue and performance metrics.
-        
-        Returns:
-            Dict with queue and performance statistics.
-        """
-        queue_stats = self.request_queue.get_queue_stats()
-        
         return {
-            "queue_stats": queue_stats,
+            "queue_stats": self.inference_worker.get_stats(),
         }
-        
-    async def cleanup(self):
-        """
-        Cleanup resources and stop the request queue before shutdown.
-        
-        This method ensures all pending requests are properly cancelled
+
+    async def cleanup(self) -> None:
+        """Cleanup resources and stop the inference worker before shutdown.
+
+        This method ensures all pending requests are properly completed
         and resources are released.
         """
         try:
             logger.info("Cleaning up MLXEmbeddingsHandler resources")
-            if hasattr(self, 'request_queue'):
-                await self.request_queue.stop()
+            if hasattr(self, 'inference_worker'):
+                self.inference_worker.stop()
             if hasattr(self, 'model'):
                 self.model.cleanup()
             logger.info("MLXEmbeddingsHandler cleanup completed successfully")

@@ -10,13 +10,21 @@ from io import BytesIO
 from http import HTTPStatus
 from typing import Any, Dict, List, Optional, Union
 
+from fastapi import HTTPException, UploadFile
 from loguru import logger
 from PIL import Image, ImageOps
-from fastapi import HTTPException, UploadFile
-from ..core.queue import RequestQueue
+
+from ..core import InferenceWorker
 from ..models.mflux import ImageGenerationModel
+from ..schemas.openai import (
+    ImageData,
+    ImageEditRequest,
+    ImageEditResponse,
+    ImageGenerationRequest,
+    ImageGenerationResponse,
+    ImageSize,
+)
 from ..utils.errors import create_error_response
-from ..schemas.openai import ImageSize, ImageGenerationRequest, ImageGenerationResponse, ImageEditRequest, ImageEditResponse, ImageData
 
 
 class MLXFluxHandler:
@@ -54,8 +62,9 @@ class MLXFluxHandler:
         )
         self.model_created = int(time.time())  # Store creation time when model is loaded
         
-        # Initialize request queue for image generation tasks
-        self.request_queue = RequestQueue(max_concurrency=max_concurrency)
+        # Dedicated inference thread — keeps the event loop free during
+        # blocking MLX model computation.
+        self.inference_worker = InferenceWorker()
 
         logger.info(f"Initialized MLXFluxHandler with model path: {model_path}, config name: {config_name}")
         if lora_paths:
@@ -76,21 +85,26 @@ class MLXFluxHandler:
             logger.error(f"Error getting models: {str(e)}")
             return []
 
-    async def initialize(self, queue_config: Optional[Dict[str, Any]] = None):
-        """Initialize the handler and start the request queue."""
+    async def initialize(self, queue_config: Optional[Dict[str, Any]] = None) -> None:
+        """Initialize the handler and start the inference worker.
+
+        Parameters
+        ----------
+        queue_config : dict, optional
+            Dictionary with ``queue_size`` and ``timeout`` keys used
+            to configure the inference worker's internal queue.
+        """
         if not queue_config:
             queue_config = {
-                "max_concurrency": 1,
                 "timeout": 300,
-                "queue_size": 100
+                "queue_size": 100,
             }
-        self.request_queue = RequestQueue(
-            max_concurrency=queue_config.get("max_concurrency", 1),
+        self.inference_worker = InferenceWorker(
+            queue_size=queue_config.get("queue_size", 100),
             timeout=queue_config.get("timeout", 300),
-            queue_size=queue_config.get("queue_size", 100)
         )
-        await self.request_queue.start(self._process_request)
-        logger.info("Initialized MLXFluxHandler and started request queue")
+        self.inference_worker.start()
+        logger.info("Initialized MLXFluxHandler and started inference worker")
         logger.info(f"Queue configuration: {queue_config}")
 
     def _parse_image_size(self, size: ImageSize) -> tuple[int, int]:
@@ -400,9 +414,11 @@ class MLXFluxHandler:
             if request.size:
                 width, height = self._parse_image_size(request.size)
             
-            # Build and submit request
+            # Build and submit request to the inference thread
             request_data = self._build_generation_request_data(request, width, height)
-            image_result = await self.request_queue.submit(request_id, request_data)
+            image_result = await self.inference_worker.submit(
+                self._run_inference, request_data
+            )
             
             # Create and return response
             return self._create_image_response(image_result)
@@ -457,10 +473,12 @@ class MLXFluxHandler:
                 temp_file_path = await self._upload_to_temp_file(image, idx, request_id)
                 temp_file_paths.append(temp_file_path)
 
-            # Submit request to queue
+            # Submit request to the inference thread
             request_data = self._build_edit_request_data(image_edit_request, temp_file_paths)
-            
-            image_result = await self.request_queue.submit(request_id, request_data)
+
+            image_result = await self.inference_worker.submit(
+                self._run_inference, request_data
+            )
             
             return self._create_edit_response(image_result)
 
@@ -492,15 +510,21 @@ class MLXFluxHandler:
         image_data = buffer.getvalue()
         return base64.b64encode(image_data).decode('utf-8')
 
-    async def _process_request(self, request_data: Dict[str, Any]) -> Image.Image:
-        """
-        Process an image generation request. This is the worker function for the request queue.
-        
-        Args:
-            request_data: Dictionary containing the request data.
-            
-        Returns:
-            Image.Image: The generated PIL Image.
+    def _run_inference(self, request_data: Dict[str, Any]) -> Image.Image:
+        """Execute image generation/editing on the inference thread.
+
+        This method is submitted to ``InferenceWorker.submit`` and runs
+        on the dedicated background thread so the event loop stays free.
+
+        Parameters
+        ----------
+        request_data : dict[str, Any]
+            Dictionary containing the request data.
+
+        Returns
+        -------
+        Image.Image
+            The generated PIL Image.
         """
         try:
             # Extract request parameters
@@ -564,40 +588,32 @@ class MLXFluxHandler:
             raise
 
     async def get_queue_stats(self) -> Dict[str, Any]:
-        """
-        Get current queue statistics.
-        
-        Returns:
-            Dict containing queue statistics.
-        """
-        if not hasattr(self, 'request_queue') or self.request_queue is None:
-            return {"error": "Request queue not initialized"}
-        
-        stats = await self.request_queue.get_stats()
-        return {
-            "queue_size": stats.get("queue_size", 0),
-            "active_requests": stats.get("active_requests", 0),
-            "completed_requests": stats.get("completed_requests", 0),
-            "failed_requests": stats.get("failed_requests", 0),
-            "average_processing_time": stats.get("average_processing_time", 0)
-        }
+        """Get statistics from the inference worker.
 
-    async def cleanup(self):
+        Returns
+        -------
+        dict[str, Any]
+            Dictionary with worker statistics.
         """
-        Clean up resources and shut down the request queue.
-        """
+        if not hasattr(self, 'inference_worker'):
+            return {"error": "Inference worker not initialized"}
+
+        return self.inference_worker.get_stats()
+
+    async def cleanup(self) -> None:
+        """Clean up resources and stop the inference worker."""
         if hasattr(self, '_cleaned') and self._cleaned:
             return
         self._cleaned = True
-        
+
         try:
             logger.info("Cleaning up MLXFluxHandler resources")
-            if hasattr(self, 'request_queue') and self.request_queue:
-                await self.request_queue.stop()
-                logger.info("Request queue stopped successfully")
+            if hasattr(self, 'inference_worker'):
+                self.inference_worker.stop()
+                logger.info("Inference worker stopped successfully")
         except Exception as e:
             logger.error(f"Error during MLXFluxHandler cleanup: {str(e)}")
-        
+
         # Force garbage collection
         gc.collect()
         logger.info("MLXFluxHandler cleanup completed")

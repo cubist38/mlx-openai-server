@@ -4,22 +4,22 @@ import os
 import tempfile
 import time
 import uuid
-from typing import Any, AsyncGenerator, Dict, List, Optional
 from http import HTTPStatus
+from typing import Any, AsyncGenerator, Dict, List, Optional
 
 from fastapi import HTTPException
 from loguru import logger
 
-from ..core.queue import RequestQueue
+from ..core import InferenceWorker
 from ..models.mlx_whisper import MLX_Whisper, calculate_audio_duration
 from ..schemas.openai import (
-    TranscriptionRequest, 
-    TranscriptionResponse, 
-    TranscriptionUsageAudio, 
+    Delta,
+    TranscriptionRequest,
+    TranscriptionResponse,
     TranscriptionResponseFormat,
     TranscriptionResponseStream,
     TranscriptionResponseStreamChoice,
-    Delta
+    TranscriptionUsageAudio,
 )
 from ..utils.errors import create_error_response
 
@@ -40,9 +40,10 @@ class MLXWhisperHandler:
         self.model_path = model_path
         self.model = MLX_Whisper(model_path)
         self.model_created = int(time.time())  # Store creation time when model is loaded
-        
-        # Initialize request queue for audio transcription tasks
-        self.request_queue = RequestQueue(max_concurrency=max_concurrency)
+
+        # Dedicated inference thread — keeps the event loop free during
+        # blocking MLX model computation.
+        self.inference_worker = InferenceWorker()
 
         logger.info(f"Initialized MLXWhisperHandler with model path: {model_path}")
     
@@ -61,21 +62,26 @@ class MLXWhisperHandler:
             logger.error(f"Error getting models: {str(e)}")
             return []
     
-    async def initialize(self, queue_config: Optional[Dict[str, Any]] = None):
-        """Initialize the handler and start the request queue."""
+    async def initialize(self, queue_config: Optional[Dict[str, Any]] = None) -> None:
+        """Initialize the handler and start the inference worker.
+
+        Parameters
+        ----------
+        queue_config : dict, optional
+            Dictionary with ``queue_size`` and ``timeout`` keys used
+            to configure the inference worker's internal queue.
+        """
         if not queue_config:
             queue_config = {
-                "max_concurrency": 1,
                 "timeout": 600,  # Longer timeout for audio processing
-                "queue_size": 50
+                "queue_size": 50,
             }
-        self.request_queue = RequestQueue(
-            max_concurrency=queue_config.get("max_concurrency"),
-            timeout=queue_config.get("timeout"),
-            queue_size=queue_config.get("queue_size")
+        self.inference_worker = InferenceWorker(
+            queue_size=queue_config.get("queue_size", 50),
+            timeout=queue_config.get("timeout", 600),
         )
-        await self.request_queue.start(self._process_request)
-        logger.info("Initialized MLXWhisperHandler and started request queue")
+        self.inference_worker.start()
+        logger.info("Initialized MLXWhisperHandler and started inference worker")
 
     async def generate_transcription_response(self, request: TranscriptionRequest) -> TranscriptionResponse:
         """
@@ -87,7 +93,14 @@ class MLXWhisperHandler:
         try:
             request_data = await self._prepare_transcription_request(request)
             temp_file_path = request_data.get("audio_path")
-            response = await self.request_queue.submit(request_id, request_data)
+
+            # Submit to the inference thread
+            audio_path = request_data.pop("audio_path")
+            response = await self.inference_worker.submit(
+                self.model,
+                audio_path=audio_path,
+                **request_data,
+            )
             response_data = TranscriptionResponse(
                 text=response["text"],
                 usage=TranscriptionUsageAudio(
@@ -129,17 +142,20 @@ class MLXWhisperHandler:
         temp_file_path = request_data.get("audio_path")
         
         try:
-            # Set stream mode
+            # Set stream mode and submit to inference thread
             request_data["stream"] = True
-            
-            # Get the generator directly from the model (bypass queue for streaming)
-            generator = self.model(
-                audio_path=request_data.pop("audio_path"),
-                **request_data
+            audio_path = request_data.pop("audio_path")
+            request_data.pop("stream")
+
+            generator = self.inference_worker.submit_stream(
+                self.model,
+                audio_path=audio_path,
+                stream=True,
+                **request_data,
             )
-            
-            # Stream each chunk
-            for chunk in generator:
+
+            # Stream each chunk (async — keeps event loop free)
+            async for chunk in generator:
                 # Create streaming response
                 stream_response = TranscriptionResponseStream(
                     id=request_id,
@@ -190,36 +206,6 @@ class MLXWhisperHandler:
             gc.collect()
 
 
-    async def _process_request(self, request_data: Dict[str, Any]) -> Dict[str, Any]:
-        """
-        Process an audio transcription request. This is the worker function for the request queue.
-        
-        Args:
-            request_data: Dictionary containing the request data.
-            
-        Returns:
-            Dict: The model's response containing transcribed text.
-        """
-        try:
-            # Extract request parameters
-            audio_path = request_data.pop("audio_path")
-            
-            # Call the model with the audio file
-            result = self.model(
-                audio_path=audio_path,
-                **request_data
-            )
-            
-            # Force garbage collection after model inference
-            gc.collect()
-            
-            return result
-            
-        except Exception as e:
-            logger.error(f"Error processing audio transcription request: {str(e)}")
-            # Clean up on error
-            gc.collect()
-            raise
 
     async def _save_uploaded_file(self, file) -> str:
         """
@@ -309,29 +295,27 @@ class MLXWhisperHandler:
             raise HTTPException(status_code=400, detail=content)
 
     async def get_queue_stats(self) -> Dict[str, Any]:
+        """Get statistics from the inference worker.
+
+        Returns
+        -------
+        dict[str, Any]
+            Dictionary with ``queue_stats`` sub-dictionary.
         """
-        Get statistics from the request queue and performance metrics.
-        
-        Returns:
-            Dict with queue and performance statistics.
-        """
-        queue_stats = self.request_queue.get_queue_stats()
-        
         return {
-            "queue_stats": queue_stats,
+            "queue_stats": self.inference_worker.get_stats(),
         }
-        
-    async def cleanup(self):
-        """
-        Cleanup resources and stop the request queue before shutdown.
-        
-        This method ensures all pending requests are properly cancelled
+
+    async def cleanup(self) -> None:
+        """Cleanup resources and stop the inference worker before shutdown.
+
+        This method ensures all pending requests are properly completed
         and resources are released.
         """
         try:
             logger.info("Cleaning up MLXWhisperHandler resources")
-            if hasattr(self, 'request_queue'):
-                await self.request_queue.stop()
+            if hasattr(self, 'inference_worker'):
+                self.inference_worker.stop()
             logger.info("MLXWhisperHandler cleanup completed successfully")
         except Exception as e:
             logger.error(f"Error during MLXWhisperHandler cleanup: {str(e)}")
