@@ -576,15 +576,10 @@ class MLXFluxHandler:
                 seed=seed,
                 **model_params
             )
-            
-            # Force garbage collection after model inference
-            gc.collect()
             return image
             
         except Exception as e:
             logger.error(f"Error processing image generation request: {str(e)}")
-            # Clean up on error
-            gc.collect()
             raise
 
     async def get_queue_stats(self) -> Dict[str, Any]:

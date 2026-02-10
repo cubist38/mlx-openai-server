@@ -121,8 +121,6 @@ class MLXWhisperHandler:
                     logger.debug(f"Cleaned up temporary file: {temp_file_path}")
                 except Exception as e:
                     logger.warning(f"Failed to clean up temporary file {temp_file_path}: {str(e)}")
-            # Force garbage collection
-            gc.collect()
 
     async def generate_transcription_stream_from_data(
         self, 
@@ -202,10 +200,6 @@ class MLXWhisperHandler:
                     logger.debug(f"Cleaned up temporary file: {temp_file_path}")
                 except Exception as e:
                     logger.warning(f"Failed to clean up temporary file {temp_file_path}: {str(e)}")
-            # Clean up
-            gc.collect()
-
-
 
     async def _save_uploaded_file(self, file) -> str:
         """
@@ -316,6 +310,8 @@ class MLXWhisperHandler:
             logger.info("Cleaning up MLXWhisperHandler resources")
             if hasattr(self, 'inference_worker'):
                 self.inference_worker.stop()
+            # Force garbage collection
+            gc.collect()
             logger.info("MLXWhisperHandler cleanup completed successfully")
         except Exception as e:
             logger.error(f"Error during MLXWhisperHandler cleanup: {str(e)}")

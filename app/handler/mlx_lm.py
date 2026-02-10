@@ -1,7 +1,7 @@
 import asyncio
-import gc
 import time
 import uuid
+import gc
 from http import HTTPStatus
 from typing import Any, AsyncGenerator, Dict, List, Optional, Tuple
 
@@ -512,6 +512,9 @@ class MLXLMHandler:
             logger.info("Cleaning up MLXLMHandler resources")
             if hasattr(self, 'inference_worker'):
                 self.inference_worker.stop()
+
+            # Force garbage collection
+            gc.collect()
             logger.info("MLXLMHandler cleanup completed successfully")
         except Exception as e:
             logger.error(f"Error during MLXLMHandler cleanup: {str(e)}")

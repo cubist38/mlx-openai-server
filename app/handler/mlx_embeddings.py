@@ -120,6 +120,8 @@ class MLXEmbeddingsHandler:
                 self.inference_worker.stop()
             if hasattr(self, 'model'):
                 self.model.cleanup()
+            # Force garbage collection
+            gc.collect()
             logger.info("MLXEmbeddingsHandler cleanup completed successfully")
         except Exception as e:
             logger.error(f"Error during MLXEmbeddingsHandler cleanup: {str(e)}")
