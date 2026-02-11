@@ -426,10 +426,33 @@ class Flux2KleinModel(BaseImageModel):
     def _generate_image(self, prompt: str, seed: int = 42, **kwargs) -> Image.Image:
         """Generate image using the specific model implementation."""
         try:
-            kwargs.pop("negative_prompt") # flux2 klein does not support negative prompt
+            if "negative_prompt" in kwargs:
+                kwargs.pop("negative_prompt") # Flux2 Klein does not support negative prompt
+            if "guidance" in kwargs:
+                kwargs["guidance"] = 1.0 # Flux2 Klein only supports guidance scale of 1.0
             return super()._generate_image(prompt, seed, **kwargs)
         except Exception as e:
             raise ModelGenerationError(f"{self.__class__.__name__} generation failed: {e}") from e
+
+class Flux2KleinEditModel(Flux2KleinModel):
+    """Flux2 Klein Edit model implementation."""
+    
+    def _load_model(self):
+        """Load the Flux2 Klein Edit model."""
+        try:
+            self.logger.info(f"Loading Flux2 Klein Edit model from {self.model_path}")
+            self._model = Flux2KleinEdit(
+                quantize=self.config.quantize,
+                model_path=self.model_path,
+                lora_paths=self.config.lora_paths,
+                lora_scales=self.config.lora_scales,
+            )
+            self._is_loaded = True
+            self.logger.info("Flux2 Klein Edit model loaded successfully")
+        except Exception as e:
+            error_msg = f"Failed to load Flux2 Klein Edit model: {e}"
+            self.logger.error(error_msg)
+            raise ModelLoadError(error_msg) from e
 
 class ImageGenerationModel:
     """Factory class for creating and managing image generation models."""
