@@ -1,5 +1,7 @@
 """API endpoints for the MLX OpenAI server."""
 
+from __future__ import annotations
+
 import base64
 from collections.abc import AsyncGenerator
 from http import HTTPStatus
@@ -48,6 +50,55 @@ from ..utils.errors import create_error_response
 router = APIRouter()
 
 
+def _resolve_handler(
+    raw_request: Request,
+    model_id: str | None = None,
+) -> Any | None:
+    """Resolve the correct handler for a request.
+
+    In multi-handler mode (``app.state.registry`` is set) the handler
+    is looked up by ``model_id``.  In single-handler mode the global
+    ``app.state.handler`` is returned.
+
+    Parameters
+    ----------
+    raw_request : Request
+        The incoming FastAPI request (used to access ``app.state``).
+    model_id : str | None, optional
+        The model identifier from the request body.  Only used when a
+        ``ModelRegistry`` is attached to the app state.
+
+    Returns
+    -------
+    Any | None
+        A handler instance, or ``None`` if no handler could be resolved.
+
+    Raises
+    ------
+    HTTPException
+        404 when a ``model_id`` is provided but not found in the
+        registry.
+    """
+    registry = getattr(raw_request.app.state, "registry", None)
+    if registry is not None and model_id is not None:
+        try:
+            return registry.get_handler(model_id)
+        except KeyError as exc:
+            raise HTTPException(
+                status_code=HTTPStatus.NOT_FOUND,
+                detail={
+                    "error": {
+                        "message": str(exc),
+                        "type": "model_not_found",
+                        "code": HTTPStatus.NOT_FOUND,
+                    }
+                },
+            ) from exc
+
+    # Fallback: single-handler mode
+    return getattr(raw_request.app.state, "handler", None)
+
+
 # =============================================================================
 # Critical/Monitoring Endpoints - Defined first to ensure priority matching
 # =============================================================================
@@ -55,11 +106,26 @@ router = APIRouter()
 
 @router.get("/health", response_model=None)
 async def health(raw_request: Request) -> HealthCheckResponse | JSONResponse:
-    """
-    Health check endpoint - verifies handler initialization status.
+    """Health check endpoint - verifies handler initialization status.
 
     Returns 503 if handler is not initialized, 200 otherwise.
+    In multi-handler mode reports the number of loaded models.
     """
+    registry = getattr(raw_request.app.state, "registry", None)
+    if registry is not None:
+        model_count = registry.get_model_count()
+        if model_count == 0:
+            return JSONResponse(
+                status_code=HTTPStatus.SERVICE_UNAVAILABLE,
+                content={"status": "unhealthy", "model_id": None, "model_status": "no_models"},
+            )
+        model_ids = [m["id"] for m in registry.list_models()]
+        return HealthCheckResponse(
+            status=HealthCheckStatus.OK,
+            model_id=", ".join(model_ids),
+            model_status=f"initialized ({model_count} model(s))",
+        )
+
     handler = getattr(raw_request.app.state, "handler", None)
 
     if handler is None:
@@ -173,7 +239,7 @@ async def chat_completions(
     request: ChatCompletionRequest, raw_request: Request
 ) -> ChatCompletionResponse | StreamingResponse | JSONResponse:
     """Handle chat completion requests."""
-    handler = getattr(raw_request.app.state, "handler", None)
+    handler = _resolve_handler(raw_request, model_id=request.model)
     if handler is None:
         return JSONResponse(
             content=create_error_response(
@@ -184,10 +250,13 @@ async def chat_completions(
             status_code=HTTPStatus.SERVICE_UNAVAILABLE,
         )
 
-    if not isinstance(handler, MLXVLMHandler) and not isinstance(handler, MLXLMHandler):
+    if not isinstance(handler, (MLXVLMHandler, MLXLMHandler)):
         return JSONResponse(
             content=create_error_response(
-                "Unsupported model type", "unsupported_request", HTTPStatus.BAD_REQUEST
+                "Unsupported model type for chat completions. "
+                f"Handler for '{request.model}' is {type(handler).__name__}.",
+                "unsupported_request",
+                HTTPStatus.BAD_REQUEST,
             ),
             status_code=HTTPStatus.BAD_REQUEST,
         )
@@ -213,7 +282,7 @@ async def embeddings(
     request: EmbeddingRequest, raw_request: Request
 ) -> EmbeddingResponse | JSONResponse:
     """Handle embedding requests."""
-    handler = getattr(raw_request.app.state, "handler", None)
+    handler = _resolve_handler(raw_request, model_id=request.model)
     if handler is None:
         return JSONResponse(
             content=create_error_response(
@@ -223,11 +292,14 @@ async def embeddings(
             ),
             status_code=HTTPStatus.SERVICE_UNAVAILABLE,
         )
-    
+
     if not isinstance(handler, MLXEmbeddingsHandler):
         return JSONResponse(
             content=create_error_response(
-                "Unsupported model type", "unsupported_request", HTTPStatus.BAD_REQUEST
+                "Unsupported model type for embeddings. "
+                f"Handler for '{request.model}' is {type(handler).__name__}.",
+                "unsupported_request",
+                HTTPStatus.BAD_REQUEST,
             ),
             status_code=HTTPStatus.BAD_REQUEST,
         )
@@ -249,7 +321,7 @@ async def image_generations(
     request: ImageGenerationRequest, raw_request: Request
 ) -> ImageGenerationResponse | JSONResponse:
     """Handle image generation requests."""
-    handler = getattr(raw_request.app.state, "handler", None)
+    handler = _resolve_handler(raw_request, model_id=request.model)
     if handler is None:
         return JSONResponse(
             content=create_error_response(
@@ -264,7 +336,8 @@ async def image_generations(
     if not isinstance(handler, MLXFluxHandler):
         return JSONResponse(
             content=create_error_response(
-                "Image generation requests require an image generation model. Use --model-type image-generation.",
+                "Image generation requests require an image generation model. "
+                f"Handler for '{request.model}' is {type(handler).__name__}.",
                 "unsupported_request",
                 HTTPStatus.BAD_REQUEST,
             ),
@@ -289,7 +362,7 @@ async def create_image_edit(
     request: Annotated[ImageEditRequest, Form()], raw_request: Request
 ) -> ImageEditResponse | JSONResponse:
     """Handle image editing requests with dynamic provider routing."""
-    handler = getattr(raw_request.app.state, "handler", None)
+    handler = _resolve_handler(raw_request, model_id=request.model)
     if handler is None:
         return JSONResponse(
             content=create_error_response(
@@ -304,7 +377,8 @@ async def create_image_edit(
     if not isinstance(handler, MLXFluxHandler):
         return JSONResponse(
             content=create_error_response(
-                "Image editing requests require an image editing model. Use --model-type image-edit.",
+                "Image editing requests require an image editing model. "
+                f"Handler for '{request.model}' is {type(handler).__name__}.",
                 "unsupported_request",
                 HTTPStatus.BAD_REQUEST,
             ),
@@ -329,7 +403,7 @@ async def create_audio_transcriptions(
 ) -> StreamingResponse | TranscriptionResponse | JSONResponse | str:
     """Handle audio transcription requests."""
     try:
-        handler = getattr(raw_request.app.state, "handler", None)
+        handler = _resolve_handler(raw_request, model_id=request.model)
         if handler is None:
             return JSONResponse(
                 content=create_error_response(

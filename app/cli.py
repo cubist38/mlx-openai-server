@@ -2,8 +2,11 @@
 
 This module defines the Click command group used by the package and the
 ``launch`` command which constructs a server configuration and starts
-the ASGI server.
+the ASGI server. When a ``--config`` YAML file is supplied the server
+runs in multi-handler mode, loading multiple models at once.
 """
+
+from __future__ import annotations
 
 import asyncio
 import sys
@@ -11,10 +14,10 @@ import sys
 import click
 from loguru import logger
 
-from .config import MLXServerConfig
-from .parsers import REASONING_PARSER_MAP, TOOL_PARSER_MAP, UNIFIED_PARSER_MAP
+from .config import MLXServerConfig, load_config_from_yaml
+from .main import start, start_multi
 from .message_converters import MESSAGE_CONVERTER_MAP
-from .main import start
+from .parsers import REASONING_PARSER_MAP, TOOL_PARSER_MAP, UNIFIED_PARSER_MAP
 from .version import __version__
 
 
@@ -87,8 +90,17 @@ def cli():
 
 @cli.command()
 @click.option(
+    "--config",
+    "config_file",
+    default=None,
+    type=click.Path(exists=True),
+    help="Path to a YAML config file for multi-handler mode. "
+    "When provided, --model-path and other per-model flags are ignored.",
+)
+@click.option(
     "--model-path",
-    required=True,
+    required=False,
+    default=None,
     help="Path to the model (required for lm, multimodal, embeddings, image-generation, image-edit, whisper model types). With `image-generation` or `image-edit` model types, it should be the local path to the model.",
 )
 @click.option(
@@ -216,6 +228,7 @@ def cli():
     help="Number of draft tokens per step when using speculative decoding (--draft-model). Only supported with model type 'lm'. Default is 2.",
 )
 def launch(
+    config_file,
     model_path,
     model_type,
     context_length,
@@ -245,10 +258,29 @@ def launch(
 ) -> None:
     """Start the FastAPI/Uvicorn server with the supplied flags.
 
-    The command builds a server configuration object using
-    ``MLXServerConfig`` and then calls the async ``start`` routine
-    which handles the event loop and server lifecycle.
+    When ``--config`` is provided the server launches in multi-handler
+    mode, loading all models defined in the YAML file. In this mode
+    per-model CLI flags (``--model-path``, ``--model-type``, etc.) are
+    ignored.
+
+    Otherwise the command builds a single-model ``MLXServerConfig``
+    and calls the async ``start`` routine.
     """
+    # ---- Multi-handler mode ----
+    if config_file is not None:
+        logger.info(f"Loading multi-handler config from: {config_file}")
+        try:
+            multi_config = load_config_from_yaml(config_file)
+        except (FileNotFoundError, ValueError) as e:
+            raise click.BadParameter(str(e), param_hint="'--config'") from e
+        asyncio.run(start_multi(multi_config))
+        return
+
+    # ---- Single-handler mode (original behavior) ----
+    if model_path is None:
+        raise click.UsageError(
+            "Either --config (multi-handler YAML) or --model-path (single model) is required."
+        )
 
     args = MLXServerConfig(
         model_path=model_path,

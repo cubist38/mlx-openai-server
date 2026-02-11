@@ -1,0 +1,34 @@
+# Example multi-handler configuration for mlx-openai-server.
+#
+# Launch with:
+#   mlx-openai-server launch --config examples/config.yaml
+
+server:
+  host: "0.0.0.0"
+  port: 8000
+  log_level: INFO
+  # log_file: logs/app.log     # uncomment to log to file
+  # no_log_file: true           # uncomment to disable file logging
+
+models:
+  # Language model
+  - model_path: mlx-community/GLM-4.7-Flash-4bit
+    model_type: lm
+    model_id: glm-4.7-flash    # optional alias (defaults to model_path)
+    enable_auto_tool_choice: true
+    tool_call_parser: glm4_moe
+    reasoning_parser: glm47_flash
+    message_converter: glm4_moe
+
+  # Another language model
+  - model_path: mlx-community/Qwen3-Coder-Next-4bit
+    model_type: lm
+    max_concurrency: 1
+    tool_call_parser: qwen3_coder
+    message_converter: qwen3_coder
+
+
+  - model_path: mlx-community/Qwen3-VL-2B-Instruct-4bit
+    model_type: multimodal
+    reasoning_parser: qwen3_vl
+    tool_call_parser: qwen3_vl

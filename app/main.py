@@ -15,25 +15,36 @@ Run the default launch flow:
 Forward explicit arguments to the CLI:
 
     python -m app.main launch --port 8000
+
+Run multi-handler mode from YAML config:
+
+    python -m app.main launch --config config.yaml
 """
+
+from __future__ import annotations
 
 import sys
 
 import uvicorn
 from loguru import logger
 
-from .config import MLXServerConfig
+from .config import MLXServerConfig, MultiModelServerConfig
 from .server import setup_server
 from .version import __version__
 
 
-def print_startup_banner(config_args):
+def print_startup_banner(config_args: MLXServerConfig) -> None:
     """Log a compact startup banner describing the selected config.
 
     The function emits human-friendly log messages that summarize the
     runtime configuration (model path/type, host/port, concurrency,
     LoRA settings, and logging options). Intended for the user-facing
     startup output only.
+
+    Parameters
+    ----------
+    config_args : MLXServerConfig
+        Single-model server configuration.
     """
     logger.info("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
     logger.info(f"✨ MLX Server v{__version__} Starting ✨")
@@ -81,6 +92,26 @@ def print_startup_banner(config_args):
     logger.info("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
 
 
+def print_multi_startup_banner(config: MultiModelServerConfig) -> None:
+    """Log a startup banner for multi-handler mode.
+
+    Parameters
+    ----------
+    config : MultiModelServerConfig
+        Multi-model server configuration.
+    """
+    logger.info("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+    logger.info(f"✨ MLX Server v{__version__} Starting (Multi-Handler Mode) ✨")
+    logger.info("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+    logger.info(f"🌐 Host: {config.host}")
+    logger.info(f"🔌 Port: {config.port}")
+    logger.info(f"📝 Log Level: {config.log_level}")
+    logger.info(f"🔢 Models to load: {len(config.models)}")
+    for idx, m in enumerate(config.models, start=1):
+        logger.info(f"  [{idx}] {m.model_id} (type={m.model_type}, path={m.model_path})")
+    logger.info("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+
+
 async def start(config: MLXServerConfig) -> None:
     """Run the ASGI server using the provided configuration.
 
@@ -88,6 +119,11 @@ async def start(config: MLXServerConfig) -> None:
     routine, logs progress, and starts the Uvicorn server. It handles
     KeyboardInterrupt and logs any startup failures before exiting the
     process with a non-zero code.
+
+    Parameters
+    ----------
+    config : MLXServerConfig
+        Single-model server configuration.
     """
     try:
         # Display startup information
@@ -103,6 +139,32 @@ async def start(config: MLXServerConfig) -> None:
         logger.info("Server shutdown requested by user. Exiting...")
     except Exception as e:
         logger.error(f"Server startup failed: {str(e)}")
+        sys.exit(1)
+
+
+async def start_multi(config: MultiModelServerConfig) -> None:
+    """Run the ASGI server in multi-handler mode.
+
+    Similar to ``start`` but works with a ``MultiModelServerConfig``
+    which defines multiple models to be loaded concurrently.
+
+    Parameters
+    ----------
+    config : MultiModelServerConfig
+        Multi-model YAML-based configuration.
+    """
+    try:
+        print_multi_startup_banner(config)
+
+        uvconfig = setup_server(config)
+        logger.info("Multi-handler server configuration complete.")
+        logger.info("Starting Uvicorn server...")
+        server = uvicorn.Server(uvconfig)
+        await server.serve()
+    except KeyboardInterrupt:
+        logger.info("Server shutdown requested by user. Exiting...")
+    except Exception as e:
+        logger.error(f"Multi-handler server startup failed: {str(e)}")
         sys.exit(1)
 
 

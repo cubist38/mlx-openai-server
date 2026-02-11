@@ -41,6 +41,7 @@ dependencies = [
   "outlines>=1.1.1,<1.2",
   "pillow>=10.4.0,<11.0",
   "pydantic>=2,<3",
+  "PyYAML>=6.0,<7",
   "python-multipart>=0.0.20,<0.0.25",
   "rich>=14,<15",
   "torchvision>=0.23.0,<0.30",

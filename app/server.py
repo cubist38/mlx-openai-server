@@ -8,13 +8,19 @@ Key exports:
 - ``create_lifespan``: returns an asynccontextmanager that initializes
     the appropriate MLX handler on startup and performs cleanup on
     shutdown.
+- ``create_multi_lifespan``: returns an asynccontextmanager for
+    multi-handler mode, registering all models from a
+    ``MultiModelServerConfig``.
 - ``setup_server``: builds the FastAPI app and returns a Uvicorn config
     ready to run.
 """
 
+from __future__ import annotations
+
 import gc
 import time
 from contextlib import asynccontextmanager
+from typing import Any
 
 import mlx.core as mx
 import uvicorn
@@ -24,7 +30,8 @@ from fastapi.responses import JSONResponse
 from loguru import logger
 
 from .api.endpoints import router
-from .config import MLXServerConfig
+from .config import MLXServerConfig, ModelEntryConfig, MultiModelServerConfig
+from .core.model_registry import ModelRegistry
 from .handler import MLXFluxHandler
 from .handler.mlx_embeddings import MLXEmbeddingsHandler
 from .handler.mlx_lm import MLXLMHandler
@@ -251,44 +258,264 @@ def create_lifespan(config_args: MLXServerConfig):
     return lifespan
 
 
+def create_handler_from_config(model_cfg: ModelEntryConfig) -> Any:
+    """Instantiate the correct handler for a single model entry.
+
+    This factory function mirrors the type-based dispatch in
+    ``create_lifespan`` but works with the per-model
+    ``ModelEntryConfig`` dataclass used in YAML configs.
+
+    Parameters
+    ----------
+    model_cfg : ModelEntryConfig
+        Configuration for a single model.
+
+    Returns
+    -------
+    Any
+        An initialized (but not yet queue-started) handler instance.
+
+    Raises
+    ------
+    ValueError
+        If the ``model_type`` is unrecognized or the configuration
+        is invalid for the given type.
+    """
+    model_path = model_cfg.model_path
+
+    if model_cfg.model_type == "multimodal":
+        return MLXVLMHandler(
+            model_path=model_path,
+            context_length=model_cfg.context_length,
+            max_concurrency=model_cfg.max_concurrency,
+            disable_auto_resize=model_cfg.disable_auto_resize,
+            enable_auto_tool_choice=model_cfg.enable_auto_tool_choice,
+            tool_call_parser=model_cfg.tool_call_parser,
+            reasoning_parser=model_cfg.reasoning_parser,
+            message_converter=model_cfg.message_converter,
+            trust_remote_code=model_cfg.trust_remote_code,
+            chat_template_file=model_cfg.chat_template_file,
+            debug=model_cfg.debug,
+        )
+
+    if model_cfg.model_type == "image-generation":
+        valid_gen_configs = {
+            "flux-schnell", "flux-dev", "flux-krea-dev",
+            "qwen-image", "z-image-turbo", "fibo",
+            "flux2-klein-4b", "flux2-klein-9b",
+        }
+        if model_cfg.config_name not in valid_gen_configs:
+            msg = (
+                f"Invalid config name: {model_cfg.config_name}. "
+                f"Supported for image generation: {sorted(valid_gen_configs)}"
+            )
+            raise ValueError(msg)
+        return MLXFluxHandler(
+            model_path=model_path,
+            max_concurrency=model_cfg.max_concurrency,
+            quantize=model_cfg.quantize,
+            config_name=model_cfg.config_name,
+            lora_paths=model_cfg.lora_paths,
+            lora_scales=model_cfg.lora_scales,
+        )
+
+    if model_cfg.model_type == "image-edit":
+        valid_edit_configs = {"flux-kontext-dev", "qwen-image-edit"}
+        if model_cfg.config_name not in valid_edit_configs:
+            msg = (
+                f"Invalid config name: {model_cfg.config_name}. "
+                f"Supported for image edit: {sorted(valid_edit_configs)}"
+            )
+            raise ValueError(msg)
+        return MLXFluxHandler(
+            model_path=model_path,
+            max_concurrency=model_cfg.max_concurrency,
+            quantize=model_cfg.quantize,
+            config_name=model_cfg.config_name,
+            lora_paths=model_cfg.lora_paths,
+            lora_scales=model_cfg.lora_scales,
+        )
+
+    if model_cfg.model_type == "embeddings":
+        return MLXEmbeddingsHandler(
+            model_path=model_path,
+            max_concurrency=model_cfg.max_concurrency,
+        )
+
+    if model_cfg.model_type == "whisper":
+        return MLXWhisperHandler(
+            model_path=model_path,
+            max_concurrency=model_cfg.max_concurrency,
+        )
+
+    # Default: language model ("lm")
+    return MLXLMHandler(
+        model_path=model_path,
+        context_length=model_cfg.context_length,
+        max_concurrency=model_cfg.max_concurrency,
+        enable_auto_tool_choice=model_cfg.enable_auto_tool_choice,
+        tool_call_parser=model_cfg.tool_call_parser,
+        reasoning_parser=model_cfg.reasoning_parser,
+        message_converter=model_cfg.message_converter,
+        trust_remote_code=model_cfg.trust_remote_code,
+        chat_template_file=model_cfg.chat_template_file,
+        debug=model_cfg.debug,
+        prompt_cache_size=model_cfg.prompt_cache_size,
+        draft_model_path=model_cfg.draft_model_path,
+        num_draft_tokens=model_cfg.num_draft_tokens,
+    )
+
+
+def create_multi_lifespan(config: MultiModelServerConfig):
+    """Create a FastAPI lifespan for multi-handler mode.
+
+    Each model entry in ``config.models`` is loaded sequentially,
+    registered in a ``ModelRegistry``, and attached to
+    ``app.state.registry``. For backward compatibility the first
+    handler is also stored as ``app.state.handler``.
+
+    Parameters
+    ----------
+    config : MultiModelServerConfig
+        Parsed multi-model configuration (typically from YAML).
+
+    Returns
+    -------
+    Callable
+        An asynccontextmanager usable as FastAPI ``lifespan``.
+    """
+
+    @asynccontextmanager
+    async def lifespan(app: FastAPI):
+        """FastAPI lifespan that initializes multiple MLX handlers.
+
+        Loads all models from the YAML config, registers them in a
+        ``ModelRegistry``, and attaches both the registry and (for
+        backward compatibility) a single ``handler`` to ``app.state``.
+
+        Parameters
+        ----------
+        app : FastAPI
+            FastAPI application instance being started.
+        """
+        registry = ModelRegistry()
+
+        try:
+            for model_cfg in config.models:
+                model_id = model_cfg.model_id  # guaranteed non-None after __post_init__
+                logger.info(
+                    f"Loading model '{model_id}' "
+                    f"(type={model_cfg.model_type}, path={model_cfg.model_path})"
+                )
+
+                handler = create_handler_from_config(model_cfg)
+
+                # Initialize the handler's inference queue
+                await handler.initialize(
+                    {
+                        "max_concurrency": model_cfg.max_concurrency,
+                        "timeout": model_cfg.queue_timeout,
+                        "queue_size": model_cfg.queue_size,
+                    }
+                )
+
+                await registry.register_model(
+                    model_id=model_id,
+                    handler=handler,
+                    model_type=model_cfg.model_type,
+                    context_length=model_cfg.context_length,
+                )
+                logger.info(f"Model '{model_id}' loaded and registered successfully")
+
+            # Store registry on app state for endpoint access
+            app.state.registry = registry
+
+            # Backward compatibility: expose first handler as app.state.handler
+            if config.models:
+                first_id = config.models[0].model_id
+                app.state.handler = registry.get_handler(first_id)
+
+            logger.info(
+                f"Multi-handler initialization complete. "
+                f"{registry.get_model_count()} model(s) loaded."
+            )
+
+        except Exception as e:
+            logger.error(f"Failed to initialize multi-handler setup: {e}")
+            # Cleanup any handlers that were already registered
+            await registry.cleanup_all()
+            raise
+
+        # Initial memory cleanup
+        mx.clear_cache()
+        gc.collect()
+
+        yield
+
+        # Shutdown
+        logger.info("Shutting down multi-handler application")
+        await registry.cleanup_all()
+
+        # Final memory cleanup
+        mx.clear_cache()
+        gc.collect()
+
+    return lifespan
+
+
 # App instance will be created during setup with the correct lifespan
 app = None
 
 
-def setup_server(config_args: MLXServerConfig) -> uvicorn.Config:
-    global app
-
+def setup_server(config_args: MLXServerConfig | MultiModelServerConfig) -> uvicorn.Config:
     """Create and configure the FastAPI app and return a Uvicorn config.
 
     This function sets up logging, constructs the FastAPI application with
     a configured lifespan, registers routes and middleware, and returns a
     :class:`uvicorn.Config` ready to be used to run the server.
 
+    When ``config_args`` is a ``MultiModelServerConfig`` the multi-handler
+    lifespan is used, which registers all models in a ``ModelRegistry``.
+
     Note: This function mutates the module-level ``app`` global variable.
 
-    Args:
-        args: Configuration object usually produced by the CLI. Expected
-            to have attributes like ``host``, ``port``, ``log_level``,
-            and logging-related fields.
+    Parameters
+    ----------
+    config_args : MLXServerConfig | MultiModelServerConfig
+        Configuration object produced by the CLI or by YAML loading.
 
-    Returns:
-        uvicorn.Config: A configuration object that can be passed to
+    Returns
+    -------
+    uvicorn.Config
+        A configuration object that can be passed to
         ``uvicorn.Server(config).run()`` to start the application.
     """
+    global app
+
+    # Extract logging parameters (available on both config types)
+    log_file = getattr(config_args, "log_file", None)
+    no_log_file = getattr(config_args, "no_log_file", False)
+    log_level = getattr(config_args, "log_level", "INFO")
 
     # Configure logging based on CLI parameters
     configure_logging(
-        log_file=config_args.log_file,
-        no_log_file=config_args.no_log_file,
-        log_level=config_args.log_level,
+        log_file=log_file,
+        no_log_file=no_log_file,
+        log_level=log_level,
     )
+
+    # Choose the correct lifespan based on config type
+    if isinstance(config_args, MultiModelServerConfig):
+        lifespan_fn = create_multi_lifespan(config_args)
+    else:
+        lifespan_fn = create_lifespan(config_args)
 
     # Create FastAPI app with the configured lifespan
     app = FastAPI(
         title="OpenAI-compatible API",
         description="API for OpenAI-compatible chat completion and text embedding",
         version=__version__,
-        lifespan=create_lifespan(config_args),
+        lifespan=lifespan_fn,
     )
 
     app.include_router(router)
@@ -345,11 +572,13 @@ def setup_server(config_args: MLXServerConfig) -> uvicorn.Config:
             content={"error": {"message": "Internal server error", "type": "internal_error"}},
         )
 
-    logger.info(f"Starting server on {config_args.host}:{config_args.port}")
+    host = config_args.host
+    port = config_args.port
+    logger.info(f"Starting server on {host}:{port}")
     return uvicorn.Config(
         app=app,
-        host=config_args.host,
-        port=config_args.port,
-        log_level=config_args.log_level.lower(),
+        host=host,
+        port=port,
+        log_level=log_level.lower(),
         access_log=True,
     )
