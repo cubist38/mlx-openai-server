@@ -18,6 +18,8 @@ class MLXEmbeddingsHandler:
     Provides request queuing, metrics tracking, and robust error handling with memory management.
     """
 
+    handler_type: str = "embeddings"
+
     def __init__(self, model_path: str, max_concurrency: int = 1):
         """
         Initialize the handler with the specified model path.

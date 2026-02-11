@@ -30,6 +30,8 @@ class MLXLMHandler:
     Provides request queuing, metrics tracking, and robust error handling.
     """
 
+    handler_type: str = "lm"
+
     def __init__(self, model_path: str, draft_model_path: str | None = None, num_draft_tokens: int = 2, context_length: int | None = None, max_concurrency: int = 1, enable_auto_tool_choice: bool = False, tool_call_parser: str = None, reasoning_parser: str = None, message_converter: str = None, trust_remote_code: bool = False, chat_template_file: str = None, debug: bool = False, prompt_cache_size: int = 10):
         """
         Initialize the handler with the specified model path.

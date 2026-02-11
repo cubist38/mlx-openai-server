@@ -29,6 +29,8 @@ class MLXWhisperHandler:
     Provides request queuing, metrics tracking, and robust error handling for audio transcription.
     """
 
+    handler_type: str = "whisper"
+
     def __init__(self, model_path: str, max_concurrency: int = 1):
         """
         Initialize the handler with the specified model path.
@@ -287,6 +289,128 @@ class MLXWhisperHandler:
                 HTTPStatus.BAD_REQUEST
             )
             raise HTTPException(status_code=400, detail=content)
+
+    async def transcribe_from_data(
+        self, request_data: Dict[str, Any]
+    ) -> TranscriptionResponse:
+        """Run transcription from pre-processed request data.
+
+        This method is used by ``HandlerProcessProxy`` for IPC: the
+        proxy saves the uploaded file in the main process and sends
+        a plain dict with the file path here.
+
+        Parameters
+        ----------
+        request_data : dict[str, Any]
+            Dictionary containing ``audio_path`` and optional model
+            parameters (``temperature``, ``language``, etc.).
+
+        Returns
+        -------
+        TranscriptionResponse
+            The transcription result with text and usage info.
+        """
+        temp_file_path = request_data.get("audio_path")
+        try:
+            audio_path = request_data.pop("audio_path")
+            response = await self.inference_worker.submit(
+                self.model,
+                audio_path=audio_path,
+                **request_data,
+            )
+            return TranscriptionResponse(
+                text=response["text"],
+                usage=TranscriptionUsageAudio(
+                    type="duration",
+                    seconds=int(calculate_audio_duration(temp_file_path)),
+                ),
+            )
+        finally:
+            if temp_file_path and os.path.exists(temp_file_path):
+                try:
+                    os.unlink(temp_file_path)
+                except Exception as e:
+                    logger.warning(
+                        f"Failed to clean up temp file {temp_file_path}: {e}"
+                    )
+
+    async def transcribe_stream_from_data(
+        self,
+        request_data: Dict[str, Any],
+    ) -> AsyncGenerator[str, None]:
+        """Run streaming transcription from pre-processed request data.
+
+        This method is used by ``HandlerProcessProxy`` for IPC: the
+        proxy saves the uploaded file in the main process and sends
+        a plain dict with the file path here.
+
+        Parameters
+        ----------
+        request_data : dict[str, Any]
+            Dictionary containing ``audio_path`` and optional model
+            parameters.
+
+        Yields
+        ------
+        str
+            SSE-formatted transcription chunks.
+        """
+        request_id = f"transcription-{uuid.uuid4()}"
+        created_time = int(time.time())
+        temp_file_path = request_data.get("audio_path")
+
+        try:
+            request_data["stream"] = True
+            audio_path = request_data.pop("audio_path")
+            request_data.pop("stream")
+
+            generator = self.inference_worker.submit_stream(
+                self.model,
+                audio_path=audio_path,
+                stream=True,
+                **request_data,
+            )
+
+            async for chunk in generator:
+                stream_response = TranscriptionResponseStream(
+                    id=request_id,
+                    object="transcription.chunk",
+                    created=created_time,
+                    model=self.model_path,
+                    choices=[
+                        TranscriptionResponseStreamChoice(
+                            delta=Delta(content=chunk.get("text", "")),
+                            finish_reason=None,
+                        )
+                    ],
+                )
+                yield f"data: {stream_response.model_dump_json()}\n\n"
+
+            final_response = TranscriptionResponseStream(
+                id=request_id,
+                object="transcription.chunk",
+                created=created_time,
+                model=self.model_path,
+                choices=[
+                    TranscriptionResponseStreamChoice(
+                        delta=Delta(content=""),
+                        finish_reason="stop",
+                    )
+                ],
+            )
+            yield f"data: {final_response.model_dump_json()}\n\n"
+            yield "data: [DONE]\n\n"
+        except Exception as e:
+            logger.error(f"Error during transcription streaming: {e}")
+            raise
+        finally:
+            if temp_file_path and os.path.exists(temp_file_path):
+                try:
+                    os.unlink(temp_file_path)
+                except Exception as e:
+                    logger.warning(
+                        f"Failed to clean up temp file {temp_file_path}: {e}"
+                    )
 
     async def get_queue_stats(self) -> Dict[str, Any]:
         """Get statistics from the inference worker.

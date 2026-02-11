@@ -15,7 +15,6 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from loguru import logger
 import numpy as np
 
-from ..handler import MLXFluxHandler, MLXEmbeddingsHandler
 from ..handler.mlx_lm import MLXLMHandler
 from ..handler.mlx_vlm import MLXVLMHandler
 from ..schemas.openai import (
@@ -48,6 +47,26 @@ from ..schemas.openai import (
 from ..utils.errors import create_error_response
 
 router = APIRouter()
+
+
+def _get_handler_type(handler: Any) -> str:
+    """Return the handler type string for a handler or proxy.
+
+    Uses the ``handler_type`` class/instance attribute present on all
+    concrete handler classes and on ``HandlerProcessProxy``.
+
+    Parameters
+    ----------
+    handler : Any
+        A handler instance or proxy.
+
+    Returns
+    -------
+    str
+        Handler type string (``"lm"``, ``"multimodal"``, ``"embeddings"``,
+        ``"image"``, ``"whisper"``), or ``""`` if not determinable.
+    """
+    return getattr(handler, "handler_type", "")
 
 
 def _resolve_handler(
@@ -250,11 +269,13 @@ async def chat_completions(
             status_code=HTTPStatus.SERVICE_UNAVAILABLE,
         )
 
-    if not isinstance(handler, (MLXVLMHandler, MLXLMHandler)):
+    handler_type = _get_handler_type(handler)
+    if handler_type not in ("lm", "multimodal"):
         return JSONResponse(
             content=create_error_response(
                 "Unsupported model type for chat completions. "
-                f"Handler for '{request.model}' is {type(handler).__name__}.",
+                f"Handler for '{request.model}' is {type(handler).__name__} "
+                f"(handler_type={handler_type!r}).",
                 "unsupported_request",
                 HTTPStatus.BAD_REQUEST,
             ),
@@ -265,7 +286,7 @@ async def chat_completions(
     request_id = getattr(raw_request.state, "request_id", None)
 
     try:
-        if isinstance(handler, MLXVLMHandler):
+        if handler_type == "multimodal":
             return await process_multimodal_request(handler, request, request_id)
         return await process_text_request(handler, request, request_id)
     except HTTPException:
@@ -293,7 +314,7 @@ async def embeddings(
             status_code=HTTPStatus.SERVICE_UNAVAILABLE,
         )
 
-    if not isinstance(handler, MLXEmbeddingsHandler):
+    if _get_handler_type(handler) != "embeddings":
         return JSONResponse(
             content=create_error_response(
                 "Unsupported model type for embeddings. "
@@ -332,8 +353,8 @@ async def image_generations(
             status_code=HTTPStatus.SERVICE_UNAVAILABLE,
         )
 
-    # Check if the handler is an MLXFluxHandler
-    if not isinstance(handler, MLXFluxHandler):
+    # Check if the handler supports image generation
+    if _get_handler_type(handler) != "image":
         return JSONResponse(
             content=create_error_response(
                 "Image generation requests require an image generation model. "
@@ -373,8 +394,8 @@ async def create_image_edit(
             status_code=HTTPStatus.SERVICE_UNAVAILABLE,
         )
 
-    # Check if the handler is an MLXFluxHandler
-    if not isinstance(handler, MLXFluxHandler):
+    # Check if the handler supports image editing
+    if _get_handler_type(handler) != "image":
         return JSONResponse(
             content=create_error_response(
                 "Image editing requests require an image editing model. "

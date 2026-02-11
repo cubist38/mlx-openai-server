@@ -31,6 +31,7 @@ from loguru import logger
 
 from .api.endpoints import router
 from .config import MLXServerConfig, ModelEntryConfig, MultiModelServerConfig
+from .core.handler_process import HandlerProcessProxy
 from .core.model_registry import ModelRegistry
 from .handler import MLXFluxHandler
 from .handler.mlx_embeddings import MLXEmbeddingsHandler
@@ -369,10 +370,16 @@ def create_handler_from_config(model_cfg: ModelEntryConfig) -> Any:
 def create_multi_lifespan(config: MultiModelServerConfig):
     """Create a FastAPI lifespan for multi-handler mode.
 
-    Each model entry in ``config.models`` is loaded sequentially,
-    registered in a ``ModelRegistry``, and attached to
-    ``app.state.registry``. For backward compatibility the first
-    handler is also stored as ``app.state.handler``.
+    Each model entry in ``config.models`` is spawned in a dedicated
+    subprocess using ``multiprocessing.get_context("spawn")``, preventing
+    MLX Metal/GPU semaphore leaks (see
+    `<https://github.com/ml-explore/mlx/issues/2457>`_).  A
+    ``HandlerProcessProxy`` in the main process forwards requests to
+    the child via multiprocessing queues.
+
+    The proxies are registered in a ``ModelRegistry`` and attached to
+    ``app.state.registry``.  For backward compatibility the first
+    proxy is also stored as ``app.state.handler``.
 
     Parameters
     ----------
@@ -387,11 +394,12 @@ def create_multi_lifespan(config: MultiModelServerConfig):
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
-        """FastAPI lifespan that initializes multiple MLX handlers.
+        """FastAPI lifespan that spawns handler subprocesses.
 
-        Loads all models from the YAML config, registers them in a
-        ``ModelRegistry``, and attaches both the registry and (for
-        backward compatibility) a single ``handler`` to ``app.state``.
+        Each model from the YAML config is loaded in its own spawned
+        subprocess, keeping MLX Metal runtime state fully isolated.
+        A ``HandlerProcessProxy`` is registered in the
+        ``ModelRegistry`` for each model.
 
         Parameters
         ----------
@@ -404,28 +412,41 @@ def create_multi_lifespan(config: MultiModelServerConfig):
             for model_cfg in config.models:
                 model_id = model_cfg.model_id  # guaranteed non-None after __post_init__
                 logger.info(
-                    f"Loading model '{model_id}' "
+                    f"Spawning handler process for model '{model_id}' "
                     f"(type={model_cfg.model_type}, path={model_cfg.model_path})"
                 )
 
-                handler = create_handler_from_config(model_cfg)
+                # Serialize the dataclass config to a plain dict for
+                # pickling across the spawn boundary.
+                from dataclasses import asdict
 
-                # Initialize the handler's inference queue
-                await handler.initialize(
-                    {
-                        "max_concurrency": model_cfg.max_concurrency,
-                        "timeout": model_cfg.queue_timeout,
-                        "queue_size": model_cfg.queue_size,
-                    }
+                model_cfg_dict = asdict(model_cfg)
+
+                proxy = HandlerProcessProxy(
+                    model_cfg_dict=model_cfg_dict,
+                    model_type=model_cfg.model_type,
+                    model_path=model_cfg.model_path,
+                    model_id=model_id,
                 )
+
+                queue_config = {
+                    "max_concurrency": model_cfg.max_concurrency,
+                    "timeout": model_cfg.queue_timeout,
+                    "queue_size": model_cfg.queue_size,
+                }
+
+                # Spawn the child process and wait for it to load the model.
+                await proxy.start(queue_config)
 
                 await registry.register_model(
                     model_id=model_id,
-                    handler=handler,
+                    handler=proxy,
                     model_type=model_cfg.model_type,
                     context_length=model_cfg.context_length,
                 )
-                logger.info(f"Model '{model_id}' loaded and registered successfully")
+                logger.info(
+                    f"Model '{model_id}' spawned and registered successfully"
+                )
 
             # Store registry on app state for endpoint access
             app.state.registry = registry
@@ -437,7 +458,7 @@ def create_multi_lifespan(config: MultiModelServerConfig):
 
             logger.info(
                 f"Multi-handler initialization complete. "
-                f"{registry.get_model_count()} model(s) loaded."
+                f"{registry.get_model_count()} model(s) spawned."
             )
 
         except Exception as e:
@@ -446,7 +467,7 @@ def create_multi_lifespan(config: MultiModelServerConfig):
             await registry.cleanup_all()
             raise
 
-        # Initial memory cleanup
+        # Initial memory cleanup (main process only)
         mx.clear_cache()
         gc.collect()
 
