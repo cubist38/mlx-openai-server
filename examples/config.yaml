@@ -31,3 +31,9 @@ models:
   - model_path: mlx-community/Qwen3-VL-2B-Instruct-4bit
     model_type: multimodal
     tool_call_parser: qwen3_vl
+
+  - model_path: black-forest-labs/FLUX.2-klein-4B
+    model_type: image-generation
+    config_name: flux2-klein-4b
+    quantize: 4
+    model_id: flux2-klein-4b
