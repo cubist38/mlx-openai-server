@@ -161,6 +161,26 @@ models:
 
 A full example is in `examples/config.yaml`.
 
+### Multi-handler process isolation (HandlerProcessProxy)
+
+In multi-handler mode, each model runs in a **dedicated subprocess** spawned via `multiprocessing.get_context("spawn")`. The main FastAPI process uses a `HandlerProcessProxy` to forward requests to the child process over multiprocessing queues.
+
+This design prevents MLX Metal/GPU semaphore leaks on macOS. When MLX arrays or Metal runtime state are shared across forked processes, the resource tracker can report leaked semaphore objects at shutdown ([ml-explore/mlx#2457](https://github.com/ml-explore/mlx/issues/2457)). Using **spawn** instead of the default fork gives each model a clean Metal context, avoiding those warnings.
+
+```
+┌─────────────────────────────────────┐     ┌─────────────────────────────────────┐
+│  Main Process (FastAPI)             │     │  Child Process (Handler)             │
+│  ┌───────────────────────────────┐  │     │  ┌───────────────────────────────┐  │
+│  │  HandlerProcessProxy          │  │     │  │  Concrete handler (e.g.       │  │
+│  │  • request_queue ────────────┼──┼─────┼─>│    MLXLMHandler)              │  │
+│  │  • response_queue <──────────┼──┼<────┼──│  • Model (MLX_LM)              │  │
+│  │  • generate_*() forwards RPC  │  │     │  │  • InferenceWorker (thread)   │  │
+│  └───────────────────────────────┘  │     │  └───────────────────────────────┘  │
+└─────────────────────────────────────┘     └─────────────────────────────────────┘
+```
+
+The proxy exposes the same interface as the concrete handlers (`generate_text_stream`, `generate_embeddings_response`, etc.), so API endpoints work without changes. Requests and responses are serialized across the process boundary via queues; non-picklable objects (e.g. uploaded files) are pre-processed in the main process before being sent as file paths.
+
 ### Using the API with multiple models
 
 Set the `model` field in your request to the **model ID** (the `model_id` from the config, or `model_path` if you did not set `model_id`). The server looks up the handler for that ID and runs the request on the correct model.
