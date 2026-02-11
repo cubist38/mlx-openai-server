@@ -13,6 +13,7 @@ A high-performance OpenAI-compatible API server for MLX models. Run text, vision
 - 🖼️ **Multimodal support** - Text, vision, audio, and image generation/editing
 - 🎨 **Flux-series models** - Image generation (schnell, dev, krea-dev, flux-2-klein) and editing (kontext, qwen-image-edit)
 - 🔌 **Easy integration** - Works with existing OpenAI client libraries
+- 📦 **Multi-model mode** - Run multiple models in one server via a YAML config; route requests by model ID
 - ⚡ **Performance** - Configurable quantization (4/8/16-bit), context length, and speculative decoding (lm)
 - 🎛️ **LoRA adapters** - Fine-tuned image generation and editing
 - 📈 **Queue management** - Built-in request queuing and monitoring
@@ -100,6 +101,118 @@ mlx-openai-server launch \
 - `--lora-scales`: Comma-separated LoRA scales (must match paths)
 - `--log-level`: `DEBUG`, `INFO`, `WARNING`, `ERROR`, `CRITICAL` (default: `INFO`)
 - `--no-log-file`: Disable file logging (console only)
+
+## Launching Multiple Models
+
+You can run several models in one server using a YAML config file. Each model gets its own handler; requests are routed by the **model ID** you use in the API (the `model` field in the request).
+
+### Start with a config file
+
+```bash
+mlx-openai-server launch --config config.yaml
+```
+
+You must provide either `--config` (multi-handler) or `--model-path` (single model). You cannot mix them.
+
+### YAML config format
+
+Create a YAML file with a `server` section (host, port, logging) and a `models` list. Each entry in `models` defines one model and supports the same options as the CLI (model path, type, context length, queue settings, etc.).
+
+| Key | Required | Description |
+|-----|----------|-------------|
+| `model_path` | Yes | Path or HuggingFace repo of the model |
+| `model_type` | No | `lm`, `multimodal`, `image-generation`, `image-edit`, `embeddings`, `whisper` (default: `lm`) |
+| `model_id` | No | ID used in API requests; defaults to `model_path` if omitted |
+| `context_length` | No | Max context length (lm / multimodal) |
+| `max_concurrency`, `queue_timeout`, `queue_size` | No | Per-model queue settings |
+
+Example `config.yaml`:
+
+```yaml
+server:
+  host: "0.0.0.0"
+  port: 8000
+  log_level: INFO
+  # log_file: logs/app.log     # uncomment to log to file
+  # no_log_file: true           # uncomment to disable file logging
+
+models:
+  # Language model
+  - model_path: mlx-community/GLM-4.7-Flash-8bit
+    model_type: lm
+    model_id: glm-4.7-flash    # optional alias (defaults to model_path)
+    enable_auto_tool_choice: true
+    tool_call_parser: glm4_moe
+    reasoning_parser: glm47_flash
+    message_converter: glm4_moe
+
+  # Another language model
+  - model_path: mlx-community/Qwen3-Coder-Next-4bit
+    model_type: lm
+    max_concurrency: 1
+    tool_call_parser: qwen3_coder
+    message_converter: qwen3_coder
+
+
+  - model_path: mlx-community/Qwen3-VL-2B-Instruct-4bit
+    model_type: multimodal
+    tool_call_parser: qwen3_vl
+
+  - model_path: black-forest-labs/FLUX.2-klein-4B
+    model_type: image-generation
+    config_name: flux2-klein-4b
+    quantize: 4
+    model_id: flux2-klein-4b
+```
+
+A full example is in `examples/config.yaml`.
+
+### Multi-handler process isolation (HandlerProcessProxy)
+
+In multi-handler mode, each model runs in a **dedicated subprocess** spawned via `multiprocessing.get_context("spawn")`. The main FastAPI process uses a `HandlerProcessProxy` to forward requests to the child process over multiprocessing queues.
+
+This design prevents MLX Metal/GPU semaphore leaks on macOS. When MLX arrays or Metal runtime state are shared across forked processes, the resource tracker can report leaked semaphore objects at shutdown ([ml-explore/mlx#2457](https://github.com/ml-explore/mlx/issues/2457)). Using **spawn** instead of the default fork gives each model a clean Metal context, avoiding those warnings.
+
+```
+┌─────────────────────────────────────┐     ┌─────────────────────────────────────┐
+│  Main Process (FastAPI)             │     │  Child Process (Handler)             │
+│  ┌───────────────────────────────┐  │     │  ┌───────────────────────────────┐  │
+│  │  HandlerProcessProxy          │  │     │  │  Concrete handler (e.g.       │  │
+│  │  • request_queue ────────────┼──┼─────┼─>│    MLXLMHandler)              │  │
+│  │  • response_queue <──────────┼──┼<────┼──│  • Model (MLX_LM)              │  │
+│  │  • generate_*() forwards RPC  │  │     │  │  • InferenceWorker (thread)   │  │
+│  └───────────────────────────────┘  │     │  └───────────────────────────────┘  │
+└─────────────────────────────────────┘     └─────────────────────────────────────┘
+```
+
+The proxy exposes the same interface as the concrete handlers (`generate_text_stream`, `generate_embeddings_response`, etc.), so API endpoints work without changes. Requests and responses are serialized across the process boundary via queues; non-picklable objects (e.g. uploaded files) are pre-processed in the main process before being sent as file paths.
+
+### Using the API with multiple models
+
+Set the `model` field in your request to the **model ID** (the `model_id` from the config, or `model_path` if you did not set `model_id`). The server looks up the handler for that ID and runs the request on the correct model.
+
+```python
+import openai
+
+client = openai.OpenAI(base_url="http://localhost:8000/v1", api_key="not-needed")
+
+# Use the first model (qwen2.5-7b)
+r1 = client.chat.completions.create(
+    model="glm-4.7-flash",
+    messages=[{"role": "user", "content": "Say hello in one word."}],
+)
+print(r1.choices[0].message.content)
+
+# Use the second model (full path as model_id)
+r2 = client.chat.completions.create(
+    model="mlx-community/Qwen3-Coder-Next-4bit",
+    messages=[{"role": "user", "content": "Say hello in one word."}],
+)
+print(r2.choices[0].message.content)
+```
+
+- **GET `/v1/models`** returns all loaded models (their IDs).
+- If you send a `model` that is not in the config, the server returns **404** with an error listing available models.
 
 ## Supported Model Types
 

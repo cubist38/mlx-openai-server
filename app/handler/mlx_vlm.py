@@ -38,6 +38,8 @@ class MLXVLMHandler:
     Provides concurrent image processing, audio processing, and robust error handling.
     """
 
+    handler_type: str = "multimodal"
+
     def __init__(self, model_path: str, context_length: int | None = None, max_workers: int = 4, max_concurrency: int = 1, disable_auto_resize: bool = False, enable_auto_tool_choice: bool = False, tool_call_parser: str = None, reasoning_parser: str = None, message_converter: str = None, trust_remote_code: bool = False, chat_template_file: str = None, debug: bool = False):
         """
         Initialize the handler with the specified model path.

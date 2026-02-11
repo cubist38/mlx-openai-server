@@ -33,6 +33,8 @@ class MLXFluxHandler:
     Provides request queuing, metrics tracking, and robust error handling.
     """
 
+    handler_type: str = "image"
+
     def __init__(self, model_path: str, max_concurrency: int = 1, quantize: Optional[int] = None, 
                  config_name: str = "flux-schnell", lora_paths: Optional[List[str]] = None, 
                  lora_scales: Optional[List[float]] = None):
@@ -581,6 +583,56 @@ class MLXFluxHandler:
         except Exception as e:
             logger.error(f"Error processing image generation request: {str(e)}")
             raise
+
+    async def edit_image_from_paths(
+        self, edit_data: Dict[str, Any]
+    ) -> ImageEditResponse:
+        """Edit an image from pre-saved file paths.
+
+        This method is used by ``HandlerProcessProxy`` for IPC: the
+        proxy saves uploaded images in the main process and sends a
+        plain dict with file paths here (avoiding non-picklable
+        ``UploadFile`` objects in the multiprocessing queue).
+
+        Parameters
+        ----------
+        edit_data : dict[str, Any]
+            Dictionary containing ``image_paths``, ``prompt``, and
+            optional ``negative_prompt``, ``steps``, ``seed``,
+            ``guidance_scale`` keys.
+
+        Returns
+        -------
+        ImageEditResponse
+            Response containing the edited image data.
+        """
+        request_id = f"image-edit-{uuid.uuid4()}"
+        temp_file_paths = edit_data.get("image_paths", [])
+
+        try:
+            request_data = {
+                "image_path": temp_file_paths[0] if temp_file_paths else None,
+                "prompt": edit_data.get("prompt"),
+                "negative_prompt": edit_data.get("negative_prompt"),
+                "steps": edit_data.get("steps"),
+                "seed": edit_data.get("seed"),
+                "guidance": edit_data.get("guidance_scale"),
+                "image_paths": temp_file_paths,
+            }
+
+            image_result = await self.inference_worker.submit(
+                self._run_inference, request_data
+            )
+            return self._create_edit_response(image_result)
+
+        except asyncio.QueueFull:
+            self._handle_queue_full_error(request_id)
+
+        except Exception as e:
+            self._handle_edit_error(request_id, e)
+
+        finally:
+            self._cleanup_temp_files(temp_file_paths)
 
     async def get_queue_stats(self) -> Dict[str, Any]:
         """Get statistics from the inference worker.

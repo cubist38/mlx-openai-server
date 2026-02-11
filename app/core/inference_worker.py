@@ -10,7 +10,6 @@ timeout handling, and statistics — replacing the need for a separate
 from __future__ import annotations
 
 import asyncio
-import gc
 import queue
 import threading
 from collections.abc import AsyncGenerator, Generator
@@ -150,7 +149,9 @@ class InferenceWorker:
                 # Exceptions are captured inside each work closure and
                 # forwarded to the event loop via futures / queues.
                 # This outer catch is a safety net to keep the thread alive.
-                pass
+                logger.exception(
+                    "Inference worker safety net: exception escaped work closure"
+                )
             finally:
                 with self._stats_lock:
                     self._active = False
@@ -216,8 +217,6 @@ class InferenceWorker:
             except BaseException as exc:
                 loop.call_soon_threadsafe(_safe_set_exception, future, exc)
                 self._inc_failed()
-            finally:
-                gc.collect()
 
         try:
             self._work_queue.put_nowait(_work)
@@ -276,8 +275,6 @@ class InferenceWorker:
             except BaseException as exc:
                 loop.call_soon_threadsafe(token_queue.put_nowait, exc)
                 self._inc_failed()
-            finally:
-                gc.collect()
 
         try:
             self._work_queue.put_nowait(_work)
