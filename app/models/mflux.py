@@ -423,7 +423,18 @@ class Flux2KleinModel(BaseImageModel):
             self.logger.error(error_msg)
             raise ModelLoadError(error_msg) from e
 
-class Flux2KleinEditModel(BaseImageModel):
+    def _generate_image(self, prompt: str, seed: int = 42, **kwargs) -> Image.Image:
+        """Generate image using the specific model implementation."""
+        try:
+            if "negative_prompt" in kwargs:
+                kwargs.pop("negative_prompt") # Flux2 Klein does not support negative prompt
+            if "guidance" in kwargs:
+                kwargs["guidance"] = 1.0 # Flux2 Klein only supports guidance scale of 1.0
+            return super()._generate_image(prompt, seed, **kwargs)
+        except Exception as e:
+            raise ModelGenerationError(f"{self.__class__.__name__} generation failed: {e}") from e
+
+class Flux2KleinEditModel(Flux2KleinModel):
     """Flux2 Klein Edit model implementation."""
     
     def _load_model(self):
@@ -472,8 +483,8 @@ class ImageGenerationModel:
         "z-image-turbo": ZImageTurboModel,
         "flux2-klein-4b": Flux2KleinModel,
         "flux2-klein-9b": Flux2KleinModel,
-        "flux2-klein-edit-4b": Flux2KleinEditModel,
-        "flux2-klein-edit-9b": Flux2KleinEditModel,
+        "flux2-klein-edit-4b": Flux2KleinModel,
+        "flux2-klein-edit-9b": Flux2KleinModel,
     }
     
     def __init__(self, model_path: str, config_name: str, quantize: Optional[int] = None, 

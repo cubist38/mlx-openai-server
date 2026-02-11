@@ -472,8 +472,6 @@ class ImageSize(str, Enum):
     SMALL = "256x256"
     MEDIUM = "512x512"
     LARGE = "1024x1024"
-    # COSMOS_SIZE = "1024x1024"
-
 
 class Priority(str, Enum):
     """Task priority levels."""
@@ -510,13 +508,11 @@ class ImageGenerationRequest(OpenAIBaseModel):
 
     prompt: str = Field(
         ...,
-        description="A text description of the desired image(s). The maximum length is 1000 characters.",
-        max_length=1000,
+        description="A text description of the desired image(s)."
     )
     negative_prompt: str | None = Field(
         None,
-        description="A text description of the desired image(s). The maximum length is 1000 characters.",
-        max_length=1000,
+        description="A text description of the desired image(s)."
     )
     model: str | None = Field(
         default=Config.IMAGE_GENERATION_MODEL, description="The model to use for image generation"
@@ -525,7 +521,7 @@ class ImageGenerationRequest(OpenAIBaseModel):
         default=ImageSize.LARGE, description="The size of the generated images"
     )
     guidance_scale: float | None = Field(
-        default=4.5, description="The guidance scale for the image generation"
+        default=3.5, description="The guidance scale for the image generation"
     )
     steps: int | None = Field(
         default=4, ge=1, le=50, description="The number of inference steps (1-50)"
