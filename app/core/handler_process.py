@@ -69,6 +69,12 @@ def _handler_worker(
     the inference worker, then enters a blocking request loop that
     dispatches method calls received from the parent process.
 
+    The child process ignores ``SIGINT`` so that ``Ctrl+C`` is handled
+    exclusively by the parent process.  The parent orchestrates an
+    orderly shutdown by sending a ``_SHUTDOWN`` message through the
+    request queue, which allows the handler to clean up resources
+    (e.g. GPU memory, temp files) before the process exits.
+
     Parameters
     ----------
     model_cfg_dict : dict[str, Any]
@@ -81,6 +87,15 @@ def _handler_worker(
     response_queue : mp.Queue
         Queue for sending responses back to the main process.
     """
+    # ------------------------------------------------------------------
+    # Ignore SIGINT — the parent manages our lifecycle via _SHUTDOWN.
+    # Without this, Ctrl+C sends SIGINT to every process in the group,
+    # killing children before the parent can perform an orderly shutdown.
+    # ------------------------------------------------------------------
+    import signal
+
+    signal.signal(signal.SIGINT, signal.SIG_IGN)
+
     import asyncio
     import gc
 
@@ -89,6 +104,12 @@ def _handler_worker(
 
     from app.config import ModelEntryConfig
     from app.server import create_handler_from_config
+
+    # Remember the parent PID so the request loop can detect if the
+    # parent dies unexpectedly (e.g. SIGKILL).  Because we use the
+    # ``spawn`` start method, ``os.getppid()`` returns the PID of the
+    # process that called ``Process.start()``.
+    _parent_pid = os.getppid()
 
     async def _main() -> None:
         model_cfg = ModelEntryConfig(**model_cfg_dict)
@@ -120,6 +141,16 @@ def _handler_worker(
             try:
                 request = request_queue.get(timeout=1.0)
             except queue.Empty:
+                # Detect orphaned child: if the parent died the queue will
+                # never receive a _SHUTDOWN, so we exit proactively.
+                try:
+                    os.kill(_parent_pid, 0)
+                except (ProcessLookupError, PermissionError):
+                    logger.warning(
+                        f"Parent process (pid={_parent_pid}) exited; "
+                        f"handler subprocess for '{model_id}' shutting down"
+                    )
+                    break
                 continue
             except Exception:
                 break
@@ -822,48 +853,79 @@ class HandlerProcessProxy:
         """Send shutdown signal to the child process and clean up.
 
         Waits for the child to acknowledge shutdown, then joins the
-        process and reader thread. If the child does not respond within
-        30 s it is forcefully terminated.
+        process and reader thread.  If the child does not respond
+        within 10 s it is forcefully terminated.
+
+        Blocking ``Process.join`` calls are wrapped in
+        ``asyncio.to_thread`` so that multiple proxies can be cleaned
+        up concurrently via ``asyncio.gather`` without blocking the
+        event loop.
         """
         if not self._process or not self._process.is_alive():
             self._running = False
             return
 
+        # -- Phase 1: Request a graceful shutdown via the IPC queue. --
         req_id = str(uuid.uuid4())
         shutdown_queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
         self._pending[req_id] = shutdown_queue
+        graceful = False
 
         try:
-            await asyncio.to_thread(
-                self._request_queue.put,
-                {"id": req_id, "method": _SHUTDOWN},
-            )
-
+            # Attempt to enqueue the shutdown command.  The put itself
+            # can fail if the child has already exited and the
+            # underlying pipe is broken.
             try:
-                await asyncio.wait_for(shutdown_queue.get(), timeout=30)
-            except asyncio.TimeoutError:
-                logger.warning(
-                    f"Handler process for '{self.model_id}' did not "
-                    "acknowledge shutdown within 30 s; terminating"
+                await asyncio.to_thread(
+                    self._request_queue.put,
+                    {"id": req_id, "method": _SHUTDOWN},
                 )
-                self._process.terminate()
+            except (BrokenPipeError, EOFError, OSError) as exc:
+                logger.warning(
+                    f"Could not send shutdown to '{self.model_id}': {exc}"
+                )
+            else:
+                # Wait for the child to acknowledge the shutdown.
+                try:
+                    await asyncio.wait_for(
+                        shutdown_queue.get(), timeout=10
+                    )
+                    graceful = True
+                except asyncio.TimeoutError:
+                    logger.warning(
+                        f"Handler process for '{self.model_id}' did not "
+                        "acknowledge shutdown within 10 s; terminating"
+                    )
         finally:
             self._pending.pop(req_id, None)
 
         self._running = False
 
-        # Wait for the process to exit.
-        self._process.join(timeout=10)
+        # -- Phase 2: Ensure the child process exits. --
+        if not graceful and self._process.is_alive():
+            self._process.terminate()
+
+        try:
+            await asyncio.to_thread(self._process.join, 5)
+        except (OSError, ValueError):
+            pass  # Process handle already closed / invalid.
+
         if self._process.is_alive():
             logger.warning(
                 f"Force-killing handler process for '{self.model_id}'"
             )
-            self._process.kill()
-            self._process.join(timeout=5)
+            try:
+                self._process.kill()
+            except (OSError, ProcessLookupError):
+                pass  # Already dead.
+            try:
+                await asyncio.to_thread(self._process.join, 3)
+            except (OSError, ValueError):
+                pass
 
-        # Wait for the reader thread to exit.
+        # -- Phase 3: Stop the response reader thread. --
         if self._reader_thread and self._reader_thread.is_alive():
-            self._reader_thread.join(timeout=5)
+            self._reader_thread.join(timeout=2)
 
         logger.info(
             f"Handler process for '{self.model_id}' shut down successfully"

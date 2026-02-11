@@ -182,22 +182,44 @@ class ModelRegistry:
             logger.info(f"Unregistered model: {model_id}")
 
     async def cleanup_all(self) -> None:
-        """Clean up all registered handlers.
+        """Clean up all registered handlers concurrently.
 
-        Iterates over every handler and invokes its ``cleanup`` method
-        (if available). Called during server shutdown.
+        Spawns cleanup tasks for every handler in parallel using
+        ``asyncio.gather`` so that multiple subprocess shutdowns do
+        not serialise their timeout windows.  Called during server
+        shutdown.
         """
         async with self._lock:
-            for model_id, handler in self._handlers.items():
-                if hasattr(handler, "cleanup"):
-                    try:
-                        await handler.cleanup()
-                        logger.info(f"Cleaned up handler for model: {model_id}")
-                    except Exception as e:
-                        logger.error(f"Error cleaning up handler for '{model_id}': {e}")
+            cleanup_tasks = [
+                self._cleanup_single_handler(model_id, handler)
+                for model_id, handler in self._handlers.items()
+                if hasattr(handler, "cleanup")
+            ]
+            if cleanup_tasks:
+                await asyncio.gather(*cleanup_tasks)
+
             self._handlers.clear()
             self._metadata.clear()
             logger.info("All models unregistered and cleaned up")
+
+    @staticmethod
+    async def _cleanup_single_handler(
+        model_id: str, handler: Any
+    ) -> None:
+        """Clean up a single handler, logging success or failure.
+
+        Parameters
+        ----------
+        model_id : str
+            Model identifier (for logging).
+        handler : Any
+            Handler instance whose ``cleanup`` method will be awaited.
+        """
+        try:
+            await handler.cleanup()
+            logger.info(f"Cleaned up handler for model: {model_id}")
+        except Exception as e:
+            logger.error(f"Error cleaning up handler for '{model_id}': {e}")
 
     def has_model(self, model_id: str) -> bool:
         """Check if a model is registered.
