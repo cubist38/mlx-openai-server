@@ -32,6 +32,7 @@ the ``resource_tracker`` semaphore leak warning on macOS).
 from __future__ import annotations
 
 import asyncio
+import concurrent.futures
 import multiprocessing as mp
 import os
 import queue
@@ -50,6 +51,7 @@ from loguru import logger
 
 _SHUTDOWN = "__SHUTDOWN__"
 _STREAM_END = "__STREAM_END__"
+_CANCEL = "__CANCEL__"
 
 
 # ---------------------------------------------------------------------------
@@ -62,6 +64,7 @@ def _handler_worker(
     queue_config: dict[str, Any],
     request_queue: mp.Queue,  # type: ignore[type-arg]
     response_queue: mp.Queue,  # type: ignore[type-arg]
+    control_queue: mp.Queue,  # type: ignore[type-arg]
 ) -> None:
     """Entry point for the spawned handler subprocess.
 
@@ -86,6 +89,8 @@ def _handler_worker(
         Queue for receiving requests from the main process.
     response_queue : mp.Queue
         Queue for sending responses back to the main process.
+    control_queue : mp.Queue
+        Queue for cancel signals from the main process (client disconnect).
     """
     # ------------------------------------------------------------------
     # Ignore SIGINT — the parent manages our lifecycle via _SHUTDOWN.
@@ -110,6 +115,30 @@ def _handler_worker(
     # ``spawn`` start method, ``os.getppid()`` returns the PID of the
     # process that called ``Process.start()``.
     _parent_pid = os.getppid()
+
+    # Request IDs cancelled by the parent (e.g. client disconnect).
+    # A dedicated thread drains control_queue and adds ids here so the
+    # request loop can stop forwarding streaming chunks.
+    _cancelled_ids: set[str] = set()
+    _cancelled_lock = threading.Lock()
+
+    def _control_reader() -> None:
+        while True:
+            try:
+                msg = control_queue.get(timeout=0.5)
+            except queue.Empty:
+                continue
+            except Exception:
+                break
+            req_id = msg.get("id", "") if isinstance(msg, dict) else msg
+            if req_id:
+                with _cancelled_lock:
+                    _cancelled_ids.add(req_id)
+
+    _control_thread = threading.Thread(
+        target=_control_reader, daemon=True, name="control-reader"
+    )
+    _control_thread.start()
 
     async def _main() -> None:
         model_cfg = ModelEntryConfig(**model_cfg_dict)
@@ -179,11 +208,18 @@ def _handler_worker(
                 method = getattr(handler, method_name)
 
                 if is_stream:
+                    cancelled_early = False
                     async for chunk in method(*args, **kwargs):
+                        with _cancelled_lock:
+                            if req_id in _cancelled_ids:
+                                cancelled_early = True
+                                break
                         response_queue.put(
                             {"id": req_id, "type": "chunk", "value": chunk}
                         )
                     response_queue.put({"id": req_id, "type": _STREAM_END})
+                    with _cancelled_lock:
+                        _cancelled_ids.discard(req_id)
                 else:
                     result = await method(*args, **kwargs)
                     response_queue.put(
@@ -288,6 +324,7 @@ class HandlerProcessProxy:
         self._ctx = mp.get_context("spawn")
         self._request_queue: mp.Queue = self._ctx.Queue()  # type: ignore[type-arg]
         self._response_queue: mp.Queue = self._ctx.Queue()  # type: ignore[type-arg]
+        self._control_queue: mp.Queue = self._ctx.Queue()  # type: ignore[type-arg]
         self._process: mp.Process | None = None
 
         # Response routing: maps request IDs → per-caller asyncio queues.
@@ -295,6 +332,10 @@ class HandlerProcessProxy:
         self._reader_thread: threading.Thread | None = None
         self._running = False
         self._loop: asyncio.AbstractEventLoop | None = None
+
+        # RPC timeouts and streaming backpressure (set in start() from queue_config).
+        self._rpc_timeout: float = 600.0
+        self._stream_queue_size: int = 64
 
     # ------------------------------------------------------------------
     # Lifecycle
@@ -316,6 +357,12 @@ class HandlerProcessProxy:
         """
         self._loop = asyncio.get_running_loop()
         self._running = True
+        self._rpc_timeout = float(
+            queue_config.get("timeout", 300)
+        )
+        self._stream_queue_size = int(
+            queue_config.get("stream_queue_size", 64)
+        )
 
         # Start the response reader thread.
         self._reader_thread = threading.Thread(
@@ -333,6 +380,7 @@ class HandlerProcessProxy:
                 queue_config,
                 self._request_queue,
                 self._response_queue,
+                self._control_queue,
             ),
             name=f"handler-{self.model_id}",
         )
@@ -397,9 +445,21 @@ class HandlerProcessProxy:
             req_id = response.get("id", "")
             pending = self._pending.get(req_id)
             if pending and self._loop:
-                self._loop.call_soon_threadsafe(
-                    pending.put_nowait, response
-                )
+                try:
+                    future = asyncio.run_coroutine_threadsafe(
+                        pending.put(response), self._loop
+                    )
+                    future.result(timeout=60)
+                except concurrent.futures.TimeoutError:
+                    logger.warning(
+                        f"Timeout delivering stream chunk for {req_id}"
+                    )
+                except Exception:
+                    if self._running:
+                        logger.debug(
+                            f"Failed to deliver chunk for {req_id}",
+                            exc_info=True,
+                        )
 
     # ------------------------------------------------------------------
     # Generic RPC helpers
@@ -446,7 +506,7 @@ class HandlerProcessProxy:
             )
 
             response = await asyncio.wait_for(
-                result_queue.get(), timeout=600
+                result_queue.get(), timeout=self._rpc_timeout
             )
 
             if response["type"] == "error":
@@ -481,7 +541,9 @@ class HandlerProcessProxy:
             When the child reports an error.
         """
         req_id = str(uuid.uuid4())
-        result_queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
+        result_queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue(
+            maxsize=self._stream_queue_size
+        )
         self._pending[req_id] = result_queue
 
         try:
@@ -498,7 +560,7 @@ class HandlerProcessProxy:
 
             while True:
                 response = await asyncio.wait_for(
-                    result_queue.get(), timeout=600
+                    result_queue.get(), timeout=self._rpc_timeout
                 )
 
                 if response["type"] == _STREAM_END:
@@ -509,6 +571,11 @@ class HandlerProcessProxy:
                 yield response["value"]
         finally:
             self._pending.pop(req_id, None)
+            # Signal child to stop forwarding chunks (e.g. client disconnect).
+            try:
+                self._control_queue.put({"id": req_id, "method": _CANCEL})
+            except (BrokenPipeError, EOFError, OSError):
+                pass
 
     @staticmethod
     def _raise_remote_error(response: dict[str, Any]) -> None:
