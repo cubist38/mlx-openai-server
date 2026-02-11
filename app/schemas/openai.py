@@ -472,8 +472,6 @@ class ImageSize(str, Enum):
     SMALL = "256x256"
     MEDIUM = "512x512"
     LARGE = "1024x1024"
-    # COSMOS_SIZE = "1024x1024"
-
 
 class Priority(str, Enum):
     """Task priority levels."""

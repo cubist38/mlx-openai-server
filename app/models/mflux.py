@@ -423,25 +423,13 @@ class Flux2KleinModel(BaseImageModel):
             self.logger.error(error_msg)
             raise ModelLoadError(error_msg) from e
 
-class Flux2KleinEditModel(BaseImageModel):
-    """Flux2 Klein Edit model implementation."""
-    
-    def _load_model(self):
-        """Load the Flux2 Klein Edit model."""
+    def _generate_image(self, prompt: str, seed: int = 42, **kwargs) -> Image.Image:
+        """Generate image using the specific model implementation."""
         try:
-            self.logger.info(f"Loading Flux2 Klein Edit model from {self.model_path}")
-            self._model = Flux2KleinEdit(
-                quantize=self.config.quantize,
-                model_path=self.model_path,
-                lora_paths=self.config.lora_paths,
-                lora_scales=self.config.lora_scales,
-            )
-            self._is_loaded = True
-            self.logger.info("Flux2 Klein Edit model loaded successfully")
+            kwargs.pop("negative_prompt") # flux2 klein does not support negative prompt
+            return super()._generate_image(prompt, seed, **kwargs)
         except Exception as e:
-            error_msg = f"Failed to load Flux2 Klein Edit model: {e}"
-            self.logger.error(error_msg)
-            raise ModelLoadError(error_msg) from e
+            raise ModelGenerationError(f"{self.__class__.__name__} generation failed: {e}") from e
 
 class ImageGenerationModel:
     """Factory class for creating and managing image generation models."""
@@ -472,8 +460,8 @@ class ImageGenerationModel:
         "z-image-turbo": ZImageTurboModel,
         "flux2-klein-4b": Flux2KleinModel,
         "flux2-klein-9b": Flux2KleinModel,
-        "flux2-klein-edit-4b": Flux2KleinEditModel,
-        "flux2-klein-edit-9b": Flux2KleinEditModel,
+        "flux2-klein-edit-4b": Flux2KleinModel,
+        "flux2-klein-edit-9b": Flux2KleinModel,
     }
     
     def __init__(self, model_path: str, config_name: str, quantize: Optional[int] = None, 
