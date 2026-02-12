@@ -106,6 +106,8 @@ mlx-openai-server launch \
 
 You can run several models in one server using a YAML config file. Each model gets its own handler; requests are routed by the **model ID** you use in the API (the `model` field in the request).
 
+**Video:** [Serving Multiple Models at Once? mlx-openai-server + OpenWebUI Test](https://www.youtube.com/watch?v=f7WXSOPZ5H4)
+
 ### Start with a config file
 
 ```bash
@@ -528,7 +530,7 @@ Follow [Conventional Commits](https://www.conventionalcommits.org/) for commit m
 - **Documentation**: This README and example notebooks
 - **Issues**: [GitHub Issues](https://github.com/cubist38/mlx-openai-server/issues)
 - **Discussions**: [GitHub Discussions](https://github.com/cubist38/mlx-openai-server/discussions)
-- **Video Tutorials**: [Setup Demo](https://youtu.be/J1gkEMvmTSE), [RAG Demo](https://youtu.be/ANUEZkmR-0s), [Testing Qwen3-Coder-Next-4bit with Qwen-Code](https://youtu.be/X5Hsd3QR_E8)
+- **Video Tutorials**: [Setup Demo](https://youtu.be/J1gkEMvmTSE), [RAG Demo](https://youtu.be/ANUEZkmR-0s), [Testing Qwen3-Coder-Next-4bit with Qwen-Code](https://youtu.be/X5Hsd3QR_E8), [Serving Multiple Models at Once? mlx-openai-server + OpenWebUI Test](https://www.youtube.com/watch?v=f7WXSOPZ5H4)
 
 ## License
 
