@@ -3,4 +3,4 @@
 # Minor: Minor version number (increments when new features are added)
 # Patch: Patch version number (increments when bug fixes are made)
 
-__version__ = "1.5.2"   
+__version__ = "1.5.3"   
