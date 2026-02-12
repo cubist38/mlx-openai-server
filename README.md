@@ -58,7 +58,7 @@ mlx-openai-server launch \
 mlx-openai-server launch \
   --model-path <path-to-main-model> \
   --model-type lm \
-  --draft-model <path-to-draft-model> \
+  --draft-model-path <path-to-draft-model> \
   --num-draft-tokens 4
 
 # Image generation (Flux-series)
@@ -93,7 +93,7 @@ mlx-openai-server launch \
 - `--config-name`: For image models - `flux-schnell`, `flux-dev`, `flux-krea-dev`, `flux-kontext-dev`, `flux2-klein-4b`, `flux2-klein-9b`, `qwen-image`, `qwen-image-edit`, `z-image-turbo`, `fibo`
 - `--quantize`: Quantization level - `4`, `8`, or `16` (image models)
 - `--context-length`: Max sequence length for memory optimization
-- `--draft-model`: Path to draft model for speculative decoding (lm only)
+- `--draft-model-path`: Path to draft model for speculative decoding (lm only)
 - `--num-draft-tokens`: Draft tokens per step for speculative decoding (lm only, default: 2)
 - `--max-concurrency`: Concurrent requests (default: 1)
 - `--queue-timeout`: Request timeout in seconds (default: 300)
@@ -459,11 +459,11 @@ Use a smaller draft model to propose tokens and verify them with the main model 
 mlx-openai-server launch \
   --model-path mlx-community/MyModel-8B-4bit \
   --model-type lm \
-  --draft-model mlx-community/MyModel-1B-4bit \
+  --draft-model-path mlx-community/MyModel-1B-4bit \
   --num-draft-tokens 4
 ```
 
-- **`--draft-model`**: Path or HuggingFace repo of the draft model (smaller size model).
+- **`--draft-model-path`**: Path or HuggingFace repo of the draft model (smaller size model).
 - **`--num-draft-tokens`**: Number of tokens the draft model generates per verification step (default: 2). Higher values can increase throughput at the cost of more draft compute.
 
 ## Request Queue System
