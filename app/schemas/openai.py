@@ -210,7 +210,7 @@ class ChatCompletionRequestBase(OpenAIBaseModel):
     tool_choice: str | dict[str, Any] | None = Field(
         "auto", description="Tool choice for the request."
     )
-    max_tokens: int | None = Field(None, description="The maximum number of tokens to generate.")
+    max_tokens: int | None = Field(256, description="The maximum number of tokens to generate.")
     temperature: float | None = Field(0.7, description="Sampling temperature.")
     top_p: float | None = Field(1.0, description="Nucleus sampling probability.")
     top_k: int | None = Field(20, description="Top-k sampling parameter.")
