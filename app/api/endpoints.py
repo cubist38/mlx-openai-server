@@ -646,10 +646,11 @@ def create_response_chunk(
     )
 
 
-def _yield_sse_chunk(data: dict[str, Any] | ChatCompletionChunk) -> str:
+def _yield_sse_chunk(data: dict[str, Any] | ChatCompletionChunk | ResponseChunk) -> str:
     """Format and yield SSE chunk data."""
-    if isinstance(data, ChatCompletionChunk):
-        return f"data: {json.dumps(data.model_dump())}\n\n"
+    # Assuming ResponseChunk was added recently, we support it too
+    if hasattr(data, "model_dump"):
+        return f"data: {json.dumps(data.model_dump(exclude_none=True))}\n\n"
     return f"data: {json.dumps(data)}\n\n"
 
 
@@ -771,10 +772,12 @@ async def process_multimodal_request(
     if isinstance(result, dict) and "response" in result and "usage" in result:
         response_data = result.get("response")
         usage = result.get("usage")
-        return format_final_response(response_data, request.model, request_id, usage)  # type: ignore[arg-type]
+        final_response = format_final_response(response_data, request.model, request_id, usage)  # type: ignore[arg-type]
+        return JSONResponse(content=final_response.model_dump(exclude_none=True))
 
     # Fallback for backward compatibility or if structure is different
-    return format_final_response(result, request.model, request_id)
+    final_response_fallback = format_final_response(result, request.model, request_id)
+    return JSONResponse(content=final_response_fallback.model_dump(exclude_none=True))
 
 
 async def process_text_request(
@@ -805,7 +808,8 @@ async def process_text_request(
     result = await handler.generate_text_response(request)  # type: ignore[union-attr]
     response_data = result.get("response")
     usage = result.get("usage")
-    return format_final_response(response_data, request.model, request_id, usage)  # type: ignore[arg-type]
+    final_response = format_final_response(response_data, request.model, request_id, usage)  # type: ignore[arg-type]
+    return JSONResponse(content=final_response.model_dump(exclude_none=True))
 
 
 def get_id() -> str:
@@ -981,9 +985,11 @@ async def process_multimodal_responses_request(
     if isinstance(result, dict) and "response" in result and "usage" in result:
         response_data = result.get("response")
         usage = result.get("usage")
-        return format_final_responses_response(response_data, request.model, request_id, usage)  # type: ignore[arg-type]
+        final_response = format_final_responses_response(response_data, request.model, request_id, usage)  # type: ignore[arg-type]
+        return JSONResponse(content=final_response.model_dump(exclude_none=True))
 
-    return format_final_responses_response(result, request.model, request_id)
+    final_response_fallback = format_final_responses_response(result, request.model, request_id)
+    return JSONResponse(content=final_response_fallback.model_dump(exclude_none=True))
 
 async def process_text_responses_request(
     handler: MLXLMHandler | MLXVLMHandler,
@@ -1010,10 +1016,11 @@ async def process_text_responses_request(
             },
         )
 
-    result = await handler.generate_text_response(chat_req)  # type: ignore[union-attr]
+    result = await handler.generate_responses_response(chat_req)  # type: ignore[union-attr]
     response_data = result.get("response")
     usage = result.get("usage")
-    return format_final_responses_response(response_data, request.model, request_id, usage)  # type: ignore[arg-type]
+    final_response = format_final_responses_response(response_data, request.model, request_id, usage)  # type: ignore[arg-type]
+    return JSONResponse(content=final_response.model_dump(exclude_none=True))
 
 def format_final_responses_response(
     response: str | dict[str, Any],
