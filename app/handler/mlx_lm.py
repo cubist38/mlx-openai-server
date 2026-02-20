@@ -582,7 +582,11 @@ class MLXLMHandler:
                 # Handle content that might be a list of dictionaries (multimodal format)
                 content = message.get("content", None)
                 if content is None:
-                    continue
+                    # Assistant messages with tool_calls have content: null — keep them
+                    if message.get("tool_calls"):
+                        message["content"] = ""
+                    else:
+                        continue
                 if isinstance(content, list):
                     # For LM models, extract only text content and concatenate
                     text_parts = []
