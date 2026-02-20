@@ -618,3 +618,383 @@ class MLXLMHandler:
             logger.error(f"Failed to prepare text request: {str(e)}")
             content = create_error_response(f"Failed to process request: {str(e)}", "bad_request", HTTPStatus.BAD_REQUEST)
             raise HTTPException(status_code=400, detail=content)
+
+    async def _prepare_responses_request(self, request: Any) -> Tuple[List[Dict[str, str]], Dict[str, Any]]:
+        """
+        Prepare a responses request by parsing model parameters and reformatting the
+        /v1/responses 'input' and 'instructions' into standard chat messages.
+        """
+        try:
+            request_dict = request.model_dump()
+            tools = request_dict.pop("tools", None)
+            tool_choice = request_dict.pop("tool_choice", None)
+            
+            chat_template_kwargs = request_dict.setdefault("chat_template_kwargs", {})
+            if tools:
+                chat_template_kwargs["tools"] = tools
+                if tool_choice:
+                    chat_template_kwargs["tool_choice"] = tool_choice
+
+            if request_dict.get("response_format", None):
+                response_format = request_dict.pop("response_format", None)
+                if response_format.get("type") == "json_schema":
+                    request_dict["schema"] = response_format.get("json_schema", {}).get("schema", None)
+            
+            chat_messages = []
+            
+            instructions = request_dict.pop("instructions", None)
+            if instructions:
+                chat_messages.append({"role": "system", "content": instructions})
+            
+            input_items = request_dict.get("input", [])
+            if isinstance(input_items, str):
+                input_items = [{"type": "text", "text": input_items}]
+            
+            for item in input_items:
+                if isinstance(item, dict):
+                    # It could be {type: "text", text: "..."} or {role: "...", content: "..."}
+                    if "role" in item and "content" in item:
+                        chat_messages.append({"role": item["role"], "content": item["content"]})
+                    elif item.get("type") == "text" or item.get("type") == "input_text":
+                        chat_messages.append({"role": "user", "content": item.get("text", "")})
+                    else:
+                        # Fallback simple stringification
+                        chat_messages.append({"role": "user", "content": str(item)})
+                else:
+                    # Could be Pydantic model Message
+                    if hasattr(item, 'role') and hasattr(item, 'content'):
+                        chat_messages.append({"role": getattr(item, 'role'), "content": getattr(item, 'content', '')})
+                    else:
+                        chat_messages.append({"role": "user", "content": str(item)})
+                        
+            return chat_messages, request_dict
+        
+        except Exception as e:
+            logger.error(f"Failed to prepare responses request: {str(e)}")
+            content = create_error_response(f"Failed to process request: {str(e)}", "bad_request", HTTPStatus.BAD_REQUEST)
+            raise HTTPException(status_code=400, detail=content)
+
+    async def generate_responses_stream(self, request: Any) -> AsyncGenerator[str, None]:
+        """
+        Generate a streaming response for responses requests.
+        """
+        request_id = f"resp-{uuid.uuid4()}"
+
+        try:
+            chat_messages, model_params = await self._prepare_responses_request(request)
+            refined_messages = self.refine_messages(chat_messages)
+            chat_template_kwargs = model_params.get("chat_template_kwargs", {})
+
+            input_prompt = self.model.create_input_prompt(refined_messages, chat_template_kwargs)
+
+            if self.debug:
+                log_debug_prompt(input_prompt)
+
+            input_ids = self.model.encode_prompt(input_prompt)
+
+            cache, rest_input_ids = self.prompt_cache.fetch_nearest_cache(input_ids)
+            cache_key = input_ids[:]
+
+            if cache is None:
+                cache = self.model.create_prompt_cache()
+
+            total_input_tokens = len(input_ids)
+            total_remaining_tokens = len(rest_input_ids)
+            total_cached_tokens = total_input_tokens - total_remaining_tokens
+
+            if self.debug:
+                log_debug_cache_stats(total_input_tokens, total_remaining_tokens)
+
+            enable_thinking = chat_template_kwargs.get("enable_thinking", True)
+            parsers_result = ParserManager.create_parsers(
+                reasoning_parser_name=self.reasoning_parser_name,
+                tool_parser_name=self.tool_parser_name,
+            )
+
+            if not enable_thinking and parsers_result.reasoning_parser:
+                if parsers_result.reasoning_parser.respects_enable_thinking():
+                    parsers_result.reasoning_parser = None
+
+            if model_params.get("schema"):
+                parsers_result.reasoning_parser = None
+                parsers_result.tool_parser = None
+                parsers_result.unified_parser = None
+
+            prompt_progress_callback = make_prompt_progress_callback() if self.debug else None
+
+            request_data = {
+                "input_ids": rest_input_ids,
+                "prompt_cache": cache,
+                "stream": True,
+                "prompt_progress_callback": prompt_progress_callback,
+                **model_params
+            }
+            request_data.pop("input", None)
+            
+            if self.debug:
+                log_debug_request(request_data)
+                request_data["verbose"] = True
+
+            input_ids = request_data.pop("input_ids")
+            prompt_cache = request_data.pop("prompt_cache")
+            request_data.pop("stream")
+
+            response_generator = self.inference_worker.submit_stream(
+                self.model,
+                input_ids=input_ids,
+                prompt_cache=prompt_cache,
+                stream=True,
+                **request_data,
+            )
+
+            after_reasoning_close_content = None
+            final_chunk = None
+            is_first_chunk = True
+            raw_text = ""
+            
+            if parsers_result.is_unified:
+                unified_parser = parsers_result.unified_parser
+                async for chunk in response_generator:
+                    if chunk is None:
+                        continue
+                    final_chunk = chunk
+                    text = chunk.text
+                    raw_text += text
+                    cache_key.append(chunk.token)
+
+                    if unified_parser:
+                        parsed_result, is_complete = unified_parser.parse_streaming(text)
+                        if parsed_result:
+                            if parsed_result.get("reasoning_content"):
+                                yield {"reasoning_content": parsed_result["reasoning_content"]}
+                            if parsed_result.get("tool_calls"):
+                                for tool_call in parsed_result["tool_calls"]:
+                                    yield tool_call
+                            if parsed_result.get("content"):
+                                yield {"content": parsed_result["content"]}
+                    else:
+                        yield text
+
+                if unified_parser and hasattr(unified_parser, "handle_parse_streaming_end"):
+                    parsed_result, is_complete = unified_parser.handle_parse_streaming_end()
+                    if parsed_result:
+                        if parsed_result.get("reasoning_content"):
+                            yield {"reasoning_content": parsed_result["reasoning_content"]}
+                        if parsed_result.get("tool_calls"):
+                            for tool_call in parsed_result["tool_calls"]:
+                                yield tool_call
+                        if parsed_result.get("content"):
+                            yield {"content": parsed_result["content"]}
+            else:
+                reasoning_parser = parsers_result.reasoning_parser
+                tool_parser = parsers_result.tool_parser
+                
+                async for chunk in response_generator:
+                    if chunk is None:
+                        continue
+                    final_chunk = chunk
+                    text = chunk.text
+                    raw_text += text
+                    cache_key.append(chunk.token)
+                    if is_first_chunk:
+                        if reasoning_parser and hasattr(reasoning_parser, 'needs_redacted_reasoning_prefix'):
+                            if reasoning_parser.needs_redacted_reasoning_prefix():
+                                text = reasoning_parser.get_reasoning_open() + text
+                        is_first_chunk = False
+                    if reasoning_parser:
+                        parsed_content, is_complete = reasoning_parser.extract_reasoning_streaming(text)
+                        if parsed_content:
+                            after_reasoning_close_content = parsed_content.get("after_reasoning_close_content")
+                            yield parsed_content
+                        if is_complete:
+                            reasoning_parser = None
+                        if after_reasoning_close_content:
+                            text = after_reasoning_close_content
+                            after_reasoning_close_content = None
+                        else:
+                            continue
+                    if tool_parser:
+                        parsed_content, is_complete = tool_parser.extract_tool_calls_streaming(text)
+                        if parsed_content:
+                            content = parsed_content.get("content")
+                            if content:
+                                yield {"content": content}
+                            tool_calls = parsed_content.get("tool_calls")
+                            if tool_calls:
+                                for tool_call in tool_calls:
+                                    yield tool_call
+                        continue
+                    
+                    yield text
+
+            total_tokens = final_chunk.prompt_tokens + final_chunk.generation_tokens
+            self.prompt_cache.insert_cache(cache_key, cache)
+
+            if self.debug:
+                log_debug_raw_text_response(raw_text)
+                log_debug_stats(
+                    final_chunk.prompt_tokens,
+                    final_chunk.generation_tokens,
+                    total_tokens,
+                    final_chunk.generation_tps,
+                    final_chunk.peak_memory
+                )
+
+            yield {
+                "__usage__": UsageInfo(
+                    prompt_tokens=final_chunk.prompt_tokens,
+                    completion_tokens=final_chunk.generation_tokens,
+                    total_tokens=total_tokens,
+                    prompt_tokens_details=PromptTokenUsageInfo(
+                        cached_tokens=total_cached_tokens
+                    )
+                )
+            }
+
+        except asyncio.QueueFull:
+            content = create_error_response("Too many requests. Service is at capacity.", "rate_limit_exceeded", HTTPStatus.TOO_MANY_REQUESTS)
+            raise HTTPException(status_code=429, detail=content)
+        except Exception as e:
+            logger.error(f"Error in responses stream generation for request {request_id}: {str(e)}")
+            content = create_error_response(f"Failed to generate text stream: {str(e)}", "server_error", HTTPStatus.INTERNAL_SERVER_ERROR)
+            raise HTTPException(status_code=500, detail=content)
+
+    async def generate_responses_response(self, request: Any) -> Dict[str, Any]:
+        """
+        Generate a complete response for responses API requests.
+        """
+        request_id = f"resp-{uuid.uuid4()}"
+
+        try:
+            chat_messages, model_params = await self._prepare_responses_request(request)
+            refined_messages = self.refine_messages(chat_messages)
+            chat_template_kwargs = model_params.get("chat_template_kwargs", {})
+
+            input_prompt = self.model.create_input_prompt(refined_messages, chat_template_kwargs)
+
+            if self.debug:
+                log_debug_prompt(input_prompt)
+
+            input_ids = self.model.encode_prompt(input_prompt)
+            cache, rest_input_ids = self.prompt_cache.fetch_nearest_cache(input_ids)
+            cache_key = input_ids[:]
+
+            if cache is None:
+                cache = self.model.create_prompt_cache()
+
+            total_input_tokens = len(input_ids)
+            total_remaining_tokens = len(rest_input_ids)
+            total_cached_tokens = total_input_tokens - total_remaining_tokens
+
+            if self.debug:
+                log_debug_cache_stats(total_input_tokens, total_remaining_tokens)
+            
+            prompt_progress_callback = make_prompt_progress_callback() if self.debug else None
+
+            request_data = {
+                "input_ids": rest_input_ids,
+                "prompt_cache": cache,
+                "stream": False,
+                "prompt_progress_callback": prompt_progress_callback,
+                **model_params
+            }
+            request_data.pop("input", None)
+
+            input_ids = request_data.pop("input_ids")
+            prompt_cache = request_data.pop("prompt_cache")
+            request_data.pop("stream")
+
+            response = await self.inference_worker.submit(
+                self.model,
+                input_ids=input_ids,
+                prompt_cache=prompt_cache,
+                stream=False,
+                **request_data,
+            )
+            
+            parsers_result = ParserManager.create_parsers(
+                reasoning_parser_name=self.reasoning_parser_name,
+                tool_parser_name=self.tool_parser_name,
+            )
+
+            enable_thinking = chat_template_kwargs.get("enable_thinking", True)
+            if not enable_thinking and parsers_result.reasoning_parser:
+                if parsers_result.reasoning_parser.respects_enable_thinking():
+                    parsers_result.reasoning_parser = None
+
+            if model_params.get("schema"):
+                parsers_result.reasoning_parser = None
+                parsers_result.tool_parser = None
+                parsers_result.unified_parser = None
+
+            response_text = response.text
+            cache_key += response.tokens
+            self.prompt_cache.insert_cache(cache_key, cache)
+
+            parsed_response = {
+                "reasoning_content": None,
+                "tool_calls": None,
+                "content": None
+            }
+
+            if parsers_result.is_unified:
+                unified_parser = parsers_result.unified_parser
+                if unified_parser:
+                    parsed_result = unified_parser.parse(response_text)
+                    if parsed_result:
+                        parsed_response["reasoning_content"] = parsed_result.get("reasoning_content")
+                        parsed_response["tool_calls"] = parsed_result.get("tool_calls")
+                        parsed_response["content"] = parsed_result.get("content")
+                else:
+                    parsed_response["content"] = response_text
+            elif parsers_result.reasoning_parser or parsers_result.tool_parser:
+                reasoning_parser = parsers_result.reasoning_parser
+                tool_parser = parsers_result.tool_parser
+
+                if reasoning_parser and reasoning_parser.needs_redacted_reasoning_prefix():
+                    response_text = reasoning_parser.get_reasoning_open() + response_text
+
+                if reasoning_parser:
+                    parsed_content = reasoning_parser.extract_reasoning(response_text)
+                    parsed_response["reasoning_content"] = parsed_content.get("reasoning_content")
+                    parsed_response["content"] = parsed_content.get("content")
+                    response_text = parsed_content.get("after_reasoning_close_content")
+
+                if response_text:
+                    if tool_parser:
+                        parsed_content = tool_parser.extract_tool_calls(response_text)
+                        parsed_response["tool_calls"] = parsed_content.get("tool_calls")
+                        parsed_response["content"] = parsed_content.get("content")
+            else:
+                parsed_response["content"] = response_text
+
+            total_tokens = response.prompt_tokens + response.generation_tokens
+
+            if self.debug:
+                log_debug_raw_text_response(response.text)
+                log_debug_stats(
+                    response.prompt_tokens,
+                    response.generation_tokens,
+                    total_tokens,
+                    response.generation_tps,
+                    response.peak_memory
+                )
+
+            usage = UsageInfo(
+                prompt_tokens=response.prompt_tokens,
+                completion_tokens=response.generation_tokens,
+                total_tokens=total_tokens,
+                prompt_tokens_details=PromptTokenUsageInfo(
+                    cached_tokens=total_cached_tokens
+                )
+            )
+
+            return {"response": parsed_response, "usage": usage}
+                        
+        except asyncio.QueueFull:
+            content = create_error_response("Too many requests. Service is at capacity.", "rate_limit_exceeded", HTTPStatus.TOO_MANY_REQUESTS)
+            raise HTTPException(status_code=429, detail=content)
+        except Exception as e:
+            logger.error(f"Error in responses generation: {str(e)}")
+            content = create_error_response(f"Failed to generate text response: {str(e)}", "server_error", HTTPStatus.INTERNAL_SERVER_ERROR)
+            raise HTTPException(status_code=500, detail=content)

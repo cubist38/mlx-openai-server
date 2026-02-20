@@ -39,6 +39,10 @@ from ..schemas.openai import (
     Message,
     Model,
     ModelsResponse,
+    ResponseChunk,
+    ResponseOutputItem,
+    ResponseRequest,
+    ResponseResponse,
     StreamingChoice,
     TranscriptionRequest,
     TranscriptionResponse,
@@ -293,6 +297,50 @@ async def chat_completions(
         raise
     except Exception as e:
         logger.exception(f"Error processing chat completion request: {type(e).__name__}: {e}")
+        return JSONResponse(
+            content=create_error_response(str(e)), status_code=HTTPStatus.INTERNAL_SERVER_ERROR
+        )
+
+
+@router.post("/v1/responses", response_model=None)
+async def responses_endpoint(
+    request: ResponseRequest, raw_request: Request
+) -> ResponseResponse | StreamingResponse | JSONResponse:
+    """Handle Responses API requests (OpenAI-compatible)."""
+    handler = _resolve_handler(raw_request, model_id=request.model)
+    if handler is None:
+        return JSONResponse(
+            content=create_error_response(
+                "Model handler not initialized",
+                "service_unavailable",
+                HTTPStatus.SERVICE_UNAVAILABLE,
+            ),
+            status_code=HTTPStatus.SERVICE_UNAVAILABLE,
+        )
+
+    handler_type = _get_handler_type(handler)
+    if handler_type not in ("lm", "multimodal"):
+        return JSONResponse(
+            content=create_error_response(
+                "Unsupported model type for responses. "
+                f"Handler for '{request.model}' is {type(handler).__name__} "
+                f"(handler_type={handler_type!r}).",
+                "unsupported_request",
+                HTTPStatus.BAD_REQUEST,
+            ),
+            status_code=HTTPStatus.BAD_REQUEST,
+        )
+
+    request_id = getattr(raw_request.state, "request_id", None)
+
+    try:
+        if handler_type == "multimodal":
+            return await process_multimodal_responses_request(handler, request, request_id)
+        return await process_text_responses_request(handler, request, request_id)
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception(f"Error processing responses request: {type(e).__name__}: {e}")
         return JSONResponse(
             content=create_error_response(str(e)), status_code=HTTPStatus.INTERNAL_SERVER_ERROR
         )
@@ -863,3 +911,254 @@ def format_final_response(
         usage=usage,
         request_id=request_id,
     )
+
+# =============================================================================
+# Responses API Handlers
+# =============================================================================
+
+def convert_to_chat_request(request: ResponseRequest) -> ChatCompletionRequest:
+    """Convert Responses API request to ChatCompletion API request for internal handlers."""
+    chat_messages = []
+    
+    instructions = request.instructions
+    if instructions:
+        chat_messages.append(Message(role="system", content=instructions, refusal=None, reasoning_content=None, tool_calls=None, tool_call_id=None))
+    
+    input_items = request.input or []
+    if isinstance(input_items, str):
+        input_items = [{"type": "text", "text": input_items}]
+    
+    for item in input_items:
+        if isinstance(item, dict):
+            if "role" in item and "content" in item:
+                chat_messages.append(Message(role=item["role"], content=item["content"], refusal=None, reasoning_content=None, tool_calls=None, tool_call_id=None))
+            elif item.get("type") in ("input_text", "text"):
+                chat_messages.append(Message(role="user", content=item.get("text", ""), refusal=None, reasoning_content=None, tool_calls=None, tool_call_id=None))
+            else:
+                chat_messages.append(Message(role="user", content=str(item), refusal=None, reasoning_content=None, tool_calls=None, tool_call_id=None))
+        elif hasattr(item, 'role') and hasattr(item, 'content'):
+            chat_messages.append(Message(role=getattr(item, 'role'), content=getattr(item, 'content'), refusal=None, reasoning_content=None, tool_calls=None, tool_call_id=None))
+        else:
+            chat_messages.append(Message(role="user", content=str(item), refusal=None, reasoning_content=None, tool_calls=None, tool_call_id=None))
+            
+    return ChatCompletionRequest(
+        model=request.model,
+        messages=chat_messages,
+        tools=request.tools,
+        tool_choice=request.tool_choice,
+        temperature=request.temperature,
+        max_tokens=request.max_tokens,
+        stream=request.stream,
+        top_p=request.top_p,
+        top_k=request.top_k,
+        min_p=request.min_p,
+        repetition_penalty=request.repetition_penalty,
+        response_format=request.response_format,
+        chat_template_kwargs=request.chat_template_kwargs
+    )
+
+async def process_multimodal_responses_request(
+    handler: MLXVLMHandler, request: ResponseRequest, request_id: str | None = None
+) -> ResponseResponse | StreamingResponse | JSONResponse:
+    if request_id:
+        logger.info(f"Processing multimodal responses request [request_id={request_id}]")
+
+    chat_req = convert_to_chat_request(request)
+
+    if request.stream:
+        return StreamingResponse(
+            handle_responses_stream_response(
+                handler.generate_multimodal_stream(chat_req), request.model, request_id
+            ),
+            media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache",
+                "Connection": "keep-alive",
+                "X-Accel-Buffering": "no",
+            },
+        )
+    result = await handler.generate_multimodal_response(chat_req)
+    if isinstance(result, dict) and "response" in result and "usage" in result:
+        response_data = result.get("response")
+        usage = result.get("usage")
+        return format_final_responses_response(response_data, request.model, request_id, usage)  # type: ignore[arg-type]
+
+    return format_final_responses_response(result, request.model, request_id)
+
+async def process_text_responses_request(
+    handler: MLXLMHandler | MLXVLMHandler,
+    request: ResponseRequest,
+    request_id: str | None = None,
+) -> ResponseResponse | StreamingResponse | JSONResponse:
+    if request_id:
+        logger.info(f"Processing text responses request [request_id={request_id}]")
+
+    chat_req = convert_to_chat_request(request)
+
+    if request.stream:
+        return StreamingResponse(
+            handle_responses_stream_response(
+                handler.generate_text_stream(chat_req),  # type: ignore[union-attr]
+                request.model,
+                request_id,
+            ),
+            media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache",
+                "Connection": "keep-alive",
+                "X-Accel-Buffering": "no",
+            },
+        )
+
+    result = await handler.generate_text_response(chat_req)  # type: ignore[union-attr]
+    response_data = result.get("response")
+    usage = result.get("usage")
+    return format_final_responses_response(response_data, request.model, request_id, usage)  # type: ignore[arg-type]
+
+def format_final_responses_response(
+    response: str | dict[str, Any],
+    model: str,
+    request_id: str | None = None,
+    usage: UsageInfo | None = None,
+) -> ResponseResponse:
+    if isinstance(response, str):
+        return ResponseResponse(
+            id=get_id(),
+            created=int(time.time()),
+            model=model,
+            output=[ResponseOutputItem(type="text", text=response)],
+            usage=usage,
+            request_id=request_id,
+        )
+
+    response_content = response.get("content", None)
+    tool_calls = response.get("tool_calls", None)
+    
+    output_items = []
+    if response_content:
+        output_items.append(ResponseOutputItem(type="text", text=response_content))
+    
+    if tool_calls:
+        for tc in tool_calls:
+            if isinstance(tc, dict):
+                output_items.append(
+                    ResponseOutputItem(
+                        type="function_call",
+                        id=tc.get("id", get_tool_call_id()),
+                        name=tc.get("function", {}).get("name", ""),
+                        arguments=tc.get("function", {}).get("arguments", ""),
+                    )
+                )
+
+    return ResponseResponse(
+        id=get_id(),
+        created=int(time.time()),
+        model=model,
+        output=output_items,
+        usage=usage,
+        request_id=request_id,
+    )
+
+def create_responses_response_chunk(
+    chunk: str | dict[str, Any],
+    model: str,
+    chat_id: str | None = None,
+    created_time: int | None = None,
+    request_id: str | None = None,
+) -> ResponseChunk:
+    chat_id = chat_id or get_id()
+    created_time = created_time or int(time.time())
+
+    if isinstance(chunk, str):
+        return ResponseChunk(
+            id=chat_id,
+            created=created_time,
+            model=model,
+            output=[ResponseOutputItem(type="text", text=chunk, index=0)],
+            request_id=request_id,
+        )
+
+    output_items = []
+    if "content" in chunk and isinstance(chunk["content"], str):
+        output_items.append(ResponseOutputItem(type="text", text=chunk["content"], index=0))
+
+    if "name" in chunk or "arguments" in chunk:
+        idx = chunk.get("index", 0)
+        output_items.append(
+            ResponseOutputItem(
+                type="function_call",
+                id=get_tool_call_id(),
+                name=chunk.get("name", None),
+                arguments=chunk.get("arguments", None),
+                index=idx,
+            )
+        )
+
+    if not output_items:
+        output_items.append(ResponseOutputItem(type="text", text="", index=0))
+
+    return ResponseChunk(
+        id=chat_id,
+        created=created_time,
+        model=model,
+        output=output_items,
+        request_id=request_id,
+    )
+
+async def handle_responses_stream_response(
+    generator: AsyncGenerator[Any, None], model: str, request_id: str | None = None
+) -> AsyncGenerator[str, None]:
+    chat_index = get_id()
+    created_time = int(time.time())
+    tool_call_index = -1
+    usage_info = None
+
+    try:
+        async for chunk in generator:
+            if not chunk:
+                continue
+
+            if isinstance(chunk, str):
+                response_chunk = create_responses_response_chunk(
+                    chunk, model, chat_id=chat_index, created_time=created_time, request_id=request_id
+                )
+                yield _yield_sse_chunk(response_chunk.model_dump())
+
+            elif isinstance(chunk, dict):
+                if "__usage__" in chunk:
+                    usage_info = chunk["__usage__"]
+                    continue
+
+                payload = dict(chunk)
+                if payload.get("name"):
+                    tool_call_index += 1
+                    payload["index"] = tool_call_index
+                elif payload.get("arguments") and "index" not in payload:
+                    payload["index"] = max(0, tool_call_index)
+
+                response_chunk = create_responses_response_chunk(
+                    payload, model, chat_id=chat_index, created_time=created_time, request_id=request_id
+                )
+                yield _yield_sse_chunk(response_chunk.model_dump())
+
+            else:
+                yield _yield_sse_chunk(
+                    create_error_response(f"Invalid chunk type: {type(chunk)}", "server_error", HTTPStatus.INTERNAL_SERVER_ERROR)
+                )
+
+    except Exception as e:
+        logger.exception(f"Error in responses stream wrapper: {type(e).__name__}: {e}")
+        yield _yield_sse_chunk(
+            create_error_response(str(e), "server_error", HTTPStatus.INTERNAL_SERVER_ERROR)
+        )
+    finally:
+        final_chunk = ResponseChunk(
+            id=chat_index,
+            created=created_time,
+            model=model,
+            output=[],
+            usage=usage_info,
+            request_id=request_id,
+        )
+        yield _yield_sse_chunk(final_chunk.model_dump())
+        yield "data: [DONE]\n\n"
