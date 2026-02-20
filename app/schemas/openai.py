@@ -2,18 +2,21 @@
 
 from __future__ import annotations
 
+import uuid
 from enum import Enum
-import random
 from typing import Any, ClassVar, Literal
 
 from fastapi import UploadFile
 from loguru import logger
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from openai.types.responses import (
+    ResponseOutputItem
+)
 
 class OpenAIBaseModel(BaseModel):
-    """Base model for OpenAI-compatible API models with extra field logging."""
-
+    """Base model for OpenAI API schemas."""
+    
     # OpenAI API does allow extra fields
     model_config = ConfigDict(extra="allow")
 
@@ -22,8 +25,7 @@ class OpenAIBaseModel(BaseModel):
 
     @model_validator(mode="wrap")
     @classmethod
-    def __log_extra_fields__(cls, data: Any, handler: Any) -> Any:
-        """Log any extra fields present in the request data."""
+    def __log_extra_fields__(cls, data, handler):
         result = handler(data)
         if not isinstance(data, dict):
             return result
@@ -40,7 +42,8 @@ class OpenAIBaseModel(BaseModel):
         # Compare against both field names and aliases
         if any(k not in field_names for k in data):
             logger.warning(
-                f"The following fields were present in the request but ignored: {data.keys() - field_names}"
+                "The following fields were present in the request but ignored: %s",
+                data.keys() - field_names,
             )
         return result
 
@@ -154,9 +157,15 @@ class PromptTokenUsageInfo(OpenAIBaseModel):
 
     cached_tokens: int | None = None
 
+class StreamOptions(OpenAIBaseModel):
+    """Stream options for a request."""
+    
+    include_usage: bool | None = True
+    continuous_usage_stats: bool | None = False
+
 
 class UsageInfo(OpenAIBaseModel):
-    """Represents token usage information for a request."""
+    """Token usage information for a request."""
 
     prompt_tokens: int = 0
     total_tokens: int = 0
@@ -165,19 +174,30 @@ class UsageInfo(OpenAIBaseModel):
 
 
 class FunctionCall(OpenAIBaseModel):
-    """Represents a function call in a message."""
+    # Internal field to preserve native tool call ID from tool parser.
+    # Excluded from serialization to maintain OpenAI API compatibility
+    # (function object should only contain 'name' and 'arguments').
+    id: str | None = Field(default=None, exclude=True)
+    name: str
+    arguments: str
 
-    arguments: str = Field(..., description="The arguments for the function call.")
-    name: str = Field(..., description="The name of the function to call.")
+def random_uuid() -> str:
+    return str(uuid.uuid4().hex)
+
+def make_tool_call_id(id_type: str = "random", func_name=None, idx=None):
+    if id_type == "kimi_k2":
+        return f"functions.{func_name}:{idx}"
+    else:
+        # by default return random
+        return f"chatcmpl-tool-{random_uuid()}"
 
 
 class ChatCompletionMessageToolCall(OpenAIBaseModel):
     """Represents a tool call in a message."""
 
-    id: str | None = Field(None, description="The ID of the tool call.")
-    function: FunctionCall = Field(..., description="The function call details.")
-    type: Literal["function"] = Field(..., description="The type of tool call, always 'function'.")
-    index: int | None = Field(None, description="The index of the tool call.")
+    id: str = Field(default_factory=make_tool_call_id)
+    type: Literal["function"] = "function"
+    function: FunctionCall
 
 
 class Message(OpenAIBaseModel):
@@ -197,21 +217,53 @@ class Message(OpenAIBaseModel):
     )
     tool_call_id: str | None = Field(None, description="The ID of the tool call, if any.")
 
+class ChatTemplateKwargs(OpenAIBaseModel):
+    """Represents the arguments for a chat template."""
 
-# Common request base for both streaming and non-streaming
-class ChatCompletionRequestBase(OpenAIBaseModel):
-    """Base model for chat completion requests."""
+    enable_thinking: bool = Field(default=True, description="Whether to enable thinking.")
+    reasoning_effort: Literal["low", "medium", "high"] = Field(
+        default="medium", description="The reasoning effort level."
+    )
 
+class FunctionDefinition(OpenAIBaseModel):
+    name: str
+    description: str | None = None
+    parameters: dict[str, Any] | None = None
+
+class ChatCompletionToolsParam(OpenAIBaseModel):
+    type: Literal["function"] = "function"
+    function: FunctionDefinition
+
+class ChatCompletionNamedFunction(OpenAIBaseModel):
+    name: str
+
+class ChatCompletionNamedToolChoiceParam(OpenAIBaseModel):
+    function: ChatCompletionNamedFunction
+    type: Literal["function"] = "function"
+
+class ChatCompletionRequest(OpenAIBaseModel):
+
+    """Request schema for OpenAI-compatible chat completion API."""
+    
     model: str = Field(Config.TEXT_MODEL, description="The model to use for completion.")
     messages: list[Message] = Field(..., description="The list of messages in the conversation.")
-    tools: list[dict[str, Any]] | None = Field(
+    tools: list[ChatCompletionToolsParam] | None = Field(
         None, description="List of tools available for the request."
     )
-    tool_choice: str | dict[str, Any] | None = Field(
-        "auto", description="Tool choice for the request."
+    tool_choice: (
+        Literal["none"]
+        | Literal["auto"]
+        | Literal["required"]
+        | ChatCompletionNamedToolChoiceParam
+        | None
+    ) = "none"
+    max_tokens: int | None = Field(
+        default=None,
+        deprecated="max_tokens is deprecated in favor of "
+        "the max_completion_tokens field",
     )
-    max_tokens: int | None = Field(256, description="The maximum number of tokens to generate.")
-    temperature: float | None = Field(0.7, description="Sampling temperature.")
+    max_completion_tokens: int | None = None
+    temperature: float | None = Field(1.0, description="Sampling temperature.")
     top_p: float | None = Field(1.0, description="Nucleus sampling probability.")
     top_k: int | None = Field(20, description="Top-k sampling parameter.")
     min_p: float | None = Field(0.0, description="Minimum probability for token generation.")
@@ -229,102 +281,22 @@ class ChatCompletionRequestBase(OpenAIBaseModel):
     )
     user: str | None = Field(None, description="User identifier.")
     repetition_penalty: float | None = Field(
-        1.05, description="Repetition penalty for token generation."
+        None, description="Repetition penalty for token generation."
     )
     repetition_context_size: int | None = Field(
-        20, description="Repetition context size for token generation."
+        None, description="Repetition context size for token generation."
     )
     xtc_probability: float | None = Field(
-        0.0, description="XTC (eXclude Top Choices) sampling probability (0.0-1.0)."
+        None, description="XTC (eXclude Top Choices) sampling probability (0.0-1.0)."
     )
     xtc_threshold: float | None = Field(
-        0.0, description="XTC sampling threshold (0.0-0.5)."
+        None, description="XTC sampling threshold (0.0-0.5)."
     )
     logit_bias: dict[str, float] | None = Field(
         None, description="Modify the likelihood of specified tokens appearing in the completion. Maps token IDs (as strings) to bias values from -100 to 100."
     )
-
-    @field_validator("messages")
-    @classmethod
-    def check_messages_not_empty(cls, v: list[Message]) -> list[Message]:
-        """Ensure that the messages list is not empty and validate message structure."""
-        if not v:
-            raise ValueError("messages cannot be empty")
-
-        # Validate message history length
-        if len(v) > 1000:
-            raise ValueError("message history is too long")
-
-        # Validate message roles
-        valid_roles = {"user", "assistant", "system", "tool"}
-        for msg in v:
-            if msg.role not in valid_roles:
-                raise ValueError(f"invalid role: {msg.role}")
-
-        return v
-
-    @field_validator("temperature")
-    @classmethod
-    def check_temperature(cls, v: float | None) -> float | None:
-        """Validate temperature is between 0 and 2."""
-        if v is not None and (v < 0 or v > 2):
-            raise ValueError("temperature must be between 0 and 2")
-        return v
-
-    @field_validator("max_tokens")
-    @classmethod
-    def check_max_tokens(cls, v: int | None) -> int | None:
-        """Validate max_tokens is positive and within reasonable limits."""
-        if v is not None:
-            if v <= 0:
-                raise ValueError("max_tokens must be positive")
-        return v
-
-    @field_validator("xtc_probability")
-    @classmethod
-    def check_xtc_probability(cls, v: float | None) -> float | None:
-        """Validate xtc_probability is between 0 and 1."""
-        if v is not None and (v < 0 or v > 1):
-            raise ValueError("xtc_probability must be between 0 and 1")
-        return v
-
-    @field_validator("xtc_threshold")
-    @classmethod
-    def check_xtc_threshold(cls, v: float | None) -> float | None:
-        """Validate xtc_threshold is between 0 and 0.5."""
-        if v is not None and (v < 0 or v > 0.5):
-            raise ValueError("xtc_threshold must be between 0 and 0.5")
-        return v
-
-    @field_validator("logit_bias")
-    @classmethod
-    def check_logit_bias(cls, v: dict[str, float] | None) -> dict[str, float] | None:
-        """Validate logit_bias keys are valid token IDs and values are within range."""
-        if v is not None:
-            for key, value in v.items():
-                try:
-                    int(key)
-                except ValueError:
-                    raise ValueError(f"logit_bias keys must be valid token IDs (integers as strings), got: {key}")
-                if not isinstance(value, (int, float)) or value < -100 or value > 100:
-                    raise ValueError(f"logit_bias values must be between -100 and 100, got: {value}")
-        return v
-
-
-class ChatTemplateKwargs(OpenAIBaseModel):
-    """Represents the arguments for a chat template."""
-
-    enable_thinking: bool = Field(default=True, description="Whether to enable thinking.")
-    reasoning_effort: Literal["low", "medium", "high"] = Field(
-        default="medium", description="The reasoning effort level."
-    )
-
-
-# Non-streaming request and response
-class ChatCompletionRequest(ChatCompletionRequestBase):
-    """Model for non-streaming chat completion requests."""
-
     stream: bool = Field(False, description="Whether to stream the response.")
+    stream_options: StreamOptions | None = None
     chat_template_kwargs: ChatTemplateKwargs = Field(
         default_factory=ChatTemplateKwargs, description="Arguments for the chat template."
     )
@@ -626,6 +598,7 @@ class TranscriptionRequest(OpenAIBaseModel):
     presence_penalty: float | None = Field(
         default=None, description="Presence penalty for token generation"
     )
+    reasoning_effort: Literal["low", "medium", "high"] | None = None
 
 
 # Transcription response objects
