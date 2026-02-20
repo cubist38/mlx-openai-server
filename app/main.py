@@ -23,6 +23,7 @@ Run multi-handler mode from YAML config:
 
 from __future__ import annotations
 
+import os
 import sys
 
 import uvicorn
@@ -112,6 +113,18 @@ def print_multi_startup_banner(config: MultiModelServerConfig) -> None:
     logger.info("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
 
 
+def _apply_sampling_env(config: MLXServerConfig) -> None:
+    """Set DEFAULT_* env vars from config so model layers use CLI sampling defaults."""
+    if config.default_max_tokens:
+        os.environ["DEFAULT_MAX_TOKENS"] = str(config.default_max_tokens)
+    if config.default_temperature:
+        os.environ["DEFAULT_TEMPERATURE"] = str(config.default_temperature)
+    if config.default_top_p:
+        os.environ["DEFAULT_TOP_P"] = str(config.default_top_p)
+    if config.default_top_k:
+        os.environ["DEFAULT_TOP_K"] = str(config.default_top_k)
+
+
 async def start(config: MLXServerConfig) -> None:
     """Run the ASGI server using the provided configuration.
 
@@ -126,6 +139,7 @@ async def start(config: MLXServerConfig) -> None:
         Single-model server configuration.
     """
     try:
+        _apply_sampling_env(config)
         # Display startup information
         print_startup_banner(config)
 

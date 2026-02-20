@@ -56,6 +56,12 @@ class MLXServerConfig:
     draft_model_path: str | None = None
     num_draft_tokens: int = 2
 
+    # Default sampling parameters (override DEFAULT_* env when set via CLI)
+    default_max_tokens: int | None = None
+    default_temperature: float | None = None
+    default_top_p: float | None = None
+    default_top_k: int | None = None
+
     # Used to capture raw CLI input before processing
     lora_paths_str: str | None = None
     lora_scales_str: str | None = None
