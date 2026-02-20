@@ -227,6 +227,11 @@ def cli():
     type=int,
     help="Number of draft tokens per step when using speculative decoding (--draft-model-path). Only supported with model type 'lm'. Default is 2.",
 )
+# Sampling parameters (defaults used when API request omits them)
+@click.option("--max-tokens", default=None, type=int, help="Default maximum number of tokens to generate.")
+@click.option("--temperature", default=None, type=float, help="Default sampling temperature.")
+@click.option("--top-p", default=None, type=float, help="Default nucleus sampling (top-p) probability.")
+@click.option("--top-k", default=None, type=int, help="Default top-k sampling parameter.")
 def launch(
     config_file,
     model_path,
@@ -255,6 +260,10 @@ def launch(
     prompt_cache_size,
     draft_model_path,
     num_draft_tokens,
+    max_tokens,
+    temperature,
+    top_p,
+    top_k,
 ) -> None:
     """Start the FastAPI/Uvicorn server with the supplied flags.
 
@@ -309,6 +318,10 @@ def launch(
         prompt_cache_size=prompt_cache_size,
         draft_model_path=draft_model_path,
         num_draft_tokens=num_draft_tokens,
+        default_max_tokens=max_tokens,
+        default_temperature=temperature,
+        default_top_p=top_p,
+        default_top_k=top_k,
     )
 
     asyncio.run(start(args))

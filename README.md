@@ -95,6 +95,11 @@ mlx-openai-server launch \
 - `--context-length`: Max sequence length for memory optimization
 - `--draft-model-path`: Path to draft model for speculative decoding (lm only)
 - `--num-draft-tokens`: Draft tokens per step for speculative decoding (lm only, default: 2)
+- **Sampling parameters** (defaults used when the API request omits them):
+  - `--max-tokens`: Default maximum number of tokens to generate
+  - `--temperature`: Default sampling temperature
+  - `--top-p`: Default nucleus sampling (top-p) probability
+  - `--top-k`: Default top-k sampling parameter
 - `--max-concurrency`: Concurrent requests (default: 1)
 - `--queue-timeout`: Request timeout in seconds (default: 300)
 - `--lora-paths`: Comma-separated LoRA adapter paths (image models)
