@@ -3,16 +3,13 @@
 from __future__ import annotations
 
 import uuid
+import time
 from enum import Enum
-from typing import Any, ClassVar, Literal
+from typing import Any, ClassVar, Literal, TypeAlias
 
-from fastapi import UploadFile
 from loguru import logger
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
-
-from openai.types.responses import (
-    ResponseOutputItem
-)
+from fastapi import UploadFile
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 class OpenAIBaseModel(BaseModel):
     """Base model for OpenAI API schemas."""
@@ -643,59 +640,85 @@ class TranscriptionResponseStream(OpenAIBaseModel):
 
 # --- Responses API Schemas ---
 
-class ResponseOutputItem(OpenAIBaseModel):
-    """Represents an output item in the Responses API."""
-    type: Literal["text", "function_call", "message"] = Field(..., description="The type of the output.")
-    text: str | None = Field(None, description="The text content if type is 'text'.")
-    id: str | None = Field(None, description="The ID of the tool call if type is 'function_call'.")
-    name: str | None = Field(None, description="The name of the function to call if type is 'function_call'.")
-    arguments: str | None = Field(None, description="The arguments for the function call if type is 'function_call'.")
-    # For streaming delta index tracking
-    index: int | None = Field(None, description="Index of the output item.")
+from openai.types.responses import (
+    ResponseStatus,
+    ResponseInputItemParam,
+    ResponseOutputItem,
+    ResponseFormatTextConfig
+)
+from openai.types.shared import Reasoning
+from openai.types.responses.response import Tool, ToolChoice
+from openai.types.responses.response import IncompleteDetails
+
+ResponseInputOutputItem: TypeAlias = ResponseInputItemParam | ResponseOutputItem
+
+class ResponsesRequest(OpenAIBaseModel):
+    input: str | list[ResponseInputOutputItem]
+    instructions: str | None = None
+    max_output_tokens: int | None = None
+    model: str | None = None
+    temperature: float | None = Field(
+        1.0, description="Sampling temperature."
+    )
+    top_p: float | None = Field(
+        1.0, description="Nucleus sampling probability."
+    )
+    top_k: int | None = Field(
+        20, description="Top-k sampling parameter."
+    )
+    min_p: float | None = Field(
+        None, description="Minimum probability for token generation."
+    )
+    repetition_penalty: float | None = Field(
+        None, description="Repetition penalty for token generation."
+    )
+    seed: int | None = Field(
+        None, description="The seed for the response."
+    )
+    text: ResponseFormatTextConfig | None = None
+    tools: list[Tool] | None = Field(
+        None, description="List of tools to use for the response."
+    )
+    tool_choice: ToolChoice | None = Field(
+        default="auto", description="The tool choice to use for the response."
+    )
+    reasoning: Reasoning | None = None
 
 
-class ResponseRequest(OpenAIBaseModel):
-    """Model for Responses API requests."""
-    model: str = Field(Config.TEXT_MODEL, description="The model to use for the response.")
-    input: list[Message | dict[str, Any]] | str | None = Field(None, description="The input sequence containing messages or text.")
-    instructions: str | None = Field(None, description="System instructions for the model.")
-    tools: list[dict[str, Any]] | None = Field(None, description="List of tools available for the request.")
-    tool_choice: str | dict[str, Any] | None = Field("auto", description="Tool choice for the request.")
-    temperature: float | None = Field(0.7, description="Sampling temperature.")
-    max_tokens: int | None = Field(256, description="The maximum number of tokens to generate.")
-    stream: bool | None = Field(False, description="Whether to stream the response.")
-    top_p: float | None = Field(1.0, description="Nucleus sampling probability.")
-    top_k: int | None = Field(20, description="Top-k sampling parameter.")
-    min_p: float | None = Field(0.0, description="Minimum probability for token generation.")
-    repetition_penalty: float | None = Field(1.05, description="Repetition penalty for token generation.")
-    response_format: dict[str, Any] | None = Field(None, description="Format for the response.")
-    chat_template_kwargs: ChatTemplateKwargs = Field(default_factory=ChatTemplateKwargs, description="Arguments for the chat template.")
-
-    @field_validator("temperature")
-    @classmethod
-    def check_temperature(cls, v: float | None) -> float | None:
-        if v is not None and (v < 0 or v > 2):
-            raise ValueError("temperature must be between 0 and 2")
-        return v
+class InputTokensDetails(OpenAIBaseModel):
+    cached_tokens: int
+    input_tokens_per_turn: list[int] = Field(default_factory=list)
+    cached_tokens_per_turn: list[int] = Field(default_factory=list)
 
 
-class ResponseResponse(OpenAIBaseModel):
+class OutputTokensDetails(OpenAIBaseModel):
+    reasoning_tokens: int = 0
+    tool_output_tokens: int = 0
+    output_tokens_per_turn: list[int] = Field(default_factory=list)
+    tool_output_tokens_per_turn: list[int] = Field(default_factory=list)
+
+class ResponseUsage(OpenAIBaseModel):
+    input_tokens: int
+    input_tokens_details: InputTokensDetails
+    output_tokens: int
+    output_tokens_details: OutputTokensDetails
+    total_tokens: int
+    
+
+class ResponsesResponse(OpenAIBaseModel):
     """Represents a complete response from the Responses API."""
-    id: str = Field(..., description="The response ID.")
-    object: Literal["response"] = Field("response", description="The object type, always 'response'.")
-    created: int = Field(..., description="The creation timestamp.")
-    model: str = Field(..., description="The model used for completion.")
-    output: list[ResponseOutputItem] = Field(..., description="List of outputs generated by the model.")
-    usage: UsageInfo | None = Field(default=None, description="The token usage.")
-    request_id: str | None = Field(None, description="Request correlation ID for tracking.")
-
-
-class ResponseChunk(OpenAIBaseModel):
-    """Represents a streaming chunk from the Responses API."""
-    id: str = Field(..., description="The chunk ID.")
-    object: Literal["response.chunk"] = Field("response.chunk", description="The object type, always 'response.chunk'.")
-    created: int = Field(..., description="The creation timestamp of the chunk.")
-    model: str = Field(..., description="The model used for the chunk.")
-    output: list[ResponseOutputItem] = Field(..., description="List of output deltas in the chunk.")
-    usage: UsageInfo | None = Field(default=None, description="The usage of the chunk.")
-    request_id: str | None = Field(None, description="Request correlation ID for tracking.")
+    id: str = Field(default_factory=lambda: f"resp_{random_uuid()}")
+    created_at: int = Field(default_factory=lambda: int(time.time()))
+    incomplete_details: IncompleteDetails | None = None
+    instructions: str | None = None
+    model: str
+    object: Literal["response"] = "response"
+    output: list[ResponseOutputItem]
+    top_p: float
+    temperature: float
+    reasoning: Reasoning | None = None
+    tool_choice: ToolChoice
+    tools: list[Tool]
+    text: ResponseFormatTextConfig | None = None
+    usage: ResponseUsage | None = None
+    status: ResponseStatus
