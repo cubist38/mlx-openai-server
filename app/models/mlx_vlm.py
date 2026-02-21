@@ -11,10 +11,11 @@ from outlines.processors import JSONLogitsProcessor
 from ..utils.outlines_transformer_tokenizer import OutlinesTransformerTokenizer
 
 # Default model parameters
-DEFAULT_MAX_TOKENS = os.getenv("DEFAULT_MAX_TOKENS", 8192)
+DEFAULT_MAX_TOKENS = os.getenv("DEFAULT_MAX_TOKENS", 100000)
 DEFAULT_TEMPERATURE = os.getenv("DEFAULT_TEMPERATURE", 0.0)
 DEFAULT_TOP_P = os.getenv("DEFAULT_TOP_P", 1.0)
 DEFAULT_SEED = os.getenv("DEFAULT_SEED", 0)
+DEFAULT_REPETITION_CONTEXT_SIZE = os.getenv("DEFAULT_REPETITION_CONTEXT_SIZE", 20)
 
 @dataclass
 class CompletionResponse:
@@ -121,11 +122,14 @@ class MLX_VLM:
                 - If stream=False: Complete response as CompletionResponse
                 - If stream=True: Generator yielding response chunks
         """
-        # Extract logits_processors from kwargs if present, otherwise initialize empty list
-        logits_processors = kwargs.pop("logits_processors", [])
+        seed = kwargs.get("seed") or DEFAULT_SEED
+
+        if seed and seed >= 0:
+            mx.random.seed(seed)
         
         # Handle JSON schema for structured outputs
-        json_schema = kwargs.get("schema", None)
+        json_schema = kwargs.get("schema")
+        logits_processors = []
         if json_schema:
             logits_processors.append(
                 JSONLogitsProcessor(
@@ -134,19 +138,25 @@ class MLX_VLM:
                     tensor_library_name="mlx"
                 )
             )
-            # Remove schema from kwargs as it's now handled via logits_processors
-            kwargs.pop("schema", None)
+
+        model_params = kwargs.get("vision_inputs")
+        sampling_params = {
+            "max_tokens": kwargs.get("max_tokens") or kwargs.get("max_completion_tokens") or DEFAULT_MAX_TOKENS,
+            "temperature": kwargs.get("temperature") or DEFAULT_TEMPERATURE,
+            "repetition_penalty": kwargs.get("repetition_penalty"),
+            "repetition_context_size": kwargs.get("repetition_context_size") or DEFAULT_REPETITION_CONTEXT_SIZE,
+            "top_p": kwargs.get("top_p") or DEFAULT_TOP_P,
+        }
         
-        # Pass logits_processors to stream_generate if any were added
-        if logits_processors:
-            kwargs["logits_processors"] = logits_processors
+        model_params.update(sampling_params)
 
         response_generator = stream_generate(
             self.model,
             self.processor,
             prompt=prompt,
             prompt_cache=prompt_cache,
-            **kwargs
+            logits_processors = logits_processors,
+            **model_params
         )
 
         if stream:
@@ -174,8 +184,6 @@ class MLX_VLM:
 
 
 if __name__ == "__main__":
-    import time
-
     image_path = "examples/images/attention.png"
     video_path = "examples/videos/demo.mp4"
     model_path = "mlx-community/Qwen3-VL-2B-Thinking-8bit"
@@ -226,6 +234,19 @@ if __name__ == "__main__":
     for key, value in inputs.items():
         if isinstance(value, torch.Tensor):
             inputs[key] = mx.array(value)
+
+    sampling_params = {
+        "max_tokens": 100000,
+        "temperature": 0.0,
+        "top_p": 1.0,
+        "seed": 0,
+        "repetition_penalty": None,
+        "repetition_context_size": 20,
+    }
+    
+    inputs.update(sampling_params)
+
+    inputs["schema"] = None
 
     response = model(input_prompt, stream=False, **inputs)
     

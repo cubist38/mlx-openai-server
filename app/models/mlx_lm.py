@@ -165,13 +165,14 @@ class MLX_LM:
             repetition_penalty=repetition_penalty,
             repetition_context_size=repetition_context_size
         )
+
         json_schema = kwargs.get("schema")
         if json_schema:
             logits_processors.append(
                 JSONLogitsProcessor(
-                    schema = json_schema,
-                    tokenizer = self.outlines_tokenizer,
-                    tensor_library_name = "mlx"
+                    schema=json_schema,
+                    tokenizer=self.outlines_tokenizer,
+                    tensor_library_name="mlx"
                 )
             )
 
