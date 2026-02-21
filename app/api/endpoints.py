@@ -18,9 +18,12 @@ import numpy as np
 from ..handler.mlx_lm import MLXLMHandler
 from ..handler.mlx_vlm import MLXVLMHandler
 from ..schemas.openai import (
+    ChatCompletionContentPartImage,
+    ChatCompletionContentPartText,
     ChatCompletionChunk,
     ChatCompletionMessageToolCall,
     ChatCompletionRequest,
+    Config,
     ChatCompletionResponse,
     Choice,
     ChoiceDeltaFunctionCall,
@@ -30,6 +33,7 @@ from ..schemas.openai import (
     EmbeddingResponse,
     EmbeddingResponseData,
     FunctionCall,
+    ImageURL,
     HealthCheckResponse,
     HealthCheckStatus,
     ImageEditRequest,
@@ -39,14 +43,29 @@ from ..schemas.openai import (
     Message,
     Model,
     ModelsResponse,
-    ResponseChunk,
-    ResponseOutputItem,
-    ResponseRequest,
-    ResponseResponse,
+    ResponsesRequest,
+    ResponsesResponse,
+    ResponseUsage,
+    InputTokensDetails,
+    OutputTokensDetails,
     StreamingChoice,
     TranscriptionRequest,
     TranscriptionResponse,
     UsageInfo,
+    random_uuid
+)
+from openai.types.responses import FunctionTool
+from openai.types.responses.response_output_message import (
+    ResponseOutputText,
+    ResponseOutputMessage
+)
+from openai.types.responses.response_function_tool_call import (
+    ResponseFunctionToolCall
+)
+from openai.types.responses.response_reasoning_item import (
+    Summary,
+    Content,
+    ResponseReasoningItem
 )
 from ..utils.errors import create_error_response
 
@@ -300,51 +319,6 @@ async def chat_completions(
         return JSONResponse(
             content=create_error_response(str(e)), status_code=HTTPStatus.INTERNAL_SERVER_ERROR
         )
-
-
-@router.post("/v1/responses", response_model=None)
-async def responses_endpoint(
-    request: ResponseRequest, raw_request: Request
-) -> ResponseResponse | StreamingResponse | JSONResponse:
-    """Handle Responses API requests (OpenAI-compatible)."""
-    handler = _resolve_handler(raw_request, model_id=request.model)
-    if handler is None:
-        return JSONResponse(
-            content=create_error_response(
-                "Model handler not initialized",
-                "service_unavailable",
-                HTTPStatus.SERVICE_UNAVAILABLE,
-            ),
-            status_code=HTTPStatus.SERVICE_UNAVAILABLE,
-        )
-
-    handler_type = _get_handler_type(handler)
-    if handler_type not in ("lm", "multimodal"):
-        return JSONResponse(
-            content=create_error_response(
-                "Unsupported model type for responses. "
-                f"Handler for '{request.model}' is {type(handler).__name__} "
-                f"(handler_type={handler_type!r}).",
-                "unsupported_request",
-                HTTPStatus.BAD_REQUEST,
-            ),
-            status_code=HTTPStatus.BAD_REQUEST,
-        )
-
-    request_id = getattr(raw_request.state, "request_id", None)
-
-    try:
-        if handler_type == "multimodal":
-            return await process_multimodal_responses_request(handler, request, request_id)
-        return await process_text_responses_request(handler, request, request_id)
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.exception(f"Error processing responses request: {type(e).__name__}: {e}")
-        return JSONResponse(
-            content=create_error_response(str(e)), status_code=HTTPStatus.INTERNAL_SERVER_ERROR
-        )
-
 
 @router.post("/v1/embeddings", response_model=None)
 async def embeddings(
@@ -646,7 +620,7 @@ def create_response_chunk(
     )
 
 
-def _yield_sse_chunk(data: dict[str, Any] | ChatCompletionChunk | ResponseChunk) -> str:
+def _yield_sse_chunk(data: dict[str, Any] | ChatCompletionChunk) -> str:
     """Format and yield SSE chunk data."""
     # Assuming ResponseChunk was added recently, we support it too
     if hasattr(data, "model_dump"):
@@ -767,17 +741,12 @@ async def process_multimodal_request(
                 "X-Accel-Buffering": "no",
             },
         )
-    # Extract response and usage from handler
     result = await handler.generate_multimodal_response(request)
-    if isinstance(result, dict) and "response" in result and "usage" in result:
-        response_data = result.get("response")
-        usage = result.get("usage")
-        final_response = format_final_response(response_data, request.model, request_id, usage)  # type: ignore[arg-type]
-        return JSONResponse(content=final_response.model_dump(exclude_none=True))
-
-    # Fallback for backward compatibility or if structure is different
-    final_response_fallback = format_final_response(result, request.model, request_id)
-    return JSONResponse(content=final_response_fallback.model_dump(exclude_none=True))
+    response_data = result.get("response")
+    usage = result.get("usage")
+    final_response = format_final_response(response_data, request.model, request_id, usage)
+    return JSONResponse(content=final_response.model_dump(exclude_none=True))
+    
 
 
 async def process_text_request(
@@ -808,15 +777,13 @@ async def process_text_request(
     result = await handler.generate_text_response(request)  # type: ignore[union-attr]
     response_data = result.get("response")
     usage = result.get("usage")
-    final_response = format_final_response(response_data, request.model, request_id, usage)  # type: ignore[arg-type]
+    final_response = format_final_response(response_data, request.model, request_id, usage)
     return JSONResponse(content=final_response.model_dump(exclude_none=True))
 
 
 def get_id() -> str:
     """Generate a unique ID for chat completions with timestamp and random component."""
-    timestamp = int(time.time())
-    random_suffix = random.randint(0, 999999)
-    return f"chatcmpl_{timestamp}{random_suffix:06d}"
+    return f"chatcmpl_{random_uuid()}"
 
 
 def get_tool_call_id() -> str:
@@ -920,252 +887,451 @@ def format_final_response(
 # Responses API Handlers
 # =============================================================================
 
-def convert_to_chat_request(request: ResponseRequest) -> ChatCompletionRequest:
-    """Convert Responses API request to ChatCompletion API request for internal handlers."""
-    chat_messages = []
-    
-    instructions = request.instructions
-    if instructions:
-        chat_messages.append(Message(role="system", content=instructions, refusal=None, reasoning_content=None, tool_calls=None, tool_call_id=None))
-    
-    input_items = request.input or []
+def _normalize_responses_item(item: Any) -> dict[str, Any]:
+    """Normalize TypedDict/BaseModel response item to a plain dictionary."""
+    if isinstance(item, dict):
+        return item
+    if hasattr(item, "model_dump"):
+        dumped = item.model_dump(exclude_none=True)
+        if isinstance(dumped, dict):
+            return dumped
+    return {}
+
+
+def _serialize_responses_tool_output(output: Any) -> str:
+    """Serialize function_call_output payloads into tool message text."""
+    if isinstance(output, str):
+        return output
+
+    if isinstance(output, list):
+        text_parts: list[str] = []
+        for output_item in output:
+            normalized = _normalize_responses_item(output_item)
+            if normalized.get("type") in {"input_text", "output_text", "text"} and normalized.get("text"):
+                text_parts.append(str(normalized["text"]))
+        if text_parts:
+            return "\n".join(text_parts)
+
+    return json.dumps(output)
+
+
+def _convert_responses_content(
+    role: str, content: Any
+) -> str | list[ChatCompletionContentPartText | ChatCompletionContentPartImage]:
+    """Convert Responses message content into chat completion content."""
+    if isinstance(content, str):
+        return content
+    if not isinstance(content, list):
+        return str(content)
+
+    if role != "user":
+        text_parts: list[str] = []
+        for part in content:
+            normalized = _normalize_responses_item(part)
+            part_type = normalized.get("type")
+            if part_type in {"input_text", "output_text", "text", "reasoning_text", "summary_text"}:
+                text = normalized.get("text")
+                if text:
+                    text_parts.append(str(text))
+        return "\n".join(text_parts)
+
+    converted: list[ChatCompletionContentPartText | ChatCompletionContentPartImage] = []
+    for part in content:
+        normalized = _normalize_responses_item(part)
+        part_type = normalized.get("type")
+        if part_type in {"input_text", "output_text", "text"}:
+            text = normalized.get("text")
+            if text:
+                converted.append(ChatCompletionContentPartText(type="text", text=str(text)))
+        elif part_type in {"input_image", "image_url"} and normalized.get("image_url"):
+            converted.append(
+                ChatCompletionContentPartImage(
+                    type="image_url",
+                    image_url=ImageURL(url=str(normalized["image_url"])),
+                )
+            )
+    return converted if converted else ""
+
+
+def _convert_responses_tools(tools: list[Any] | None) -> list[dict[str, Any]] | None:
+    """Convert Responses function tools into chat-completions tool schema."""
+    if not tools:
+        return None
+
+    converted_tools: list[dict[str, Any]] = []
+    for tool in tools:
+        normalized = _normalize_responses_item(tool)
+        if normalized.get("type") != "function":
+            continue
+
+        function_name = normalized.get("name")
+        if not function_name and isinstance(tool, FunctionTool):
+            function_name = tool.name
+        if not function_name:
+            continue
+
+        converted_tools.append(
+            {
+                "type": "function",
+                "function": {
+                    "name": function_name,
+                    "description": normalized.get("description"),
+                    "parameters": normalized.get("parameters"),
+                },
+            }
+        )
+    return converted_tools or None
+
+
+def _convert_responses_tool_choice(tool_choice: Any) -> Any:
+    """Convert Responses tool_choice to chat-completions tool_choice shape."""
+    if tool_choice in {None, "none", "auto", "required"}:
+        return tool_choice
+
+    normalized = _normalize_responses_item(tool_choice)
+    if normalized.get("type") == "function" and normalized.get("name"):
+        return {
+            "type": "function",
+            "function": {"name": normalized["name"]},
+        }
+    return "auto"
+
+
+def convert_responses_request_to_chat_request(
+    request: ResponsesRequest,
+    model: str | None = None,
+) -> ChatCompletionRequest:
+    """Convert a Responses request into a ChatCompletionRequest with full turn history."""
+    chat_messages: list[Message] = []
+    pending_tool_calls: list[ChatCompletionMessageToolCall] = []
+    pending_user_parts: list[ChatCompletionContentPartText | ChatCompletionContentPartImage] = []
+
+    def flush_pending_user_parts() -> None:
+        if pending_user_parts:
+            chat_messages.append(Message(role="user", content=list(pending_user_parts)))
+            pending_user_parts.clear()
+
+    def flush_pending_tool_calls() -> None:
+        flush_pending_user_parts()
+        if pending_tool_calls:
+            chat_messages.append(
+                Message(role="assistant", content="", tool_calls=list(pending_tool_calls))
+            )
+            pending_tool_calls.clear()
+
+    if request.instructions:
+        chat_messages.append(Message(role="system", content=request.instructions))
+
+    input_items = request.input
     if isinstance(input_items, str):
-        input_items = [{"type": "text", "text": input_items}]
-    
-    for item in input_items:
-        if isinstance(item, dict):
-            if "role" in item and "content" in item:
-                chat_messages.append(Message(role=item["role"], content=item["content"], refusal=None, reasoning_content=None, tool_calls=None, tool_call_id=None))
-            elif item.get("type") in ("input_text", "text"):
-                chat_messages.append(Message(role="user", content=item.get("text", ""), refusal=None, reasoning_content=None, tool_calls=None, tool_call_id=None))
-            else:
-                chat_messages.append(Message(role="user", content=str(item), refusal=None, reasoning_content=None, tool_calls=None, tool_call_id=None))
-        elif hasattr(item, 'role') and hasattr(item, 'content'):
-            chat_messages.append(Message(role=getattr(item, 'role'), content=getattr(item, 'content'), refusal=None, reasoning_content=None, tool_calls=None, tool_call_id=None))
-        else:
-            chat_messages.append(Message(role="user", content=str(item), refusal=None, reasoning_content=None, tool_calls=None, tool_call_id=None))
-            
-    return ChatCompletionRequest(
-        model=request.model,
-        messages=chat_messages,
-        tools=request.tools,
-        tool_choice=request.tool_choice,
-        temperature=request.temperature,
-        max_tokens=request.max_tokens,
-        stream=request.stream,
-        top_p=request.top_p,
-        top_k=request.top_k,
-        min_p=request.min_p,
-        repetition_penalty=request.repetition_penalty,
-        response_format=request.response_format,
-        chat_template_kwargs=request.chat_template_kwargs
-    )
+        chat_messages.append(Message(role="user", content=input_items))
+    elif isinstance(input_items, list):
+        for raw_item in input_items:
+            item = _normalize_responses_item(raw_item)
+            if not item:
+                continue
 
-async def process_multimodal_responses_request(
-    handler: MLXVLMHandler, request: ResponseRequest, request_id: str | None = None
-) -> ResponseResponse | StreamingResponse | JSONResponse:
-    if request_id:
-        logger.info(f"Processing multimodal responses request [request_id={request_id}]")
+            item_type = item.get("type")
+            if item_type == "function_call":
+                flush_pending_user_parts()
+                pending_tool_calls.append(
+                    ChatCompletionMessageToolCall(
+                        id=item.get("call_id") or get_tool_call_id(),
+                        type="function",
+                        function=FunctionCall(
+                            name=item.get("name", ""),
+                            arguments=item.get("arguments", "{}"),
+                        ),
+                    )
+                )
+                continue
 
-    chat_req = convert_to_chat_request(request)
+            flush_pending_tool_calls()
 
-    if request.stream:
-        return StreamingResponse(
-            handle_responses_stream_response(
-                handler.generate_multimodal_stream(chat_req), request.model, request_id
-            ),
-            media_type="text/event-stream",
-            headers={
-                "Cache-Control": "no-cache",
-                "Connection": "keep-alive",
-                "X-Accel-Buffering": "no",
-            },
-        )
-    result = await handler.generate_multimodal_response(chat_req)
-    if isinstance(result, dict) and "response" in result and "usage" in result:
-        response_data = result.get("response")
-        usage = result.get("usage")
-        final_response = format_final_responses_response(response_data, request.model, request_id, usage)  # type: ignore[arg-type]
-        return JSONResponse(content=final_response.model_dump(exclude_none=True))
+            if item_type == "function_call_output":
+                flush_pending_user_parts()
+                chat_messages.append(
+                    Message(
+                        role="tool",
+                        tool_call_id=item.get("call_id"),
+                        content=_serialize_responses_tool_output(item.get("output", "")),
+                    )
+                )
+                continue
 
-    final_response_fallback = format_final_responses_response(result, request.model, request_id)
-    return JSONResponse(content=final_response_fallback.model_dump(exclude_none=True))
+            if item_type == "reasoning":
+                flush_pending_user_parts()
+                reasoning_parts = item.get("content") or item.get("summary") or []
+                reasoning_text = _convert_responses_content("assistant", reasoning_parts)
+                if reasoning_text:
+                    chat_messages.append(
+                        Message(
+                            role="assistant",
+                            content="",
+                            reasoning_content=str(reasoning_text),
+                        )
+                    )
+                continue
 
-async def process_text_responses_request(
-    handler: MLXLMHandler | MLXVLMHandler,
-    request: ResponseRequest,
-    request_id: str | None = None,
-) -> ResponseResponse | StreamingResponse | JSONResponse:
-    if request_id:
-        logger.info(f"Processing text responses request [request_id={request_id}]")
+            role = item.get("role")
+            if role:
+                flush_pending_user_parts()
+                mapped_role = "system" if role == "developer" else role
+                if mapped_role not in {"system", "user", "assistant", "tool"}:
+                    mapped_role = "user"
+                chat_messages.append(
+                    Message(
+                        role=mapped_role,
+                        content=_convert_responses_content(mapped_role, item.get("content", "")),
+                    )
+                )
+                continue
 
-    chat_req = convert_to_chat_request(request)
-
-    if request.stream:
-        return StreamingResponse(
-            handle_responses_stream_response(
-                handler.generate_text_stream(chat_req),  # type: ignore[union-attr]
-                request.model,
-                request_id,
-            ),
-            media_type="text/event-stream",
-            headers={
-                "Cache-Control": "no-cache",
-                "Connection": "keep-alive",
-                "X-Accel-Buffering": "no",
-            },
-        )
-
-    result = await handler.generate_responses_response(chat_req)  # type: ignore[union-attr]
-    response_data = result.get("response")
-    usage = result.get("usage")
-    final_response = format_final_responses_response(response_data, request.model, request_id, usage)  # type: ignore[arg-type]
-    return JSONResponse(content=final_response.model_dump(exclude_none=True))
-
-def format_final_responses_response(
-    response: str | dict[str, Any],
-    model: str,
-    request_id: str | None = None,
-    usage: UsageInfo | None = None,
-) -> ResponseResponse:
-    if isinstance(response, str):
-        return ResponseResponse(
-            id=get_id(),
-            created=int(time.time()),
-            model=model,
-            output=[ResponseOutputItem(type="text", text=response)],
-            usage=usage,
-            request_id=request_id,
-        )
-
-    response_content = response.get("content", None)
-    tool_calls = response.get("tool_calls", None)
-    
-    output_items = []
-    if response_content:
-        output_items.append(ResponseOutputItem(type="text", text=response_content))
-    
-    if tool_calls:
-        for tc in tool_calls:
-            if isinstance(tc, dict):
-                output_items.append(
-                    ResponseOutputItem(
-                        type="function_call",
-                        id=tc.get("id", get_tool_call_id()),
-                        name=tc.get("function", {}).get("name", ""),
-                        arguments=tc.get("function", {}).get("arguments", ""),
+            if item_type in {"input_text", "text"}:
+                text = item.get("text")
+                if text:
+                    pending_user_parts.append(ChatCompletionContentPartText(type="text", text=str(text)))
+            elif item_type in {"input_image", "image_url"} and item.get("image_url"):
+                pending_user_parts.append(
+                    ChatCompletionContentPartImage(
+                        type="image_url",
+                        image_url=ImageURL(url=str(item["image_url"])),
                     )
                 )
 
-    return ResponseResponse(
-        id=get_id(),
-        created=int(time.time()),
-        model=model,
-        output=output_items,
-        usage=usage,
-        request_id=request_id,
-    )
+        flush_pending_tool_calls()
+        flush_pending_user_parts()
+    else:
+        raise ValueError(f"Unsupported Responses input format: {type(input_items)}")
 
-def create_responses_response_chunk(
-    chunk: str | dict[str, Any],
-    model: str,
-    chat_id: str | None = None,
-    created_time: int | None = None,
-    request_id: str | None = None,
-) -> ResponseChunk:
-    chat_id = chat_id or get_id()
-    created_time = created_time or int(time.time())
+    chat_request_payload: dict[str, Any] = {
+        "model": model or request.model or Config.TEXT_MODEL,
+        "messages": chat_messages,
+        "tools": _convert_responses_tools(request.tools),
+        "tool_choice": _convert_responses_tool_choice(request.tool_choice),
+        "top_p": request.top_p,
+        "top_k": request.top_k,
+        "min_p": request.min_p,
+        "temperature": request.temperature,
+        "max_completion_tokens": request.max_output_tokens,
+        "repetition_penalty": request.repetition_penalty,
+        "seed": request.seed,
+    }
 
-    if isinstance(chunk, str):
-        return ResponseChunk(
-            id=chat_id,
-            created=created_time,
-            model=model,
-            output=[ResponseOutputItem(type="text", text=chunk, index=0)],
-            request_id=request_id,
-        )
+    if request.reasoning:
+        # Best-effort translation from Responses reasoning to template kwargs.
+        reasoning_data = _normalize_responses_item(request.reasoning)
+        reasoning_effort = str(reasoning_data.get("effort", "")).lower()
+        if reasoning_effort in {"none", "minimal"}:
+            chat_request_payload["chat_template_kwargs"] = {
+                "enable_thinking": False,
+            }
+        elif reasoning_effort in {"low", "medium", "high"}:
+            chat_request_payload["chat_template_kwargs"] = {
+                "enable_thinking": True,
+                "reasoning_effort": reasoning_effort,
+            }
+        elif reasoning_effort == "xhigh":
+            chat_request_payload["chat_template_kwargs"] = {
+                "enable_thinking": True,
+                "reasoning_effort": "high",
+            }
 
+    return ChatCompletionRequest(**chat_request_payload)
+
+def format_final_responses_response(
+    response: str | dict[str, Any],
+    request: ResponsesRequest,
+    usage: UsageInfo | None = None,
+    effective_model: str | None = None,
+) -> ResponsesResponse:
+    """Format the final non-streaming response."""
+    response_payload: dict[str, Any]
+    if isinstance(response, str):
+        response_payload = {"reasoning_content": None, "tool_calls": None, "content": response}
+    else:
+        response_payload = response
+
+    unique_id = random_uuid()
+
+    reasoning_content = response_payload.get("reasoning_content")
+    tool_calls = response_payload.get("tool_calls")
+    content = response_payload.get("content")
     output_items = []
-    if "content" in chunk and isinstance(chunk["content"], str):
-        output_items.append(ResponseOutputItem(type="text", text=chunk["content"], index=0))
 
-    if "name" in chunk or "arguments" in chunk:
-        idx = chunk.get("index", 0)
-        output_items.append(
-            ResponseOutputItem(
+    if reasoning_content:
+        reasoning_item = ResponseReasoningItem(
+            id=f"rs_{unique_id}",
+            summary=[Summary(text=reasoning_content, type="summary_text")],
+            type="reasoning",
+            content=[Content(text=reasoning_content, type="reasoning_text")],
+            status="completed",
+        )
+        output_items.append(reasoning_item)
+
+    if tool_calls:
+        for idx, tool_call in enumerate(tool_calls):
+            tool_call_name = tool_call.get("name", "")
+            tool_call_arguments = tool_call.get("arguments", "{}")
+            if not isinstance(tool_call_arguments, str):
+                tool_call_arguments = json.dumps(tool_call_arguments)
+            tool_call_item = ResponseFunctionToolCall(
+                id=f"fc_{unique_id}_{idx}",
+                name=tool_call_name,
+                arguments=tool_call_arguments,
+                call_id=tool_call.get("id", f"call_{unique_id}_{idx}"),
                 type="function_call",
-                id=get_tool_call_id(),
-                name=chunk.get("name", None),
-                arguments=chunk.get("arguments", None),
-                index=idx,
+                status="completed",
             )
+            output_items.append(tool_call_item)
+
+    if content:
+        content_item = ResponseOutputText(
+            annotations=[],
+            logprobs=[],
+            text=content,
+            type="output_text",
+        )
+        msg_item = ResponseOutputMessage(
+            id=f"msg_{unique_id}",
+            content=[content_item],
+            type="message",
+            role="assistant",
+            status="completed",
+        )
+        output_items.append(msg_item)
+
+    response_usage = None
+    if usage is not None:
+        input_tokens = usage.prompt_tokens
+        output_tokens = usage.completion_tokens or 0
+        response_usage = ResponseUsage(
+            input_tokens=input_tokens,
+            input_tokens_details=InputTokensDetails(
+                cached_tokens=usage.prompt_tokens_details.cached_tokens
+                if usage.prompt_tokens_details
+                and usage.prompt_tokens_details.cached_tokens is not None
+                else 0
+            ),
+            output_tokens=output_tokens,
+            output_tokens_details=OutputTokensDetails(),
+            total_tokens=usage.total_tokens,
         )
 
-    if not output_items:
-        output_items.append(ResponseOutputItem(type="text", text="", index=0))
-
-    return ResponseChunk(
-        id=chat_id,
-        created=created_time,
-        model=model,
+    responses_response = ResponsesResponse(
+        id=f"resp_{unique_id}",
+        created_at=int(time.time()),
+        status="completed",
+        incomplete_details=None,
+        instructions=request.instructions,
+        model=effective_model or request.model or "unknown-model",
+        object="response",
+        top_p=1.0 if request.top_p is None else request.top_p,
+        temperature=1.0 if request.temperature is None else request.temperature,
         output=output_items,
-        request_id=request_id,
+        usage=response_usage,
+        tool_choice=request.tool_choice or "auto",
+        tools=request.tools or [],
+        text=request.text,
+        reasoning=request.reasoning,
     )
+    return responses_response
 
-async def handle_responses_stream_response(
-    generator: AsyncGenerator[Any, None], model: str, request_id: str | None = None
-) -> AsyncGenerator[str, None]:
-    chat_index = get_id()
-    created_time = int(time.time())
-    tool_call_index = -1
-    usage_info = None
+async def process_text_responses_request(
+    handler: MLXLMHandler,
+    request: ResponsesRequest
+) -> ResponsesResponse | StreamingResponse | JSONResponse:
+    """Handle text-only Responses API requests."""
+    if getattr(request, "stream", False):
+        return JSONResponse(
+            content=create_error_response(
+                "Streaming is not implemented yet for /v1/responses",
+                "unsupported_request",
+                HTTPStatus.NOT_IMPLEMENTED,
+            ),
+            status_code=HTTPStatus.NOT_IMPLEMENTED,
+        )
+        
+    effective_model = request.model or getattr(handler, "model_path", Config.TEXT_MODEL)
+    chat_request = convert_responses_request_to_chat_request(request, model=effective_model)
+    result = await handler.generate_text_response(chat_request)
+    response_data = result.get("response")
+    usage = result.get("usage")
+    final_response = format_final_responses_response(
+        response_data,
+        request,
+        usage,
+        effective_model=effective_model,
+    )
+    return JSONResponse(content=final_response.model_dump(exclude_none=True))
+
+
+async def process_multimodal_responses_request(
+    handler: MLXVLMHandler,
+    request: ResponsesRequest
+) -> ResponsesResponse | StreamingResponse | JSONResponse:
+    """Handle streaming response generation for Responses API."""
+
+    if getattr(request, "stream", False):
+        return JSONResponse(
+            content=create_error_response(
+                "Streaming is not implemented yet for /v1/responses",
+                "unsupported_request",
+                HTTPStatus.NOT_IMPLEMENTED,
+            ),
+            status_code=HTTPStatus.NOT_IMPLEMENTED,
+        )
+
+    effective_model = request.model or getattr(handler, "model_path", Config.MULTIMODAL_MODEL)
+    chat_request = convert_responses_request_to_chat_request(request, model=effective_model)
+    result = await handler.generate_multimodal_response(chat_request)
+    response_data = result.get("response")
+    usage = result.get("usage")
+    final_response = format_final_responses_response(
+        response_data,
+        request,
+        usage,
+        effective_model=effective_model,
+    )
+    return JSONResponse(content=final_response.model_dump(exclude_none=True))
+
+@router.post("/v1/responses", response_model=None)
+async def responses_endpoint(
+    request: ResponsesRequest, raw_request: Request
+) -> ResponsesResponse | StreamingResponse | JSONResponse:
+    """Handle Responses API requests (OpenAI-compatible)."""
+    handler = _resolve_handler(raw_request, model_id=request.model)
+    if handler is None:
+        return JSONResponse(
+            content=create_error_response(
+                "Model handler not initialized",
+                "service_unavailable",
+                HTTPStatus.SERVICE_UNAVAILABLE,
+            ),
+            status_code=HTTPStatus.SERVICE_UNAVAILABLE,
+        )
+
+    handler_type = _get_handler_type(handler)
+    if handler_type not in ("lm", "multimodal"):
+        return JSONResponse(
+            content=create_error_response(
+                "Unsupported model type for responses. "
+                f"Handler for '{request.model}' is {type(handler).__name__} "
+                f"(handler_type={handler_type!r}).",
+                "unsupported_request",
+                HTTPStatus.BAD_REQUEST,
+            ),
+            status_code=HTTPStatus.BAD_REQUEST,
+        )
 
     try:
-        async for chunk in generator:
-            if not chunk:
-                continue
-
-            if isinstance(chunk, str):
-                response_chunk = create_responses_response_chunk(
-                    chunk, model, chat_id=chat_index, created_time=created_time, request_id=request_id
-                )
-                yield _yield_sse_chunk(response_chunk.model_dump())
-
-            elif isinstance(chunk, dict):
-                if "__usage__" in chunk:
-                    usage_info = chunk["__usage__"]
-                    continue
-
-                payload = dict(chunk)
-                if payload.get("name"):
-                    tool_call_index += 1
-                    payload["index"] = tool_call_index
-                elif payload.get("arguments") and "index" not in payload:
-                    payload["index"] = max(0, tool_call_index)
-
-                response_chunk = create_responses_response_chunk(
-                    payload, model, chat_id=chat_index, created_time=created_time, request_id=request_id
-                )
-                yield _yield_sse_chunk(response_chunk.model_dump())
-
-            else:
-                yield _yield_sse_chunk(
-                    create_error_response(f"Invalid chunk type: {type(chunk)}", "server_error", HTTPStatus.INTERNAL_SERVER_ERROR)
-                )
-
+        if handler_type == "multimodal":
+            return await process_multimodal_responses_request(handler, request)
+        return await process_text_responses_request(handler, request)
+    except HTTPException:
+        raise
     except Exception as e:
-        logger.exception(f"Error in responses stream wrapper: {type(e).__name__}: {e}")
-        yield _yield_sse_chunk(
-            create_error_response(str(e), "server_error", HTTPStatus.INTERNAL_SERVER_ERROR)
+        logger.exception(f"Error processing responses request: {type(e).__name__}: {e}")
+        return JSONResponse(
+            content=create_error_response(str(e)), status_code=HTTPStatus.INTERNAL_SERVER_ERROR
         )
-    finally:
-        final_chunk = ResponseChunk(
-            id=chat_index,
-            created=created_time,
-            model=model,
-            output=[],
-            usage=usage_info,
-            request_id=request_id,
-        )
-        yield _yield_sse_chunk(final_chunk.model_dump())
-        yield "data: [DONE]\n\n"
