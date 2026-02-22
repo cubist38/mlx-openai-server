@@ -7,6 +7,44 @@ A high-performance OpenAI-compatible API server for MLX models. Run text, vision
 
 > **Note:** Requires **macOS with M-series chips** (MLX is optimized for Apple Silicon).
 
+---
+
+## Table of Contents
+
+<details>
+<summary>Click to expand</summary>
+
+- [5-Second Quick Start](#5-second-quick-start)
+- [Installation](#installation)
+- [Quick Start](#quick-start)
+- [Server Parameters](#server-parameters)
+- [Launching Multiple Models](#launching-multiple-models)
+- [Supported Model Types](#supported-model-types)
+- [Using the API](#using-the-api)
+- [Common Use Cases](#common-use-cases)
+- [Advanced Configuration](#advanced-configuration)
+- [Request Queue System](#request-queue-system)
+- [Example Notebooks](#example-notebooks)
+- [Large Models](#large-models)
+- [Troubleshooting](#troubleshooting)
+- [Quick Reference Card](#quick-reference-card)
+- [Contributing](#contributing)
+- [Support](#support)
+
+</details>
+
+---
+
+## 5-Second Quick Start
+
+```bash
+mlx-openai-server launch --model-path mlx-community/Qwen3-Coder-Next-4bit --model-type lm
+```
+
+Then point your OpenAI client to `http://localhost:8000/v1`. For full setup, see [Installation](#installation) and [Quick Start](#quick-start).
+
+---
+
 ## Key Features
 
 - 🚀 **OpenAI-compatible API** - Drop-in replacement for OpenAI services
@@ -17,6 +55,8 @@ A high-performance OpenAI-compatible API server for MLX models. Run text, vision
 - ⚡ **Performance** - Configurable quantization (4/8/16-bit), context length, and speculative decoding (lm)
 - 🎛️ **LoRA adapters** - Fine-tuned image generation and editing
 - 📈 **Queue management** - Built-in request queuing and monitoring
+
+---
 
 ## Installation
 
@@ -43,6 +83,8 @@ For audio transcription models, install ffmpeg:
 ```bash
 brew install ffmpeg
 ```
+
+---
 
 ## Quick Start
 
@@ -88,24 +130,33 @@ mlx-openai-server launch \
 
 ### Server Parameters
 
-- `--model-path`: Path to MLX model (local or HuggingFace repo)
-- `--model-type`: `lm`, `multimodal`, `image-generation`, `image-edit`, `embeddings`, or `whisper`
-- `--config-name`: For image models - `flux-schnell`, `flux-dev`, `flux-krea-dev`, `flux-kontext-dev`, `flux2-klein-4b`, `flux2-klein-9b`, `qwen-image`, `qwen-image-edit`, `z-image-turbo`, `fibo`
-- `--quantize`: Quantization level - `4`, `8`, or `16` (image models)
-- `--context-length`: Max sequence length for memory optimization
-- `--draft-model-path`: Path to draft model for speculative decoding (lm only)
-- `--num-draft-tokens`: Draft tokens per step for speculative decoding (lm only, default: 2)
-- **Sampling parameters** (defaults used when the API request omits them):
-  - `--max-tokens`: Default maximum number of tokens to generate
-  - `--temperature`: Default sampling temperature
-  - `--top-p`: Default nucleus sampling (top-p) probability
-  - `--top-k`: Default top-k sampling parameter
-- `--max-concurrency`: Concurrent requests (default: 1)
-- `--queue-timeout`: Request timeout in seconds (default: 300)
-- `--lora-paths`: Comma-separated LoRA adapter paths (image models)
-- `--lora-scales`: Comma-separated LoRA scales (must match paths)
-- `--log-level`: `DEBUG`, `INFO`, `WARNING`, `ERROR`, `CRITICAL` (default: `INFO`)
-- `--no-log-file`: Disable file logging (console only)
+| Parameter | Required | Type | Default | Description |
+|-----------|----------|------|---------|-------------|
+| | | | | **Required parameters** |
+| `--model-path` | Yes | path | — | Path to MLX model (local or HuggingFace repo) |
+| `--model-type` | Yes | string | — | `lm`, `multimodal`, `image-generation`, `image-edit`, `embeddings`, or `whisper` |
+| | | | | **Model configuration** |
+| `--config-name` | No* | string | — | Image models: `flux-schnell`, `flux-dev`, `flux-krea-dev`, `flux-kontext-dev`, `flux2-klein-4b`, `flux2-klein-9b`, `qwen-image`, `qwen-image-edit`, `z-image-turbo`, `fibo` |
+| `--quantize` | No | int | — | Quantization level: 4, 8, or 16 (image models) |
+| `--context-length` | No | int | — | Max sequence length for memory optimization |
+| | | | | **Sampling parameters** (used when API request omits them) |
+| `--max-tokens` | No | int | 100000 | Default maximum tokens to generate |
+| `--temperature` | No | float | 1.0 | Default sampling temperature |
+| `--top-p` | No | float | 1.0 | Default nucleus sampling (top-p) probability |
+| `--top-k` | No | int | 20 | Default top-k sampling parameter |
+| | | | | **Speculative decoding** (lm only) |
+| `--draft-model-path` | No | path | — | Path to draft model for speculative decoding |
+| `--num-draft-tokens` | No | int | 2 | Draft tokens per step |
+| | | | | **Queue settings** |
+| `--max-concurrency` | No | int | 1 | Concurrent requests |
+| `--queue-timeout` | No | int | 300 | Request timeout in seconds |
+| | | | | **Advanced options** |
+| `--lora-paths` | No | string | — | Comma-separated LoRA adapter paths (image models) |
+| `--lora-scales` | No | string | — | Comma-separated LoRA scales (must match paths) |
+| `--log-level` | No | string | `INFO` | `DEBUG`, `INFO`, `WARNING`, `ERROR`, `CRITICAL` |
+| `--no-log-file` | No | flag | false | Disable file logging (console only) |
+
+*Required for `image-generation` and `image-edit` model types.
 
 ## Launching Multiple Models
 
@@ -221,6 +272,8 @@ print(r2.choices[0].message.content)
 - **GET `/v1/models`** returns all loaded models (their IDs).
 - If you send a `model` that is not in the config, the server returns **404** with an error listing available models.
 
+---
+
 ## Supported Model Types
 
 1. **Text-only** (`lm`) - Language models via `mlx-lm`
@@ -245,6 +298,21 @@ print(r2.choices[0].message.content)
 - `flux-kontext-dev` - Context-aware editing (28 steps, 2.5 guidance)
 - `flux2-klein-edit-4b` / `flux2-klein-edit-9b` - Flux 2 Klein editing
 - `qwen-image-edit` - Qwen image editing (50 steps, 4.0 guidance)
+
+---
+
+## Common Use Cases
+
+| Use Case | One-liner Launch |
+|----------|------------------|
+| **Text generation** | `mlx-openai-server launch --model-type lm --model-path <path>` |
+| **Vision Q&A** | `mlx-openai-server launch --model-type multimodal --model-path <path>` |
+| **Image generation** | `mlx-openai-server launch --model-type image-generation --model-path <path> --config-name flux-dev` |
+| **Image editing** | `mlx-openai-server launch --model-type image-edit --model-path <path> --config-name flux-kontext-dev` |
+| **Audio transcription** | `mlx-openai-server launch --model-type whisper --model-path mlx-community/whisper-large-v3-mlx` |
+| **Embeddings** | `mlx-openai-server launch --model-type embeddings --model-path <path>` |
+
+---
 
 ## Using the API
 
@@ -602,16 +670,15 @@ Response:
 ## Example Notebooks
 
 Check the `examples/` directory for comprehensive guides:
-- `responses_api.ipynb` - Responses API (text, image, tools, streaming, structured outputs)
-- `audio_examples.ipynb` - Audio processing
-- `embedding_examples.ipynb` - Text embeddings
-- `lm_embeddings_examples.ipynb` - Language model embeddings
-- `vlm_embeddings_examples.ipynb` - Vision-language embeddings
-- `vision_examples.ipynb` - Vision capabilities
-- `image_generations.ipynb` - Image generation
-- `image_edit.ipynb` - Image editing
-- `structured_outputs_examples.ipynb` - JSON schema outputs
-- `simple_rag_demo.ipynb` - RAG pipeline demo
+
+| Category | Notebooks | Description |
+|----------|-----------|-------------|
+| **Text & Chat** | `responses_api.ipynb`, `simple_rag_demo.ipynb` | Responses API (text, image, tools, streaming, structured outputs); RAG pipeline demo |
+| **Vision** | `vision_examples.ipynb` | Vision capabilities |
+| **Audio** | `audio_examples.ipynb`, `transcription_examples.ipynb` | Audio processing and transcription |
+| **Embeddings** | `embedding_examples.ipynb`, `lm_embeddings_examples.ipynb`, `vlm_embeddings_examples.ipynb` | Text, LM, and VLM embeddings |
+| **Images** | `image_generations.ipynb`, `image_edit.ipynb` | Image generation and editing |
+| **Advanced** | `structured_outputs_examples.ipynb` | JSON schema / structured outputs |
 
 ## Large Models
 
@@ -622,6 +689,44 @@ bash configure_mlx.sh
 ```
 
 This raises the system's wired memory limit for better performance.
+
+---
+
+## Troubleshooting
+
+| Issue | Solution |
+|-------|----------|
+| **Memory problems** | Use `--quantize 4` or `8` for image models; reduce `--context-length` for lm/multimodal. Run `configure_mlx.sh` on macOS 15+ to raise wired memory limits. |
+| **Model download issues** | Ensure `transformers` and `huggingface_hub` are installed. Check network access; some models require Hugging Face login. |
+| **Port already in use** | Use `--port` to specify a different port (e.g. `--port 8001`). |
+| **Quantization questions** | For lm/multimodal, use pre-quantized models from [mlx-community](https://huggingface.co/mlx-community). For image models, use `--quantize 4` or `8`. |
+| **Metal/semaphore warnings** | Use multi-handler mode (`--config`); each model runs in a spawned subprocess to avoid Metal context issues. |
+
+---
+
+## Quick Reference Card
+
+```bash
+# Text (language model)
+mlx-openai-server launch --model-type lm --model-path <path>
+
+# Vision (multimodal)
+mlx-openai-server launch --model-type multimodal --model-path <path>
+
+# Image generation
+mlx-openai-server launch --model-type image-generation --model-path <path> --config-name flux-dev
+
+# Image editing
+mlx-openai-server launch --model-type image-edit --model-path <path> --config-name flux-kontext-dev
+
+# Embeddings
+mlx-openai-server launch --model-type embeddings --model-path <path>
+
+# Whisper (audio transcription)
+mlx-openai-server launch --model-type whisper --model-path mlx-community/whisper-large-v3-mlx
+```
+
+---
 
 ## Contributing
 
