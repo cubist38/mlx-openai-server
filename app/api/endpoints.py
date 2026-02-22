@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import base64
 from collections.abc import AsyncGenerator
 from http import HTTPStatus
@@ -1109,13 +1110,19 @@ def convert_responses_request_to_chat_request(
         "messages": chat_messages,
         "tools": _convert_responses_tools(request.tools),
         "tool_choice": _convert_responses_tool_choice(request.tool_choice),
-        "top_p": request.top_p,
-        "top_k": request.top_k,
-        "min_p": request.min_p,
-        "temperature": request.temperature,
-        "max_completion_tokens": request.max_output_tokens,
-        "repetition_penalty": request.repetition_penalty,
-        "seed": request.seed,
+
+        # sampling parameters (use 'is not None' to preserve valid 0 values)
+        "top_p": request.top_p if request.top_p is not None else os.getenv("DEFAULT_TOP_P"),
+        "top_k": request.top_k if request.top_k is not None else os.getenv("DEFAULT_TOP_K"),
+        "min_p": request.min_p if request.min_p is not None else os.getenv("DEFAULT_MIN_P"),
+        "temperature": request.temperature if request.temperature is not None else os.getenv("DEFAULT_TEMPERATURE"),
+        "max_completion_tokens": request.max_output_tokens if request.max_output_tokens is not None else os.getenv("DEFAULT_MAX_TOKENS"),
+        "repetition_penalty": request.repetition_penalty if request.repetition_penalty is not None else os.getenv("DEFAULT_REPETITION_PENALTY"),
+        "repetition_context_size": request.repetition_context_size if request.repetition_context_size is not None else os.getenv("DEFAULT_REPETITION_CONTEXT_SIZE"),
+        "xtc_probability": request.xtc_probability if request.xtc_probability is not None else os.getenv("DEFAULT_XTC_PROBABILITY"),
+        "xtc_threshold": request.xtc_threshold if request.xtc_threshold is not None else os.getenv("DEFAULT_XTC_THRESHOLD"),
+        "presence_penalty": request.presence_penalty if request.presence_penalty is not None else os.getenv("DEFAULT_PRESENCE_PENALTY"),
+        "seed": request.seed if request.seed is not None else os.getenv("DEFAULT_SEED"),
     }
 
     if request.reasoning:

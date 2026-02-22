@@ -658,13 +658,13 @@ class ResponsesRequest(OpenAIBaseModel):
     max_output_tokens: int | None = None
     model: str | None = None
     temperature: float | None = Field(
-        1.0, description="Sampling temperature."
+        None, description="Sampling temperature."
     )
     top_p: float | None = Field(
-        1.0, description="Nucleus sampling probability."
+        None, description="Nucleus sampling probability."
     )
     top_k: int | None = Field(
-        20, description="Top-k sampling parameter."
+        None, description="Top-k sampling parameter."
     )
     min_p: float | None = Field(
         None, description="Minimum probability for token generation."

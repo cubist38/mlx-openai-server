@@ -134,16 +134,22 @@ class MLX_LM:
                 - seed: Random seed (default: 0)
                 - max_tokens: Maximum number of tokens to generate (default: 256)
         """
-        # Set default parameters if not provided
-        seed = kwargs.get("seed") or DEFAULT_SEED
-        max_tokens = kwargs.get("max_tokens") or kwargs.get("max_completion_tokens") or DEFAULT_MAX_TOKENS
+        # Set default parameters if not provided (use 'is not None' to preserve valid 0 values)
+        seed = kwargs.get("seed") if kwargs.get("seed") is not None else DEFAULT_SEED
+        max_tokens = (
+            kwargs.get("max_tokens")
+            if kwargs.get("max_tokens") is not None
+            else kwargs.get("max_completion_tokens")
+            if kwargs.get("max_completion_tokens") is not None
+            else DEFAULT_MAX_TOKENS
+        )
         sampler_kwargs = {
-            "temp": kwargs.get("temperature") or DEFAULT_TEMPERATURE,
-            "top_p": kwargs.get("top_p") or DEFAULT_TOP_P,
-            "top_k": kwargs.get("top_k") or DEFAULT_TOP_K,
-            "min_p": kwargs.get("min_p") or DEFAULT_MIN_P,
-            "xtc_probability": kwargs.get("xtc_probability") or DEFAULT_XTC_PROBABILITY,
-            "xtc_threshold": kwargs.get("xtc_threshold") or DEFAULT_XTC_THRESHOLD,
+            "temp": kwargs.get("temperature") if kwargs.get("temperature") is not None else DEFAULT_TEMPERATURE,
+            "top_p": kwargs.get("top_p") if kwargs.get("top_p") is not None else DEFAULT_TOP_P,
+            "top_k": kwargs.get("top_k") if kwargs.get("top_k") is not None else DEFAULT_TOP_K,
+            "min_p": kwargs.get("min_p") if kwargs.get("min_p") is not None else DEFAULT_MIN_P,
+            "xtc_probability": kwargs.get("xtc_probability") if kwargs.get("xtc_probability") is not None else DEFAULT_XTC_PROBABILITY,
+            "xtc_threshold": kwargs.get("xtc_threshold") if kwargs.get("xtc_threshold") is not None else DEFAULT_XTC_THRESHOLD,
         }
 
         # Add XTC special tokens (EOS and newline) when XTC is enabled
@@ -153,7 +159,11 @@ class MLX_LM:
             ] + self.tokenizer.encode("\n")
 
         repetition_penalty = kwargs.get("repetition_penalty")
-        repetition_context_size = kwargs.get("repetition_context_size") or DEFAULT_REPETITION_CONTEXT_SIZE
+        repetition_context_size = (
+            kwargs.get("repetition_context_size")
+            if kwargs.get("repetition_context_size") is not None
+            else DEFAULT_REPETITION_CONTEXT_SIZE
+        )
         logit_bias = kwargs.get("logit_bias")
 
         # Convert string keys to int if logit_bias is provided (OpenAI API uses string keys)

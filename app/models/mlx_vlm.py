@@ -140,12 +140,24 @@ class MLX_VLM:
             )
 
         model_params = kwargs.get("vision_inputs")
+        # Use 'is not None' to preserve valid 0 values (e.g. temperature=0, top_p=0)
+        max_tokens = (
+            kwargs.get("max_tokens")
+            if kwargs.get("max_tokens") is not None
+            else kwargs.get("max_completion_tokens")
+            if kwargs.get("max_completion_tokens") is not None
+            else DEFAULT_MAX_TOKENS
+        )
         sampling_params = {
-            "max_tokens": kwargs.get("max_tokens") or kwargs.get("max_completion_tokens") or DEFAULT_MAX_TOKENS,
-            "temperature": kwargs.get("temperature") or DEFAULT_TEMPERATURE,
+            "max_tokens": max_tokens,
+            "temperature": kwargs.get("temperature") if kwargs.get("temperature") is not None else DEFAULT_TEMPERATURE,
             "repetition_penalty": kwargs.get("repetition_penalty"),
-            "repetition_context_size": kwargs.get("repetition_context_size") or DEFAULT_REPETITION_CONTEXT_SIZE,
-            "top_p": kwargs.get("top_p") or DEFAULT_TOP_P,
+            "repetition_context_size": (
+                kwargs.get("repetition_context_size")
+                if kwargs.get("repetition_context_size") is not None
+                else DEFAULT_REPETITION_CONTEXT_SIZE
+            ),
+            "top_p": kwargs.get("top_p") if kwargs.get("top_p") is not None else DEFAULT_TOP_P,
         }
         
         model_params.update(sampling_params)
