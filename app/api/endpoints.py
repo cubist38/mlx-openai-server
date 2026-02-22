@@ -277,11 +277,63 @@ async def queue_stats(raw_request: Request) -> dict[str, Any] | JSONResponse:
 # =============================================================================
 
 
+def _parse_env_float(key: str, default: float | None = None) -> float | None:
+    """Parse a float from an environment variable, or return default."""
+    val = os.getenv(key)
+    if val is None:
+        return default
+    try:
+        return float(val)
+    except (TypeError, ValueError):
+        return default
+
+
+def _parse_env_int(key: str, default: int | None = None) -> int | None:
+    """Parse an int from an environment variable, or return default."""
+    val = os.getenv(key)
+    if val is None:
+        return default
+    try:
+        return int(val)
+    except (TypeError, ValueError):
+        return default
+
+
+def refine_chat_completion_request(
+    request: ChatCompletionRequest,
+) -> ChatCompletionRequest:
+    """Refine chat completion request with defaults from env for sampling params and model."""
+    if request.temperature is None:
+        request.temperature = _parse_env_float("DEFAULT_TEMPERATURE")
+    if request.top_p is None:
+        request.top_p = _parse_env_float("DEFAULT_TOP_P")
+    if request.top_k is None:
+        request.top_k = _parse_env_int("DEFAULT_TOP_K")
+    if request.seed is None:
+        request.seed = _parse_env_int("DEFAULT_SEED")
+    if request.repetition_penalty is None:
+        request.repetition_penalty = _parse_env_float("DEFAULT_REPETITION_PENALTY")
+    if request.max_completion_tokens is None and request.max_tokens is None:
+        request.max_completion_tokens = _parse_env_int("DEFAULT_MAX_TOKENS")
+    if request.xtc_probability is None:
+        request.xtc_probability = _parse_env_float("DEFAULT_XTC_PROBABILITY")
+    if request.xtc_threshold is None:
+        request.xtc_threshold = _parse_env_float("DEFAULT_XTC_THRESHOLD")
+    if request.presence_penalty is None:
+        request.presence_penalty = _parse_env_float("DEFAULT_PRESENCE_PENALTY")
+    if request.repetition_context_size is None:
+        request.repetition_context_size = _parse_env_int("DEFAULT_REPETITION_CONTEXT_SIZE")
+    if not request.model:
+        request.model = Config.TEXT_MODEL
+    return request
+
+
 @router.post("/v1/chat/completions", response_model=None)
 async def chat_completions(
     request: ChatCompletionRequest, raw_request: Request
 ) -> ChatCompletionResponse | StreamingResponse | JSONResponse:
     """Handle chat completion requests."""
+    request = refine_chat_completion_request(request)
     handler = _resolve_handler(raw_request, model_id=request.model)
     if handler is None:
         return JSONResponse(
@@ -1111,14 +1163,13 @@ def convert_responses_request_to_chat_request(
         "tools": _convert_responses_tools(request.tools),
         "tool_choice": _convert_responses_tool_choice(request.tool_choice),
 
-        # sampling parameters (use 'is not None' to preserve valid 0 values)
-        "top_p": request.top_p if request.top_p is not None else os.getenv("DEFAULT_TOP_P"),
-        "top_k": request.top_k if request.top_k is not None else os.getenv("DEFAULT_TOP_K"),
-        "min_p": request.min_p if request.min_p is not None else os.getenv("DEFAULT_MIN_P"),
-        "temperature": request.temperature if request.temperature is not None else os.getenv("DEFAULT_TEMPERATURE"),
-        "max_completion_tokens": request.max_output_tokens if request.max_output_tokens is not None else os.getenv("DEFAULT_MAX_TOKENS"),
-        "repetition_penalty": request.repetition_penalty if request.repetition_penalty is not None else os.getenv("DEFAULT_REPETITION_PENALTY"),
-        "seed": request.seed if request.seed is not None else os.getenv("DEFAULT_SEED"),
+        "top_p": request.top_p,
+        "top_k": request.top_k,
+        "min_p": request.min_p,
+        "temperature": request.temperature,
+        "max_completion_tokens": request.max_output_tokens,
+        "repetition_penalty": request.repetition_penalty,
+        "seed": request.seed,
     }
 
     if request.reasoning:
@@ -1145,8 +1196,7 @@ def convert_responses_request_to_chat_request(
 def format_final_responses_response(
     response: str | dict[str, Any],
     request: ResponsesRequest,
-    usage: UsageInfo | None = None,
-    effective_model: str | None = None,
+    usage: UsageInfo | None = None
 ) -> ResponsesResponse:
     """Format the final non-streaming response."""
     response_payload: dict[str, Any]
@@ -1227,10 +1277,10 @@ def format_final_responses_response(
         status="completed",
         incomplete_details=None,
         instructions=request.instructions,
-        model=effective_model or request.model or "unknown-model",
+        model=request.model,
         object="response",
-        top_p=1.0 if request.top_p is None else request.top_p,
-        temperature=1.0 if request.temperature is None else request.temperature,
+        top_p=request.top_p,
+        temperature=request.temperature,
         output=output_items,
         usage=response_usage,
         tool_choice=request.tool_choice or "auto",
@@ -1239,6 +1289,27 @@ def format_final_responses_response(
         reasoning=request.reasoning,
     )
     return responses_response
+
+
+def refine_responses_request(
+    request: ResponsesRequest,
+) -> ResponsesRequest:
+    """Refine Responses API request with defaults from env for sampling params and model."""
+    if request.temperature is None:
+        request.temperature = _parse_env_float("DEFAULT_TEMPERATURE")
+    if request.top_p is None:
+        request.top_p = _parse_env_float("DEFAULT_TOP_P")
+    if request.top_k is None:
+        request.top_k = _parse_env_int("DEFAULT_TOP_K")
+    if request.seed is None:
+        request.seed = _parse_env_int("DEFAULT_SEED")
+    if request.repetition_penalty is None:
+        request.repetition_penalty = _parse_env_float("DEFAULT_REPETITION_PENALTY")
+    if request.max_output_tokens is None:
+        request.max_output_tokens = _parse_env_int("DEFAULT_MAX_TOKENS")
+    if not request.model:
+        request.model = Config.TEXT_MODEL
+    return request
 
 async def process_text_responses_request(
     handler: MLXLMHandler,
@@ -1254,17 +1325,15 @@ async def process_text_responses_request(
             ),
             status_code=HTTPStatus.NOT_IMPLEMENTED,
         )
-        
-    effective_model = request.model or getattr(handler, "model_path", Config.TEXT_MODEL)
-    chat_request = convert_responses_request_to_chat_request(request, model=effective_model)
+    refined_request = refine_responses_request(request)
+    chat_request = convert_responses_request_to_chat_request(refined_request)
     result = await handler.generate_text_response(chat_request)
     response_data = result.get("response")
     usage = result.get("usage")
     final_response = format_final_responses_response(
         response_data,
         request,
-        usage,
-        effective_model=effective_model,
+        usage
     )
     return JSONResponse(content=final_response.model_dump(exclude_none=True))
 
