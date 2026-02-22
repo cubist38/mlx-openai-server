@@ -1171,21 +1171,17 @@ def convert_responses_request_to_chat_request(
     }
 
     if request.text and request.text.format:
+        # Responses API `text.format` is flat: {"type":"json_schema","name":"...","schema":{...}}
+        # Chat Completions `response_format` nests those fields under "json_schema".
         fmt = request.text.format
         fmt_type = fmt.get("type")
         if fmt_type == "json_schema":
-            # Responses API: {"type":"json_schema","name":"...","schema":{...},"strict":true}
-            # Chat Completions API: {"type":"json_schema","json_schema":{"name":"...","schema":{...},"strict":true}}
-            json_schema_payload: dict[str, Any] = {}
-            if fmt.get("name"):
-                json_schema_payload["name"] = fmt["name"]
-            if fmt.get("schema") is not None:
-                json_schema_payload["schema"] = fmt["schema"]
-            if fmt.get("strict") is not None:
-                json_schema_payload["strict"] = fmt["strict"]
             chat_request_payload["response_format"] = {
                 "type": "json_schema",
-                "json_schema": json_schema_payload,
+                "json_schema": {
+                    "name": fmt.get("name", ""),
+                    "schema": fmt.get("schema", {}),
+                },
             }
         elif fmt_type in {"json_object", "text"}:
             chat_request_payload["response_format"] = {"type": fmt_type}
