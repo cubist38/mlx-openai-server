@@ -644,13 +644,26 @@ from openai.types.responses import (
     ResponseStatus,
     ResponseInputItemParam,
     ResponseOutputItem,
-    ResponseFormatTextConfig
 )
 from openai.types.shared import Reasoning
 from openai.types.responses.response import Tool, ToolChoice
 from openai.types.responses.response import IncompleteDetails
 
 ResponseInputOutputItem: TypeAlias = ResponseInputItemParam | ResponseOutputItem
+
+
+class ResponseTextConfig(OpenAIBaseModel):
+    """Wrapper for the Responses API ``text`` request parameter.
+
+    The OpenAI Responses API sends ``text`` as ``{"format": {...}}``
+    where ``format`` holds the actual output-format descriptor
+    (e.g. ``{"type": "json_schema", "name": "...", "schema": {...}}``).
+    Keeping this as an opaque dict avoids tight coupling to the openai
+    SDK's internal TypedDict union which is not Pydantic-friendly.
+    """
+
+    format: dict[str, Any] | None = None
+
 
 class ResponsesRequest(OpenAIBaseModel):
     """Request schema for the OpenAI-compatible Responses API endpoint."""
@@ -672,7 +685,7 @@ class ResponsesRequest(OpenAIBaseModel):
         None, description="Repetition penalty for token generation."
     )
     seed: int | None = Field(None, description="The seed for the response.")
-    text: ResponseFormatTextConfig | None = None
+    text: ResponseTextConfig | None = None
     tools: list[Tool] | None = Field(
         None, description="List of tools to use for the response."
     )
@@ -717,6 +730,6 @@ class ResponsesResponse(OpenAIBaseModel):
     reasoning: Reasoning | None = None
     tool_choice: ToolChoice | None = None
     tools: list[Tool] | None = None
-    text: ResponseFormatTextConfig | None = None
+    text: ResponseTextConfig | None = None
     usage: ResponseUsage | None = None
     status: ResponseStatus

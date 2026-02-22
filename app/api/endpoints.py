@@ -53,7 +53,7 @@ from ..schemas.openai import (
     TranscriptionRequest,
     TranscriptionResponse,
     UsageInfo,
-    random_uuid
+    random_uuid,
 )
 from openai.types.responses import FunctionTool
 from openai.types.responses.response_output_message import (
@@ -1161,7 +1161,6 @@ def convert_responses_request_to_chat_request(
         "messages": chat_messages,
         "tools": _convert_responses_tools(request.tools),
         "tool_choice": _convert_responses_tool_choice(request.tool_choice),
-
         "top_p": request.top_p,
         "top_k": request.top_k,
         "min_p": request.min_p,
@@ -1170,6 +1169,26 @@ def convert_responses_request_to_chat_request(
         "repetition_penalty": request.repetition_penalty,
         "seed": request.seed,
     }
+
+    if request.text and request.text.format:
+        fmt = request.text.format
+        fmt_type = fmt.get("type")
+        if fmt_type == "json_schema":
+            # Responses API: {"type":"json_schema","name":"...","schema":{...},"strict":true}
+            # Chat Completions API: {"type":"json_schema","json_schema":{"name":"...","schema":{...},"strict":true}}
+            json_schema_payload: dict[str, Any] = {}
+            if fmt.get("name"):
+                json_schema_payload["name"] = fmt["name"]
+            if fmt.get("schema") is not None:
+                json_schema_payload["schema"] = fmt["schema"]
+            if fmt.get("strict") is not None:
+                json_schema_payload["strict"] = fmt["strict"]
+            chat_request_payload["response_format"] = {
+                "type": "json_schema",
+                "json_schema": json_schema_payload,
+            }
+        elif fmt_type in {"json_object", "text"}:
+            chat_request_payload["response_format"] = {"type": fmt_type}
 
     if request.reasoning:
         # Best-effort translation from Responses reasoning to template kwargs.
