@@ -147,9 +147,6 @@ mlx-openai-server launch \
 | | | | | **Speculative decoding** (lm only) |
 | `--draft-model-path` | No | path | — | Path to draft model for speculative decoding |
 | `--num-draft-tokens` | No | int | 2 | Draft tokens per step |
-| | | | | **Queue settings** |
-| `--max-concurrency` | No | int | 1 | Concurrent requests |
-| `--queue-timeout` | No | int | 300 | Request timeout in seconds |
 | | | | | **Advanced options** |
 | `--lora-paths` | No | string | — | Comma-separated LoRA adapter paths (image models) |
 | `--lora-scales` | No | string | — | Comma-separated LoRA scales (must match paths) |
