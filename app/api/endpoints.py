@@ -1051,8 +1051,7 @@ def _convert_responses_tool_choice(tool_choice: Any) -> Any:
 
 
 def convert_responses_request_to_chat_request(
-    request: ResponsesRequest,
-    model: str | None = None,
+    request: ResponsesRequest
 ) -> ChatCompletionRequest:
     """Convert a Responses request into a ChatCompletionRequest with full turn history."""
     chat_messages: list[Message] = []
@@ -1158,7 +1157,7 @@ def convert_responses_request_to_chat_request(
         raise ValueError(f"Unsupported Responses input format: {type(input_items)}")
 
     chat_request_payload: dict[str, Any] = {
-        "model": model or request.model or Config.TEXT_MODEL,
+        "model": request.model,
         "messages": chat_messages,
         "tools": _convert_responses_tools(request.tools),
         "tool_choice": _convert_responses_tool_choice(request.tool_choice),
@@ -1277,14 +1276,14 @@ def format_final_responses_response(
         status="completed",
         incomplete_details=None,
         instructions=request.instructions,
-        model=request.model,
+        model=request.model,       
         object="response",
         top_p=request.top_p,
         temperature=request.temperature,
         output=output_items,
         usage=response_usage,
-        tool_choice=request.tool_choice or "auto",
-        tools=request.tools or [],
+        tool_choice=request.tool_choice,
+        tools=request.tools,
         text=request.text,
         reasoning=request.reasoning,
     )
@@ -1301,6 +1300,8 @@ def refine_responses_request(
         request.top_p = _parse_env_float("DEFAULT_TOP_P")
     if request.top_k is None:
         request.top_k = _parse_env_int("DEFAULT_TOP_K")
+    if request.min_p is None:
+        request.min_p = _parse_env_float("DEFAULT_MIN_P")
     if request.seed is None:
         request.seed = _parse_env_int("DEFAULT_SEED")
     if request.repetition_penalty is None:
@@ -1311,59 +1312,383 @@ def refine_responses_request(
         request.model = Config.TEXT_MODEL
     return request
 
+async def handle_responses_stream_response(
+    generator: AsyncGenerator[Any, None],
+    request: ResponsesRequest,
+    model: str | None = None,
+) -> AsyncGenerator[str, None]:
+    """Handle streaming response generation for Responses API.
+
+    Emits the full sequence of server-sent events defined by the OpenAI
+    Responses API streaming protocol:
+    response.created → response.in_progress → (per output item) →
+    response.output_item.added → response.content_part.added →
+    response.output_text.delta* → response.output_text.done →
+    response.content_part.done → response.output_item.done →
+    response.completed
+
+    Reasoning chunks emitted by the handler are forwarded as
+    ``response.reasoning_summary_text.delta`` events.  Tool-call chunks
+    are forwarded as ``response.function_call_arguments.delta`` events.
+    """
+    unique_id = random_uuid()
+    resp_id = f"resp_{unique_id}"
+    msg_item_id = f"msg_{unique_id}"
+    created_time = int(time.time())
+
+    sequence_number = 0
+
+    def _next_seq() -> int:
+        nonlocal sequence_number
+        seq = sequence_number
+        sequence_number += 1
+        return seq
+
+    def _create_base_response(
+        status: str, output: list[dict[str, Any]] | None = None
+    ) -> dict[str, Any]:
+        if output is None:
+            output = []
+        reasoning_val = None
+        if request.reasoning:
+            reasoning_val = (
+                request.reasoning.model_dump()
+                if hasattr(request.reasoning, "model_dump")
+                else request.reasoning
+            )
+        text_val = None
+        if request.text:
+            text_val = (
+                request.text.model_dump()
+                if hasattr(request.text, "model_dump")
+                else request.text
+            )
+        return {
+            "id": resp_id,
+            "created_at": created_time,
+            "incomplete_details": None,
+            "instructions": request.instructions,
+            "metadata": None,
+            "model": request.model,
+            "object": "response",
+            "output": output,
+            "parallel_tool_calls": True,
+            "temperature": request.temperature,
+            "tool_choice": request.tool_choice,
+            "tools": [_normalize_responses_item(t) for t in (request.tools or [])],
+            "top_p": request.top_p,
+            "background": False,
+            "max_output_tokens": request.max_output_tokens,
+            "max_tool_calls": None,
+            "previous_response_id": request.previous_response_id,
+            "prompt": None,
+            "reasoning": reasoning_val,
+            "service_tier": "auto",
+            "status": status,
+            "text": text_val,
+            "top_logprobs": None,
+            "truncation": "disabled",
+            "usage": None,
+            "user": None,
+        }
+
+    # ── Lifecycle: response.created / response.in_progress ────────────────
+    base_in_progress = _create_base_response("in_progress")
+    yield (
+        f"event: response.created\n"
+        f"data: {json.dumps({'response': base_in_progress, 'sequence_number': _next_seq(), 'type': 'response.created'})}\n\n"
+    )
+    yield (
+        f"event: response.in_progress\n"
+        f"data: {json.dumps({'response': base_in_progress, 'sequence_number': _next_seq(), 'type': 'response.in_progress'})}\n\n"
+    )
+
+    # ── Output item: message ───────────────────────────────────────────────
+    # output_index=0 is the message item; reasoning items (if present) are
+    # emitted inline before the message item is opened.
+    output_index = 0
+
+    # Reasoning item state (output_index=0 when reasoning precedes message)
+    reasoning_item_id = f"rs_{unique_id}"
+    reasoning_output_index: int | None = None
+    full_reasoning = ""
+
+    # Message item state
+    full_text = ""
+    usage_info = None
+    # track pending tool-call streams keyed by tool_call_index
+    tool_call_output_indices: dict[int, int] = {}  # tool_call_index → output_index
+    tool_call_ids: dict[int, str] = {}  # tool_call_index → call item id
+    tool_call_names: dict[int, str] = {}
+    tool_call_args: dict[int, str] = {}
+    msg_item_opened = False
+
+    def _open_message_item() -> str:
+        nonlocal msg_item_opened, output_index
+        if msg_item_opened:
+            return ""
+        msg_item_opened = True
+        events = []
+        events.append(
+            f"event: response.output_item.added\n"
+            f"data: {json.dumps({'item': {'id': msg_item_id, 'content': [], 'role': 'assistant', 'status': 'in_progress', 'type': 'message'}, 'output_index': output_index, 'sequence_number': _next_seq(), 'type': 'response.output_item.added'})}\n\n"
+        )
+        events.append(
+            f"event: response.content_part.added\n"
+            f"data: {json.dumps({'content_index': 0, 'item_id': msg_item_id, 'output_index': output_index, 'part': {'annotations': [], 'text': '', 'type': 'output_text', 'logprobs': []}, 'sequence_number': _next_seq(), 'type': 'response.content_part.added'})}\n\n"
+        )
+        return "".join(events)
+
+    try:
+        async for chunk in generator:
+            if not chunk:
+                continue
+
+            if isinstance(chunk, str):
+                # Plain text delta → output_text
+                pending = _open_message_item()
+                if pending:
+                    yield pending
+                full_text += chunk
+                yield (
+                    f"event: response.output_text.delta\n"
+                    f"data: {json.dumps({'content_index': 0, 'delta': chunk, 'item_id': msg_item_id, 'logprobs': [], 'output_index': output_index, 'sequence_number': _next_seq(), 'type': 'response.output_text.delta'})}\n\n"
+                )
+
+            elif isinstance(chunk, dict):
+                if "__usage__" in chunk:
+                    usage_info = chunk["__usage__"]
+                    continue
+
+                if "reasoning_content" in chunk:
+                    # Reasoning delta — emitted before the message item
+                    reasoning_text = chunk["reasoning_content"]
+                    if reasoning_text:
+                        if reasoning_output_index is None:
+                            # Open reasoning item once
+                            reasoning_output_index = output_index
+                            output_index += 1
+                            yield (
+                                f"event: response.output_item.added\n"
+                                f"data: {json.dumps({'item': {'id': reasoning_item_id, 'summary': [], 'type': 'reasoning', 'status': 'in_progress'}, 'output_index': reasoning_output_index, 'sequence_number': _next_seq(), 'type': 'response.output_item.added'})}\n\n"
+                            )
+                        full_reasoning += reasoning_text
+                        yield (
+                            f"event: response.reasoning_summary_text.delta\n"
+                            f"data: {json.dumps({'delta': reasoning_text, 'item_id': reasoning_item_id, 'output_index': reasoning_output_index, 'summary_index': 0, 'sequence_number': _next_seq(), 'type': 'response.reasoning_summary_text.delta'})}\n\n"
+                        )
+                    # Also forward any content portion that may accompany reasoning
+                    content_part = chunk.get("content")
+                    if content_part:
+                        pending = _open_message_item()
+                        if pending:
+                            yield pending
+                        full_text += content_part
+                        yield (
+                            f"event: response.output_text.delta\n"
+                            f"data: {json.dumps({'content_index': 0, 'delta': content_part, 'item_id': msg_item_id, 'logprobs': [], 'output_index': output_index, 'sequence_number': _next_seq(), 'type': 'response.output_text.delta'})}\n\n"
+                        )
+
+                elif "name" in chunk or "arguments" in chunk:
+                    # Tool-call delta
+                    tc_index = chunk.get("index", 0)
+                    if tc_index not in tool_call_output_indices:
+                        tc_item_id = f"fc_{unique_id}_{tc_index}"
+                        tc_call_id = get_tool_call_id()
+                        tc_out_idx = output_index
+                        output_index += 1
+                        tool_call_output_indices[tc_index] = tc_out_idx
+                        tool_call_ids[tc_index] = tc_item_id
+                        tool_call_names[tc_index] = chunk.get("name", "")
+                        tool_call_args[tc_index] = ""
+                        yield (
+                            f"event: response.output_item.added\n"
+                            f"data: {json.dumps({'item': {'id': tc_item_id, 'call_id': tc_call_id, 'name': tool_call_names[tc_index], 'arguments': '', 'type': 'function_call', 'status': 'in_progress'}, 'output_index': tc_out_idx, 'sequence_number': _next_seq(), 'type': 'response.output_item.added'})}\n\n"
+                        )
+                    tc_item_id = tool_call_ids[tc_index]
+                    tc_out_idx = tool_call_output_indices[tc_index]
+                    if "name" in chunk and chunk["name"] and not tool_call_names.get(tc_index):
+                        tool_call_names[tc_index] = chunk["name"]
+                    args_delta = chunk.get("arguments", "")
+                    if args_delta:
+                        tool_call_args[tc_index] = tool_call_args.get(tc_index, "") + args_delta
+                        yield (
+                            f"event: response.function_call_arguments.delta\n"
+                            f"data: {json.dumps({'delta': args_delta, 'item_id': tc_item_id, 'output_index': tc_out_idx, 'sequence_number': _next_seq(), 'type': 'response.function_call_arguments.delta'})}\n\n"
+                        )
+
+        # ── Close reasoning item ───────────────────────────────────────────
+        if reasoning_output_index is not None and full_reasoning:
+            yield (
+                f"event: response.reasoning_summary_text.done\n"
+                f"data: {json.dumps({'item_id': reasoning_item_id, 'output_index': reasoning_output_index, 'summary_index': 0, 'text': full_reasoning, 'sequence_number': _next_seq(), 'type': 'response.reasoning_summary_text.done'})}\n\n"
+            )
+            yield (
+                f"event: response.output_item.done\n"
+                f"data: {json.dumps({'item': {'id': reasoning_item_id, 'summary': [{'type': 'summary_text', 'text': full_reasoning}], 'type': 'reasoning', 'status': 'completed'}, 'output_index': reasoning_output_index, 'sequence_number': _next_seq(), 'type': 'response.output_item.done'})}\n\n"
+            )
+
+        # ── Close tool-call items ──────────────────────────────────────────
+        for tc_index, tc_out_idx in tool_call_output_indices.items():
+            tc_item_id = tool_call_ids[tc_index]
+            full_args = tool_call_args.get(tc_index, "")
+            yield (
+                f"event: response.function_call_arguments.done\n"
+                f"data: {json.dumps({'arguments': full_args, 'item_id': tc_item_id, 'output_index': tc_out_idx, 'sequence_number': _next_seq(), 'type': 'response.function_call_arguments.done'})}\n\n"
+            )
+            yield (
+                f"event: response.output_item.done\n"
+                f"data: {json.dumps({'item': {'id': tc_item_id, 'name': tool_call_names.get(tc_index, ''), 'arguments': full_args, 'type': 'function_call', 'status': 'completed'}, 'output_index': tc_out_idx, 'sequence_number': _next_seq(), 'type': 'response.output_item.done'})}\n\n"
+            )
+
+        # ── Close message item (text) ──────────────────────────────────────
+        if msg_item_opened:
+            yield (
+                f"event: response.output_text.done\n"
+                f"data: {json.dumps({'content_index': 0, 'item_id': msg_item_id, 'logprobs': [], 'output_index': output_index, 'sequence_number': _next_seq(), 'text': full_text, 'type': 'response.output_text.done'})}\n\n"
+            )
+            yield (
+                f"event: response.content_part.done\n"
+                f"data: {json.dumps({'content_index': 0, 'item_id': msg_item_id, 'output_index': output_index, 'part': {'annotations': [], 'text': full_text, 'type': 'output_text', 'logprobs': None}, 'sequence_number': _next_seq(), 'type': 'response.content_part.done'})}\n\n"
+            )
+            yield (
+                f"event: response.output_item.done\n"
+                f"data: {json.dumps({'item': {'id': msg_item_id, 'content': [{'annotations': [], 'text': full_text, 'type': 'output_text', 'logprobs': None}], 'role': 'assistant', 'status': 'completed', 'summary': [], 'type': 'message'}, 'output_index': output_index, 'sequence_number': _next_seq(), 'type': 'response.output_item.done'})}\n\n"
+            )
+
+    except Exception as e:
+        logger.exception(f"Error in Responses stream wrapper: {e}")
+    finally:
+        # ── Build final completed output list ─────────────────────────────
+        final_output: list[dict[str, Any]] = []
+        if reasoning_output_index is not None:
+            final_output.insert(
+                reasoning_output_index,
+                {
+                    "id": reasoning_item_id,
+                    "summary": [{"type": "summary_text", "text": full_reasoning}],
+                    "type": "reasoning",
+                    "status": "completed",
+                },
+            )
+        for tc_index, tc_out_idx in tool_call_output_indices.items():
+            final_output.insert(
+                tc_out_idx,
+                {
+                    "id": tool_call_ids[tc_index],
+                    "name": tool_call_names.get(tc_index, ""),
+                    "arguments": tool_call_args.get(tc_index, ""),
+                    "type": "function_call",
+                    "status": "completed",
+                },
+            )
+        if msg_item_opened:
+            final_output.append(
+                {
+                    "id": msg_item_id,
+                    "content": [
+                        {"annotations": [], "text": full_text, "type": "output_text", "logprobs": None}
+                    ],
+                    "role": "assistant",
+                    "status": "completed",
+                    "type": "message",
+                }
+            )
+
+        final_response_obj = _create_base_response("completed", final_output)
+
+        if usage_info:
+            input_tokens = usage_info.prompt_tokens
+            output_tokens = usage_info.completion_tokens or 0
+            cached_tokens = (
+                usage_info.prompt_tokens_details.cached_tokens
+                if usage_info.prompt_tokens_details
+                and usage_info.prompt_tokens_details.cached_tokens is not None
+                else 0
+            )
+            final_response_obj["usage"] = {
+                "input_tokens": input_tokens,
+                "input_tokens_details": {
+                    "cached_tokens": cached_tokens,
+                    "input_tokens_per_turn": [],
+                    "cached_tokens_per_turn": [],
+                },
+                "output_tokens": output_tokens,
+                "output_tokens_details": {
+                    "reasoning_tokens": 0,
+                    "tool_output_tokens": 0,
+                    "output_tokens_per_turn": [],
+                    "tool_output_tokens_per_turn": [],
+                },
+                "total_tokens": usage_info.total_tokens,
+            }
+
+        yield (
+            f"event: response.completed\n"
+            f"data: {json.dumps({'response': final_response_obj, 'sequence_number': _next_seq(), 'type': 'response.completed'})}\n\n"
+        )
+
 async def process_text_responses_request(
     handler: MLXLMHandler,
     request: ResponsesRequest
 ) -> ResponsesResponse | StreamingResponse | JSONResponse:
     """Handle text-only Responses API requests."""
-    if getattr(request, "stream", False):
-        return JSONResponse(
-            content=create_error_response(
-                "Streaming is not implemented yet for /v1/responses",
-                "unsupported_request",
-                HTTPStatus.NOT_IMPLEMENTED,
-            ),
-            status_code=HTTPStatus.NOT_IMPLEMENTED,
-        )
     refined_request = refine_responses_request(request)
     chat_request = convert_responses_request_to_chat_request(refined_request)
+    if refined_request.stream:
+        return StreamingResponse(
+            handle_responses_stream_response(
+                handler.generate_text_stream(chat_request),
+                refined_request,
+                refined_request.model,
+            ),
+            media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache",
+                "Connection": "keep-alive",
+                "X-Accel-Buffering": "no",
+            },
+        )
     result = await handler.generate_text_response(chat_request)
     response_data = result.get("response")
     usage = result.get("usage")
     final_response = format_final_responses_response(
         response_data,
-        request,
-        usage
+        refined_request,
+        usage,
     )
     return JSONResponse(content=final_response.model_dump(exclude_none=True))
 
 
 async def process_multimodal_responses_request(
     handler: MLXVLMHandler,
-    request: ResponsesRequest
+    request: ResponsesRequest,
 ) -> ResponsesResponse | StreamingResponse | JSONResponse:
-    """Handle streaming response generation for Responses API."""
+    """Handle multimodal Responses API requests."""
+    refined_request = refine_responses_request(request)
+    chat_request = convert_responses_request_to_chat_request(refined_request)
 
-    if getattr(request, "stream", False):
-        return JSONResponse(
-            content=create_error_response(
-                "Streaming is not implemented yet for /v1/responses",
-                "unsupported_request",
-                HTTPStatus.NOT_IMPLEMENTED,
+    if refined_request.stream:
+        return StreamingResponse(
+            handle_responses_stream_response(
+                handler.generate_multimodal_stream(chat_request),
+                refined_request,
             ),
-            status_code=HTTPStatus.NOT_IMPLEMENTED,
+            media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache",
+                "Connection": "keep-alive",
+                "X-Accel-Buffering": "no",
+            },
         )
 
-    effective_model = request.model or getattr(handler, "model_path", Config.MULTIMODAL_MODEL)
-    chat_request = convert_responses_request_to_chat_request(request, model=effective_model)
     result = await handler.generate_multimodal_response(chat_request)
     response_data = result.get("response")
     usage = result.get("usage")
     final_response = format_final_responses_response(
         response_data,
-        request,
-        usage,
-        effective_model=effective_model,
+        refined_request,
+        usage
     )
     return JSONResponse(content=final_response.model_dump(exclude_none=True))
 
