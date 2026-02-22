@@ -653,28 +653,25 @@ from openai.types.responses.response import IncompleteDetails
 ResponseInputOutputItem: TypeAlias = ResponseInputItemParam | ResponseOutputItem
 
 class ResponsesRequest(OpenAIBaseModel):
+    """Request schema for the OpenAI-compatible Responses API endpoint."""
+
     input: str | list[ResponseInputOutputItem]
     instructions: str | None = None
     max_output_tokens: int | None = None
     model: str | None = None
-    temperature: float | None = Field(
-        None, description="Sampling temperature."
+    stream: bool = Field(False, description="Whether to stream the response.")
+    previous_response_id: str | None = Field(
+        None,
+        description="ID of a previous response to chain from for multi-turn conversations.",
     )
-    top_p: float | None = Field(
-        None, description="Nucleus sampling probability."
-    )
-    top_k: int | None = Field(
-        None, description="Top-k sampling parameter."
-    )
-    min_p: float | None = Field(
-        None, description="Minimum probability for token generation."
-    )
+    temperature: float | None = Field(None, description="Sampling temperature.")
+    top_p: float | None = Field(None, description="Nucleus sampling probability.")
+    top_k: int | None = Field(None, description="Top-k sampling parameter.")
+    min_p: float | None = Field(None, description="Minimum probability for token generation.")
     repetition_penalty: float | None = Field(
         None, description="Repetition penalty for token generation."
     )
-    seed: int | None = Field(
-        None, description="The seed for the response."
-    )
+    seed: int | None = Field(None, description="The seed for the response.")
     text: ResponseFormatTextConfig | None = None
     tools: list[Tool] | None = Field(
         None, description="List of tools to use for the response."
@@ -707,6 +704,7 @@ class ResponseUsage(OpenAIBaseModel):
 
 class ResponsesResponse(OpenAIBaseModel):
     """Represents a complete response from the Responses API."""
+
     id: str = Field(default_factory=lambda: f"resp_{random_uuid()}")
     created_at: int = Field(default_factory=lambda: int(time.time()))
     incomplete_details: IncompleteDetails | None = None
@@ -714,11 +712,11 @@ class ResponsesResponse(OpenAIBaseModel):
     model: str
     object: Literal["response"] = "response"
     output: list[ResponseOutputItem]
-    top_p: float
-    temperature: float
+    top_p: float | None = None
+    temperature: float | None = None
     reasoning: Reasoning | None = None
-    tool_choice: ToolChoice
-    tools: list[Tool]
+    tool_choice: ToolChoice | None = None
+    tools: list[Tool] | None = None
     text: ResponseFormatTextConfig | None = None
     usage: ResponseUsage | None = None
     status: ResponseStatus
