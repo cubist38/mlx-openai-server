@@ -2,7 +2,6 @@ import asyncio
 import base64
 import gc
 import time
-import uuid
 from http import HTTPStatus
 from typing import Any, Dict, List, Optional, Tuple
 
