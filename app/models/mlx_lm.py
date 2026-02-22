@@ -21,8 +21,8 @@ DEFAULT_MIN_P = os.getenv("DEFAULT_MIN_P", 0.0)
 DEFAULT_XTC_PROBABILITY = os.getenv("DEFAULT_XTC_PROBABILITY", 0.0)
 DEFAULT_XTC_THRESHOLD = os.getenv("DEFAULT_XTC_THRESHOLD", 0.0)
 DEFAULT_SEED = os.getenv("DEFAULT_SEED", 0)
-DEFAULT_MAX_TOKENS = os.getenv("DEFAULT_MAX_TOKENS", 8192)
-DEFAULT_BATCH_SIZE = os.getenv("DEFAULT_BATCH_SIZE", 32)
+DEFAULT_MAX_TOKENS = os.getenv("DEFAULT_MAX_TOKENS", 1000000)
+DEFAULT_REPETITION_CONTEXT_SIZE = os.getenv("DEFAULT_REPETITION_CONTEXT_SIZE", 20)
 
 @dataclass
 class CompletionResponse:
@@ -134,17 +134,22 @@ class MLX_LM:
                 - seed: Random seed (default: 0)
                 - max_tokens: Maximum number of tokens to generate (default: 256)
         """
-        # Set default parameters if not provided
-        seed = kwargs.get("seed")
-        max_tokens = kwargs.get("max_tokens", DEFAULT_MAX_TOKENS)
-
+        # Set default parameters if not provided (use 'is not None' to preserve valid 0 values)
+        seed = kwargs.get("seed") if kwargs.get("seed") is not None else DEFAULT_SEED
+        max_tokens = (
+            kwargs.get("max_tokens")
+            if kwargs.get("max_tokens") is not None
+            else kwargs.get("max_completion_tokens")
+            if kwargs.get("max_completion_tokens") is not None
+            else DEFAULT_MAX_TOKENS
+        )
         sampler_kwargs = {
-            "temp": kwargs.get("temperature", DEFAULT_TEMPERATURE),
-            "top_p": kwargs.get("top_p", DEFAULT_TOP_P),
-            "top_k": kwargs.get("top_k", DEFAULT_TOP_K),
-            "min_p": kwargs.get("min_p", DEFAULT_MIN_P),
-            "xtc_probability": kwargs.get("xtc_probability", DEFAULT_XTC_PROBABILITY),
-            "xtc_threshold": kwargs.get("xtc_threshold", DEFAULT_XTC_THRESHOLD),
+            "temp": kwargs.get("temperature") if kwargs.get("temperature") is not None else DEFAULT_TEMPERATURE,
+            "top_p": kwargs.get("top_p") if kwargs.get("top_p") is not None else DEFAULT_TOP_P,
+            "top_k": kwargs.get("top_k") if kwargs.get("top_k") is not None else DEFAULT_TOP_K,
+            "min_p": kwargs.get("min_p") if kwargs.get("min_p") is not None else DEFAULT_MIN_P,
+            "xtc_probability": kwargs.get("xtc_probability") if kwargs.get("xtc_probability") is not None else DEFAULT_XTC_PROBABILITY,
+            "xtc_threshold": kwargs.get("xtc_threshold") if kwargs.get("xtc_threshold") is not None else DEFAULT_XTC_THRESHOLD,
         }
 
         # Add XTC special tokens (EOS and newline) when XTC is enabled
@@ -153,30 +158,37 @@ class MLX_LM:
                 self.tokenizer.eos_token_id
             ] + self.tokenizer.encode("\n")
 
-        repetition_penalty = kwargs.get("repetition_penalty", 1.0)
-        repetition_context_size = kwargs.get("repetition_context_size", 20)
-        logit_bias = kwargs.get("logit_bias", None)
+        repetition_penalty = kwargs.get("repetition_penalty")
+        repetition_context_size = (
+            kwargs.get("repetition_context_size")
+            if kwargs.get("repetition_context_size") is not None
+            else DEFAULT_REPETITION_CONTEXT_SIZE
+        )
+        logit_bias = kwargs.get("logit_bias")
+
         # Convert string keys to int if logit_bias is provided (OpenAI API uses string keys)
-        if logit_bias is not None:
+        if logit_bias:
             logit_bias = {int(k): v for k, v in logit_bias.items()}
+
         logits_processors = make_logits_processors(
             logit_bias=logit_bias,
             repetition_penalty=repetition_penalty,
             repetition_context_size=repetition_context_size
         )
-        json_schema = kwargs.get("schema", None)
+
+        json_schema = kwargs.get("schema")
         if json_schema:
             logits_processors.append(
                 JSONLogitsProcessor(
-                    schema = json_schema,
-                    tokenizer = self.outlines_tokenizer,
-                    tensor_library_name = "mlx"
+                    schema=json_schema,
+                    tokenizer=self.outlines_tokenizer,
+                    tensor_library_name="mlx"
                 )
             )
 
         # Only seed RNG when an explicit non-negative seed is provided
         # None or negative values (e.g., -1) result in non-deterministic generation
-        if seed is not None and seed >= 0:
+        if seed and seed >= 0:
             mx.random.seed(seed)
         
         prompt_progress_callback = kwargs.get("prompt_progress_callback")

@@ -95,6 +95,11 @@ mlx-openai-server launch \
 - `--context-length`: Max sequence length for memory optimization
 - `--draft-model-path`: Path to draft model for speculative decoding (lm only)
 - `--num-draft-tokens`: Draft tokens per step for speculative decoding (lm only, default: 2)
+- **Sampling parameters** (defaults used when the API request omits them):
+  - `--max-tokens`: Default maximum number of tokens to generate
+  - `--temperature`: Default sampling temperature
+  - `--top-p`: Default nucleus sampling (top-p) probability
+  - `--top-k`: Default top-k sampling parameter
 - `--max-concurrency`: Concurrent requests (default: 1)
 - `--queue-timeout`: Request timeout in seconds (default: 300)
 - `--lora-paths`: Comma-separated LoRA adapter paths (image models)
@@ -379,6 +384,109 @@ response = client.embeddings.create(
 print(f"Embedding dimension: {len(response.data[0].embedding)}")
 ```
 
+### Responses API
+
+The server exposes the OpenAI [Responses API](https://platform.openai.com/docs/api-reference/responses) at `POST /v1/responses`. Use `client.responses.create()` with the OpenAI SDK for text and multimodal (lm/multimodal) models.
+
+**Text input (non-streaming):**
+
+```python
+import openai
+
+client = openai.OpenAI(base_url="http://localhost:8000/v1", api_key="not-needed")
+
+response = client.responses.create(
+    model="local-model",
+    input="Tell me a three sentence bedtime story about a unicorn."
+)
+# response.output contains reasoning and message items
+for item in response.output:
+    if item.type == "message":
+        for part in item.content:
+            if getattr(part, "text", None):
+                print(part.text)
+```
+
+**Text input (streaming):**
+
+```python
+response = client.responses.create(
+    model="local-model",
+    input="Tell me a three sentence bedtime story about a unicorn.",
+    stream=True
+)
+for chunk in response:
+    print(chunk)
+```
+
+**Image input (vision / multimodal):**
+
+```python
+response = client.responses.create(
+    model="local-multimodal",
+    input=[
+        {
+            "role": "user",
+            "content": [
+                {"type": "input_text", "text": "What is in this image?"},
+                {
+                    "type": "input_image",
+                    "image_url": "path/to/image.jpg",
+                    "detail": "low"
+                }
+            ]
+        }
+    ]
+)
+```
+
+**Function calling:**
+
+```python
+tools = [{
+    "type": "function",
+    "name": "get_current_weather",
+    "description": "Get the current weather in a given location",
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "location": {"type": "string", "description": "The city and state"},
+            "unit": {"type": "string", "enum": ["celsius", "fahrenheit"]}
+        },
+        "required": ["location", "unit"]
+    }
+}]
+
+response = client.responses.create(
+    model="local-model",
+    tools=tools,
+    input="What is the weather like in Boston today?",
+    tool_choice="auto"
+)
+```
+
+**Structured outputs (Pydantic):**
+
+```python
+from pydantic import BaseModel
+
+class Address(BaseModel):
+    street: str
+    city: str
+    state: str
+    zip: str
+
+response = client.responses.parse(
+    model="local-model",
+    input=[{"role": "user", "content": "Format: 1 Hacker Wy Menlo Park CA 94025"}],
+    text_format=Address
+)
+address = response.output_parsed  # Pydantic model instance
+print(address)
+```
+
+See `examples/responses_api.ipynb` for full examples including streaming, image input, tool calls, and structured outputs.
+
 ### Structured Outputs (JSON Schema)
 
 ```python
@@ -494,6 +602,7 @@ Response:
 ## Example Notebooks
 
 Check the `examples/` directory for comprehensive guides:
+- `responses_api.ipynb` - Responses API (text, image, tools, streaming, structured outputs)
 - `audio_examples.ipynb` - Audio processing
 - `embedding_examples.ipynb` - Text embeddings
 - `lm_embeddings_examples.ipynb` - Language model embeddings

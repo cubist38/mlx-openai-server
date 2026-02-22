@@ -1,6 +1,5 @@
 import asyncio
 import time
-import uuid
 import gc
 from http import HTTPStatus
 from typing import Any, AsyncGenerator, Dict, List, Optional, Tuple
@@ -157,8 +156,6 @@ class MLXLMHandler:
         Yields:
             str or dict: Response chunks (str) followed by usage info (dict) at the end.
         """
-        request_id = f"text-{uuid.uuid4()}"
-
         try:
             chat_messages, model_params = await self._prepare_text_request(request)
 
@@ -351,7 +348,7 @@ class MLXLMHandler:
             content = create_error_response("Too many requests. Service is at capacity.", "rate_limit_exceeded", HTTPStatus.TOO_MANY_REQUESTS)
             raise HTTPException(status_code=429, detail=content)
         except Exception as e:
-            logger.error(f"Error in text stream generation for request {request_id}: {str(e)}")
+            logger.error(f"Error in text stream generation: {str(e)}")
             content = create_error_response(f"Failed to generate text stream: {str(e)}", "server_error", HTTPStatus.INTERNAL_SERVER_ERROR)
             raise HTTPException(status_code=500, detail=content)
 
@@ -366,8 +363,6 @@ class MLXLMHandler:
         Returns:
             dict: Response content and usage info.
         """
-        request_id = f"text-{uuid.uuid4()}"
-
         try:
             chat_messages, model_params = await self._prepare_text_request(request)
             # Refine messages to remove None values and convert to the correct format
@@ -558,29 +553,33 @@ class MLXLMHandler:
         Returns:
             Tuple containing the formatted chat messages and model parameters.
         """
+
         try:
             request_dict = request.model_dump()
             tools = request_dict.pop("tools")
             tool_choice = request_dict.pop("tool_choice")
-            
-            if tools:
-                request_dict["chat_template_kwargs"]["tools"] = tools
-                if tool_choice:
-                    request_dict["chat_template_kwargs"]["tool_choice"] = tool_choice
+            chat_template_kwargs = request_dict.get("chat_template_kwargs", {})
 
-            if request_dict.get("response_format", None):
-                response_format = request_dict.pop("response_format", None)
+            if tools:
+                chat_template_kwargs["tools"] = tools
+                if tool_choice:
+                    chat_template_kwargs["tool_choice"] = tool_choice
+
+            request_dict["chat_template_kwargs"] = chat_template_kwargs
+
+            if request_dict.get("response_format"):
+                response_format = request_dict.pop("response_format")
                 if response_format.get("type") == "json_schema":
-                    request_dict["schema"] = response_format.get("json_schema", None).get("schema", None)
+                    request_dict["schema"] = response_format.get("json_schema", {}).get("schema")
             
             # Format chat messages and merge system messages into index 0
             chat_messages = []
             system_messages = []
             non_system_messages = []
             
-            for message in request_dict.get("messages", []):
+            for message in request_dict.pop("messages", []):
                 # Handle content that might be a list of dictionaries (multimodal format)
-                content = message.get("content", None)
+                content = message.get("content")
                 if content is None:
                     # Assistant messages with tool_calls have content: null — keep them
                     if message.get("tool_calls"):

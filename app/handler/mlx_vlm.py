@@ -2,7 +2,6 @@ import asyncio
 import base64
 import gc
 import time
-import uuid
 from http import HTTPStatus
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -22,7 +21,7 @@ from ..schemas.openai import (
     ChatCompletionContentPartInputAudio,
     ChatCompletionContentPartVideo,
     ChatCompletionRequest,
-    UsageInfo,
+    UsageInfo
 )
 from ..utils.debug_logging import (
     log_debug_prompt,
@@ -128,9 +127,6 @@ class MLXVLMHandler:
             AsyncGenerator: Yields response chunks.
         """
         
-        # Create a unique request ID
-        request_id = f"multimodal-{uuid.uuid4()}"
-        
         try:
             request_dict = await self._prepare_multimodal_request(request)
             
@@ -146,33 +142,36 @@ class MLXVLMHandler:
             
             # Process vision info and create inputs
             image_inputs, video_inputs = process_vision_info(messages)
-            inputs = self.model.create_inputs(input_prompt, image_inputs, video_inputs)
-            
-            request_dict["prompt"] = input_prompt
-            
+            vision_inputs = self.model.create_inputs(input_prompt, image_inputs, video_inputs)
+                    
             # Convert torch tensors to mlx arrays
-            for key, value in inputs.items():
+            for key, value in vision_inputs.items():
                 if isinstance(value, torch.Tensor):
-                    inputs[key] = mx.array(value)
-
-            # merge all keys from inputs to request_dict
-            request_dict.update(inputs)
-            request_dict["stream"] = True
+                    vision_inputs[key] = mx.array(value)
             
             if self.debug:
                 log_debug_request(request_dict)
-                request_dict["verbose"] = True
-            
-            # Extract explicit model args; remaining kwargs are forwarded
-            # to the model on the inference thread.
-            prompt = request_dict.pop("prompt")
-            request_dict.pop("stream")
+    
+            model_params = {
+                # sampling params
+                "seed": request_dict.get("seed"),
+                "max_tokens": request_dict.get("max_tokens"),
+                "temperature": request_dict.get("temperature"),
+                "repetition_penalty": request_dict.get("repetition_penalty"),
+                "repetition_context_size": request_dict.get("repetition_context_size"),
+                "top_p": request_dict.get("top_p"),
+                # json schema
+                "schema": request_dict.get("schema"),
+                # vision inputs
+                "vision_inputs": vision_inputs,
+            }
 
             response_generator = self.inference_worker.submit_stream(
                 self.model,
-                prompt=prompt,
+                prompt=input_prompt,
                 stream=True,
-                **request_dict,
+                verbose = self.debug,
+                **model_params,
             )
 
             # Create parsers using ParserManager
@@ -289,7 +288,7 @@ class MLXVLMHandler:
             raise HTTPException(status_code=429, detail=content)
 
         except Exception as e:
-            logger.error(f"Error in multimodal stream generation for request {request_id}: {str(e)}")
+            logger.error(f"Error in multimodal stream generation: {str(e)}")
             content = create_error_response(f"Failed to generate multimodal stream: {str(e)}", "server_error", HTTPStatus.INTERNAL_SERVER_ERROR)
             raise HTTPException(status_code=500, detail=content)
 
@@ -305,9 +304,6 @@ class MLXVLMHandler:
             str: Complete response.
         """
         try:
-            # Create a unique request ID
-            request_id = f"multimodal-{uuid.uuid4()}"
-            
             request_dict = await self._prepare_multimodal_request(request)
             
             # Extract messages, images, videos, audios
@@ -322,30 +318,37 @@ class MLXVLMHandler:
             
             # Process vision info and create inputs
             image_inputs, video_inputs = process_vision_info(messages)
-            inputs = self.model.create_inputs(input_prompt, image_inputs, video_inputs)
-
-            request_dict["prompt"] = input_prompt
+            vision_inputs = self.model.create_inputs(input_prompt, image_inputs, video_inputs)
             
             # Convert torch tensors to mlx arrays
-            for key, value in inputs.items():
+            for key, value in vision_inputs.items():
                 if isinstance(value, torch.Tensor):
-                    inputs[key] = mx.array(value)
+                    vision_inputs[key] = mx.array(value)
 
-            # merge all keys from inputs to request_dict
-            request_dict.update(inputs)
             if self.debug:
                 log_debug_request(request_dict)
-                request_dict["verbose"] = True
 
-            # Extract explicit model args; remaining kwargs are forwarded.
-            prompt = request_dict.pop("prompt")
-            request_dict.pop("stream", None)
+            model_params = {
+                # sampling params
+                "seed": request_dict.get("seed"),
+                "max_tokens": request_dict.get("max_tokens"),
+                "max_completion_tokens": request_dict.get("max_completion_tokens"),
+                "temperature": request_dict.get("temperature"),
+                "repetition_penalty": request_dict.get("repetition_penalty"),
+                "repetition_context_size": request_dict.get("repetition_context_size"),
+                "top_p": request_dict.get("top_p"),
+                # json schema
+                "schema": request_dict.get("schema"),
+                # vision inputs
+                "vision_inputs": vision_inputs,
+            }
 
             response = await self.inference_worker.submit(
                 self.model,
-                prompt=prompt,
+                prompt=input_prompt,
                 stream=False,
-                **request_dict,
+                verbose = self.debug,
+                **model_params,
             )
 
             # Create parsers using ParserManager
@@ -528,7 +531,6 @@ class MLXVLMHandler:
             }
         }
 
-
     async def _prepare_multimodal_request(self, request: ChatCompletionRequest) -> Tuple[List[Dict[str, Any]], List[str], List[str], Dict[str, Any]]:
         """
         Prepare the multimodal request by processing messages with text, images, and audio.
@@ -555,78 +557,58 @@ class MLXVLMHandler:
         audios = []
         videos = []
 
-        try:
-            # Process each message in the request
-            for message in request.messages:
-                # Handle system and assistant messages (simple text content)
-                if message.role in ["system", "assistant"]:
-                    chat_messages.append({"role": message.role, "content": message.content})
+        for message in request.messages:
+            # Handle system and assistant messages (simple text content)
+            if message.role in ["system", "assistant"]:
+                chat_messages.append({"role": message.role, "content": message.content})
+                continue
+
+            # Handle user messages
+            if message.role == "user":
+                # Case 1: Simple string content
+                if isinstance(message.content, str):
+                    chat_messages.append({"role": "user", "content": message.content})
                     continue
+                    
+                # Case 2: Content is a list of dictionaries or objects
+                if isinstance(message.content, list):
+                    formatted_content_parts = []
 
-                # Handle user messages
-                if message.role == "user":
-                    # Case 1: Simple string content
-                    if isinstance(message.content, str):
-                        chat_messages.append({"role": "user", "content": message.content})
-                        continue
-                        
-                    # Case 2: Content is a list of dictionaries or objects
-                    if isinstance(message.content, list):
-                        formatted_content_parts = []
+                    for content_part in message.content:
+                        formatted_content_part = await self._reformat_multimodal_content_part(content_part)
+                        if isinstance(content_part, ChatCompletionContentPartImage):
+                            images.append(formatted_content_part["path"])
+                        elif isinstance(content_part, ChatCompletionContentPartInputAudio):
+                            audios.append(formatted_content_part["path"])
+                        elif isinstance(content_part, ChatCompletionContentPartVideo):
+                            videos.append(formatted_content_part["path"])
 
-                        for content_part in message.content:
-                            formatted_content_part = await self._reformat_multimodal_content_part(content_part)
-                            if isinstance(content_part, ChatCompletionContentPartImage):
-                                images.append(formatted_content_part["path"])
-                            elif isinstance(content_part, ChatCompletionContentPartInputAudio):
-                                audios.append(formatted_content_part["path"])
-                            elif isinstance(content_part, ChatCompletionContentPartVideo):
-                                videos.append(formatted_content_part["path"])
+                        formatted_content_parts.append(formatted_content_part["content_part"])
+                    chat_messages.append({"role": "user", "content": formatted_content_parts})
+                else:
+                    content = create_error_response("Invalid message content format", "invalid_request_error", HTTPStatus.BAD_REQUEST)
+                    raise HTTPException(status_code=400, detail=content)
 
-                            formatted_content_parts.append(formatted_content_part["content_part"])
-                        chat_messages.append({"role": "user", "content": formatted_content_parts})
-                    else:
-                        content = create_error_response("Invalid message content format", "invalid_request_error", HTTPStatus.BAD_REQUEST)
-                        raise HTTPException(status_code=400, detail=content)
+        request_dict = request.model_dump()
+        request_dict.pop("messages")
+        request_dict["messages"] = chat_messages
+        request_dict["images"] = images
+        request_dict["audios"] = audios
+        request_dict["videos"] = videos
 
-            request_dict = {
-                "messages": chat_messages,
-                "images": images,
-                "audios": audios,
-                "videos": videos,
-                "temperature": request.temperature,
-                "top_p": request.top_p,
-                "frequency_penalty": request.frequency_penalty,
-                "presence_penalty": request.presence_penalty,
-                "max_tokens": request.max_tokens,
-                "chat_template_kwargs": request.chat_template_kwargs.model_dump(),
-                "stream": request.stream
-            }
+        tools = request_dict.pop("tools")
+        tool_choice = request_dict.pop("tool_choice")
 
-            tools = request.tools 
-            tool_choice = request.tool_choice
-            
-            if tools:
-                request_dict["chat_template_kwargs"]["tools"] = tools
-                if tool_choice:
-                    request_dict["chat_template_kwargs"]["tool_choice"] = tool_choice
+        chat_template_kwargs = request_dict.get("chat_template_kwargs", {})
 
-            # Extract response_format for JSON schema structured outputs
-            if request.response_format:
-                response_format = request.response_format
-                if isinstance(response_format, dict) and response_format.get("type") == "json_schema":
-                    json_schema_dict = response_format.get("json_schema", {})
-                    if isinstance(json_schema_dict, dict):
-                        request_dict["schema"] = json_schema_dict.get("schema", None)
-            
-            return request_dict
-
-        except HTTPException:
-            raise
-        except Exception as e:
-            logger.error(f"Failed to prepare multimodal request: {str(e)}")
-            content = create_error_response(f"Failed to process request: {str(e)}", "bad_request", HTTPStatus.BAD_REQUEST)
-            raise HTTPException(status_code=400, detail=content)
+        if tools:
+            chat_template_kwargs["tools"] = tools
+            if tool_choice:
+                chat_template_kwargs["tool_choice"] = tool_choice
+        
+        request_dict["chat_template_kwargs"] = chat_template_kwargs
+        
+        return request_dict
             
     def _validate_image_url(self, url: str) -> None:
         """

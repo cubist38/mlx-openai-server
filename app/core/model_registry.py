@@ -15,7 +15,7 @@ from typing import Any
 
 from loguru import logger
 
-from app.schemas.model import ModelMetadata
+from ..schemas.model import ModelMetadata
 
 
 class ModelRegistry:
