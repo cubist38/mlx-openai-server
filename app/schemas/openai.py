@@ -259,19 +259,19 @@ class ChatCompletionRequest(OpenAIBaseModel):
         deprecated="max_tokens is deprecated in favor of "
         "the max_completion_tokens field",
     )
-    max_completion_tokens: int | None = None
-    temperature: float | None = Field(1.0, description="Sampling temperature.")
-    top_p: float | None = Field(1.0, description="Nucleus sampling probability.")
-    top_k: int | None = Field(20, description="Top-k sampling parameter.")
-    min_p: float | None = Field(0.0, description="Minimum probability for token generation.")
+    max_completion_tokens: int | None = Field(None, description="Maximum number of tokens to generate.")
+    temperature: float | None = Field(None, description="Sampling temperature.")
+    top_p: float | None = Field(None, description="Nucleus sampling probability.")
+    top_k: int | None = Field(None, description="Top-k sampling parameter.")
+    min_p: float | None = Field(None, description="Minimum probability for token generation.")
     frequency_penalty: float | None = Field(
-        0.0, description="Frequency penalty for token generation."
+        None, description="Frequency penalty for token generation."
     )
     presence_penalty: float | None = Field(
-        0.0, description="Presence penalty for token generation."
+        None, description="Presence penalty for token generation."
     )
     stop: list[str] | None = Field(None, description="List of stop sequences.")
-    n: int | None = Field(1, description="Number of completions to generate.")
+    n: int | None = Field(None, description="Number of completions to generate.")
     response_format: dict[str, Any] | None = Field(None, description="Format for the response.")
     seed: int | None = Field(
         None, description="The seed to use for sampling.",
