@@ -57,10 +57,16 @@ class MLXServerConfig:
     num_draft_tokens: int = 2
 
     # Default sampling parameters (override DEFAULT_* env when set via CLI)
-    default_max_tokens: int | None = None
-    default_temperature: float | None = None
-    default_top_p: float | None = None
-    default_top_k: int | None = None
+    default_max_tokens: int = 100000
+    default_temperature: float = 1.0
+    default_top_p: float = 1.0
+    default_top_k: int = 20
+    default_min_p: float = 0.0
+    default_presence_penalty: float = 0.0
+    default_xtc_probability: float = 0.0
+    default_xtc_threshold: float = 0.0
+    default_seed: int = 0
+    default_repetition_context_size: int = 20
 
     # Used to capture raw CLI input before processing
     lora_paths_str: str | None = None

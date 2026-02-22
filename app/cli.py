@@ -228,10 +228,41 @@ def cli():
     help="Number of draft tokens per step when using speculative decoding (--draft-model-path). Only supported with model type 'lm'. Default is 2.",
 )
 # Sampling parameters (defaults used when API request omits them)
-@click.option("--max-tokens", default=None, type=int, help="Default maximum number of tokens to generate.")
-@click.option("--temperature", default=None, type=float, help="Default sampling temperature.")
-@click.option("--top-p", default=None, type=float, help="Default nucleus sampling (top-p) probability.")
-@click.option("--top-k", default=None, type=int, help="Default top-k sampling parameter.")
+@click.option(
+    "--max-tokens",
+    default=100000,
+    type=int,
+    help="Default maximum number of tokens to generate.",
+)
+@click.option("--temperature", default=1.0, type=float, help="Default sampling temperature.")
+@click.option("--top-p", default=1.0, type=float, help="Default nucleus sampling (top-p) probability.")
+@click.option("--top-k", default=20, type=int, help="Default top-k sampling parameter.")
+@click.option("--min-p", default=0.0, type=float, help="Default min-p sampling parameter.")
+@click.option(
+    "--presence-penalty",
+    default=0.0,
+    type=float,
+    help="Default presence penalty for token generation.",
+)
+@click.option(
+    "--xtc-probability",
+    default=0.0,
+    type=float,
+    help="Default XTC probability sampling parameter.",
+)
+@click.option(
+    "--xtc-threshold",
+    default=0.0,
+    type=float,
+    help="Default XTC threshold sampling parameter.",
+)
+@click.option("--seed", default=0, type=int, help="Default random seed for generation.")
+@click.option(
+    "--repetition-context-size",
+    default=20,
+    type=int,
+    help="Default repetition context size parameter.",
+)
 def launch(
     config_file,
     model_path,
@@ -264,6 +295,12 @@ def launch(
     temperature,
     top_p,
     top_k,
+    min_p,
+    presence_penalty,
+    xtc_probability,
+    xtc_threshold,
+    seed,
+    repetition_context_size,
 ) -> None:
     """Start the FastAPI/Uvicorn server with the supplied flags.
 
@@ -322,6 +359,12 @@ def launch(
         default_temperature=temperature,
         default_top_p=top_p,
         default_top_k=top_k,
+        default_min_p=min_p,
+        default_presence_penalty=presence_penalty,
+        default_xtc_probability=xtc_probability,
+        default_xtc_threshold=xtc_threshold,
+        default_seed=seed,
+        default_repetition_context_size=repetition_context_size,
     )
 
     asyncio.run(start(args))

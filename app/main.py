@@ -115,14 +115,28 @@ def print_multi_startup_banner(config: MultiModelServerConfig) -> None:
 
 def _apply_sampling_env(config: MLXServerConfig) -> None:
     """Set DEFAULT_* env vars from config so model layers use CLI sampling defaults."""
-    if config.default_max_tokens:
+    if config.default_max_tokens is not None:
         os.environ["DEFAULT_MAX_TOKENS"] = str(config.default_max_tokens)
-    if config.default_temperature:
+    if config.default_temperature is not None:
         os.environ["DEFAULT_TEMPERATURE"] = str(config.default_temperature)
-    if config.default_top_p:
+    if config.default_top_p is not None:
         os.environ["DEFAULT_TOP_P"] = str(config.default_top_p)
-    if config.default_top_k:
+    if config.default_top_k is not None:
         os.environ["DEFAULT_TOP_K"] = str(config.default_top_k)
+    if config.default_min_p is not None:
+        os.environ["DEFAULT_MIN_P"] = str(config.default_min_p)
+    if config.default_presence_penalty is not None:
+        os.environ["DEFAULT_PRESENCE_PENALTY"] = str(config.default_presence_penalty)
+    if config.default_xtc_probability is not None:
+        os.environ["DEFAULT_XTC_PROBABILITY"] = str(config.default_xtc_probability)
+    if config.default_xtc_threshold is not None:
+        os.environ["DEFAULT_XTC_THRESHOLD"] = str(config.default_xtc_threshold)
+    if config.default_seed is not None:
+        os.environ["DEFAULT_SEED"] = str(config.default_seed)
+    if config.default_repetition_context_size is not None:
+        os.environ["DEFAULT_REPETITION_CONTEXT_SIZE"] = str(
+            config.default_repetition_context_size
+        )
 
 
 async def start(config: MLXServerConfig) -> None:
