@@ -637,6 +637,57 @@ class TranscriptionResponseStream(OpenAIBaseModel):
         default=None, description="The usage of the transcription."
     )
 
+# Audio Speech
+class SpeechRequest(BaseModel):
+    input: str
+    model: str | None = None
+    voice: str | None = Field(
+        default=None,
+        description="Voice to use. For OpenAI: alloy, echo, etc. For Qwen3-TTS: Vivian, Ryan, etc.",
+    )
+    gender: str | None = Field(
+        default=None,
+        description="Gender of the voice. For OpenAI: male, female, other. For Qwen3-TTS: male, female, other.",
+    )
+    pitch: float | None = Field(
+        default=None,
+        description="Pitch of the voice. For OpenAI: 0.0-1.0. For Qwen3-TTS: 0.0-1.0.",
+    )
+    lang_code: str | None = Field(
+        default=None,
+        description="Language code. For OpenAI: en, zh, etc. For Qwen3-TTS: en, zh, etc.",
+    )
+    instructions: str | None = Field(
+        default=None,
+        description="Instructions for voice style/emotion (maps to 'instruct' for Qwen3-TTS)",
+    )
+    response_format: Literal["wav", "pcm", "flac", "mp3", "aac", "opus"] = "wav"
+    speed: float | None = Field(
+        default=1.0,
+        ge=0.25,
+        le=4.0,
+    )
+    # Qwen3-TTS specific parameters
+    task_type: Literal["CustomVoice", "VoiceDesign", "Base"] | None = Field(
+        default=None,
+        description="TTS task type: CustomVoice, VoiceDesign, or Base (voice clone)",
+    )
+    language: str | None = Field(
+        default=None,
+        description="Language code (e.g., 'Chinese', 'English', 'Auto')",
+    )
+    ref_audio: str | None = Field(
+        default=None,
+        description="Reference audio for voice cloning (Base task). URL, base64, or file path.",
+    )
+    ref_text: str | None = Field(
+        default=None,
+        description="Transcript of reference audio for voice cloning (Base task)",
+    )
+    max_new_tokens: int | None = Field(
+        default=None,
+        description="Maximum tokens to generate",
+    )
 
 # --- Responses API Schemas ---
 
