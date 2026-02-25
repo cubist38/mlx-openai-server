@@ -1,24 +1,27 @@
-import logging
+from __future__ import annotations
+
+from loguru import logger
 import inspect
 from PIL import Image
-from pyexpat import model
 from abc import ABC, abstractmethod
-from mflux.models.common.config import ModelConfig
+from typing import Any, Callable, Optional
 
-# supported models
+from mflux.models.common.config import ModelConfig
+from mflux.models.z_image.variants import ZImageTurbo
+from mflux.models.fibo.variants.txt2img.fibo import FIBO
 from mflux.models.flux.variants.txt2img.flux import Flux1
 from mflux.models.qwen.variants.txt2img.qwen_image import QwenImage
 from mflux.models.flux.variants.kontext.flux_kontext import Flux1Kontext
 from mflux.models.qwen.variants.edit.qwen_image_edit import QwenImageEdit
-from mflux.models.z_image.variants.turbo import ZImageTurbo
-from mflux.models.fibo.variants.txt2img.fibo import FIBO
 from mflux.models.flux2.variants.txt2img.flux2_klein import Flux2Klein
 from mflux.models.flux2.variants.edit.flux2_klein_edit import Flux2KleinEdit
 
-from typing import Dict, Type, Any, Optional, Union, List
+
+# -----------------------------------------------------------------------------
+# Exceptions
+# -----------------------------------------------------------------------------
 
 
-# # Custom Exceptions
 class ImageModelError(Exception):
     """Base exception for image generation model errors."""
     pass
@@ -39,503 +42,267 @@ class InvalidConfigurationError(ImageModelError):
     pass
 
 
+# -----------------------------------------------------------------------------
+# Model configuration (registry-driven)
+# -----------------------------------------------------------------------------
+
+
+def _lora_validate(
+    lora_paths: Optional[list[str]] | None,
+    lora_scales: Optional[list[float]] | None,
+) -> None:
+    if (lora_paths is None) != (lora_scales is None):
+        raise InvalidConfigurationError(
+            "Both lora_paths and lora_scales must be provided together."
+        )
+    if lora_paths and lora_scales and len(lora_paths) != len(lora_scales):
+        raise InvalidConfigurationError(
+            f"lora_paths and lora_scales must have the same length "
+            f"(got {len(lora_paths)} and {len(lora_scales)})"
+        )
+
+
 class ModelConfiguration:
-    """Configuration class for image generation models."""
-    
-    def __init__(self, 
+    """Configuration for a single image generation model type."""
+
+    def __init__(
+        self,
         model_type: str,
         model_config: ModelConfig,
         quantize: Optional[int] = None,
-        lora_paths: Optional[List[str]] = None,
-        lora_scales: Optional[List[float]] = None
-    ):
-        
-        # Validate quantization level
-        if quantize and quantize not in [4, 8, 16]:
-            raise InvalidConfigurationError(f"Invalid quantization level: {quantize}. Must be 4, 8, or 16.")
-        
-        # Validate LoRA parameters: both must be provided together and have matching lengths
-        if (lora_paths is None) != (lora_scales is None):
+        lora_paths: Optional[list[str]] = None,
+        lora_scales: Optional[list[float]] = None,
+    ) -> None:
+        if quantize is not None and quantize not in (4, 8, 16):
             raise InvalidConfigurationError(
-                "Both lora_paths and lora_scales must be provided together."
+                f"Invalid quantization level: {quantize}. Must be 4, 8, or 16."
             )
-        if lora_paths and lora_scales and len(lora_paths) != len(lora_scales):
-            raise InvalidConfigurationError(
-                f"lora_paths and lora_scales must have the same length (got {len(lora_paths)} and {len(lora_scales)})"
-            )
-        
+        _lora_validate(lora_paths, lora_scales)
         self.model_type = model_type
         self.model_config = model_config
         self.quantize = quantize
         self.lora_paths = lora_paths
         self.lora_scales = lora_scales
-    
-    @classmethod
-    def schnell(cls, quantize: Optional[int] = None, lora_paths: Optional[List[str]] = None, lora_scales: Optional[List[float]] = None) -> 'ModelConfiguration':
-        """Create configuration for Flux Schnell model."""
-        return cls(
-            model_type="schnell",
-            model_config=ModelConfig.schnell(),
-            quantize=quantize,
-            lora_paths=lora_paths,
-            lora_scales=lora_scales
-        )
-    
-    @classmethod
-    def dev(cls, quantize: Optional[int] = None, lora_paths: Optional[List[str]] = None, lora_scales: Optional[List[float]] = None) -> 'ModelConfiguration':
-        """Create configuration for Flux Dev model."""
-        return cls(
-            model_type="dev",
-            model_config=ModelConfig.dev(),
-            quantize=quantize,
-            lora_paths=lora_paths,
-            lora_scales=lora_scales
-        )
 
     @classmethod
-    def krea_dev(cls, quantize: Optional[int] = None, lora_paths: Optional[List[str]] = None, lora_scales: Optional[List[float]] = None) -> 'ModelConfiguration':
-        """Create configuration for Flux Krea Dev model."""
+    def from_name(
+        cls,
+        config_name: str,
+        quantize: Optional[int] = None,
+        lora_paths: Optional[list[str]] = None,
+        lora_scales: Optional[list[float]] = None,
+    ) -> ModelConfiguration:
+        if config_name not in _CONFIG_REGISTRY:
+            available = ", ".join(_CONFIG_REGISTRY.keys())
+            raise InvalidConfigurationError(
+                f"Invalid config name: {config_name}. Available: {available}"
+            )
+        model_type, config_factory = _CONFIG_REGISTRY[config_name]
         return cls(
-            model_type="krea-dev",
-            model_config=ModelConfig.krea_dev(),
+            model_type=model_type,
+            model_config=config_factory(),
             quantize=quantize,
             lora_paths=lora_paths,
-            lora_scales=lora_scales
-        )
-    
-    @classmethod
-    def kontext(cls, quantize: Optional[int] = None, lora_paths: Optional[List[str]] = None, lora_scales: Optional[List[float]] = None) -> 'ModelConfiguration':
-        """Create configuration for Flux Kontext model."""
-        return cls(
-            model_type="kontext",
-            model_config=ModelConfig.kontext(),
-            quantize=quantize,
-            lora_paths=lora_paths,
-            lora_scales=lora_scales
-        )
-
-    @classmethod
-    def qwen_image(cls, quantize: Optional[int] = None, lora_paths: Optional[List[str]] = None, lora_scales: Optional[List[float]] = None) -> 'ModelConfiguration':
-        """Create configuration for Qwen Image model."""
-        return cls(
-            model_type="qwen-image",
-            model_config=ModelConfig.qwen_image(),
-            quantize=quantize,
-            lora_paths=lora_paths,
-            lora_scales=lora_scales
+            lora_scales=lora_scales,
         )
 
-    @classmethod
-    def qwen_image_edit(cls, quantize: Optional[int] = None, lora_paths: Optional[List[str]] = None, lora_scales: Optional[List[float]] = None) -> 'ModelConfiguration':
-        """Create configuration for Qwen Image Edit model."""
-        return cls(
-            model_type="qwen-image-edit",
-            model_config=ModelConfig.qwen_image_edit(),
-            quantize=quantize,
-            lora_paths=lora_paths,
-            lora_scales=lora_scales
-        )
 
-    @classmethod
-    def fibo(cls, quantize: Optional[int] = None, lora_paths: Optional[List[str]] = None, lora_scales: Optional[List[float]] = None) -> 'ModelConfiguration':
-        """Create configuration for Fibo model."""
-        return cls(
-            model_type="fibo",
-            model_config=ModelConfig.fibo(),
-            quantize=quantize,
-            lora_paths=lora_paths,
-            lora_scales=lora_scales
-        )
+_CONFIG_REGISTRY: dict[str, tuple[str, Callable[[], ModelConfig]]] = {
+    "flux-schnell": ("schnell", ModelConfig.schnell),
+    "flux-dev": ("dev", ModelConfig.dev),
+    "flux-krea-dev": ("krea-dev", ModelConfig.krea_dev),
+    "flux-kontext-dev": ("kontext", ModelConfig.dev_kontext),
+    "qwen-image": ("qwen-image", ModelConfig.qwen_image),
+    "qwen-image-edit": ("qwen-image-edit", ModelConfig.qwen_image_edit),
+    "fibo": ("fibo", ModelConfig.fibo),
+    "z-image-turbo": ("z-image-turbo", ModelConfig.z_image_turbo),
+    "flux2-klein-4b": ("flux2-klein", ModelConfig.flux2_klein_4b),
+    "flux2-klein-9b": ("flux2-klein", ModelConfig.flux2_klein_9b),
+    "flux2-klein-edit-4b": ("flux2-klein-edit", ModelConfig.flux2_klein_4b),
+    "flux2-klein-edit-9b": ("flux2-klein-edit", ModelConfig.flux2_klein_9b),
+}
 
-    @classmethod
-    def z_image_turbo(cls, quantize: Optional[int] = None, lora_paths: Optional[List[str]] = None, lora_scales: Optional[List[float]] = None) -> 'ModelConfiguration':
-        """Create configuration for Z Image Turbo model."""
-        return cls(
-            model_type="z-image-turbo",
-            model_config=ModelConfig.z_image_turbo(),
-            quantize=quantize,
-            lora_paths=lora_paths,
-            lora_scales=lora_scales
-        )
-    
-    @classmethod
-    def flux2_klein_4b(cls, quantize: Optional[int] = None, lora_paths: Optional[List[str]] = None, lora_scales: Optional[List[float]] = None) -> 'ModelConfiguration':
-        """Create configuration for Flux2 Klein model."""
-        return cls(
-            model_type="flux2-klein",
-            model_config=ModelConfig.flux2_klein_4b(),
-            quantize=quantize,
-            lora_paths=lora_paths,
-            lora_scales=lora_scales
-        )
+# Public list of all supported image config names (single source of truth for CLI/server).
+IMAGE_CONFIG_NAMES: tuple[str, ...] = tuple(_CONFIG_REGISTRY.keys())
 
-    @classmethod
-    def flux2_klein_edit_4b(cls, quantize: Optional[int] = None, lora_paths: Optional[List[str]] = None, lora_scales: Optional[List[float]] = None) -> 'ModelConfiguration':
-        """Create configuration for Flux2 Klein Edit model."""
-        return cls(
-            model_type="flux2-klein-edit",
-            model_config=ModelConfig.flux2_klein_4b(),
-            quantize=quantize,
-            lora_paths=lora_paths,
-            lora_scales=lora_scales
-        )
-    
-    @classmethod
-    def flux2_klein_9b(cls, quantize: Optional[int] = None, lora_paths: Optional[List[str]] = None, lora_scales: Optional[List[float]] = None) -> 'ModelConfiguration':
-        """Create configuration for Flux2 Klein model."""
-        return cls(
-            model_type="flux2-klein",
-            model_config=ModelConfig.flux2_klein_9b(),
-            quantize=quantize,
-            lora_paths=lora_paths,
-            lora_scales=lora_scales
-        )
-    
-    @classmethod
-    def flux2_klein_edit_9b(cls, quantize: Optional[int] = None, lora_paths: Optional[List[str]] = None, lora_scales: Optional[List[float]] = None) -> 'ModelConfiguration':
-        """Create configuration for Flux2 Klein Edit model."""
-        return cls(
-            model_type="flux2-klein-edit",
-            model_config=ModelConfig.flux2_klein_9b(),
-            quantize=quantize,
-            lora_paths=lora_paths,
-            lora_scales=lora_scales
-        )
 
+# -----------------------------------------------------------------------------
+# Base image model and generic backend wrapper
+# -----------------------------------------------------------------------------
 
 
 class BaseImageModel(ABC):
-    """Abstract base class for image generation models with common functionality."""
-    
-    def __init__(self, model_path: str, config: ModelConfiguration):
+    """Abstract base for image generation models."""
+
+    def __init__(self, model_path: str, config: ModelConfiguration) -> None:
         self.model_path = model_path
         self.config = config
-        self.logger = logging.getLogger(self.__class__.__name__)
-        self._model = None
+        self._model: Any = None
         self._is_loaded = False
-            
         self._load_model()
-    
+
+    def is_loaded(self) -> bool:
+        return self._is_loaded
+
     @abstractmethod
-    def _load_model(self):
+    def _load_model(self) -> None:
         """Load the specific model implementation."""
         pass
-    
-    def _generate_image(self, prompt: str, seed: int = 42, **kwargs) -> Image.Image:
-        """Generate image using the specific model implementation."""
-        try:
-            # Get the signature of the generate_image method to filter kwargs
-            sig = inspect.signature(self._model.generate_image)
-            valid_params = set(sig.parameters.keys())
-            
-            # Filter kwargs to only include parameters that the method actually accepts
-            filtered_kwargs = {
-                key: value for key, value in kwargs.items()
-                if key in valid_params
-            }
-            
-            # Build kwargs for generate_image call
-            generate_kwargs = {
-                "prompt": prompt,
-                "seed": seed,
-                **filtered_kwargs
-            }
-            
-            result = self._model.generate_image(**generate_kwargs)
-            return result.image
-        except Exception as e:
-            raise ModelGenerationError(f"{self.__class__.__name__} generation failed: {e}") from e
-    
-    def __call__(self, prompt: str, seed: int = 42, **kwargs) -> Image.Image:
-        """Generate an image from a text prompt."""
+
+    def _generate_image(self, prompt: str, seed: int = 42, **kwargs: Any) -> Image.Image:
+        sig = inspect.signature(self._model.generate_image)
+        valid = set(sig.parameters.keys())
+        filtered = {k: v for k, v in kwargs.items() if k in valid}
+        result = self._model.generate_image(
+            prompt=prompt, seed=seed, **filtered
+        )
+        return result.image
+
+    def __call__(self, prompt: str, seed: int = 42, **kwargs: Any) -> Image.Image:
         if not self._is_loaded:
             raise ModelLoadError("Model is not loaded. Cannot generate image.")
-                        
-        # Validate inputs
-        if not prompt or not prompt.strip():
+        if not (prompt and prompt.strip()):
             raise ModelGenerationError("Prompt cannot be empty.")
-            
         if not isinstance(seed, int) or seed < 0:
             raise ModelGenerationError("Seed must be a non-negative integer.")
-
         try:
             result = self._generate_image(prompt, seed, **kwargs)
             if result is None:
                 raise ModelGenerationError("Model returned None instead of an image.")
-                
-            self.logger.info("Image generated successfully")
+            logger.info("Image generated successfully")
             return result
+        except ModelGenerationError:
+            raise
         except Exception as e:
-            error_msg = f"Error generating image: {e}"
-            self.logger.error(error_msg)
-            raise ModelGenerationError(error_msg) from e
-
-class FluxStandardModel(BaseImageModel):
-    """Standard Flux model implementation for Dev and Schnell variants."""
-    
-    def _load_model(self):
-        """Load the standard Flux model."""
-        try:
-            self.logger.info(f"Loading {self.config.model_type} model from {self.model_path}")
-            
-            # Prepare lora parameters
-            lora_paths = self.config.lora_paths
-            lora_scales = self.config.lora_scales
-            
-            # Log LoRA information if provided
-            if lora_paths:
-                self.logger.info(f"Using LoRA adapters: {lora_paths}")
-                if lora_scales:
-                    self.logger.info(f"LoRA scales: {lora_scales}")
-            
-            self._model = Flux1(
-                quantize=self.config.quantize,
-                model_path=self.model_path,
-                lora_paths=lora_paths,
-                lora_scales=lora_scales,
-                model_config=self.config.model_config,
-            )
-            self._is_loaded = True
-            self.logger.info(f"{self.config.model_type} model loaded successfully")
-        except Exception as e:
-            error_msg = f"Failed to load {self.config.model_type} model: {e}"
-            self.logger.error(error_msg)
-            raise ModelLoadError(error_msg) from e
+            logger.error(f"Error generating image: {e}")
+            raise ModelGenerationError(f"Error generating image: {e}") from e
 
 
-class FluxKontextModel(BaseImageModel):
-    """Flux Kontext model implementation."""
-    
-    def _load_model(self):
-        """Load the Flux Kontext model."""
-        try:
-            self.logger.info(f"Loading Kontext model from {self.model_path}")
-            self._model = Flux1Kontext(
-                quantize=self.config.quantize,
-                model_path=self.model_path,
-                lora_paths=self.config.lora_paths,
-                lora_scales=self.config.lora_scales,
-            )
-            self._is_loaded = True
-            self.logger.info("Kontext model loaded successfully")
-        except Exception as e:
-            error_msg = f"Failed to load Kontext model: {e}"
-            self.logger.error(error_msg)
-            raise ModelLoadError(error_msg) from e
+def _load_backed(
+    self: BaseImageModel,
+    backend_class: type,
+    display_name: str,
+) -> None:
+    """Shared load logic: instantiate backend and set _model, _is_loaded."""
+    logger.info(f"Loading {display_name} from {self.model_path}")
+    if self.config.lora_paths:
+        logger.info(f"LoRA adapters: {self.config.lora_paths}")
+    try:
+        self._model = backend_class(
+            quantize=self.config.quantize,
+            model_path=self.model_path,
+            lora_paths=self.config.lora_paths,
+            lora_scales=self.config.lora_scales,
+            model_config=self.config.model_config,
+        )
+        self._is_loaded = True
+        logger.info(f"{display_name} loaded successfully")
+    except Exception as e:
+        msg = f"Failed to load {display_name}: {e}"
+        logger.error(msg)
+        raise ModelLoadError(msg) from e
 
-class QwenImageModel(BaseImageModel):
-    """Qwen Image model implementation."""
-    
-    def _load_model(self):
-        """Load the Qwen Image model."""
-        try:
-            self.logger.info(f"Loading Qwen Image model from {self.model_path}")
-            self._model = QwenImage( 
-                quantize=self.config.quantize,
-                model_path=self.model_path,
-                lora_paths=self.config.lora_paths,
-                lora_scales=self.config.lora_scales,
-            )
-            self._is_loaded = True
-            self.logger.info("Qwen Image model loaded successfully")
-        except Exception as e:
-            error_msg = f"Failed to load Qwen Image model: {e}"
-            self.logger.error(error_msg)
-            raise ModelLoadError(error_msg) from e
 
-class QwenImageEditModel(BaseImageModel):
-    """Qwen Image Edit model implementation."""
-    
-    def _load_model(self):
-        """Load the Qwen Image Edit model."""
-        try:
-            self.logger.info(f"Loading Qwen Image Edit model from {self.model_path}")
-            self._model = QwenImageEdit(
-                quantize=self.config.quantize,
-                model_path=self.model_path,
-                lora_paths=self.config.lora_paths,
-                lora_scales=self.config.lora_scales,
-            )
-            self._is_loaded = True
-            self.logger.info("Qwen Image Edit model loaded successfully")
-        except Exception as e:
-            error_msg = f"Failed to load Qwen Image Edit model: {e}"
-            self.logger.error(error_msg)
-            raise ModelLoadError(error_msg) from e
+class BackedImageModel(BaseImageModel):
+    """Generic wrapper: loads a given backend class and delegates generate."""
 
-class ZImageTurboModel(BaseImageModel):
-    """Z Image Turbo model implementation."""
-    
-    def _load_model(self):
-        """Load the Z Image Turbo model."""
-        try:
-            self.logger.info(f"Loading Z Image Turbo model from {self.model_path}")
-            self._model = ZImageTurbo(
-                quantize=self.config.quantize,
-                model_path=self.model_path,
-                lora_paths=self.config.lora_paths,
-                lora_scales=self.config.lora_scales,
-            )
-            self._is_loaded = True
-            self.logger.info("Z Image Turbo model loaded successfully")
-        except Exception as e:
-            error_msg = f"Failed to load Z Image Turbo model: {e}"
-            self.logger.error(error_msg)
-            raise ModelLoadError(error_msg) from e
+    def __init__(
+        self,
+        model_path: str,
+        config: ModelConfiguration,
+        backend_class: type,
+        display_name: str,
+    ) -> None:
+        self._backend_class = backend_class
+        self._display_name = display_name
+        super().__init__(model_path, config)
 
-class FIBOModel(BaseImageModel):
-    """FIBO model implementation."""
-    
-    def _load_model(self):
-        """Load the FIBO model."""
-        try:
-            self.logger.info(f"Loading FIBO model from {self.model_path}")
-            self._model = FIBO(
-                quantize=self.config.quantize,
-                model_path=self.model_path,
-                lora_paths=self.config.lora_paths,
-                lora_scales=self.config.lora_scales,
-            )
-            self._is_loaded = True
-            self.logger.info("FIBO model loaded successfully")
-        except Exception as e:
-            error_msg = f"Failed to load FIBO model: {e}"
-            self.logger.error(error_msg)
-            raise ModelLoadError(error_msg) from e
+    def _load_model(self) -> None:
+        _load_backed(self, self._backend_class, self._display_name)
 
-class Flux2KleinModel(BaseImageModel):
-    """Flux2 Klein model implementation."""
-    
-    def _load_model(self):
-        """Load the Flux2 Klein model."""
-        try:
-            self.logger.info(f"Loading Flux2 Klein model from {self.model_path}")
-            self._model = Flux2Klein(
-                quantize=self.config.quantize,
-                model_path=self.model_path,
-                lora_paths=self.config.lora_paths,
-                lora_scales=self.config.lora_scales,
-            )
-            self._is_loaded = True
-            self.logger.info("Flux2 Klein model loaded successfully")
-        except Exception as e:
-            error_msg = f"Failed to load Flux2 Klein model: {e}"
-            self.logger.error(error_msg)
-            raise ModelLoadError(error_msg) from e
 
-    def _generate_image(self, prompt: str, seed: int = 42, **kwargs) -> Image.Image:
-        """Generate image using the specific model implementation."""
-        try:
-            if "negative_prompt" in kwargs:
-                kwargs.pop("negative_prompt") # Flux2 Klein does not support negative prompt
-            if "guidance" in kwargs:
-                kwargs["guidance"] = 1.0 # Flux2 Klein only supports guidance scale of 1.0
-            return super()._generate_image(prompt, seed, **kwargs)
-        except Exception as e:
-            raise ModelGenerationError(f"{self.__class__.__name__} generation failed: {e}") from e
+class Flux2KleinBackedModel(BackedImageModel):
+    """Flux2 Klein: only supports guidance=1.0 and no negative_prompt."""
 
-class Flux2KleinEditModel(Flux2KleinModel):
-    """Flux2 Klein Edit model implementation."""
-    
-    def _load_model(self):
-        """Load the Flux2 Klein Edit model."""
-        try:
-            self.logger.info(f"Loading Flux2 Klein Edit model from {self.model_path}")
-            self._model = Flux2KleinEdit(
-                quantize=self.config.quantize,
-                model_path=self.model_path,
-                lora_paths=self.config.lora_paths,
-                lora_scales=self.config.lora_scales,
-            )
-            self._is_loaded = True
-            self.logger.info("Flux2 Klein Edit model loaded successfully")
-        except Exception as e:
-            error_msg = f"Failed to load Flux2 Klein Edit model: {e}"
-            self.logger.error(error_msg)
-            raise ModelLoadError(error_msg) from e
+    def _generate_image(self, prompt: str, seed: int = 42, **kwargs: Any) -> Image.Image:
+        kwargs.pop("negative_prompt", None)
+        guidance = kwargs.get("guidance")
+        if guidance and guidance != 1.0:
+            logger.warning("guidance is not supported for Flux2 Klein. Setting to 1.0")
+            kwargs["guidance"] = 1.0
+        return super()._generate_image(prompt, seed, **kwargs)
+
+
+# Config name -> (backend_class, wrapper_class, display_name)
+_MODEL_REGISTRY: dict[str, tuple[type, type, str]] = {
+    "flux-schnell": (Flux1, BackedImageModel, "Flux Schnell"),
+    "flux-dev": (Flux1, BackedImageModel, "Flux Dev"),
+    "flux-krea-dev": (Flux1, BackedImageModel, "Flux Krea Dev"),
+    "flux-kontext-dev": (Flux1Kontext, BackedImageModel, "Flux Kontext"),
+    "qwen-image": (QwenImage, BackedImageModel, "Qwen Image"),
+    "qwen-image-edit": (QwenImageEdit, BackedImageModel, "Qwen Image Edit"),
+    "fibo": (FIBO, BackedImageModel, "FIBO"),
+    "z-image-turbo": (ZImageTurbo, BackedImageModel, "Z Image Turbo"),
+    "flux2-klein-4b": (Flux2Klein, Flux2KleinBackedModel, "Flux2 Klein"),
+    "flux2-klein-9b": (Flux2Klein, Flux2KleinBackedModel, "Flux2 Klein"),
+    "flux2-klein-edit-4b": (Flux2KleinEdit, Flux2KleinBackedModel, "Flux2 Klein Edit"),
+    "flux2-klein-edit-9b": (Flux2KleinEdit, Flux2KleinBackedModel, "Flux2 Klein Edit"),
+}
+
+
+# -----------------------------------------------------------------------------
+# Public factory
+# -----------------------------------------------------------------------------
+
 
 class ImageGenerationModel:
-    """Factory class for creating and managing image generation models."""
-    
-    _MODEL_CONFIGS = {
-        "flux-schnell": ModelConfiguration.schnell,
-        "flux-dev": ModelConfiguration.dev,
-        "flux-krea-dev": ModelConfiguration.krea_dev,
-        "flux-kontext-dev": ModelConfiguration.kontext,
-        "qwen-image": ModelConfiguration.qwen_image,
-        "qwen-image-edit": ModelConfiguration.qwen_image_edit,
-        "fibo": ModelConfiguration.fibo,
-        "z-image-turbo": ModelConfiguration.z_image_turbo,
-        "flux2-klein-4b": ModelConfiguration.flux2_klein_4b,
-        "flux2-klein-9b": ModelConfiguration.flux2_klein_9b,
-        "flux2-klein-edit-4b": ModelConfiguration.flux2_klein_edit_4b,
-        "flux2-klein-edit-9b": ModelConfiguration.flux2_klein_edit_9b,
-    }
-    
-    _MODEL_CLASSES = {
-        "flux-schnell": FluxStandardModel,
-        "flux-dev": FluxStandardModel,
-        "flux-krea-dev": FluxStandardModel,
-        "flux-kontext-dev": FluxKontextModel,
-        "qwen-image": QwenImageModel,
-        "qwen-image-edit": QwenImageEditModel,
-        "fibo": FIBOModel,
-        "z-image-turbo": ZImageTurboModel,
-        "flux2-klein-4b": Flux2KleinModel,
-        "flux2-klein-9b": Flux2KleinModel,
-        "flux2-klein-edit-4b": Flux2KleinModel,
-        "flux2-klein-edit-9b": Flux2KleinModel,
-    }
-    
-    def __init__(self, model_path: str, config_name: str, quantize: Optional[int] = None, 
-                 lora_paths: Optional[List[str]] = None, lora_scales: Optional[List[float]] = None):
-       
+    """Factory for creating and calling image generation models by config name."""
+
+    def __init__(
+        self,
+        model_path: str,
+        config_name: str,
+        quantize: Optional[int] = None,
+        lora_paths: Optional[list[str]] = None,
+        lora_scales: Optional[list[float]] = None,
+    ) -> None:
         self.model_path = model_path
         self.config_name = config_name
         self.quantize = quantize
         self.lora_paths = lora_paths
         self.lora_scales = lora_scales
-        self.logger = logging.getLogger(self.__class__.__name__)
-        
-        # Validate configuration
-        if self.config_name not in self._MODEL_CONFIGS:
-            available_configs = ", ".join(self._MODEL_CONFIGS.keys())
-            raise InvalidConfigurationError(f"Invalid config name: {self.config_name}. Available options: {available_configs}")
-   
-        
+        self.config = ModelConfiguration.from_name(
+            config_name,
+            quantize=quantize,
+            lora_paths=lora_paths,
+            lora_scales=lora_scales,
+        )
+        backend_class, wrapper_class, display_name = _MODEL_REGISTRY[config_name]
         try:
-            # Create model configuration
-            config_factory = self._MODEL_CONFIGS[config_name]
-            
-            self.config = config_factory(quantize=quantize, lora_paths=lora_paths, lora_scales=lora_scales)
-            
-            # Create model instance
-            model_class = self._MODEL_CLASSES[config_name]
-            self.model_instance = model_class(model_path, self.config)
-            
-            self.logger.info(f"ImageGenerationModel initialized successfully with config: {config_name}")
-            if lora_paths:
-                self.logger.info(f"LoRA adapters: {lora_paths}")
-            
+            self.model_instance = wrapper_class(
+                model_path,
+                self.config,
+                backend_class=backend_class,
+                display_name=display_name,
+            )
         except Exception as e:
-            error_msg = f"Failed to initialize ImageGenerationModel: {e}"
-            self.logger.error(error_msg)
-            raise ModelLoadError(error_msg) from e
-    
-    def __call__(self, prompt: str, seed: int = 42, **kwargs) -> Image.Image:
-        """Generate an image using the configured model."""
+            logger.error(f"Failed to initialize ImageGenerationModel: {e}")
+            raise ModelLoadError(f"Failed to initialize ImageGenerationModel: {e}") from e
+        logger.info(f"ImageGenerationModel initialized with config: {config_name}")
+        if lora_paths:
+            logger.info(f"LoRA adapters: {lora_paths}")
+
+    def __call__(self, prompt: str, seed: int = 42, **kwargs: Any) -> Image.Image:
         return self.model_instance(prompt, seed=seed, **kwargs)
-    
-    def get_model_info(self) -> Dict[str, Any]:
-        """Get information about a specific model configuration."""
+
+    def get_model_info(self) -> dict[str, Any]:
         return {
             "model_path": self.model_path,
             "type": self.config.model_type,
-            "model_class": self.model_instance.__class__.__name__
+            "model_class": self.model_instance.__class__.__name__,
         }
-    
-    def get_current_config(self) -> Dict[str, Any]:
-        """Get current model configuration information."""
+
+    def get_current_config(self) -> dict[str, Any]:
         return {
             "config_name": self.config_name,
             "model_path": self.model_path,
@@ -545,16 +312,24 @@ class ImageGenerationModel:
             "lora_paths": self.config.lora_paths,
             "lora_scales": self.config.lora_scales,
         }
-    
+
     def is_loaded(self) -> bool:
-        """Check if the model is loaded and ready for inference."""
-        return hasattr(self.model_instance, '_is_loaded') and self.model_instance._is_loaded
+        return self.model_instance.is_loaded()
+
 
 if __name__ == "__main__":
     model = ImageGenerationModel(
         model_path="black-forest-labs/FLUX.2-klein-4B",
-        config_name="flux2-klein-4b"
+        config_name="flux2-klein-4b",
     )
-    prompt = "A beautiful sunset over a calm ocean, with a small boat in the distance."
-    image = model(prompt, num_inference_steps = 4, width = 1024, height = 1024, guidance = 1.0)
-    image.save("test.png")
+    image_path = "examples/images/china.png"
+    prompt = "Make it like 1800s"
+    image = model(
+        prompt,
+        num_inference_steps=4,
+        width=1024,
+        height=1024,
+        guidance=1.0,
+        image_paths=[image_path],
+    )
+    image.save("examples/result.png")
