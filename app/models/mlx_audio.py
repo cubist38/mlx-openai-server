@@ -2,49 +2,29 @@
 mlx-audio model wrapper
 
 The best audio processing library built on Apple's MLX framework, providing fast and efficient text-to-speech (TTS), speech-to-text (STT), and speech-to-speech (STS) on Apple Silicon.
-
-This module is only fully functional when the optional ``audio`` extra is installed:
-``uv pip install mlx-openai-server[audio]``
 """
 
-import io
 import os
+import io
+import numpy as np
 from typing import Generator, Optional
 
-import numpy as np
+from mlx_audio.audio_io import write as audio_write
 
-try:
-    from mlx_audio.audio_io import write as audio_write
-    from mlx_audio.stt.utils import load_model as load_stt_model
-    from mlx_audio.tts.utils import load_model as load_tts_model
-    from mlx_audio.utils import load_audio as load_audio_from_file
-
-    _MLX_AUDIO_AVAILABLE = True
-except ImportError:
-    _MLX_AUDIO_AVAILABLE = False
-    audio_write = None  # type: ignore[misc, assignment]
-    load_audio_from_file = None  # type: ignore[misc, assignment]
-    load_tts_model = None  # type: ignore[misc, assignment]
-    load_stt_model = None  # type: ignore[misc, assignment]
+from mlx_audio.utils import load_audio as load_audio_from_file
+from mlx_audio.tts.utils import load_model as load_tts_model
+from mlx_audio.stt.utils import load_model as load_stt_model
 
 
 class MLX_Audio:
     """
     A wrapper class for MLX Audio that handles memory management to prevent leaks.
-
-    Requires the optional ``audio`` extra: ``uv pip install mlx-openai-server[audio]``.
     """
 
-    def __init__(self, model_path: str) -> None:
+    def __init__(self, model_path: str):
         """
         Initialize the MLX_Audio model.
         """
-        if not _MLX_AUDIO_AVAILABLE:
-            raise ImportError(
-                "mlx-audio is not installed. Install the audio extra: "
-                "uv pip install mlx-openai-server[audio]"
-            )
-        assert load_tts_model is not None
         self.model = load_tts_model(model_path)
 
     def tts(
