@@ -6,26 +6,62 @@ The best audio processing library built on Apple's MLX framework, providing fast
 
 import os
 import io
+import time
 import numpy as np
+from dataclasses import dataclass
 from typing import Generator, Optional
 
 from mlx_audio.audio_io import write as audio_write
-
 from mlx_audio.utils import load_audio as load_audio_from_file
+
 from mlx_audio.tts.utils import load_model as load_tts_model
 from mlx_audio.stt.utils import load_model as load_stt_model
 
+
+@dataclass
+class STTResponse:
+    """
+    The output of :func:`stt`.
+
+    Args:
+        text (str): The text of the transcription.
+        language (str): The language of the transcription.
+        start (float): The start time of the transcription.
+        end (float): The end time of the transcription.
+        prompt_tokens (int): The number of tokens in the prompt.
+        total_tokens (int): The total number of tokens in the transcription.
+        prompt_tps (float): The prompt tokens-per-second.
+        generation_tps (float): The generation tokens-per-second.
+        total_time (float): The total time of the transcription.
+    """
+
+    text: str = None
+    language: str = None
+    start: float = None
+    end: float = None
+    prompt_tokens: int = None
+    total_tokens: int = None
+    prompt_tps: float = None
+    generation_tps: float = None
+    total_time: float = None
+  
 
 class MLX_Audio:
     """
     A wrapper class for MLX Audio that handles memory management to prevent leaks.
     """
 
-    def __init__(self, model_path: str):
+    def __init__(self, model_path: str, task: str = "tts"):
         """
         Initialize the MLX_Audio model.
         """
-        self.model = load_tts_model(model_path)
+        self.task = task
+        if task == "tts":
+            self.model = load_tts_model(model_path)
+        elif task == "stt":
+            self.model = load_stt_model(model_path)
+        else:
+            raise ValueError(f"Invalid task: {task}")
 
     def tts(
         self, 
@@ -142,9 +178,99 @@ class MLX_Audio:
             audio_write(buffer, concatenated_audio, sample_rate, format=response_format)
             yield buffer.getvalue()
 
+    def stt(
+        self,
+        audio: str,
+        verbose: bool = False,
+        stream: bool = False,
+        format: str = "json",
+        **kwargs
+    ) -> Generator[bytes, None, None] | STTResponse:
+        """
+        Transcribe audio file.
+
+        Parameters
+        ----------
+        audio: str
+            The path to the audio file to transcribe.
+        verbose: bool
+            Whether to print verbose output.
+        stream: bool
+            Whether to stream the transcription.
+        format: str
+            The format of the transcription.
+        **kwargs
+            Additional keyword arguments passed to the model's generate method.
+
+        Yields
+        ------
+        bytes
+            Encoded audio chunks when stream=True.
+
+        Returns
+        -------
+        Generator[bytes, None, None] | STTResponse
+            The raw stream when stream=True, else an STTResponse with transcription and stats.
+        """
+        stream_response = self.model.generate(
+            audio=audio,
+            verbose=verbose,
+            stream=True,
+            format=format,
+            **kwargs
+        )
+        if stream:
+            return stream_response
+
+        start_time = time.time()
+        text_parts: list[str] = []
+        last_final = None
+
+        for chunk in stream_response:
+            if chunk.text:
+                text_parts.append(chunk.text)
+            if chunk.is_final:
+                last_final = chunk
+
+        total_time = time.time() - start_time
+        if last_final is not None:
+            prompt_tokens = last_final.prompt_tokens
+            generation_tokens = last_final.generation_tokens
+            total_tokens = prompt_tokens + generation_tokens
+            prompt_tps = prompt_tokens / total_time if total_time > 0 else 0.0
+            generation_tps = generation_tokens / total_time if total_time > 0 else 0.0
+            language = last_final.language
+        else:
+            prompt_tokens = 0
+            generation_tokens = 0
+            total_tokens = 0
+            prompt_tps = 0.0
+            generation_tps = 0.0
+            language = None
+
+        return STTResponse(
+            text="".join(text_parts),
+            language=language,
+            start=0,
+            end=total_time,
+            prompt_tokens=prompt_tokens,
+            total_tokens=total_tokens,
+            prompt_tps=prompt_tps,
+            generation_tps=generation_tps,
+            total_time=total_time,
+        )
+    
+    def __call__(self, *args, **kwargs):
+        if self.task == "tts":
+            return self.tts(*args, **kwargs)
+        elif self.task == "stt":
+            return self.stt(*args, **kwargs)
+        else:
+            raise ValueError(f"Invalid task: {self.task}")
+
 
 if __name__ == "__main__":
-    model = MLX_Audio("mlx-community/Qwen3-TTS-12Hz-0.6B-Base-4bit")
-    result = model.tts("Hello, world!", stream=True)
+    model = MLX_Audio("mlx-community/Qwen3-ASR-0.6B-4bit", task = "stt")
+    result = model(audio="examples/audios/podcast.wav", stream=True)
     for chunk in result:
         print(chunk)
