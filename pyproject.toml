@@ -34,7 +34,6 @@ dependencies = [
   "mlx-embeddings>=0.0.5,<0.1",
   "mlx-lm>=0.30.7,<0.31",
   "mlx-vlm>=0.3.12,<0.4",
-  "mlx-audio>=0.3.1,<0.4",
   "mlx-whisper>=0.4.3,<0.5",
   "mlx>=0.30.6",                        # Needed due to a typing issue in <0.30
   "numpy>=2.2.0,<2.4",
@@ -49,6 +48,9 @@ dependencies = [
   "torchvision>=0.23.0,<0.30",
   "uvicorn>=0.35.0,<0.40",
 ]
+
+[project.optional-dependencies]
+audio = ["mlx-audio>=0.3.1,<0.4"]
 
 [dependency-groups]
 dev = [
