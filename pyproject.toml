@@ -32,7 +32,7 @@ dependencies = [
   "mflux>=0.16.6,<0.17",
   "loguru>=0.7.3,<0.8",
   "mlx-embeddings>=0.0.5,<0.1",
-  "mlx-lm>=0.30.5,<0.31",  # 0.30.5 required by mlx-audio 0.3.x when using [audio]; default install gets 0.30.7+
+  "mlx-lm>=0.30.7,<0.31",
   "mlx-vlm>=0.3.12,<0.4",
   "mlx-whisper>=0.4.3,<0.5",
   "mlx>=0.30.6",                        # Needed due to a typing issue in <0.30
@@ -50,7 +50,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-audio = ["mlx-audio>=0.3.1,<0.4"]
+audio = ["mlx-audio @ git+https://github.com/cubist38/mlx-audio.git"]
 
 [dependency-groups]
 dev = [
