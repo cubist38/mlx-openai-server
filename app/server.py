@@ -171,10 +171,6 @@ def create_lifespan(config_args: MLXServerConfig):
                     debug=config_args.debug,
                 )
             elif config_args.model_type == "image-generation":
-                if config_args.config_name not in ["flux-schnell", "flux-dev", "flux-krea-dev", "qwen-image", "z-image-turbo", "fibo", "flux2-klein-4b", "flux2-klein-9b"]:
-                    raise ValueError(
-                        f"Invalid config name: {config_args.config_name}. Only flux-schnell, flux-dev, flux-krea-dev, qwen-image, z-image-turbo, fibo, flux2-klein-4b, and flux2-klein-9b are supported for image generation."
-                    )
                 handler = MLXFluxHandler(
                     model_path=model_identifier,
                     max_concurrency=config_args.max_concurrency,
@@ -188,10 +184,6 @@ def create_lifespan(config_args: MLXServerConfig):
                     model_path=model_identifier, max_concurrency=config_args.max_concurrency
                 )
             elif config_args.model_type == "image-edit":
-                if config_args.config_name not in ["flux-kontext-dev", "qwen-image-edit"]:
-                    raise ValueError(
-                        f"Invalid config name: {config_args.config_name}. Only flux-kontext-dev and qwen-image-edit are supported for image edit."
-                    )
                 handler = MLXFluxHandler(
                     model_path=model_identifier,
                     max_concurrency=config_args.max_concurrency,
@@ -300,17 +292,6 @@ def create_handler_from_config(model_cfg: ModelEntryConfig) -> Any:
         )
 
     if model_cfg.model_type == "image-generation":
-        valid_gen_configs = {
-            "flux-schnell", "flux-dev", "flux-krea-dev",
-            "qwen-image", "z-image-turbo", "fibo",
-            "flux2-klein-4b", "flux2-klein-9b",
-        }
-        if model_cfg.config_name not in valid_gen_configs:
-            msg = (
-                f"Invalid config name: {model_cfg.config_name}. "
-                f"Supported for image generation: {sorted(valid_gen_configs)}"
-            )
-            raise ValueError(msg)
         return MLXFluxHandler(
             model_path=model_path,
             max_concurrency=model_cfg.max_concurrency,
@@ -321,13 +302,6 @@ def create_handler_from_config(model_cfg: ModelEntryConfig) -> Any:
         )
 
     if model_cfg.model_type == "image-edit":
-        valid_edit_configs = {"flux-kontext-dev", "qwen-image-edit"}
-        if model_cfg.config_name not in valid_edit_configs:
-            msg = (
-                f"Invalid config name: {model_cfg.config_name}. "
-                f"Supported for image edit: {sorted(valid_edit_configs)}"
-            )
-            raise ValueError(msg)
         return MLXFluxHandler(
             model_path=model_path,
             max_concurrency=model_cfg.max_concurrency,
