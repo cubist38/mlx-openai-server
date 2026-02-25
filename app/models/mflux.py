@@ -122,6 +122,9 @@ _CONFIG_REGISTRY: dict[str, tuple[str, Callable[[], ModelConfig]]] = {
     "flux2-klein-edit-9b": ("flux2-klein-edit", ModelConfig.flux2_klein_9b),
 }
 
+# Public list of all supported image config names (single source of truth for CLI/server).
+IMAGE_CONFIG_NAMES: tuple[str, ...] = tuple(_CONFIG_REGISTRY.keys())
+
 
 # -----------------------------------------------------------------------------
 # Base image model and generic backend wrapper

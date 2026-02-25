@@ -16,6 +16,7 @@ from loguru import logger
 
 from .config import MLXServerConfig, load_config_from_yaml
 from .main import start, start_multi
+from .models.mflux import IMAGE_CONFIG_NAMES
 from .message_converters import MESSAGE_CONVERTER_MAP
 from .parsers import REASONING_PARSER_MAP, TOOL_PARSER_MAP, UNIFIED_PARSER_MAP
 from .version import __version__
@@ -133,7 +134,7 @@ def cli():
 @click.option(
     "--config-name",
     default=None,
-    type=click.Choice(["flux-schnell", "flux-dev", "flux-krea-dev", "flux-kontext-dev", "qwen-image", "qwen-image-edit", "z-image-turbo", "fibo", "flux2-klein-4b", "flux2-klein-9b", "flux2-klein-edit-4b", "flux2-klein-edit-9b"]),
+    type=click.Choice(list(IMAGE_CONFIG_NAMES)),
     help="Config name of the model. Only used for image-generation and image-edit models.",
 )
 @click.option(
