@@ -49,12 +49,13 @@ class OpenAIBaseModel(BaseModel):
 class Config:
     """Configuration class holding the default model names for different types of requests."""
 
-    TEXT_MODEL = "local-text-model"  # Default model for text-based chat completions
-    MULTIMODAL_MODEL = "local-multimodal-model"  # Model used for multimodal requests
-    EMBEDDING_MODEL = "local-embedding-model"  # Model used for generating embeddings
-    IMAGE_GENERATION_MODEL = "local-image-generation-model"
-    IMAGE_EDIT_MODEL = "local-image-edit-model"
-    TRANSCRIPTION_MODEL = "local-transcription-model"
+    TEXT_MODEL = "mlx-text-model"  # Default model for text-based chat completions
+    MULTIMODAL_MODEL = "mlx-multimodal-model"  # Model used for multimodal requests
+    EMBEDDING_MODEL = "mlx-embedding-model"  # Model used for generating embeddings
+    IMAGE_GENERATION_MODEL = "mlx-image-generation-model"
+    IMAGE_EDIT_MODEL = "mlx-image-edit-model"
+    TRANSCRIPTION_MODEL = "mlx-transcription-model"
+    SPEECH_TO_SPEECH_MODEL = "mlx-speech-to-speech-model"
 
 
 class HealthCheckStatus(str, Enum):
@@ -637,8 +638,17 @@ class TranscriptionResponseStream(OpenAIBaseModel):
         default=None, description="The usage of the transcription."
     )
 
-# Audio Speech
-class SpeechRequest(BaseModel):
+# Speech-to-Speech Request
+class SpeechToSpeechRequest(BaseModel):
+    file: UploadFile = Field(..., description="The audio file to separate")
+    model: str | None = Field(
+        default=Config.SPEECH_TO_SPEECH_MODEL, description="The model to use for speech-to-speech"
+    )
+    description: str = Field(..., description="Text description of what to separate (e.g., 'speech', 'guitar', 'drums')")
+
+
+# Text-to-Speech Request
+class TextToSpeechRequest(BaseModel):
     input: str
     model: str | None = None
     voice: str | None = Field(
