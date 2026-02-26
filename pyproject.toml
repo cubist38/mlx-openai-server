@@ -31,6 +31,7 @@ dependencies = [
   "librosa>=0.11.0,<0.12",
   "mflux>=0.16.6,<0.17",
   "loguru>=0.7.3,<0.8",
+  "webrtcvad-wheels>=2.0.14,<2.1",
   "mlx-audio @ git+https://github.com/cubist38/mlx-audio.git",
   "mlx-embeddings>=0.0.5,<0.1",
   "mlx-lm>=0.30.7,<0.31",
