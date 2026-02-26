@@ -3,6 +3,7 @@ mlx-audio model wrapper
 
 The best audio processing library built on Apple's MLX framework, providing fast and efficient text-to-speech (TTS), speech-to-text (STT), and speech-to-speech (STS) on Apple Silicon.
 """
+from __future__ import annotations
 
 import os
 import io
@@ -16,6 +17,8 @@ from mlx_audio.utils import load_audio as load_audio_from_file
 
 from mlx_audio.tts.utils import load_model as load_tts_model
 from mlx_audio.stt.utils import load_model as load_stt_model
+
+from mlx_audio.sts import SAMAudio, save_audio
 
 
 @dataclass
@@ -51,17 +54,49 @@ class MLX_Audio:
     A wrapper class for MLX Audio that handles memory management to prevent leaks.
     """
 
-    def __init__(self, model_path: str, task: str = "tts"):
+    def __init__(self, model_path: str, model_type: str = "tts"):
         """
         Initialize the MLX_Audio model.
         """
-        self.task = task
-        if task == "tts":
-            self.model = load_tts_model(model_path)
-        elif task == "stt":
-            self.model = load_stt_model(model_path)
+        self.model_type = model_type
+        if model_type == "tts":
+            try:
+                self.model = load_tts_model(model_path)
+            except Exception as e:
+                raise ValueError(f"Failed to load TTS model: {e}")
+        elif model_type == "stt":
+            try:
+                self.model = load_stt_model(model_path)
+            except Exception as e:
+                raise ValueError(f"Failed to load STT model: {e}")
+        elif model_type == "sts":
+            try:
+                self.model = SAMAudio.from_pretrained(model_path)
+            except Exception as e:
+                raise ValueError(f"Failed to load STS model. Note that only SAMAudio model is supported for now.")
         else:
-            raise ValueError(f"Invalid task: {task}")
+            raise ValueError(f"Invalid model type: {model_type}")
+
+    def sts(
+        self,
+        audios: list[str],
+        descriptions: list[str]
+    ):
+        """
+        Separate audio sources using text prompts.
+
+        Parameters
+        ----------
+        audios: list[str]
+            The list of audio paths to separate.
+        descriptions: list[str]
+            The list of descriptions for the audio sources.
+        """
+        result = self.model.separate(
+            audios=audios,
+            descriptions=descriptions
+        )
+        return result
 
     def tts(
         self, 
@@ -261,16 +296,18 @@ class MLX_Audio:
         )
     
     def __call__(self, *args, **kwargs):
-        if self.task == "tts":
+        if self.model_type == "tts":
             return self.tts(*args, **kwargs)
-        elif self.task == "stt":
+        elif self.model_type == "stt":
             return self.stt(*args, **kwargs)
+        elif self.model_type == "sts":
+            return self.sts(*args, **kwargs)
         else:
-            raise ValueError(f"Invalid task: {self.task}")
+            raise ValueError(f"Invalid model type: {self.model_type}")
 
 
 if __name__ == "__main__":
-    model = MLX_Audio("mlx-community/Qwen3-ASR-0.6B-4bit", task = "stt")
-    result = model(audio="examples/audios/podcast.wav", stream=True)
-    for chunk in result:
-        print(chunk)
+    audio_path = "examples/audios/podcast.wav"
+    model = MLX_Audio("facebook/sam-audio-small", model_type = "sts")
+    result = model(audios=[audio_path], descriptions=["speech"])
+    print(result)
