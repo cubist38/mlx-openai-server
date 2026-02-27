@@ -208,11 +208,21 @@ class Message(OpenAIBaseModel):
     role: Literal["system", "user", "assistant", "tool"] = Field(
         ..., description="The role of the message sender."
     )
+    name: str | None = Field(
+        None,
+        description="An optional name for the participant. "
+        "Rendered into the chat template for models that support named messages.",
+    )
     reasoning_content: str | None = Field(None, description="The reasoning content, if any.")
     tool_calls: list[ChatCompletionMessageToolCall] | None = Field(
         None, description="List of tool calls, if any."
     )
     tool_call_id: str | None = Field(None, description="The ID of the tool call, if any.")
+    partial: bool = Field(
+        False,
+        description="When true on the final assistant message, the model continues "
+        "from this message instead of starting a new assistant turn (prefill / partial mode).",
+    )
 
 class ChatTemplateKwargs(OpenAIBaseModel):
     """Represents the arguments for a chat template."""
