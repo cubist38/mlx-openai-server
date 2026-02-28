@@ -1,0 +1,51 @@
+name: Linters
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+jobs:
+  linters:
+    name: Run Linters
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v5
+
+      - name: Debug GitHub Variables
+        run: |
+          echo "github.event_name: ${{ github.event_name }}"
+          echo "github.ref_name: ${{ github.ref_name }}"
+          echo "github.event.repository.default_branch: ${{ github.event.repository.default_branch }}"
+
+      - name: Setup Python 3 (with caching)
+        uses: actions/setup-python@v6
+        id: setup-python
+        with:
+          python-version: 3.12
+          cache: 'pip'
+          cache-dependency-path: |
+            pyproject.toml
+
+      - name: Install Linting Requirements
+        run: |
+          python -m pip install --upgrade pip
+          pip install --group dev -e .
+
+      - name: Cache pre-commit
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cache/pre-commit
+          key: ${{ runner.os }}-lint-py${{ steps.setup-python.outputs.python-version || '3.x' }}-${{ hashFiles('**/.pre-commit-config.yaml', '**/pyproject.toml') }}
+          restore-keys: |
+            ${{ runner.os }}-lint-
+
+      - name: Run pre-commit
+        uses: pre-commit/action@v3.0.1
+
+      - uses: pre-commit-ci/lite-action@v1.1.0
+        if: always()
