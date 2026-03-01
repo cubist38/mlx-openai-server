@@ -652,8 +652,9 @@ def create_response_chunk(
     if function_call:
         # Validate index exists before accessing
         tool_index = chunk.get("index", 0)
+        tool_call_id = chunk.get("id", get_tool_call_id())
         tool_chunk = ChoiceDeltaToolCall(
-            index=tool_index, type="function", id=get_tool_call_id(), function=function_call
+            index=tool_index, type="function", id=tool_call_id, function=function_call
         )
 
         delta = Delta(content=None, role="assistant", tool_calls=[tool_chunk])  # type: ignore[call-arg]
@@ -689,6 +690,7 @@ async def handle_stream_response(
     created_time = int(time.time())
     finish_reason = "stop"
     tool_call_index = -1
+    tool_call_ids: dict[int, str] = {}
     usage_info = None
 
     try:
@@ -731,6 +733,12 @@ async def handle_stream_response(
                     payload["index"] = tool_call_index
                 elif payload.get("arguments") and "index" not in payload:
                     payload["index"] = tool_call_index
+
+                if payload.get("name") or payload.get("arguments"):
+                    tool_idx = payload.get("index", 0)
+                    if tool_idx not in tool_call_ids:
+                        tool_call_ids[tool_idx] = payload.get("id", get_tool_call_id())
+                    payload["id"] = tool_call_ids[tool_idx]
 
                 response_chunk = create_response_chunk(
                     payload,
