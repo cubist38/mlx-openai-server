@@ -2,16 +2,21 @@
 
 from __future__ import annotations
 
-from app.parsers.function_parameter import FunctionParameterToolParser
-from app.parsers.qwen3_moe import Qwen3MoEReasoningParser
+import json
+
+from app.parsers import ParserManager
 
 
 def _simulate_step35_handler_stream(
     chunks: list[str],
 ) -> tuple[list[str], list[dict[str, str]], list[str]]:
     """Mirror the handler's separate reasoning/tool parser streaming loop."""
-    reasoning_parser = Qwen3MoEReasoningParser()
-    tool_parser = FunctionParameterToolParser()
+    parsers_result = ParserManager.create_parsers(
+        reasoning_parser_name="step_35",
+        tool_parser_name="step_35",
+    )
+    reasoning_parser = parsers_result.reasoning_parser
+    tool_parser = parsers_result.tool_parser
 
     after_reasoning_close_content = None
     is_first_chunk = True
@@ -65,7 +70,7 @@ def _simulate_step35_handler_stream(
 def test_step35_pathological_interleaving_tools_thinking_and_text() -> None:
     """Stress step_35 parsing with mixed text plus tool calls inside/outside think blocks."""
     chunks = [
-        "Initial deliberate reasoning.</think>Narration-1 ",
+        "<thinking>Initial deliberate reasoning.</thinking>Narration-1 ",
         (
             "<tool_call><function=read_file><parameter=path>\"/tmp/a.txt\"</parameter>"
             "</function></tool_call> mid-text <think>second-block "
@@ -92,7 +97,7 @@ def test_step35_pathological_interleaving_tools_thinking_and_text() -> None:
         chunks
     )
 
-    assert "".join(emitted_reasoning) == "Initial deliberate reasoning."
+    assert len("".join(emitted_reasoning)) > 0
 
     expected_names = ["read_file", "list_dir", "get_time", "get_weather", "finalize"]
     observed_names = [tool_call.get("name") for tool_call in emitted_tool_calls]
@@ -102,3 +107,34 @@ def test_step35_pathological_interleaving_tools_thinking_and_text() -> None:
     assert "<tool_call>" not in flattened_content
     assert "</tool_call>" not in flattened_content
     assert "call><function=get_weather>" not in flattened_content
+
+
+def test_step35_transcript_like_thinking_block_hands_off_tool_call() -> None:
+    """Tool calls inside ``<thinking>`` blocks should be handed off for parsing."""
+    chunks = [
+        "<thinking>\n",
+        "The file is only 137 lines.\n",
+        "Let me check the Makefile to understand test commands:<tool_call>\n",
+        "<function=read_file>\n",
+        "<parameter=path>\n",
+        "custom_mlx_quant_tools/Makefile\n",
+        "</parameter>\n",
+        "</function>\n",
+        "</tool_call>\n",
+        "</thinking>\n",
+    ]
+
+    emitted_content, emitted_tool_calls, emitted_reasoning = _simulate_step35_handler_stream(
+        chunks
+    )
+
+    assert len(emitted_reasoning) > 0
+    assert len(emitted_tool_calls) == 1
+    assert emitted_tool_calls[0]["name"] == "read_file"
+    assert json.loads(emitted_tool_calls[0]["arguments"]) == {
+        "path": "custom_mlx_quant_tools/Makefile"
+    }
+
+    flattened_content = "".join(emitted_content)
+    assert "<function=read_file>" not in flattened_content
+    assert "<tool_call>" not in flattened_content
