@@ -328,7 +328,9 @@ class MLXLMHandler:
                         text = pending_texts.pop(0)
 
                         # If a tool tag opened in a previous chunk, finish tool parsing first.
-                        if tool_parser and tool_parser.state != ToolParserState.NORMAL:
+                        if tool_parser and (
+                            tool_parser.state != ToolParserState.NORMAL or bool(tool_parser.buffer)
+                        ):
                             if self.debug:
                                 log_debug_parser_event(
                                     component="mlx_lm.stream.tool",
@@ -347,6 +349,16 @@ class MLXLMHandler:
                                     parsed_content=parsed_content,
                                     is_complete=is_complete,
                                 )
+                            requeue_reasoning_tail = ""
+                            if (
+                                reasoning_parser
+                                and reasoning_parser.state == ReasoningParserState.FOUND_PREFIX
+                                and tool_parser.state == ToolParserState.NORMAL
+                                and tool_parser.buffer
+                            ):
+                                requeue_reasoning_tail = tool_parser.buffer
+                                tool_parser.buffer = ""
+
                             if parsed_content:
                                 tool_calls = parsed_content.get("tool_calls")
                                 if tool_calls:
@@ -360,6 +372,9 @@ class MLXLMHandler:
                                         yield tool_call
                                 content = parsed_content.get("content")
                                 if isinstance(content, str) and content:
+                                    if requeue_reasoning_tail:
+                                        content = f"{content}{requeue_reasoning_tail}"
+                                        requeue_reasoning_tail = ""
                                     if (
                                         reasoning_parser
                                         and reasoning_parser.state == ReasoningParserState.FOUND_PREFIX
@@ -367,6 +382,8 @@ class MLXLMHandler:
                                         pending_texts.insert(0, content)
                                     else:
                                         yield content
+                            if requeue_reasoning_tail:
+                                pending_texts.insert(0, requeue_reasoning_tail)
                             continue
 
                         if reasoning_parser:
@@ -388,14 +405,54 @@ class MLXLMHandler:
                                     parsed_content=parsed_content,
                                     is_complete=is_complete,
                                 )
+                            reasoning_passthrough_for_tool = None
                             if parsed_content:
                                 after_reasoning_close_content = parsed_content.get("after_reasoning_close_content")
-                                yield parsed_content
+                                reasoning_content = parsed_content.get("reasoning_content")
+                                content_piece = parsed_content.get("content")
+                                tool_tail_overlap = False
+                                if isinstance(content_piece, str) and tool_parser is not None:
+                                    tool_open = tool_parser.get_tool_open()
+                                    max_overlap = min(len(content_piece), len(tool_open) - 1)
+                                    for overlap_size in range(max_overlap, 0, -1):
+                                        if content_piece.endswith(tool_open[:overlap_size]):
+                                            tool_tail_overlap = True
+                                            break
+                                tool_hint_present = (
+                                    isinstance(content_piece, str)
+                                    and (
+                                        "<tool" in content_piece
+                                        or "</tool" in content_piece
+                                        or "<function=" in content_piece
+                                        or "<parameter=" in content_piece
+                                        or tool_tail_overlap
+                                    )
+                                )
+
+                                # When parser output is pure content in NORMAL state, only
+                                # force a tool-parser pass if tool markers are present.
+                                if (
+                                    isinstance(content_piece, str)
+                                    and content_piece
+                                    and reasoning_content is None
+                                    and after_reasoning_close_content is None
+                                    and reasoning_parser.state == ReasoningParserState.NORMAL
+                                    and tool_parser is not None
+                                    and tool_hint_present
+                                ):
+                                    reasoning_passthrough_for_tool = content_piece
+                                    if reasoning_parser.buffer:
+                                        reasoning_passthrough_for_tool += reasoning_parser.buffer
+                                        reasoning_parser.buffer = ""
+                                else:
+                                    yield parsed_content
                             if is_complete:
                                 reasoning_parser = None
                             if after_reasoning_close_content:
                                 text = after_reasoning_close_content
                                 after_reasoning_close_content = None
+                            elif reasoning_passthrough_for_tool is not None:
+                                text = reasoning_passthrough_for_tool
                             else:
                                 continue
 
@@ -418,6 +475,16 @@ class MLXLMHandler:
                                     parsed_content=parsed_content,
                                     is_complete=is_complete,
                                 )
+                            requeue_reasoning_tail = ""
+                            if (
+                                reasoning_parser
+                                and reasoning_parser.state == ReasoningParserState.FOUND_PREFIX
+                                and tool_parser.state == ToolParserState.NORMAL
+                                and tool_parser.buffer
+                            ):
+                                requeue_reasoning_tail = tool_parser.buffer
+                                tool_parser.buffer = ""
+
                             if parsed_content:
                                 tool_calls = parsed_content.get("tool_calls")
                                 if tool_calls:
@@ -431,6 +498,9 @@ class MLXLMHandler:
                                         yield tool_call
                                 content = parsed_content.get("content")
                                 if isinstance(content, str) and content:
+                                    if requeue_reasoning_tail:
+                                        content = f"{content}{requeue_reasoning_tail}"
+                                        requeue_reasoning_tail = ""
                                     if (
                                         reasoning_parser
                                         and reasoning_parser.state == ReasoningParserState.FOUND_PREFIX
@@ -438,6 +508,8 @@ class MLXLMHandler:
                                         pending_texts.insert(0, content)
                                     else:
                                         yield content
+                            if requeue_reasoning_tail:
+                                pending_texts.insert(0, requeue_reasoning_tail)
                             continue
 
                         yield text
@@ -614,9 +686,14 @@ class MLXLMHandler:
                             parsed_content=parsed_content,
                             is_complete=True,
                         )
-                    parsed_response["reasoning_content"] = parsed_content.get("reasoning_content")
-                    parsed_response["content"] = parsed_content.get("content")
-                    response_text = parsed_content.get("after_reasoning_close_content")
+                    if parsed_content:
+                        parsed_response["reasoning_content"] = parsed_content.get("reasoning_content")
+                        parsed_response["content"] = parsed_content.get("content")
+                        # Keep tool parsing active when no explicit reasoning open tag exists
+                        # (for example raw output that starts with a stray ``</think>``).
+                        response_text = parsed_content.get("after_reasoning_close_content")
+                        if response_text is None:
+                            response_text = parsed_content.get("content")
 
                 if response_text:
                     if tool_parser:

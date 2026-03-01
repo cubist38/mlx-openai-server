@@ -37,8 +37,19 @@ def _simulate_mixed_think_tool_handoff_handler_stream(
         while pending_texts:
             text = pending_texts.pop(0)
 
-            if tool_parser and tool_parser.state != ToolParserState.NORMAL:
+            if tool_parser and (
+                tool_parser.state != ToolParserState.NORMAL or bool(tool_parser.buffer)
+            ):
                 parsed_content, _is_complete = tool_parser.extract_tool_calls_streaming(text)
+                requeue_reasoning_tail = ""
+                if (
+                    reasoning_parser
+                    and reasoning_parser.state == ReasoningParserState.FOUND_PREFIX
+                    and tool_parser.state == ToolParserState.NORMAL
+                    and tool_parser.buffer
+                ):
+                    requeue_reasoning_tail = tool_parser.buffer
+                    tool_parser.buffer = ""
                 if parsed_content:
                     tool_calls = parsed_content.get("tool_calls")
                     if isinstance(tool_calls, list):
@@ -47,6 +58,9 @@ def _simulate_mixed_think_tool_handoff_handler_stream(
                         )
                     content = parsed_content.get("content")
                     if isinstance(content, str) and content:
+                        if requeue_reasoning_tail:
+                            content = f"{content}{requeue_reasoning_tail}"
+                            requeue_reasoning_tail = ""
                         if (
                             reasoning_parser
                             and reasoning_parser.state == ReasoningParserState.FOUND_PREFIX
@@ -54,6 +68,8 @@ def _simulate_mixed_think_tool_handoff_handler_stream(
                             pending_texts.insert(0, content)
                         else:
                             emitted_content.append(content)
+                if requeue_reasoning_tail:
+                    pending_texts.insert(0, requeue_reasoning_tail)
                 continue
 
             if reasoning_parser:
@@ -78,6 +94,15 @@ def _simulate_mixed_think_tool_handoff_handler_stream(
 
             if tool_parser:
                 parsed_content, _is_complete = tool_parser.extract_tool_calls_streaming(text)
+                requeue_reasoning_tail = ""
+                if (
+                    reasoning_parser
+                    and reasoning_parser.state == ReasoningParserState.FOUND_PREFIX
+                    and tool_parser.state == ToolParserState.NORMAL
+                    and tool_parser.buffer
+                ):
+                    requeue_reasoning_tail = tool_parser.buffer
+                    tool_parser.buffer = ""
                 if parsed_content:
                     tool_calls = parsed_content.get("tool_calls")
                     if isinstance(tool_calls, list):
@@ -86,6 +111,9 @@ def _simulate_mixed_think_tool_handoff_handler_stream(
                         )
                     content = parsed_content.get("content")
                     if isinstance(content, str) and content:
+                        if requeue_reasoning_tail:
+                            content = f"{content}{requeue_reasoning_tail}"
+                            requeue_reasoning_tail = ""
                         if (
                             reasoning_parser
                             and reasoning_parser.state == ReasoningParserState.FOUND_PREFIX
@@ -93,6 +121,8 @@ def _simulate_mixed_think_tool_handoff_handler_stream(
                             pending_texts.insert(0, content)
                         else:
                             emitted_content.append(content)
+                if requeue_reasoning_tail:
+                    pending_texts.insert(0, requeue_reasoning_tail)
                 continue
 
             emitted_content.append(text)
@@ -196,3 +226,48 @@ def test_mixed_think_tool_handoff_tool_call_inside_thinking_keeps_trailing_reaso
     assert flattened_content == ""
     assert "</thinking>" not in flattened_content
     assert "<tool_call>" not in flattened_content
+
+
+def test_mixed_think_tool_handoff_split_tool_open_inside_thinking_does_not_leak_partial_marker() -> (
+    None
+):
+    """A split ``<tool_call>`` opener inside thinking should not leak ``<tool_`` into reasoning."""
+    chunks = [
+        "<thinking>abc <tool_",
+        (
+            'call><function=read_file><parameter=path>"/tmp/a.txt"</parameter></function>'
+            "</tool_call> xyz </thinking>"
+        ),
+    ]
+
+    emitted_content, emitted_tool_calls, emitted_reasoning = (
+        _simulate_mixed_think_tool_handoff_handler_stream(chunks)
+    )
+
+    assert [tool_call.get("name") for tool_call in emitted_tool_calls] == ["read_file"]
+    assert "".join(emitted_reasoning) == "abc  xyz "
+    assert "".join(emitted_content) == ""
+
+
+def test_mixed_think_tool_handoff_split_reasoning_close_after_tool_handoff_routes_tail_to_content() -> (
+    None
+):
+    """Split ``</thinking>`` markers after a tool handoff should still close reasoning correctly."""
+    chunks = [
+        (
+            "<thinking>before "
+            '<tool_call><function=read_file><parameter=path>"/tmp/a.txt"</parameter></function>'
+            "</tool_call> after <"
+        ),
+        "/thi",
+        "nki",
+        "ng> tail",
+    ]
+
+    emitted_content, emitted_tool_calls, emitted_reasoning = (
+        _simulate_mixed_think_tool_handoff_handler_stream(chunks)
+    )
+
+    assert [tool_call.get("name") for tool_call in emitted_tool_calls] == ["read_file"]
+    assert "".join(emitted_reasoning) == "before  after "
+    assert "".join(emitted_content) == " tail"

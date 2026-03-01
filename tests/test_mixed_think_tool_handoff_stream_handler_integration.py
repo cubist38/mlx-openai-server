@@ -64,6 +64,18 @@ class _FakeStreamChunk:
     peak_memory: float = 0.0
 
 
+@dataclass
+class _FakeNonStreamResponse:
+    """Minimal non-stream response object consumed by ``generate_text_response``."""
+
+    text: str
+    tokens: list[int]
+    prompt_tokens: int = 11
+    generation_tokens: int = 7
+    generation_tps: float = 1.0
+    peak_memory: float = 0.0
+
+
 class _FakeModel:
     """Tiny model stub used by ``generate_text_stream``."""
 
@@ -93,8 +105,13 @@ class _FakePromptCache:
 class _FakeInferenceWorker:
     """Inference worker stub that returns a fixed async stream."""
 
-    def __init__(self, chunks: list[_FakeStreamChunk]) -> None:
-        self._chunks = chunks
+    def __init__(
+        self,
+        chunks: list[_FakeStreamChunk] | None = None,
+        non_stream_response: _FakeNonStreamResponse | None = None,
+    ) -> None:
+        self._chunks = chunks or []
+        self._non_stream_response = non_stream_response
 
     def submit_stream(self, *args: object, **kwargs: object) -> AsyncIterator[_FakeStreamChunk]:
         async def _gen() -> AsyncIterator[_FakeStreamChunk]:
@@ -102,6 +119,11 @@ class _FakeInferenceWorker:
                 yield chunk
 
         return _gen()
+
+    async def submit(self, *args: object, **kwargs: object) -> _FakeNonStreamResponse:
+        if self._non_stream_response is None:
+            raise RuntimeError("non-stream response not configured in test stub")
+        return self._non_stream_response
 
 
 class MixedThinkToolHandoffStreamHandlerIntegrationTests(unittest.TestCase):
@@ -166,6 +188,290 @@ class MixedThinkToolHandoffStreamHandlerIntegrationTests(unittest.TestCase):
 
         usage_chunks = [item for item in outputs if isinstance(item, dict) and "__usage__" in item]
         assert len(usage_chunks) == 1
+
+    def test_mixed_think_tool_handoff_terminal_tool_call_before_thinking_close(self) -> None:
+        """Terminal in-thinking tool calls should still parse when they end right before ``</thinking>``."""
+        handler_cls = _load_mlx_lm_handler_class()
+        handler = object.__new__(handler_cls)
+
+        handler.debug = False
+        handler.message_converter = None
+        handler.enable_auto_tool_choice = False
+        handler.reasoning_parser_name = "mixed_think_tool_handoff"
+        handler.tool_parser_name = "step_35"
+        handler.model = _FakeModel()
+        handler.prompt_cache = _FakePromptCache()
+        handler.inference_worker = _FakeInferenceWorker(
+            [
+                _FakeStreamChunk("<thinking>tail-check:", token=201),
+                _FakeStreamChunk("<tool_call>\n<function=read_file>\n", token=202),
+                _FakeStreamChunk(
+                    "<parameter=path>\napp/api/endpoints.py\n</parameter>\n",
+                    token=203,
+                ),
+                _FakeStreamChunk(
+                    "<parameter=start_line>\n692\n</parameter>\n"
+                    "<parameter=end_line>\n790\n</parameter>\n",
+                    token=204,
+                ),
+                _FakeStreamChunk("</function>\n</tool_call>\n</thinking>", token=205),
+            ]
+        )
+
+        async def _fake_prepare_text_request(
+            self: object, request: object
+        ) -> tuple[list[dict[str, str]], dict[str, object]]:
+            return [{"role": "user", "content": "hello"}], {"chat_template_kwargs": {}}
+
+        handler._prepare_text_request = types.MethodType(_fake_prepare_text_request, handler)
+
+        async def _collect() -> list[str | dict[str, object]]:
+            return [item async for item in handler.generate_text_stream(request=object())]
+
+        outputs = asyncio.run(_collect())
+
+        reasoning_text = "".join(
+            item["reasoning_content"]
+            for item in outputs
+            if isinstance(item, dict) and isinstance(item.get("reasoning_content"), str)
+        )
+        assert reasoning_text == "tail-check:\n"
+
+        emitted_tool_calls = [
+            item for item in outputs if isinstance(item, dict) and isinstance(item.get("name"), str)
+        ]
+        assert len(emitted_tool_calls) == 1
+        assert emitted_tool_calls[0]["name"] == "read_file"
+        assert emitted_tool_calls[0]["arguments"] == (
+            '{"path": "app/api/endpoints.py", "start_line": 692, "end_line": 790}'
+        )
+
+        plain_content = "".join(item for item in outputs if isinstance(item, str))
+        assert plain_content == ""
+        assert "<tool_call>" not in plain_content
+        assert "</thinking>" not in plain_content
+
+    def test_nonstream_step35_parses_tool_call_when_response_starts_with_stray_think_close(self) -> (
+        None
+    ):
+        """Non-stream parsing should still extract tool calls after a leading stray ``</think>``."""
+        handler_cls = _load_mlx_lm_handler_class()
+        handler = object.__new__(handler_cls)
+
+        handler.debug = False
+        handler.message_converter = None
+        handler.enable_auto_tool_choice = False
+        handler.reasoning_parser_name = "step_35"
+        handler.tool_parser_name = "step_35"
+        handler.model = _FakeModel()
+        handler.prompt_cache = _FakePromptCache()
+        handler.inference_worker = _FakeInferenceWorker(
+            non_stream_response=_FakeNonStreamResponse(
+                text=(
+                    "</think>\n"
+                    "prefix text before tool.\n"
+                    "<tool_call>\n"
+                    "<function=read_file>\n"
+                    "<parameter=path>\n"
+                    "app/api/endpoints.py\n"
+                    "</parameter>\n"
+                    "<parameter=start_line>\n"
+                    "692\n"
+                    "</parameter>\n"
+                    "<parameter=end_line>\n"
+                    "790\n"
+                    "</parameter>\n"
+                    "</function>\n"
+                    "</tool_call>\n"
+                ),
+                tokens=[1, 2, 3],
+                prompt_tokens=100,
+                generation_tokens=20,
+            )
+        )
+
+        async def _fake_prepare_text_request(
+            self: object, request: object
+        ) -> tuple[list[dict[str, str]], dict[str, object]]:
+            return [{"role": "user", "content": "hello"}], {"chat_template_kwargs": {}}
+
+        handler._prepare_text_request = types.MethodType(_fake_prepare_text_request, handler)
+
+        result = asyncio.run(handler.generate_text_response(request=object()))
+        parsed = result["response"]
+
+        assert isinstance(parsed, dict)
+        assert isinstance(parsed.get("tool_calls"), list)
+        assert len(parsed["tool_calls"]) == 1
+        assert parsed["tool_calls"][0]["name"] == "read_file"
+        assert parsed["tool_calls"][0]["arguments"] == (
+            '{"path": "app/api/endpoints.py", "start_line": 692, "end_line": 790}'
+        )
+        if isinstance(parsed.get("content"), str):
+            assert "<tool_call>" not in parsed["content"]
+
+    def test_stream_step35_parses_tool_call_when_output_starts_with_stray_think_close(self) -> None:
+        """Streaming should parse tool calls even when output starts with stray ``</think>``."""
+        handler_cls = _load_mlx_lm_handler_class()
+        handler = object.__new__(handler_cls)
+
+        handler.debug = False
+        handler.message_converter = None
+        handler.enable_auto_tool_choice = False
+        handler.reasoning_parser_name = "step_35"
+        handler.tool_parser_name = "step_35"
+        handler.model = _FakeModel()
+        handler.prompt_cache = _FakePromptCache()
+        handler.inference_worker = _FakeInferenceWorker(
+            [
+                _FakeStreamChunk("</think>\nprefix text before tool.\n", token=301),
+                _FakeStreamChunk("<tool_call>\n<function=read_file>\n", token=302),
+                _FakeStreamChunk(
+                    "<parameter=path>\napp/api/endpoints.py\n</parameter>\n",
+                    token=303,
+                ),
+                _FakeStreamChunk(
+                    "<parameter=start_line>\n692\n</parameter>\n"
+                    "<parameter=end_line>\n790\n</parameter>\n",
+                    token=304,
+                ),
+                _FakeStreamChunk("</function>\n</tool_call>\n", token=305),
+            ]
+        )
+
+        async def _fake_prepare_text_request(
+            self: object, request: object
+        ) -> tuple[list[dict[str, str]], dict[str, object]]:
+            return [{"role": "user", "content": "hello"}], {"chat_template_kwargs": {}}
+
+        handler._prepare_text_request = types.MethodType(_fake_prepare_text_request, handler)
+
+        async def _collect() -> list[str | dict[str, object]]:
+            return [item async for item in handler.generate_text_stream(request=object())]
+
+        outputs = asyncio.run(_collect())
+
+        emitted_tool_calls = [
+            item for item in outputs if isinstance(item, dict) and isinstance(item.get("name"), str)
+        ]
+        assert len(emitted_tool_calls) == 1
+        assert emitted_tool_calls[0]["name"] == "read_file"
+        assert emitted_tool_calls[0]["arguments"] == (
+            '{"path": "app/api/endpoints.py", "start_line": 692, "end_line": 790}'
+        )
+
+        plain_content = "".join(item for item in outputs if isinstance(item, str))
+        assert "<tool_call>" not in plain_content
+
+    def test_stream_step35_preserves_split_parameter_close_marker_inside_tool_call(self) -> None:
+        """A chunk split at ``<`` + ``/parameter>`` should not corrupt parsed tool arguments."""
+        handler_cls = _load_mlx_lm_handler_class()
+        handler = object.__new__(handler_cls)
+
+        handler.debug = False
+        handler.message_converter = None
+        handler.enable_auto_tool_choice = False
+        handler.reasoning_parser_name = "step_35"
+        handler.tool_parser_name = "step_35"
+        handler.model = _FakeModel()
+        handler.prompt_cache = _FakePromptCache()
+        handler.inference_worker = _FakeInferenceWorker(
+            [
+                _FakeStreamChunk(
+                    (
+                        "prefix text.\n"
+                        "<tool_call>\n"
+                        "<function=read_file>\n"
+                        "<parameter=path>\n"
+                        "mlx-openai-server/app/handler/mlx_lm.py\n"
+                        "<"
+                    ),
+                    token=401,
+                ),
+                _FakeStreamChunk(
+                    "/parameter>\n<parameter=start_line>\n151\n</parameter>\n",
+                    token=402,
+                ),
+                _FakeStreamChunk(
+                    "<parameter=end_line>\n523\n</parameter>\n</function>\n</tool_call>\n",
+                    token=403,
+                ),
+            ]
+        )
+
+        async def _fake_prepare_text_request(
+            self: object, request: object
+        ) -> tuple[list[dict[str, str]], dict[str, object]]:
+            return [{"role": "user", "content": "hello"}], {"chat_template_kwargs": {}}
+
+        handler._prepare_text_request = types.MethodType(_fake_prepare_text_request, handler)
+
+        async def _collect() -> list[str | dict[str, object]]:
+            return [item async for item in handler.generate_text_stream(request=object())]
+
+        outputs = asyncio.run(_collect())
+
+        emitted_tool_calls = [
+            item for item in outputs if isinstance(item, dict) and isinstance(item.get("name"), str)
+        ]
+        assert len(emitted_tool_calls) == 1
+        assert emitted_tool_calls[0]["name"] == "read_file"
+        assert emitted_tool_calls[0]["arguments"] == (
+            '{"path": "mlx-openai-server/app/handler/mlx_lm.py", "start_line": 151, "end_line": 523}'
+        )
+
+    def test_stream_step35_parses_tool_call_when_open_marker_is_split_as_too_plus_l_call(self) -> (
+        None
+    ):
+        """A ``<too`` + ``l_call>`` split should still produce one parsed tool call."""
+        handler_cls = _load_mlx_lm_handler_class()
+        handler = object.__new__(handler_cls)
+
+        handler.debug = False
+        handler.message_converter = None
+        handler.enable_auto_tool_choice = False
+        handler.reasoning_parser_name = "step_35"
+        handler.tool_parser_name = "step_35"
+        handler.model = _FakeModel()
+        handler.prompt_cache = _FakePromptCache()
+        handler.inference_worker = _FakeInferenceWorker(
+            [
+                _FakeStreamChunk("prefix text.<too", token=501),
+                _FakeStreamChunk(
+                    "l_call>\n"
+                    "<function=read_file>\n"
+                    "<parameter=path>\n"
+                    "mlx-openai-server/app/handler/mlx_lm.py\n"
+                    "</parameter>\n"
+                    "<parameter=start_line>\n151\n</parameter>\n"
+                    "<parameter=end_line>\n523\n</parameter>\n"
+                    "</function>\n"
+                    "</tool_call>\n",
+                    token=502,
+                ),
+            ]
+        )
+
+        async def _fake_prepare_text_request(
+            self: object, request: object
+        ) -> tuple[list[dict[str, str]], dict[str, object]]:
+            return [{"role": "user", "content": "hello"}], {"chat_template_kwargs": {}}
+
+        handler._prepare_text_request = types.MethodType(_fake_prepare_text_request, handler)
+
+        async def _collect() -> list[str | dict[str, object]]:
+            return [item async for item in handler.generate_text_stream(request=object())]
+
+        outputs = asyncio.run(_collect())
+
+        emitted_tool_calls = [
+            item for item in outputs if isinstance(item, dict) and isinstance(item.get("name"), str)
+        ]
+        assert len(emitted_tool_calls) == 1
+        assert emitted_tool_calls[0]["name"] == "read_file"
+        assert emitted_tool_calls[0]["arguments"] == (
+            '{"path": "mlx-openai-server/app/handler/mlx_lm.py", "start_line": 151, "end_line": 523}'
+        )
 
 
 if __name__ == "__main__":

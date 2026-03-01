@@ -80,6 +80,9 @@ class MixedThinkToolHandoffReasoningParser(AbstractReasoningParser):
         if boundary_type == "tool":
             reasoning_content = reasoning_body[:boundary_idx]
             after_reasoning_close_content = reasoning_body[boundary_idx:]
+            # Any buffered overlap was consumed into ``reasoning_body`` above.
+            # Clear it so stale marker fragments do not leak into later chunks.
+            self.buffer = ""
             return {
                 "reasoning_content": reasoning_content,
                 "after_reasoning_close_content": after_reasoning_close_content,
