@@ -19,41 +19,42 @@ from .hermes import HermesReasoningParser, HermesToolParser
 from .kimi_k2 import KimiK2ToolParser
 from .longcat_flash_lite import LongCatFlashLiteToolParser
 from .minimax_m2 import MiniMaxM2ToolParser
+from .mixed_think_tool_handoff import MixedThinkToolHandoffReasoningParser, Step35ReasoningParser
 from .qwen3_moe import Qwen3MoEReasoningParser
 from .solar_open import SolarOpenReasoningParser, SolarOpenToolParser
-from .step35 import Step35ReasoningParser
 
 # Mapping from parser name strings to reasoning parser classes
 REASONING_PARSER_MAP: dict[str, type[AbstractReasoningParser]] = {
     "hermes": HermesReasoningParser,
-    "qwen3": HermesReasoningParser, # use HermesReasoningParser for Qwen3
+    "qwen3": HermesReasoningParser,  # use HermesReasoningParser for Qwen3
     "qwen3_moe": Qwen3MoEReasoningParser,
-    "qwen3_vl": Qwen3MoEReasoningParser, # use Qwen3MoEReasoningParser for Qwen3 VL
+    "qwen3_vl": Qwen3MoEReasoningParser,  # use Qwen3MoEReasoningParser for Qwen3 VL
     "glm4_moe": GLM4MoEReasoningParser,
-    "glm47_flash": Qwen3MoEReasoningParser, # use Qwen3MoEReasoningParser for GLM47 Flash
-    "minimax_m2": Qwen3MoEReasoningParser, # use Qwen3MoEReasoningParser for MiniMax M2
-    "nemotron3_nano": Qwen3MoEReasoningParser, # use Qwen3MoEReasoningParser for Nemotron3 Nano
+    "glm47_flash": Qwen3MoEReasoningParser,  # use Qwen3MoEReasoningParser for GLM47 Flash
+    "minimax_m2": Qwen3MoEReasoningParser,  # use Qwen3MoEReasoningParser for MiniMax M2
+    "nemotron3_nano": Qwen3MoEReasoningParser,  # use Qwen3MoEReasoningParser for Nemotron3 Nano
     "solar_open": SolarOpenReasoningParser,
     "kimi_k2": HermesReasoningParser,
-    "step_35": Step35ReasoningParser,
+    "mixed_think_tool_handoff": MixedThinkToolHandoffReasoningParser,
+    "step_35": MixedThinkToolHandoffReasoningParser,  # backward-compatible alias
 }
 
 # Mapping from parser name strings to tool parser classes
 TOOL_PARSER_MAP: dict[str, type[AbstractToolParser]] = {
     "hermes": HermesToolParser,
-    "qwen3": HermesToolParser, # use HermesToolParser for Qwen3
-    "qwen3_coder": FunctionParameterToolParser, # use FunctionParameterToolParser for Qwen3 Coder
-    "qwen3_moe": HermesToolParser, # use HermesToolParser for Qwen3 MoE
-    "qwen3_vl": HermesToolParser, # use HermesToolParser for Qwen3 VL
+    "qwen3": HermesToolParser,  # use HermesToolParser for Qwen3
+    "qwen3_coder": FunctionParameterToolParser,  # use FunctionParameterToolParser for Qwen3 Coder
+    "qwen3_moe": HermesToolParser,  # use HermesToolParser for Qwen3 MoE
+    "qwen3_vl": HermesToolParser,  # use HermesToolParser for Qwen3 VL
     "glm4_moe": GLM4MoEToolParser,
     "minimax_m2": MiniMaxM2ToolParser,
-    "nemotron3_nano": FunctionParameterToolParser, # use FunctionParameterToolParser for Nemotron3 Nano
+    "nemotron3_nano": FunctionParameterToolParser,  # use FunctionParameterToolParser for Nemotron3 Nano
     "functiongemma": FunctionGemmaToolParser,
-    "iquest_coder_v1": HermesToolParser, # use HermesToolParser for IQuest Coder V1
+    "iquest_coder_v1": HermesToolParser,  # use HermesToolParser for IQuest Coder V1
     "solar_open": SolarOpenToolParser,
     "longcat_flash_lite": LongCatFlashLiteToolParser,
     "kimi_k2": KimiK2ToolParser,
-    "step_35": FunctionParameterToolParser, # use FunctionParameterToolParser for Step 35
+    "step_35": FunctionParameterToolParser,  # use FunctionParameterToolParser for Step 35
 }
 
 # Unified parsers that handle BOTH reasoning and tool calls in one class
@@ -188,7 +189,7 @@ class ParserManager:
 
     >>> result = ParserManager.create_parsers("qwen3", "hermes")
     >>> result.reasoning_parser  # Qwen3ReasoningParser
-    >>> result.tool_parser       # HermesToolParser
+    >>> result.tool_parser  # HermesToolParser
     """
 
     @staticmethod
@@ -258,9 +259,12 @@ class ParserManager:
             Parser name if unified, None otherwise.
         """
         # Both point to same unified parser
-        if (reasoning_name and tool_name and
-            reasoning_name == tool_name and
-            reasoning_name in UNIFIED_PARSER_MAP):
+        if (
+            reasoning_name
+            and tool_name
+            and reasoning_name == tool_name
+            and reasoning_name in UNIFIED_PARSER_MAP
+        ):
             return reasoning_name
 
         # Either one is a unified parser (takes precedence)
@@ -302,6 +306,7 @@ __all__ = [
     "Qwen3MoEReasoningParser",
     "GLM4MoEReasoningParser",
     "SolarOpenReasoningParser",
+    "MixedThinkToolHandoffReasoningParser",
     "Step35ReasoningParser",
     # Tool parsers
     "HermesToolParser",

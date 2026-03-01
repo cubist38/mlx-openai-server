@@ -1,8 +1,9 @@
-"""Integration-style streaming regression for Step 3.5 handler parsing."""
+"""Integration-style streaming regression for mixed-think handler parsing."""
 
 from __future__ import annotations
 
 import asyncio
+from collections.abc import AsyncIterator
 from dataclasses import dataclass
 import importlib
 from pathlib import Path
@@ -95,18 +96,20 @@ class _FakeInferenceWorker:
     def __init__(self, chunks: list[_FakeStreamChunk]) -> None:
         self._chunks = chunks
 
-    def submit_stream(self, *args: object, **kwargs: object):
-        async def _gen():
+    def submit_stream(self, *args: object, **kwargs: object) -> AsyncIterator[_FakeStreamChunk]:
+        async def _gen() -> AsyncIterator[_FakeStreamChunk]:
             for chunk in self._chunks:
                 yield chunk
 
         return _gen()
 
 
-class Step35StreamHandlerIntegrationTests(unittest.TestCase):
-    """Exercise Step 3.5 streaming parser composition through handler loop."""
+class MixedThinkToolHandoffStreamHandlerIntegrationTests(unittest.TestCase):
+    """Exercise mixed-think streaming parser composition through handler loop."""
 
-    def test_step35_tool_inside_thinking_reenters_reasoning_after_tool_parse(self) -> None:
+    def test_mixed_think_tool_handoff_inside_thinking_reenters_reasoning_after_tool_parse(
+        self,
+    ) -> None:
         """Tool chunks inside thinking should parse as tool calls, not leaked text."""
         handler_cls = _load_mlx_lm_handler_class()
         handler = object.__new__(handler_cls)
@@ -114,7 +117,7 @@ class Step35StreamHandlerIntegrationTests(unittest.TestCase):
         handler.debug = False
         handler.message_converter = None
         handler.enable_auto_tool_choice = False
-        handler.reasoning_parser_name = "step_35"
+        handler.reasoning_parser_name = "mixed_think_tool_handoff"
         handler.tool_parser_name = "step_35"
         handler.model = _FakeModel()
         handler.prompt_cache = _FakePromptCache()
@@ -123,7 +126,7 @@ class Step35StreamHandlerIntegrationTests(unittest.TestCase):
                 _FakeStreamChunk("<thinking>before ", token=101),
                 _FakeStreamChunk("<tool_call>\n", token=102),
                 _FakeStreamChunk(
-                    "<function=read_file><parameter=path>\"/tmp/a.txt\"</parameter></function>\n",
+                    '<function=read_file><parameter=path>"/tmp/a.txt"</parameter></function>\n',
                     token=103,
                 ),
                 _FakeStreamChunk("</tool_call> after </thinking> final", token=104),
@@ -131,17 +134,14 @@ class Step35StreamHandlerIntegrationTests(unittest.TestCase):
         )
 
         async def _fake_prepare_text_request(
-            self, request: object
+            self: object, request: object
         ) -> tuple[list[dict[str, str]], dict[str, object]]:
             return [{"role": "user", "content": "hello"}], {"chat_template_kwargs": {}}
 
         handler._prepare_text_request = types.MethodType(_fake_prepare_text_request, handler)
 
         async def _collect() -> list[str | dict[str, object]]:
-            outputs: list[str | dict[str, object]] = []
-            async for item in handler.generate_text_stream(request=object()):
-                outputs.append(item)
-            return outputs
+            return [item async for item in handler.generate_text_stream(request=object())]
 
         outputs = asyncio.run(_collect())
 
@@ -153,9 +153,7 @@ class Step35StreamHandlerIntegrationTests(unittest.TestCase):
         assert reasoning_text == "before  after "
 
         emitted_tool_calls = [
-            item
-            for item in outputs
-            if isinstance(item, dict) and isinstance(item.get("name"), str)
+            item for item in outputs if isinstance(item, dict) and isinstance(item.get("name"), str)
         ]
         assert len(emitted_tool_calls) == 1
         assert emitted_tool_calls[0]["name"] == "read_file"
@@ -166,9 +164,7 @@ class Step35StreamHandlerIntegrationTests(unittest.TestCase):
         assert "<tool_call>" not in plain_content
         assert "</thinking>" not in plain_content
 
-        usage_chunks = [
-            item for item in outputs if isinstance(item, dict) and "__usage__" in item
-        ]
+        usage_chunks = [item for item in outputs if isinstance(item, dict) and "__usage__" in item]
         assert len(usage_chunks) == 1
 
 
