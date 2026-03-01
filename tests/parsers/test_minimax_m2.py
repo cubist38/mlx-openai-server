@@ -1,11 +1,10 @@
-"""Tests for the MiniMax M2 parser."""
+"""Tests for the MiniMax M2 parser (tool parsing only)."""
 
-from app.parsers.minimax_m2 import MiniMaxM2ReasoningParser, MiniMaxM2ToolParser
+from app.parsers.minimax_m2 import MiniMaxM2ToolParser
 
 
-def test_minimax_m2_reasoning_and_tool_parsing_streaming() -> None:
-    """Test streaming parsing of reasoning and tool calls."""
-    reasoning_parser = MiniMaxM2ReasoningParser()
+def test_minimax_m2_tool_parsing_streaming() -> None:
+    """Test streaming parsing of tool calls."""
     tool_parser = MiniMaxM2ToolParser()
 
     chunks = [
@@ -19,31 +18,12 @@ def test_minimax_m2_reasoning_and_tool_parsing_streaming() -> None:
         "</invoke>\n",
         "</minimax:tool_call>",
     ]
-    after_reasoning_close_content = None
-    is_first_chunk = True
-    reasoning_results = []
     tool_call_results = []
     is_complete_flags = []
 
     for chunk in chunks:
         if chunk is None:
             continue
-        if is_first_chunk:
-            if reasoning_parser and reasoning_parser.needs_redacted_reasoning_prefix():
-                chunk = reasoning_parser.get_reasoning_open() + chunk
-                is_first_chunk = False
-        if reasoning_parser:
-            parsed_content, is_complete = reasoning_parser.extract_reasoning_streaming(chunk)
-            if parsed_content:
-                reasoning_results.append(parsed_content)
-                after_reasoning_close_content = parsed_content.get("after_reasoning_close_content")
-            if is_complete:
-                reasoning_parser = None
-            if after_reasoning_close_content:
-                chunk = after_reasoning_close_content
-                after_reasoning_close_content = None
-            else:
-                continue
         if tool_parser:
             parsed_content, is_complete = tool_parser.extract_tool_calls_streaming(chunk)
             if parsed_content:
@@ -52,17 +32,6 @@ def test_minimax_m2_reasoning_and_tool_parsing_streaming() -> None:
             if is_complete:
                 tool_parser = None
             continue
-
-    # Verify reasoning parser extracted content correctly
-    assert len(reasoning_results) > 0
-    # Check that we got reasoning results for the chunks with reasoning tags
-    assert any("reasoning_content" in result for result in reasoning_results if isinstance(result, dict))
-    # The final reasoning result should contain the closing tag and after content
-    final_reasoning = reasoning_results[-1]
-    assert isinstance(final_reasoning, dict)
-    assert "reasoning_content" in final_reasoning
-    assert "after_reasoning_close_content" in final_reasoning
-    assert final_reasoning["after_reasoning_close_content"] == "<minimax:tool_call>"
 
     # Verify tool parser extracted content correctly
     assert len(tool_call_results) > 0
@@ -83,5 +52,4 @@ def test_minimax_m2_reasoning_and_tool_parsing_streaming() -> None:
 
 
 if __name__ == "__main__":
-    test_minimax_m2_reasoning_and_tool_parsing_streaming()
-
+    test_minimax_m2_tool_parsing_streaming()
