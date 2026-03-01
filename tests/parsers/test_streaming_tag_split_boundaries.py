@@ -12,7 +12,7 @@ def test_qwen3_reasoning_parser_handles_split_reasoning_close_tag() -> None:
     """Reasoning parsing should complete even when ``</think>`` is split across chunks."""
     parser = Qwen3MoEReasoningParser()
 
-    # Mirror handler behavior for step_35/qwen3_moe reasoning parsers:
+    # Mirror handler behavior for mixed_think_tool_handoff/qwen3_moe reasoning parsers:
     # first chunk is prefixed with `<think>` when the model omits it.
     first_chunk = "<think>" + "I should call a tool now.</th"
     second_chunk = "ink><tool_call>"
@@ -95,7 +95,7 @@ def test_function_parameter_tool_parser_recovers_missing_function_close() -> Non
     output = (
         "<tool_call>\n"
         "<function=read_file>\n"
-        "<parameter=path>\"/tmp/file.txt\"</parameter>\n"
+        '<parameter=path>"/tmp/file.txt"</parameter>\n'
         "</tool_call>"
     )
 
@@ -119,7 +119,7 @@ def test_function_parameter_tool_parser_allows_function_tag_spacing_drift() -> N
     output = (
         "<tool_call>\n"
         "<function =read_file>\n"
-        "<parameter=path>\"/tmp/file.txt\"</parameter>\n"
+        '<parameter=path>"/tmp/file.txt"</parameter>\n'
         "</function>\n"
         "</tool_call>"
     )
@@ -143,7 +143,7 @@ def test_function_parameter_tool_parser_allows_parameter_tag_spacing_drift() -> 
     output = (
         "<tool_call>\n"
         "<function=read_file>\n"
-        "<parameter =path>\"/tmp/file.txt\"</parameter>\n"
+        '<parameter =path>"/tmp/file.txt"</parameter>\n'
         "</function>\n"
         "</tool_call>"
     )

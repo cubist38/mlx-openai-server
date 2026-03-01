@@ -1,4 +1,4 @@
-"""Pathological streaming regressions for step_35 parser composition."""
+"""Pathological streaming regressions for mixed-think tool-handoff composition."""
 
 from __future__ import annotations
 
@@ -8,12 +8,12 @@ from app.parsers import ParserManager
 from app.parsers.abstract_parser import ReasoningParserState, ToolParserState
 
 
-def _simulate_step35_handler_stream(
+def _simulate_mixed_think_tool_handoff_handler_stream(
     chunks: list[str],
 ) -> tuple[list[str], list[dict[str, str]], list[str]]:
     """Mirror the handler's separate reasoning/tool parser streaming loop."""
     parsers_result = ParserManager.create_parsers(
-        reasoning_parser_name="step_35",
+        reasoning_parser_name="mixed_think_tool_handoff",
         tool_parser_name="step_35",
     )
     reasoning_parser = parsers_result.reasoning_parser
@@ -100,24 +100,24 @@ def _simulate_step35_handler_stream(
     return emitted_content, emitted_tool_calls, emitted_reasoning
 
 
-def test_step35_pathological_interleaving_tools_thinking_and_text() -> None:
-    """Stress step_35 parsing with mixed text plus tool calls inside/outside think blocks."""
+def test_mixed_think_tool_handoff_pathological_interleaving_tools_thinking_and_text() -> None:
+    """Stress mixed-think parsing with mixed text plus tools inside/outside think blocks."""
     chunks = [
         "<thinking>Initial deliberate reasoning.</thinking>Narration-1 ",
         (
-            "<tool_call><function=read_file><parameter=path>\"/tmp/a.txt\"</parameter>"
+            '<tool_call><function=read_file><parameter=path>"/tmp/a.txt"</parameter>'
             "</function></tool_call> mid-text <think>second-block "
         ),
         (
-            "inside-think tool: <tool_call><function=list_dir><parameter=path>\"/tmp\"</parameter>"
+            'inside-think tool: <tool_call><function=list_dir><parameter=path>"/tmp"</parameter>'
             "</function></tool_call> still-thinking </think> bridge "
         ),
         (
-            "<tool_call><function=get_time><parameter=tz>\"UTC\"</parameter></function></tool_call>"
+            '<tool_call><function=get_time><parameter=tz>"UTC"</parameter></function></tool_call>'
             "<tool_"
         ),
         (
-            "call><function=get_weather><parameter=city>\"NYC\"</parameter></function></tool_call>"
+            'call><function=get_weather><parameter=city>"NYC"</parameter></function></tool_call>'
             " tail-text <think>third-block "
         ),
         (
@@ -126,8 +126,8 @@ def test_step35_pathological_interleaving_tools_thinking_and_text() -> None:
         ),
     ]
 
-    emitted_content, emitted_tool_calls, emitted_reasoning = _simulate_step35_handler_stream(
-        chunks
+    emitted_content, emitted_tool_calls, emitted_reasoning = (
+        _simulate_mixed_think_tool_handoff_handler_stream(chunks)
     )
 
     assert len("".join(emitted_reasoning)) > 0
@@ -142,7 +142,7 @@ def test_step35_pathological_interleaving_tools_thinking_and_text() -> None:
     assert "call><function=get_weather>" not in flattened_content
 
 
-def test_step35_transcript_like_thinking_block_hands_off_tool_call() -> None:
+def test_mixed_think_tool_handoff_transcript_like_thinking_block_hands_off_tool_call() -> None:
     """Tool calls inside ``<thinking>`` blocks should be handed off for parsing."""
     chunks = [
         "<thinking>\n",
@@ -157,8 +157,8 @@ def test_step35_transcript_like_thinking_block_hands_off_tool_call() -> None:
         "</thinking>\n",
     ]
 
-    emitted_content, emitted_tool_calls, emitted_reasoning = _simulate_step35_handler_stream(
-        chunks
+    emitted_content, emitted_tool_calls, emitted_reasoning = (
+        _simulate_mixed_think_tool_handoff_handler_stream(chunks)
     )
 
     assert len(emitted_reasoning) > 0
@@ -173,18 +173,20 @@ def test_step35_transcript_like_thinking_block_hands_off_tool_call() -> None:
     assert "<tool_call>" not in flattened_content
 
 
-def test_step35_tool_call_inside_thinking_keeps_trailing_reasoning_out_of_content() -> None:
+def test_mixed_think_tool_handoff_tool_call_inside_thinking_keeps_trailing_reasoning_out_of_content() -> (
+    None
+):
     """Reasoning after an in-thinking tool call should not leak into normal content."""
     chunks = [
         (
             "<thinking>before-tool "
-            "<tool_call><function=read_file><parameter=path>\"/tmp/a.txt\"</parameter></function></tool_call>"
+            '<tool_call><function=read_file><parameter=path>"/tmp/a.txt"</parameter></function></tool_call>'
             " after-tool </thinking>"
         ),
     ]
 
-    emitted_content, emitted_tool_calls, emitted_reasoning = _simulate_step35_handler_stream(
-        chunks
+    emitted_content, emitted_tool_calls, emitted_reasoning = (
+        _simulate_mixed_think_tool_handoff_handler_stream(chunks)
     )
 
     assert [tool_call.get("name") for tool_call in emitted_tool_calls] == ["read_file"]
