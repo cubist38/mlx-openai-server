@@ -1,3 +1,5 @@
+"""Parser registry and factory helpers for reasoning/tool extraction."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -19,6 +21,7 @@ from .longcat_flash_lite import LongCatFlashLiteToolParser
 from .minimax_m2 import MiniMaxM2ToolParser
 from .qwen3_moe import Qwen3MoEReasoningParser
 from .solar_open import SolarOpenReasoningParser, SolarOpenToolParser
+from .step35 import Step35ReasoningParser
 
 # Mapping from parser name strings to reasoning parser classes
 REASONING_PARSER_MAP: dict[str, type[AbstractReasoningParser]] = {
@@ -32,7 +35,7 @@ REASONING_PARSER_MAP: dict[str, type[AbstractReasoningParser]] = {
     "nemotron3_nano": Qwen3MoEReasoningParser, # use Qwen3MoEReasoningParser for Nemotron3 Nano
     "solar_open": SolarOpenReasoningParser,
     "kimi_k2": HermesReasoningParser,
-    "step_35": Qwen3MoEReasoningParser, # use Qwen3MoEReasoningParser for Step 35
+    "step_35": Step35ReasoningParser,
 }
 
 # Mapping from parser name strings to tool parser classes
@@ -128,6 +131,7 @@ class ParsersResult:
     parser_name : str | None
         The primary parser name used (for metadata lookups).
     """
+
     reasoning_parser: AbstractReasoningParser | None = None
     tool_parser: AbstractToolParser | None = None
     unified_parser: Any | None = None
@@ -298,6 +302,7 @@ __all__ = [
     "Qwen3MoEReasoningParser",
     "GLM4MoEReasoningParser",
     "SolarOpenReasoningParser",
+    "Step35ReasoningParser",
     # Tool parsers
     "HermesToolParser",
     "GLM4MoEToolParser",
