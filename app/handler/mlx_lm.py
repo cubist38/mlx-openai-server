@@ -14,10 +14,13 @@ from ..parsers import ParserManager
 from ..schemas.openai import ChatCompletionRequest, PromptTokenUsageInfo, UsageInfo
 from ..utils.debug_logging import (
     log_debug_cache_stats,
+    log_debug_model_dispatch,
+    log_debug_parser_event,
     log_debug_prompt,
     log_debug_raw_text_response,
     log_debug_request,
     log_debug_stats,
+    log_debug_tool_call_emission,
     make_prompt_progress_callback,
 )
 from ..utils.errors import create_error_response
@@ -220,6 +223,7 @@ class MLXLMHandler:
             
             if self.debug:
                 log_debug_request(request_data)
+                log_debug_model_dispatch("mlx_lm.generate_text_stream.submit_stream", request_data)
                 request_data["verbose"] = True
 
             # Extract explicit model args; remaining kwargs are forwarded.
@@ -239,6 +243,7 @@ class MLXLMHandler:
             final_chunk = None
             is_first_chunk = True
             raw_text = "" # only use for debugging
+            chunk_index = 0
             
             # Handle unified parser streaming
             if parsers_result.is_unified:
@@ -246,19 +251,43 @@ class MLXLMHandler:
                 async for chunk in response_generator:
                     if chunk is None:
                         continue
+                    chunk_index += 1
                     final_chunk = chunk
                     text = chunk.text
                     raw_text += text
                     cache_key.append(chunk.token)
 
                     if unified_parser:
+                        if self.debug:
+                            log_debug_parser_event(
+                                component="mlx_lm.stream.unified",
+                                chunk_index=chunk_index,
+                                phase="before-parse",
+                                parser=unified_parser,
+                                text=text,
+                            )
                         parsed_result, is_complete = unified_parser.parse_streaming(text)
+                        if self.debug:
+                            log_debug_parser_event(
+                                component="mlx_lm.stream.unified",
+                                chunk_index=chunk_index,
+                                phase="after-parse",
+                                parser=unified_parser,
+                                parsed_content=parsed_result,
+                                is_complete=is_complete,
+                            )
                         if parsed_result:
                             # Unified parser returns dict with reasoning_content, tool_calls, content
                             if parsed_result.get("reasoning_content"):
                                 yield {"reasoning_content": parsed_result["reasoning_content"]}
                             if parsed_result.get("tool_calls"):
                                 for tool_call in parsed_result["tool_calls"]:
+                                    if self.debug:
+                                        log_debug_tool_call_emission(
+                                            component="mlx_lm.stream.unified",
+                                            chunk_index=chunk_index,
+                                            tool_call=tool_call,
+                                        )
                                     yield tool_call
                             if parsed_result.get("content"):
                                 yield parsed_result["content"]
@@ -284,6 +313,7 @@ class MLXLMHandler:
                 async for chunk in response_generator:
                     if chunk is None:
                         continue
+                    chunk_index += 1
                     final_chunk = chunk
                     text = chunk.text
                     raw_text += text
@@ -294,7 +324,24 @@ class MLXLMHandler:
                                 text = reasoning_parser.get_reasoning_open() + text
                         is_first_chunk = False
                     if reasoning_parser:
+                        if self.debug:
+                            log_debug_parser_event(
+                                component="mlx_lm.stream.reasoning",
+                                chunk_index=chunk_index,
+                                phase="before-parse",
+                                parser=reasoning_parser,
+                                text=text,
+                            )
                         parsed_content, is_complete = reasoning_parser.extract_reasoning_streaming(text)
+                        if self.debug:
+                            log_debug_parser_event(
+                                component="mlx_lm.stream.reasoning",
+                                chunk_index=chunk_index,
+                                phase="after-parse",
+                                parser=reasoning_parser,
+                                parsed_content=parsed_content,
+                                is_complete=is_complete,
+                            )
                         if parsed_content:
                             after_reasoning_close_content = parsed_content.get("after_reasoning_close_content")
                             yield parsed_content
@@ -306,7 +353,24 @@ class MLXLMHandler:
                         else:
                             continue
                     if tool_parser:
+                        if self.debug:
+                            log_debug_parser_event(
+                                component="mlx_lm.stream.tool",
+                                chunk_index=chunk_index,
+                                phase="before-parse",
+                                parser=tool_parser,
+                                text=text,
+                            )
                         parsed_content, is_complete = tool_parser.extract_tool_calls_streaming(text)
+                        if self.debug:
+                            log_debug_parser_event(
+                                component="mlx_lm.stream.tool",
+                                chunk_index=chunk_index,
+                                phase="after-parse",
+                                parser=tool_parser,
+                                parsed_content=parsed_content,
+                                is_complete=is_complete,
+                            )
                         if parsed_content:
                             content = parsed_content.get("content")
                             if content:
@@ -314,6 +378,12 @@ class MLXLMHandler:
                             tool_calls = parsed_content.get("tool_calls")
                             if tool_calls:
                                 for tool_call in tool_calls:
+                                    if self.debug:
+                                        log_debug_tool_call_emission(
+                                            component="mlx_lm.stream.tool",
+                                            chunk_index=chunk_index,
+                                            tool_call=tool_call,
+                                        )
                                     yield tool_call
                         continue
                     
@@ -404,6 +474,9 @@ class MLXLMHandler:
                 **model_params
             }
 
+            if self.debug:
+                log_debug_model_dispatch("mlx_lm.generate_text_response.submit", request_data)
+
             # Extract explicit model args; remaining kwargs are forwarded.
             input_ids = request_data.pop("input_ids")
             prompt_cache = request_data.pop("prompt_cache")
@@ -452,6 +525,16 @@ class MLXLMHandler:
                 unified_parser = parsers_result.unified_parser
                 if unified_parser:
                     parsed_result = unified_parser.parse(response_text)
+                    if self.debug:
+                        log_debug_parser_event(
+                            component="mlx_lm.nonstream.unified",
+                            chunk_index=0,
+                            phase="parse",
+                            parser=unified_parser,
+                            text=response_text,
+                            parsed_content=parsed_result,
+                            is_complete=True,
+                        )
                     if parsed_result:
                         parsed_response["reasoning_content"] = parsed_result.get("reasoning_content")
                         parsed_response["tool_calls"] = parsed_result.get("tool_calls")
@@ -468,6 +551,16 @@ class MLXLMHandler:
 
                 if reasoning_parser:
                     parsed_content = reasoning_parser.extract_reasoning(response_text)
+                    if self.debug:
+                        log_debug_parser_event(
+                            component="mlx_lm.nonstream.reasoning",
+                            chunk_index=0,
+                            phase="parse",
+                            parser=reasoning_parser,
+                            text=response_text,
+                            parsed_content=parsed_content,
+                            is_complete=True,
+                        )
                     parsed_response["reasoning_content"] = parsed_content.get("reasoning_content")
                     parsed_response["content"] = parsed_content.get("content")
                     response_text = parsed_content.get("after_reasoning_close_content")
@@ -475,12 +568,31 @@ class MLXLMHandler:
                 if response_text:
                     if tool_parser:
                         parsed_content = tool_parser.extract_tool_calls(response_text)
+                        if self.debug:
+                            log_debug_parser_event(
+                                component="mlx_lm.nonstream.tool",
+                                chunk_index=0,
+                                phase="parse",
+                                parser=tool_parser,
+                                text=response_text,
+                                parsed_content=parsed_content,
+                                is_complete=True,
+                            )
                         parsed_response["tool_calls"] = parsed_content.get("tool_calls")
                         parsed_response["content"] = parsed_content.get("content")
             else:
                 parsed_response["content"] = response_text
 
             total_tokens = response.prompt_tokens + response.generation_tokens
+
+            if self.debug and isinstance(parsed_response.get("tool_calls"), list):
+                for tool_call in parsed_response["tool_calls"]:
+                    if isinstance(tool_call, dict):
+                        log_debug_tool_call_emission(
+                            component="mlx_lm.nonstream.tool",
+                            chunk_index=0,
+                            tool_call=tool_call,
+                        )
 
             if self.debug:
                 log_debug_raw_text_response(response.text)
