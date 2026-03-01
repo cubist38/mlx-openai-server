@@ -581,8 +581,8 @@ class MLXLMHandler:
                 # Handle content that might be a list of dictionaries (multimodal format)
                 content = message.get("content")
                 if content is None:
-                    # Assistant messages with tool_calls have content: null — keep them
-                    if message.get("tool_calls"):
+                    # Assistant messages with tool_calls or partial have content: null — keep them
+                    if message.get("tool_calls") or message.get("partial"):
                         message["content"] = ""
                     else:
                         continue
@@ -615,6 +615,22 @@ class MLXLMHandler:
             
             # Add all non-system messages after the merged system message
             chat_messages.extend(non_system_messages)
+
+            # Detect partial mode: last assistant message with partial=True
+            is_partial = (
+                chat_messages
+                and chat_messages[-1].get("role") == "assistant"
+                and chat_messages[-1].get("partial", False)
+            )
+
+            # Strip 'partial' from all messages — server-level control, not a template field
+            for msg in chat_messages:
+                msg.pop("partial", None)
+
+            # Communicate partial mode to create_input_prompt via chat_template_kwargs
+            if is_partial:
+                chat_template_kwargs["_partial_mode"] = True
+
             return chat_messages, request_dict
         
         except Exception as e:

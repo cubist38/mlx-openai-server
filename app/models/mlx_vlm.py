@@ -84,6 +84,8 @@ class MLX_VLM:
         return make_prompt_cache(self.model.language_model, max_kv_size=self.context_length)
 
     def create_input_prompt(self, messages: List[Dict[str, str]], chat_template_kwargs: Dict[str, Any]) -> str:
+        chat_template_kwargs.pop("_partial_mode", None)
+
         return self.processor.apply_chat_template(
             messages,
             tokenize=False,

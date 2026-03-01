@@ -105,10 +105,13 @@ class MLX_LM:
         return self.model_type
 
     def create_input_prompt(self, messages: List[Dict[str, str]], chat_template_kwargs: Dict[str, Any]) -> str:
+        use_partial = chat_template_kwargs.pop("_partial_mode", False)
+
         return self.tokenizer.apply_chat_template(
             messages,
-            tokenize = False,
-            add_generation_prompt=True,
+            tokenize=False,
+            add_generation_prompt=not use_partial,
+            continue_final_message=use_partial,
             **chat_template_kwargs,
         )
 
