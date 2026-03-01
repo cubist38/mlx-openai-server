@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 
 from app.parsers import ParserManager
+from app.parsers.abstract_parser import ReasoningParserState, ToolParserState
 
 
 def _simulate_step35_handler_stream(
@@ -32,37 +33,69 @@ def _simulate_step35_handler_stream(
                 text = reasoning_parser.get_reasoning_open() + text
             is_first_chunk = False
 
-        if reasoning_parser:
-            parsed_content, is_complete = reasoning_parser.extract_reasoning_streaming(text)
-            if parsed_content:
-                reasoning_piece = parsed_content.get("reasoning_content")
-                if isinstance(reasoning_piece, str):
-                    emitted_reasoning.append(reasoning_piece)
-                after_reasoning_close_content = parsed_content.get(
-                    "after_reasoning_close_content"
-                )
-            if is_complete:
-                reasoning_parser = None
-            if after_reasoning_close_content:
-                text = after_reasoning_close_content
-                after_reasoning_close_content = None
-            else:
+        pending_texts = [text]
+        while pending_texts:
+            text = pending_texts.pop(0)
+
+            if tool_parser and tool_parser.state != ToolParserState.NORMAL:
+                parsed_content, _is_complete = tool_parser.extract_tool_calls_streaming(text)
+                if parsed_content:
+                    tool_calls = parsed_content.get("tool_calls")
+                    if isinstance(tool_calls, list):
+                        emitted_tool_calls.extend(
+                            tool_call for tool_call in tool_calls if isinstance(tool_call, dict)
+                        )
+                    content = parsed_content.get("content")
+                    if isinstance(content, str) and content:
+                        if (
+                            reasoning_parser
+                            and reasoning_parser.state == ReasoningParserState.FOUND_PREFIX
+                        ):
+                            pending_texts.insert(0, content)
+                        else:
+                            emitted_content.append(content)
                 continue
 
-        if tool_parser:
-            parsed_content, _is_complete = tool_parser.extract_tool_calls_streaming(text)
-            if parsed_content:
-                content = parsed_content.get("content")
-                if isinstance(content, str) and content:
-                    emitted_content.append(content)
-                tool_calls = parsed_content.get("tool_calls")
-                if isinstance(tool_calls, list):
-                    emitted_tool_calls.extend(
-                        tool_call for tool_call in tool_calls if isinstance(tool_call, dict)
+            if reasoning_parser:
+                parsed_content, is_complete = reasoning_parser.extract_reasoning_streaming(text)
+                if parsed_content:
+                    reasoning_piece = parsed_content.get("reasoning_content")
+                    if isinstance(reasoning_piece, str):
+                        emitted_reasoning.append(reasoning_piece)
+                    passthrough_content = parsed_content.get("content")
+                    if isinstance(passthrough_content, str) and passthrough_content:
+                        emitted_content.append(passthrough_content)
+                    after_reasoning_close_content = parsed_content.get(
+                        "after_reasoning_close_content"
                     )
-            continue
+                if is_complete:
+                    reasoning_parser = None
+                if after_reasoning_close_content:
+                    text = after_reasoning_close_content
+                    after_reasoning_close_content = None
+                else:
+                    continue
 
-        emitted_content.append(text)
+            if tool_parser:
+                parsed_content, _is_complete = tool_parser.extract_tool_calls_streaming(text)
+                if parsed_content:
+                    tool_calls = parsed_content.get("tool_calls")
+                    if isinstance(tool_calls, list):
+                        emitted_tool_calls.extend(
+                            tool_call for tool_call in tool_calls if isinstance(tool_call, dict)
+                        )
+                    content = parsed_content.get("content")
+                    if isinstance(content, str) and content:
+                        if (
+                            reasoning_parser
+                            and reasoning_parser.state == ReasoningParserState.FOUND_PREFIX
+                        ):
+                            pending_texts.insert(0, content)
+                        else:
+                            emitted_content.append(content)
+                continue
+
+            emitted_content.append(text)
 
     return emitted_content, emitted_tool_calls, emitted_reasoning
 
@@ -137,4 +170,27 @@ def test_step35_transcript_like_thinking_block_hands_off_tool_call() -> None:
 
     flattened_content = "".join(emitted_content)
     assert "<function=read_file>" not in flattened_content
+    assert "<tool_call>" not in flattened_content
+
+
+def test_step35_tool_call_inside_thinking_keeps_trailing_reasoning_out_of_content() -> None:
+    """Reasoning after an in-thinking tool call should not leak into normal content."""
+    chunks = [
+        (
+            "<thinking>before-tool "
+            "<tool_call><function=read_file><parameter=path>\"/tmp/a.txt\"</parameter></function></tool_call>"
+            " after-tool </thinking>"
+        ),
+    ]
+
+    emitted_content, emitted_tool_calls, emitted_reasoning = _simulate_step35_handler_stream(
+        chunks
+    )
+
+    assert [tool_call.get("name") for tool_call in emitted_tool_calls] == ["read_file"]
+    assert "".join(emitted_reasoning) == "before-tool  after-tool "
+
+    flattened_content = "".join(emitted_content)
+    assert flattened_content == ""
+    assert "</thinking>" not in flattened_content
     assert "<tool_call>" not in flattened_content

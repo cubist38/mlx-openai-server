@@ -82,13 +82,10 @@ class Step35ReasoningParser(AbstractReasoningParser):
         if boundary_type == "tool":
             reasoning_content = reasoning_body[:boundary_idx]
             after_reasoning_close_content = reasoning_body[boundary_idx:]
-            self.buffer = ""
-            self.state = ReasoningParserState.NORMAL
-            self._active_close = None
             return {
                 "reasoning_content": reasoning_content,
                 "after_reasoning_close_content": after_reasoning_close_content,
-            }, True
+            }, False
 
         overlaps = [_suffix_prefix_overlap(reasoning_body, TOOL_OPEN)]
         if self._active_close is not None:
