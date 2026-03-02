@@ -10,18 +10,62 @@ from loguru import logger
 from ..core import InferenceWorker
 from ..message_converters import MessageConverterManager
 from ..models.mlx_lm import MLX_LM
-from ..parsers import ParserManager
+from ..parsers import ParserManager, ReasoningParserState, ToolParserState
 from ..schemas.openai import ChatCompletionRequest, PromptTokenUsageInfo, UsageInfo
 from ..utils.debug_logging import (
     log_debug_cache_stats,
+    log_debug_model_dispatch,
+    log_debug_parser_event,
     log_debug_prompt,
     log_debug_raw_text_response,
     log_debug_request,
     log_debug_stats,
+    log_debug_tool_call_emission,
     make_prompt_progress_callback,
 )
 from ..utils.errors import create_error_response
 from ..utils.prompt_cache import LRUPromptCache
+
+
+def _strip_complete_tool_blocks(text: str, tool_open: str, tool_close: str) -> str:
+    """Remove fully formed tool-call blocks while preserving surrounding literal text.
+
+    Parameters
+    ----------
+    text : str
+        Raw model output text.
+    tool_open : str
+        Tool-call opening marker (for example ``<tool_call>``).
+    tool_close : str
+        Tool-call closing marker (for example ``</tool_call>``).
+
+    Returns
+    -------
+    str
+        Input text with complete tool-call blocks removed.
+    """
+    if not text or tool_open not in text:
+        return text
+
+    pieces: list[str] = []
+    cursor = 0
+    while True:
+        open_idx = text.find(tool_open, cursor)
+        if open_idx == -1:
+            pieces.append(text[cursor:])
+            break
+
+        pieces.append(text[cursor:open_idx])
+        close_idx = text.find(tool_close, open_idx + len(tool_open))
+        if close_idx == -1:
+            # Keep trailing malformed fragments as literal content.
+            pieces.append(text[open_idx:])
+            break
+
+        cursor = close_idx + len(tool_close)
+
+    return "".join(pieces)
+
 
 class MLXLMHandler:
     """
@@ -220,6 +264,7 @@ class MLXLMHandler:
             
             if self.debug:
                 log_debug_request(request_data)
+                log_debug_model_dispatch("mlx_lm.generate_text_stream.submit_stream", request_data)
                 request_data["verbose"] = True
 
             # Extract explicit model args; remaining kwargs are forwarded.
@@ -239,6 +284,7 @@ class MLXLMHandler:
             final_chunk = None
             is_first_chunk = True
             raw_text = "" # only use for debugging
+            chunk_index = 0
             
             # Handle unified parser streaming
             if parsers_result.is_unified:
@@ -246,19 +292,43 @@ class MLXLMHandler:
                 async for chunk in response_generator:
                     if chunk is None:
                         continue
+                    chunk_index += 1
                     final_chunk = chunk
                     text = chunk.text
                     raw_text += text
                     cache_key.append(chunk.token)
 
                     if unified_parser:
+                        if self.debug:
+                            log_debug_parser_event(
+                                component="mlx_lm.stream.unified",
+                                chunk_index=chunk_index,
+                                phase="before-parse",
+                                parser=unified_parser,
+                                text=text,
+                            )
                         parsed_result, is_complete = unified_parser.parse_streaming(text)
+                        if self.debug:
+                            log_debug_parser_event(
+                                component="mlx_lm.stream.unified",
+                                chunk_index=chunk_index,
+                                phase="after-parse",
+                                parser=unified_parser,
+                                parsed_content=parsed_result,
+                                is_complete=is_complete,
+                            )
                         if parsed_result:
                             # Unified parser returns dict with reasoning_content, tool_calls, content
                             if parsed_result.get("reasoning_content"):
                                 yield {"reasoning_content": parsed_result["reasoning_content"]}
                             if parsed_result.get("tool_calls"):
                                 for tool_call in parsed_result["tool_calls"]:
+                                    if self.debug:
+                                        log_debug_tool_call_emission(
+                                            component="mlx_lm.stream.unified",
+                                            chunk_index=chunk_index,
+                                            tool_call=tool_call,
+                                        )
                                     yield tool_call
                             if parsed_result.get("content"):
                                 yield parsed_result["content"]
@@ -284,6 +354,7 @@ class MLXLMHandler:
                 async for chunk in response_generator:
                     if chunk is None:
                         continue
+                    chunk_index += 1
                     final_chunk = chunk
                     text = chunk.text
                     raw_text += text
@@ -293,31 +364,196 @@ class MLXLMHandler:
                             if reasoning_parser.needs_redacted_reasoning_prefix():
                                 text = reasoning_parser.get_reasoning_open() + text
                         is_first_chunk = False
-                    if reasoning_parser:
-                        parsed_content, is_complete = reasoning_parser.extract_reasoning_streaming(text)
-                        if parsed_content:
-                            after_reasoning_close_content = parsed_content.get("after_reasoning_close_content")
-                            yield parsed_content
-                        if is_complete:
-                            reasoning_parser = None
-                        if after_reasoning_close_content:
-                            text = after_reasoning_close_content
-                            after_reasoning_close_content = None
-                        else:
+                    pending_texts = [text]
+                    while pending_texts:
+                        text = pending_texts.pop(0)
+
+                        # If a tool tag opened in a previous chunk, finish tool parsing first.
+                        if tool_parser and (
+                            tool_parser.state != ToolParserState.NORMAL or bool(tool_parser.buffer)
+                        ):
+                            if self.debug:
+                                log_debug_parser_event(
+                                    component="mlx_lm.stream.tool",
+                                    chunk_index=chunk_index,
+                                    phase="before-parse",
+                                    parser=tool_parser,
+                                    text=text,
+                                )
+                            parsed_content, is_complete = tool_parser.extract_tool_calls_streaming(text)
+                            if self.debug:
+                                log_debug_parser_event(
+                                    component="mlx_lm.stream.tool",
+                                    chunk_index=chunk_index,
+                                    phase="after-parse",
+                                    parser=tool_parser,
+                                    parsed_content=parsed_content,
+                                    is_complete=is_complete,
+                                )
+                            requeue_reasoning_tail = ""
+                            if (
+                                reasoning_parser
+                                and reasoning_parser.state == ReasoningParserState.FOUND_PREFIX
+                                and tool_parser.state == ToolParserState.NORMAL
+                                and tool_parser.buffer
+                            ):
+                                requeue_reasoning_tail = tool_parser.buffer
+                                tool_parser.buffer = ""
+
+                            if parsed_content:
+                                tool_calls = parsed_content.get("tool_calls")
+                                if tool_calls:
+                                    for tool_call in tool_calls:
+                                        if self.debug:
+                                            log_debug_tool_call_emission(
+                                                component="mlx_lm.stream.tool",
+                                                chunk_index=chunk_index,
+                                                tool_call=tool_call,
+                                            )
+                                        yield tool_call
+                                content = parsed_content.get("content")
+                                if isinstance(content, str) and content:
+                                    if requeue_reasoning_tail:
+                                        content = f"{content}{requeue_reasoning_tail}"
+                                        requeue_reasoning_tail = ""
+                                    if (
+                                        reasoning_parser
+                                        and reasoning_parser.state == ReasoningParserState.FOUND_PREFIX
+                                    ):
+                                        pending_texts.insert(0, content)
+                                    else:
+                                        yield content
+                            if requeue_reasoning_tail:
+                                pending_texts.insert(0, requeue_reasoning_tail)
                             continue
-                    if tool_parser:
-                        parsed_content, is_complete = tool_parser.extract_tool_calls_streaming(text)
-                        if parsed_content:
-                            content = parsed_content.get("content")
-                            if content:
-                                yield content
-                            tool_calls = parsed_content.get("tool_calls")
-                            if tool_calls:
-                                for tool_call in tool_calls:
-                                    yield tool_call
-                        continue
-                    
-                    yield text
+
+                        if reasoning_parser:
+                            if self.debug:
+                                log_debug_parser_event(
+                                    component="mlx_lm.stream.reasoning",
+                                    chunk_index=chunk_index,
+                                    phase="before-parse",
+                                    parser=reasoning_parser,
+                                    text=text,
+                                )
+                            parsed_content, is_complete = reasoning_parser.extract_reasoning_streaming(text)
+                            if self.debug:
+                                log_debug_parser_event(
+                                    component="mlx_lm.stream.reasoning",
+                                    chunk_index=chunk_index,
+                                    phase="after-parse",
+                                    parser=reasoning_parser,
+                                    parsed_content=parsed_content,
+                                    is_complete=is_complete,
+                                )
+                            reasoning_passthrough_for_tool = None
+                            if parsed_content:
+                                after_reasoning_close_content = parsed_content.get("after_reasoning_close_content")
+                                reasoning_content = parsed_content.get("reasoning_content")
+                                content_piece = parsed_content.get("content")
+                                tool_tail_overlap = False
+                                if isinstance(content_piece, str) and tool_parser is not None:
+                                    tool_open = tool_parser.get_tool_open()
+                                    max_overlap = min(len(content_piece), len(tool_open) - 1)
+                                    for overlap_size in range(max_overlap, 0, -1):
+                                        if content_piece.endswith(tool_open[:overlap_size]):
+                                            tool_tail_overlap = True
+                                            break
+                                tool_hint_present = (
+                                    isinstance(content_piece, str)
+                                    and (
+                                        "<tool" in content_piece
+                                        or "</tool" in content_piece
+                                        or "<function=" in content_piece
+                                        or "<parameter=" in content_piece
+                                        or tool_tail_overlap
+                                    )
+                                )
+
+                                # When parser output is pure content in NORMAL state, only
+                                # force a tool-parser pass if tool markers are present.
+                                if (
+                                    isinstance(content_piece, str)
+                                    and content_piece
+                                    and reasoning_content is None
+                                    and after_reasoning_close_content is None
+                                    and reasoning_parser.state == ReasoningParserState.NORMAL
+                                    and tool_parser is not None
+                                    and tool_hint_present
+                                ):
+                                    reasoning_passthrough_for_tool = content_piece
+                                    if reasoning_parser.buffer:
+                                        reasoning_passthrough_for_tool += reasoning_parser.buffer
+                                        reasoning_parser.buffer = ""
+                                else:
+                                    yield parsed_content
+                            if is_complete:
+                                reasoning_parser = None
+                            if after_reasoning_close_content:
+                                text = after_reasoning_close_content
+                                after_reasoning_close_content = None
+                            elif reasoning_passthrough_for_tool is not None:
+                                text = reasoning_passthrough_for_tool
+                            else:
+                                continue
+
+                        if tool_parser:
+                            if self.debug:
+                                log_debug_parser_event(
+                                    component="mlx_lm.stream.tool",
+                                    chunk_index=chunk_index,
+                                    phase="before-parse",
+                                    parser=tool_parser,
+                                    text=text,
+                                )
+                            parsed_content, is_complete = tool_parser.extract_tool_calls_streaming(text)
+                            if self.debug:
+                                log_debug_parser_event(
+                                    component="mlx_lm.stream.tool",
+                                    chunk_index=chunk_index,
+                                    phase="after-parse",
+                                    parser=tool_parser,
+                                    parsed_content=parsed_content,
+                                    is_complete=is_complete,
+                                )
+                            requeue_reasoning_tail = ""
+                            if (
+                                reasoning_parser
+                                and reasoning_parser.state == ReasoningParserState.FOUND_PREFIX
+                                and tool_parser.state == ToolParserState.NORMAL
+                                and tool_parser.buffer
+                            ):
+                                requeue_reasoning_tail = tool_parser.buffer
+                                tool_parser.buffer = ""
+
+                            if parsed_content:
+                                tool_calls = parsed_content.get("tool_calls")
+                                if tool_calls:
+                                    for tool_call in tool_calls:
+                                        if self.debug:
+                                            log_debug_tool_call_emission(
+                                                component="mlx_lm.stream.tool",
+                                                chunk_index=chunk_index,
+                                                tool_call=tool_call,
+                                            )
+                                        yield tool_call
+                                content = parsed_content.get("content")
+                                if isinstance(content, str) and content:
+                                    if requeue_reasoning_tail:
+                                        content = f"{content}{requeue_reasoning_tail}"
+                                        requeue_reasoning_tail = ""
+                                    if (
+                                        reasoning_parser
+                                        and reasoning_parser.state == ReasoningParserState.FOUND_PREFIX
+                                    ):
+                                        pending_texts.insert(0, content)
+                                    else:
+                                        yield content
+                            if requeue_reasoning_tail:
+                                pending_texts.insert(0, requeue_reasoning_tail)
+                            continue
+
+                        yield text
 
             total_tokens = final_chunk.prompt_tokens + final_chunk.generation_tokens
             self.prompt_cache.insert_cache(cache_key, cache)
@@ -404,6 +640,9 @@ class MLXLMHandler:
                 **model_params
             }
 
+            if self.debug:
+                log_debug_model_dispatch("mlx_lm.generate_text_response.submit", request_data)
+
             # Extract explicit model args; remaining kwargs are forwarded.
             input_ids = request_data.pop("input_ids")
             prompt_cache = request_data.pop("prompt_cache")
@@ -452,6 +691,16 @@ class MLXLMHandler:
                 unified_parser = parsers_result.unified_parser
                 if unified_parser:
                     parsed_result = unified_parser.parse(response_text)
+                    if self.debug:
+                        log_debug_parser_event(
+                            component="mlx_lm.nonstream.unified",
+                            chunk_index=0,
+                            phase="parse",
+                            parser=unified_parser,
+                            text=response_text,
+                            parsed_content=parsed_result,
+                            is_complete=True,
+                        )
                     if parsed_result:
                         parsed_response["reasoning_content"] = parsed_result.get("reasoning_content")
                         parsed_response["tool_calls"] = parsed_result.get("tool_calls")
@@ -462,25 +711,76 @@ class MLXLMHandler:
             elif parsers_result.reasoning_parser or parsers_result.tool_parser:
                 reasoning_parser = parsers_result.reasoning_parser
                 tool_parser = parsers_result.tool_parser
+                synthetic_reasoning_open: str | None = None
 
                 if reasoning_parser and reasoning_parser.needs_redacted_reasoning_prefix():
-                    response_text = reasoning_parser.get_reasoning_open() + response_text
+                    synthetic_reasoning_open = reasoning_parser.get_reasoning_open()
+                    response_text = synthetic_reasoning_open + response_text
 
                 if reasoning_parser:
                     parsed_content = reasoning_parser.extract_reasoning(response_text)
-                    parsed_response["reasoning_content"] = parsed_content.get("reasoning_content")
-                    parsed_response["content"] = parsed_content.get("content")
-                    response_text = parsed_content.get("after_reasoning_close_content")
+                    if self.debug:
+                        log_debug_parser_event(
+                            component="mlx_lm.nonstream.reasoning",
+                            chunk_index=0,
+                            phase="parse",
+                            parser=reasoning_parser,
+                            text=response_text,
+                            parsed_content=parsed_content,
+                            is_complete=True,
+                        )
+                    if parsed_content:
+                        parsed_response["reasoning_content"] = parsed_content.get("reasoning_content")
+                        parsed_response["content"] = parsed_content.get("content")
+                        # Keep tool parsing active when no explicit reasoning open tag exists
+                        # (for example raw output that starts with a stray ``</think>``).
+                        response_text = parsed_content.get("after_reasoning_close_content")
+                        if response_text is None:
+                            response_text = parsed_content.get("content")
 
                 if response_text:
                     if tool_parser:
                         parsed_content = tool_parser.extract_tool_calls(response_text)
+                        if self.debug:
+                            log_debug_parser_event(
+                                component="mlx_lm.nonstream.tool",
+                                chunk_index=0,
+                                phase="parse",
+                                parser=tool_parser,
+                                text=response_text,
+                                parsed_content=parsed_content,
+                                is_complete=True,
+                            )
                         parsed_response["tool_calls"] = parsed_content.get("tool_calls")
-                        parsed_response["content"] = parsed_content.get("content")
+                        tool_content = parsed_content.get("content")
+                        if isinstance(tool_content, str):
+                            parsed_response["content"] = tool_content
+                        elif parsed_response["tool_calls"]:
+                            strip_source = response_text
+                            if (
+                                synthetic_reasoning_open
+                                and strip_source.startswith(synthetic_reasoning_open)
+                            ):
+                                strip_source = strip_source[len(synthetic_reasoning_open):]
+                            stripped_content = _strip_complete_tool_blocks(
+                                strip_source,
+                                tool_parser.get_tool_open(),
+                                tool_parser.get_tool_close(),
+                            )
+                            parsed_response["content"] = stripped_content or None
             else:
                 parsed_response["content"] = response_text
 
             total_tokens = response.prompt_tokens + response.generation_tokens
+
+            if self.debug and isinstance(parsed_response.get("tool_calls"), list):
+                for tool_call in parsed_response["tool_calls"]:
+                    if isinstance(tool_call, dict):
+                        log_debug_tool_call_emission(
+                            component="mlx_lm.nonstream.tool",
+                            chunk_index=0,
+                            tool_call=tool_call,
+                        )
 
             if self.debug:
                 log_debug_raw_text_response(response.text)

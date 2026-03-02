@@ -68,6 +68,7 @@ from openai.types.responses.response_reasoning_item import (
     Content,
     ResponseReasoningItem
 )
+from ..utils.debug_logging import log_debug_server_request
 from ..utils.errors import create_error_response
 
 router = APIRouter()
@@ -360,6 +361,12 @@ async def chat_completions(
 
     # Get request ID from middleware
     request_id = getattr(raw_request.state, "request_id", None)
+    if getattr(handler, "debug", False):
+        log_debug_server_request(
+            route="/v1/chat/completions",
+            request_payload=request.model_dump(exclude_none=True),
+            request_id=request_id,
+        )
 
     try:
         if handler_type == "multimodal":
@@ -1742,6 +1749,14 @@ async def responses_endpoint(
                 HTTPStatus.BAD_REQUEST,
             ),
             status_code=HTTPStatus.BAD_REQUEST,
+        )
+
+    request_id = getattr(raw_request.state, "request_id", None)
+    if getattr(handler, "debug", False):
+        log_debug_server_request(
+            route="/v1/responses",
+            request_payload=request.model_dump(exclude_none=True),
+            request_id=request_id,
         )
 
     try:

@@ -1,5 +1,7 @@
 """Tests for the FunctionGemma parser."""
 
+import json
+
 from app.parsers.functiongemma import FunctionGemmaToolParser
 
 
@@ -37,12 +39,11 @@ def test_functiongemma_tool_parsing_streaming() -> None:
     assert len(complete_tool_calls) == 2
     # Verify first tool call
     assert complete_tool_calls[0]["name"] == "get_weather"
-    assert complete_tool_calls[0]["arguments"] == '{"param": "value"}'
+    assert json.loads(complete_tool_calls[0]["arguments"]) == {"param": "value"}
     # Verify second tool call
     assert complete_tool_calls[1]["name"] == "get_time"
-    assert complete_tool_calls[1]["arguments"] == "{}"
+    assert json.loads(complete_tool_calls[1]["arguments"]) == {}
 
 
 if __name__ == "__main__":
     test_functiongemma_tool_parsing_streaming()
-
