@@ -86,3 +86,75 @@ def test_function_parameter_tool_parser_preserves_leading_text_before_tool_open(
     tool_call = tool_calls[0]
     assert tool_call["name"] == "get_weather"
     assert json.loads(tool_call["arguments"]) == {"city": "NYC"}
+
+
+def test_function_parameter_tool_parser_recovers_missing_function_close() -> None:
+    """Closed tool blocks without ``</function>`` should still parse tool calls."""
+    parser = FunctionParameterToolParser()
+
+    output = (
+        "<tool_call>\n"
+        "<function=read_file>\n"
+        "<parameter=path>\"/tmp/file.txt\"</parameter>\n"
+        "</tool_call>"
+    )
+
+    parsed = parser.extract_tool_calls(output)
+    assert isinstance(parsed, dict)
+    assert "tool_calls" in parsed
+    assert "<tool_call>" not in (parsed.get("content") or "")
+
+    tool_calls = parsed["tool_calls"]
+    assert isinstance(tool_calls, list)
+    assert len(tool_calls) == 1
+    tool_call = tool_calls[0]
+    assert tool_call["name"] == "read_file"
+    assert json.loads(tool_call["arguments"]) == {"path": "/tmp/file.txt"}
+
+
+def test_function_parameter_tool_parser_allows_function_tag_spacing_drift() -> None:
+    """Parser should recover when the function tag has spacing around ``=``."""
+    parser = FunctionParameterToolParser()
+
+    output = (
+        "<tool_call>\n"
+        "<function =read_file>\n"
+        "<parameter=path>\"/tmp/file.txt\"</parameter>\n"
+        "</function>\n"
+        "</tool_call>"
+    )
+
+    parsed = parser.extract_tool_calls(output)
+    assert isinstance(parsed, dict)
+    assert "tool_calls" in parsed
+
+    tool_calls = parsed["tool_calls"]
+    assert isinstance(tool_calls, list)
+    assert len(tool_calls) == 1
+    tool_call = tool_calls[0]
+    assert tool_call["name"] == "read_file"
+    assert json.loads(tool_call["arguments"]) == {"path": "/tmp/file.txt"}
+
+
+def test_function_parameter_tool_parser_allows_parameter_tag_spacing_drift() -> None:
+    """Parser should recover when the parameter tag has spacing around ``=``."""
+    parser = FunctionParameterToolParser()
+
+    output = (
+        "<tool_call>\n"
+        "<function=read_file>\n"
+        "<parameter =path>\"/tmp/file.txt\"</parameter>\n"
+        "</function>\n"
+        "</tool_call>"
+    )
+
+    parsed = parser.extract_tool_calls(output)
+    assert isinstance(parsed, dict)
+    assert "tool_calls" in parsed
+
+    tool_calls = parsed["tool_calls"]
+    assert isinstance(tool_calls, list)
+    assert len(tool_calls) == 1
+    tool_call = tool_calls[0]
+    assert tool_call["name"] == "read_file"
+    assert json.loads(tool_call["arguments"]) == {"path": "/tmp/file.txt"}
