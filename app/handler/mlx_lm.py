@@ -189,6 +189,12 @@ class MLXLMHandler:
         logger.info("Messages filtered successfully")
         return refined_messages
 
+    def _debug_log_prompt_cache_entries_per_chunk(self, chunk_index: int) -> None:
+        """Log current prompt-cache entry count for each streamed chunk."""
+        entry_count_fn = getattr(self.prompt_cache, "entry_count", None)
+        entry_count = entry_count_fn() if callable(entry_count_fn) else 0
+        logger.debug(f"[mlx_lm.stream] chunk={chunk_index} prompt_cache_entries={entry_count}")
+
     async def generate_text_stream(self, request: ChatCompletionRequest) -> AsyncGenerator[str, None]:
         """
         Generate a streaming response for text-only chat completion requests.
@@ -293,6 +299,8 @@ class MLXLMHandler:
                     if chunk is None:
                         continue
                     chunk_index += 1
+                    if self.debug:
+                        self._debug_log_prompt_cache_entries_per_chunk(chunk_index)
                     final_chunk = chunk
                     text = chunk.text
                     raw_text += text
@@ -355,6 +363,8 @@ class MLXLMHandler:
                     if chunk is None:
                         continue
                     chunk_index += 1
+                    if self.debug:
+                        self._debug_log_prompt_cache_entries_per_chunk(chunk_index)
                     final_chunk = chunk
                     text = chunk.text
                     raw_text += text

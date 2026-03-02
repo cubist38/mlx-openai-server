@@ -307,6 +307,10 @@ class LRUPromptCache:
             # Convert back to list for _delete
             self._delete(list(oldest_tokens))
 
+    def entry_count(self) -> int:
+        """Return the current number of cached prompt entries."""
+        return len(self._lru)
+
 if __name__ == "__main__":
     from app.models.mlx_lm import MLX_LM
     model_path = "mlx-community/Qwen3-Coder-Next-8bit"
