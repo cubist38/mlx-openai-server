@@ -36,7 +36,7 @@ REASONING_PARSER_MAP: dict[str, type[AbstractReasoningParser]] = {
     "solar_open": SolarOpenReasoningParser,
     "kimi_k2": HermesReasoningParser,
     "mixed_think_tool_handoff": MixedThinkToolHandoffReasoningParser,
-    "step_35": MixedThinkToolHandoffReasoningParser,  # backward-compatible alias
+    "step_35": Step35ReasoningParser,  # backward-compatible parser with legacy implicit-open behavior
 }
 
 # Mapping from parser name strings to tool parser classes

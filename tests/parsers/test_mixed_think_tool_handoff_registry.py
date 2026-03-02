@@ -22,9 +22,10 @@ def test_mixed_think_tool_handoff_reasoning_key_maps_to_semantic_class() -> None
 
 
 def test_step35_reasoning_alias_maps_to_semantic_class() -> None:
-    """Legacy step_35 reasoning key should remain an alias of semantic class."""
+    """Legacy step_35 key should resolve to a compatibility subclass of semantic parser."""
     semantic_cls = getattr(parsers, "MixedThinkToolHandoffReasoningParser")
-    assert parsers.REASONING_PARSER_MAP["step_35"] is semantic_cls
+    step35_cls = parsers.REASONING_PARSER_MAP["step_35"]
+    assert issubclass(step35_cls, semantic_cls)
 
 
 def test_parser_manager_accepts_semantic_reasoning_name() -> None:
