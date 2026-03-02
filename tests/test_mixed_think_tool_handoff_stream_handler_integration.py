@@ -6,6 +6,7 @@ import asyncio
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
 import importlib
+import json
 from pathlib import Path
 import sys
 import types
@@ -179,7 +180,7 @@ class MixedThinkToolHandoffStreamHandlerIntegrationTests(unittest.TestCase):
         ]
         assert len(emitted_tool_calls) == 1
         assert emitted_tool_calls[0]["name"] == "read_file"
-        assert emitted_tool_calls[0]["arguments"] == '{"path": "/tmp/a.txt"}'
+        assert json.loads(emitted_tool_calls[0]["arguments"]) == {"path": "/tmp/a.txt"}
 
         plain_content = "".join(item for item in outputs if isinstance(item, str))
         assert plain_content == " final"
@@ -242,18 +243,20 @@ class MixedThinkToolHandoffStreamHandlerIntegrationTests(unittest.TestCase):
         ]
         assert len(emitted_tool_calls) == 1
         assert emitted_tool_calls[0]["name"] == "read_file"
-        assert emitted_tool_calls[0]["arguments"] == (
-            '{"path": "app/api/endpoints.py", "start_line": 692, "end_line": 790}'
-        )
+        assert json.loads(emitted_tool_calls[0]["arguments"]) == {
+            "path": "app/api/endpoints.py",
+            "start_line": 692,
+            "end_line": 790,
+        }
 
         plain_content = "".join(item for item in outputs if isinstance(item, str))
         assert plain_content == ""
         assert "<tool_call>" not in plain_content
         assert "</thinking>" not in plain_content
 
-    def test_nonstream_step35_parses_tool_call_when_response_starts_with_stray_think_close(self) -> (
-        None
-    ):
+    def test_nonstream_step35_parses_tool_call_when_response_starts_with_stray_think_close(
+        self,
+    ) -> None:
         """Non-stream parsing should still extract tool calls after a leading stray ``</think>``."""
         handler_cls = _load_mlx_lm_handler_class()
         handler = object.__new__(handler_cls)
@@ -304,11 +307,63 @@ class MixedThinkToolHandoffStreamHandlerIntegrationTests(unittest.TestCase):
         assert isinstance(parsed.get("tool_calls"), list)
         assert len(parsed["tool_calls"]) == 1
         assert parsed["tool_calls"][0]["name"] == "read_file"
-        assert parsed["tool_calls"][0]["arguments"] == (
-            '{"path": "app/api/endpoints.py", "start_line": 692, "end_line": 790}'
-        )
+        assert json.loads(parsed["tool_calls"][0]["arguments"]) == {
+            "path": "app/api/endpoints.py",
+            "start_line": 692,
+            "end_line": 790,
+        }
         if isinstance(parsed.get("content"), str):
             assert "<tool_call>" not in parsed["content"]
+
+    def test_nonstream_qwen3_moe_tool_fallback_does_not_leak_synthetic_reasoning_prefix(
+        self,
+    ) -> None:
+        """Synthetic reasoning-open prefixes should not leak into content fallback."""
+        handler_cls = _load_mlx_lm_handler_class()
+        handler = object.__new__(handler_cls)
+
+        handler.debug = False
+        handler.message_converter = None
+        handler.enable_auto_tool_choice = False
+        handler.reasoning_parser_name = "qwen3_moe"
+        handler.tool_parser_name = "hermes"
+        handler.model = _FakeModel()
+        handler.prompt_cache = _FakePromptCache()
+        handler.inference_worker = _FakeInferenceWorker(
+            non_stream_response=_FakeNonStreamResponse(
+                text=(
+                    "preface before tool.\n"
+                    '<tool_call>{"name":"read_file","arguments":{"path":"app/handler/mlx_vlm.py"}}</tool_call>\n'
+                ),
+                tokens=[1, 2, 3],
+                prompt_tokens=100,
+                generation_tokens=20,
+            )
+        )
+
+        async def _fake_prepare_text_request(
+            self: object, request: object
+        ) -> tuple[list[dict[str, str]], dict[str, object]]:
+            return [{"role": "user", "content": "hello"}], {"chat_template_kwargs": {}}
+
+        handler._prepare_text_request = types.MethodType(_fake_prepare_text_request, handler)
+
+        result = asyncio.run(handler.generate_text_response(request=object()))
+        parsed = result["response"]
+
+        assert isinstance(parsed, dict)
+        assert parsed["reasoning_content"] is None
+        assert isinstance(parsed.get("tool_calls"), list)
+        assert len(parsed["tool_calls"]) == 1
+        assert parsed["tool_calls"][0]["name"] == "read_file"
+        assert json.loads(parsed["tool_calls"][0]["arguments"]) == {
+            "path": "app/handler/mlx_vlm.py"
+        }
+        assert isinstance(parsed.get("content"), str)
+        visible_content = parsed["content"]
+        assert "preface before tool." in visible_content
+        assert "<think>" not in visible_content
+        assert "<tool_call>" not in visible_content
 
     def test_stream_step35_parses_tool_call_when_output_starts_with_stray_think_close(self) -> None:
         """Streaming should parse tool calls even when output starts with stray ``</think>``."""
@@ -356,12 +411,194 @@ class MixedThinkToolHandoffStreamHandlerIntegrationTests(unittest.TestCase):
         ]
         assert len(emitted_tool_calls) == 1
         assert emitted_tool_calls[0]["name"] == "read_file"
-        assert emitted_tool_calls[0]["arguments"] == (
-            '{"path": "app/api/endpoints.py", "start_line": 692, "end_line": 790}'
-        )
+        assert json.loads(emitted_tool_calls[0]["arguments"]) == {
+            "path": "app/api/endpoints.py",
+            "start_line": 692,
+            "end_line": 790,
+        }
 
         plain_content = "".join(item for item in outputs if isinstance(item, str))
         assert "<tool_call>" not in plain_content
+
+    def test_stream_step35_hides_reasoning_when_open_tag_missing_but_close_tag_present(
+        self,
+    ) -> None:
+        """Legacy step_35 behavior should infer reasoning from stray close tags."""
+        handler_cls = _load_mlx_lm_handler_class()
+        handler = object.__new__(handler_cls)
+
+        handler.debug = False
+        handler.message_converter = None
+        handler.enable_auto_tool_choice = False
+        handler.reasoning_parser_name = "step_35"
+        handler.tool_parser_name = "step_35"
+        handler.model = _FakeModel()
+        handler.prompt_cache = _FakePromptCache()
+        handler.inference_worker = _FakeInferenceWorker(
+            [
+                _FakeStreamChunk("I should inspect both handlers first.\n", token=351),
+                _FakeStreamChunk("Then verify token usage fields.</think>\n", token=352),
+                _FakeStreamChunk("<tool_call>\n<function=read_file>\n", token=353),
+                _FakeStreamChunk(
+                    "<parameter=path>\napp/handler/mlx_vlm.py\n</parameter>\n",
+                    token=354,
+                ),
+                _FakeStreamChunk("</function>\n</tool_call>\n", token=355),
+            ]
+        )
+
+        async def _fake_prepare_text_request(
+            self: object, request: object
+        ) -> tuple[list[dict[str, str]], dict[str, object]]:
+            return [{"role": "user", "content": "hello"}], {"chat_template_kwargs": {}}
+
+        handler._prepare_text_request = types.MethodType(_fake_prepare_text_request, handler)
+
+        async def _collect() -> list[str | dict[str, object]]:
+            return [item async for item in handler.generate_text_stream(request=object())]
+
+        outputs = asyncio.run(_collect())
+
+        reasoning_text = "".join(
+            item["reasoning_content"]
+            for item in outputs
+            if isinstance(item, dict) and isinstance(item.get("reasoning_content"), str)
+        )
+        assert (
+            reasoning_text
+            == "I should inspect both handlers first.\nThen verify token usage fields."
+        )
+
+        emitted_tool_calls = [
+            item for item in outputs if isinstance(item, dict) and isinstance(item.get("name"), str)
+        ]
+        assert len(emitted_tool_calls) == 1
+        assert emitted_tool_calls[0]["name"] == "read_file"
+        assert json.loads(emitted_tool_calls[0]["arguments"]) == {"path": "app/handler/mlx_vlm.py"}
+
+        visible_content = "".join(item for item in outputs if isinstance(item, str)) + "".join(
+            item["content"]
+            for item in outputs
+            if isinstance(item, dict) and isinstance(item.get("content"), str)
+        )
+        assert "I should inspect both handlers first." not in visible_content
+        assert "Then verify token usage fields." not in visible_content
+        assert "</think>" not in visible_content
+        assert "<tool_call>" not in visible_content
+
+    def test_nonstream_step35_hides_reasoning_when_open_tag_missing_but_close_tag_present(
+        self,
+    ) -> None:
+        """Legacy step_35 non-stream behavior should infer reasoning from stray close tags."""
+        handler_cls = _load_mlx_lm_handler_class()
+        handler = object.__new__(handler_cls)
+
+        handler.debug = False
+        handler.message_converter = None
+        handler.enable_auto_tool_choice = False
+        handler.reasoning_parser_name = "step_35"
+        handler.tool_parser_name = "step_35"
+        handler.model = _FakeModel()
+        handler.prompt_cache = _FakePromptCache()
+        handler.inference_worker = _FakeInferenceWorker(
+            non_stream_response=_FakeNonStreamResponse(
+                text=(
+                    "I should inspect both handlers first.\n"
+                    "Then verify token usage fields.</think>\n"
+                    "<tool_call>\n"
+                    "<function=read_file>\n"
+                    "<parameter=path>\n"
+                    "app/handler/mlx_vlm.py\n"
+                    "</parameter>\n"
+                    "</function>\n"
+                    "</tool_call>\n"
+                ),
+                tokens=[1, 2, 3],
+                prompt_tokens=100,
+                generation_tokens=20,
+            )
+        )
+
+        async def _fake_prepare_text_request(
+            self: object, request: object
+        ) -> tuple[list[dict[str, str]], dict[str, object]]:
+            return [{"role": "user", "content": "hello"}], {"chat_template_kwargs": {}}
+
+        handler._prepare_text_request = types.MethodType(_fake_prepare_text_request, handler)
+
+        result = asyncio.run(handler.generate_text_response(request=object()))
+        parsed = result["response"]
+
+        assert isinstance(parsed, dict)
+        assert parsed["reasoning_content"] == (
+            "I should inspect both handlers first.\nThen verify token usage fields."
+        )
+        assert isinstance(parsed.get("tool_calls"), list)
+        assert len(parsed["tool_calls"]) == 1
+        assert parsed["tool_calls"][0]["name"] == "read_file"
+        assert json.loads(parsed["tool_calls"][0]["arguments"]) == {
+            "path": "app/handler/mlx_vlm.py"
+        }
+        content = parsed.get("content")
+        if isinstance(content, str):
+            assert "I should inspect both handlers first." not in content
+            assert "Then verify token usage fields." not in content
+            assert "</think>" not in content
+            assert "<tool_call>" not in content
+
+    def test_stream_mixed_think_parser_preserves_literal_text_when_open_tag_is_missing(
+        self,
+    ) -> None:
+        """Semantic mixed-think parser remains strict when no opening reasoning marker exists."""
+        handler_cls = _load_mlx_lm_handler_class()
+        handler = object.__new__(handler_cls)
+
+        handler.debug = False
+        handler.message_converter = None
+        handler.enable_auto_tool_choice = False
+        handler.reasoning_parser_name = "mixed_think_tool_handoff"
+        handler.tool_parser_name = "step_35"
+        handler.model = _FakeModel()
+        handler.prompt_cache = _FakePromptCache()
+        handler.inference_worker = _FakeInferenceWorker(
+            [
+                _FakeStreamChunk("I should inspect both handlers first.\n", token=371),
+                _FakeStreamChunk("Then verify token usage fields.</think>\n", token=372),
+                _FakeStreamChunk("<tool_call>\n<function=read_file>\n", token=373),
+                _FakeStreamChunk(
+                    "<parameter=path>\napp/handler/mlx_vlm.py\n</parameter>\n",
+                    token=374,
+                ),
+                _FakeStreamChunk("</function>\n</tool_call>\n", token=375),
+            ]
+        )
+
+        async def _fake_prepare_text_request(
+            self: object, request: object
+        ) -> tuple[list[dict[str, str]], dict[str, object]]:
+            return [{"role": "user", "content": "hello"}], {"chat_template_kwargs": {}}
+
+        handler._prepare_text_request = types.MethodType(_fake_prepare_text_request, handler)
+
+        async def _collect() -> list[str | dict[str, object]]:
+            return [item async for item in handler.generate_text_stream(request=object())]
+
+        outputs = asyncio.run(_collect())
+
+        reasoning_text = "".join(
+            item["reasoning_content"]
+            for item in outputs
+            if isinstance(item, dict) and isinstance(item.get("reasoning_content"), str)
+        )
+        assert reasoning_text == ""
+
+        visible_content = "".join(item for item in outputs if isinstance(item, str)) + "".join(
+            item["content"]
+            for item in outputs
+            if isinstance(item, dict) and isinstance(item.get("content"), str)
+        )
+        assert "I should inspect both handlers first." in visible_content
+        assert "</think>" in visible_content
 
     def test_stream_step35_preserves_split_parameter_close_marker_inside_tool_call(self) -> None:
         """A chunk split at ``<`` + ``/parameter>`` should not corrupt parsed tool arguments."""
@@ -416,13 +653,15 @@ class MixedThinkToolHandoffStreamHandlerIntegrationTests(unittest.TestCase):
         ]
         assert len(emitted_tool_calls) == 1
         assert emitted_tool_calls[0]["name"] == "read_file"
-        assert emitted_tool_calls[0]["arguments"] == (
-            '{"path": "mlx-openai-server/app/handler/mlx_lm.py", "start_line": 151, "end_line": 523}'
-        )
+        assert json.loads(emitted_tool_calls[0]["arguments"]) == {
+            "path": "mlx-openai-server/app/handler/mlx_lm.py",
+            "start_line": 151,
+            "end_line": 523,
+        }
 
-    def test_stream_step35_parses_tool_call_when_open_marker_is_split_as_too_plus_l_call(self) -> (
-        None
-    ):
+    def test_stream_step35_parses_tool_call_when_open_marker_is_split_as_too_plus_l_call(
+        self,
+    ) -> None:
         """A ``<too`` + ``l_call>`` split should still produce one parsed tool call."""
         handler_cls = _load_mlx_lm_handler_class()
         handler = object.__new__(handler_cls)
@@ -469,9 +708,11 @@ class MixedThinkToolHandoffStreamHandlerIntegrationTests(unittest.TestCase):
         ]
         assert len(emitted_tool_calls) == 1
         assert emitted_tool_calls[0]["name"] == "read_file"
-        assert emitted_tool_calls[0]["arguments"] == (
-            '{"path": "mlx-openai-server/app/handler/mlx_lm.py", "start_line": 151, "end_line": 523}'
-        )
+        assert json.loads(emitted_tool_calls[0]["arguments"]) == {
+            "path": "mlx-openai-server/app/handler/mlx_lm.py",
+            "start_line": 151,
+            "end_line": 523,
+        }
 
 
 if __name__ == "__main__":

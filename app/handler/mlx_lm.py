@@ -26,6 +26,47 @@ from ..utils.debug_logging import (
 from ..utils.errors import create_error_response
 from ..utils.prompt_cache import LRUPromptCache
 
+
+def _strip_complete_tool_blocks(text: str, tool_open: str, tool_close: str) -> str:
+    """Remove fully formed tool-call blocks while preserving surrounding literal text.
+
+    Parameters
+    ----------
+    text : str
+        Raw model output text.
+    tool_open : str
+        Tool-call opening marker (for example ``<tool_call>``).
+    tool_close : str
+        Tool-call closing marker (for example ``</tool_call>``).
+
+    Returns
+    -------
+    str
+        Input text with complete tool-call blocks removed.
+    """
+    if not text or tool_open not in text:
+        return text
+
+    pieces: list[str] = []
+    cursor = 0
+    while True:
+        open_idx = text.find(tool_open, cursor)
+        if open_idx == -1:
+            pieces.append(text[cursor:])
+            break
+
+        pieces.append(text[cursor:open_idx])
+        close_idx = text.find(tool_close, open_idx + len(tool_open))
+        if close_idx == -1:
+            # Keep trailing malformed fragments as literal content.
+            pieces.append(text[open_idx:])
+            break
+
+        cursor = close_idx + len(tool_close)
+
+    return "".join(pieces)
+
+
 class MLXLMHandler:
     """
     Handler class for making requests to the underlying MLX text-only language model service.
@@ -670,9 +711,11 @@ class MLXLMHandler:
             elif parsers_result.reasoning_parser or parsers_result.tool_parser:
                 reasoning_parser = parsers_result.reasoning_parser
                 tool_parser = parsers_result.tool_parser
+                synthetic_reasoning_open: str | None = None
 
                 if reasoning_parser and reasoning_parser.needs_redacted_reasoning_prefix():
-                    response_text = reasoning_parser.get_reasoning_open() + response_text
+                    synthetic_reasoning_open = reasoning_parser.get_reasoning_open()
+                    response_text = synthetic_reasoning_open + response_text
 
                 if reasoning_parser:
                     parsed_content = reasoning_parser.extract_reasoning(response_text)
@@ -709,7 +752,22 @@ class MLXLMHandler:
                                 is_complete=True,
                             )
                         parsed_response["tool_calls"] = parsed_content.get("tool_calls")
-                        parsed_response["content"] = parsed_content.get("content")
+                        tool_content = parsed_content.get("content")
+                        if isinstance(tool_content, str):
+                            parsed_response["content"] = tool_content
+                        elif parsed_response["tool_calls"]:
+                            strip_source = response_text
+                            if (
+                                synthetic_reasoning_open
+                                and strip_source.startswith(synthetic_reasoning_open)
+                            ):
+                                strip_source = strip_source[len(synthetic_reasoning_open):]
+                            stripped_content = _strip_complete_tool_blocks(
+                                strip_source,
+                                tool_parser.get_tool_open(),
+                                tool_parser.get_tool_close(),
+                            )
+                            parsed_response["content"] = stripped_content or None
             else:
                 parsed_response["content"] = response_text
 

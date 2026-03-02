@@ -1,5 +1,7 @@
 """Tests for the GLM4 MoE parser."""
 
+import json
+
 from app.parsers.glm4_moe import GLM4MoEReasoningParser, GLM4MoEToolParser
 
 
@@ -10,7 +12,7 @@ def test_glm4_moe_reasoning_and_tool_parsing_streaming() -> None:
 
     chunks = [
         "<think>The user is asking",
-        "for the weather in Tokyo. I have a function available called \"get_weather\" that takes a city parameter and returns the weather information for that city. The user has provided \"Tokyo\" as the city they want weather information for, so I have all the required parameters to make the function call.",
+        'for the weather in Tokyo. I have a function available called "get_weather" that takes a city parameter and returns the weather information for that city. The user has provided "Tokyo" as the city they want weather information for, so I have all the required parameters to make the function call.',
         "call.</think>",
         "I'll get the current weather information for Tokyo for you.",
         "<tool_call>get_weather",
@@ -46,7 +48,9 @@ def test_glm4_moe_reasoning_and_tool_parsing_streaming() -> None:
     # Verify reasoning parser extracted content correctly
     assert len(reasoning_results) > 0
     # Check that we got reasoning results for the chunks with reasoning tags
-    assert any("reasoning_content" in result for result in reasoning_results if isinstance(result, dict))
+    assert any(
+        "reasoning_content" in result for result in reasoning_results if isinstance(result, dict)
+    )
     # The reasoning parser should have completed and extracted reasoning content
     # Note: The original test checks for "content" key, which may be present in some cases
     final_reasoning = reasoning_results[-1]
@@ -66,9 +70,8 @@ def test_glm4_moe_reasoning_and_tool_parsing_streaming() -> None:
     assert len(complete_tool_call["tool_calls"]) == 1
     assert complete_tool_call["tool_calls"][0]["name"] == "get_weather"
     # Verify that arguments is a JSON string containing the expected parameter
-    assert complete_tool_call["tool_calls"][0]["arguments"] == '{"city": "Tokyo"}'
+    assert json.loads(complete_tool_call["tool_calls"][0]["arguments"]) == {"city": "Tokyo"}
 
 
 if __name__ == "__main__":
     test_glm4_moe_reasoning_and_tool_parsing_streaming()
-
