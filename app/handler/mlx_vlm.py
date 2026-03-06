@@ -724,22 +724,40 @@ class MLXVLMHandler:
                 - List of processed video paths
                 - Dictionary of model parameters
         """
-        chat_messages = []
+        non_system_messages: list[dict[str, Any]] = []
+        system_messages: list[str] = []
         images = []
         audios = []
         videos = []
 
         for message in request.messages:
-            # Handle system and assistant messages (simple text content)
-            if message.role in ["system", "assistant"]:
-                chat_messages.append({"role": message.role, "content": message.content})
+            # Collect system messages separately for consolidation
+            if message.role == "system":
+                content = message.content
+                if isinstance(content, list):
+                    text_parts = []
+                    for item in content:
+                        if isinstance(item, str):
+                            text_parts.append(item)
+                        elif isinstance(item, dict) and item.get("type") == "text" and item.get("text"):
+                            text_parts.append(item["text"])
+                        elif hasattr(item, "text") and item.text:
+                            text_parts.append(item.text)
+                    content = "\n".join(text_parts) if text_parts else ""
+                if content:
+                    system_messages.append(content)
+                continue
+
+            # Handle assistant messages (simple text content)
+            if message.role == "assistant":
+                non_system_messages.append({"role": message.role, "content": message.content})
                 continue
 
             # Handle user messages
             if message.role == "user":
                 # Case 1: Simple string content
                 if isinstance(message.content, str):
-                    chat_messages.append({"role": "user", "content": message.content})
+                    non_system_messages.append({"role": "user", "content": message.content})
                     continue
                     
                 # Case 2: Content is a list of dictionaries or objects
@@ -756,10 +774,20 @@ class MLXVLMHandler:
                             videos.append(formatted_content_part["path"])
 
                         formatted_content_parts.append(formatted_content_part["content_part"])
-                    chat_messages.append({"role": "user", "content": formatted_content_parts})
+                    non_system_messages.append({"role": "user", "content": formatted_content_parts})
                 else:
                     content = create_error_response("Invalid message content format", "invalid_request_error", HTTPStatus.BAD_REQUEST)
                     raise HTTPException(status_code=400, detail=content)
+
+            # Handle tool messages and other roles
+            else:
+                non_system_messages.append({"role": message.role, "content": message.content})
+
+        # Consolidate system messages into a single string at index 0
+        chat_messages: list[dict[str, Any]] = []
+        if system_messages:
+            chat_messages.append({"role": "system", "content": "\n\n".join(system_messages)})
+        chat_messages.extend(non_system_messages)
 
         request_dict = request.model_dump()
         request_dict.pop("messages")
