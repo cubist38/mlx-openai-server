@@ -1,5 +1,7 @@
 """Tests for the MiniMax M2 parser (tool parsing only)."""
 
+import json
+
 from app.parsers.minimax_m2 import MiniMaxM2ToolParser
 
 
@@ -12,9 +14,9 @@ def test_minimax_m2_tool_parsing_streaming() -> None:
         "thinking about the",
         "problem",
         ".</think><minimax:tool_call>",
-        "<invoke name=\"tool_name\">\n",
-        "<parameter name=\"argument_name\">argument_value</parameter>\n",
-        "<parameter name=\"argument_name\">argument_value</parameter>\n",
+        '<invoke name="tool_name">\n',
+        '<parameter name="argument_name">argument_value</parameter>\n',
+        '<parameter name="argument_name">argument_value</parameter>\n',
         "</invoke>\n",
         "</minimax:tool_call>",
     ]
@@ -48,7 +50,9 @@ def test_minimax_m2_tool_parsing_streaming() -> None:
     assert complete_tool_call["tool_calls"][0]["name"] == "tool_name"
     # Verify that arguments is a JSON string containing the expected parameter
     # Note: Since there are two parameters with the same name, the second overwrites the first
-    assert complete_tool_call["tool_calls"][0]["arguments"] == '{"argument_name": "argument_value"}'
+    assert json.loads(complete_tool_call["tool_calls"][0]["arguments"]) == {
+        "argument_name": "argument_value"
+    }
 
 
 if __name__ == "__main__":

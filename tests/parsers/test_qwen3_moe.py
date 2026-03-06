@@ -1,5 +1,7 @@
 """Tests for the Qwen3 MoE parser."""
 
+import json
+
 from app.parsers.hermes import HermesToolParser
 from app.parsers.qwen3_moe import Qwen3MoEReasoningParser
 
@@ -79,7 +81,9 @@ def test_qwen3_moe_reasoning_and_tool_parsing_streaming() -> None:
     assert len(complete_tool_call["tool_calls"]) == 1
     assert complete_tool_call["tool_calls"][0]["name"] == "tool_name"
     # Verify that arguments is a JSON string containing the expected parameter
-    assert complete_tool_call["tool_calls"][0]["arguments"] == '{"argument_name": "argument_value"}'
+    assert json.loads(complete_tool_call["tool_calls"][0]["arguments"]) == {
+        "argument_name": "argument_value"
+    }
 
 
 if __name__ == "__main__":
