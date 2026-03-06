@@ -76,11 +76,11 @@ class MLXLMHandler:
         )
         self.model_created = int(time.time())  # Store creation time when model is loaded
         self.model_type = self.model.get_model_type()
-        
+
         # Store parser configuration
         self.enable_auto_tool_choice = enable_auto_tool_choice
         # Debug mode
-        self.debug = debug   
+        self.debug = debug
         self.reasoning_parser_name = reasoning_parser
         self.tool_parser_name = tool_call_parser
         self.prompt_cache = LRUPromptCache(max_size=prompt_cache_size)
@@ -105,7 +105,7 @@ class MLXLMHandler:
         except Exception as e:
             logger.error(f"Error getting models: {str(e)}")
             return []
-    
+
     async def initialize(self, queue_config: Optional[Dict[str, Any]] = None) -> None:
         """Initialize the handler and start the inference worker.
 
@@ -137,7 +137,7 @@ class MLXLMHandler:
             logger.info("Message converter is enabled, converting messages...")
             messages = self.message_converter.convert_messages(messages)
             logger.info("Messages converted successfully")
-        
+
         logger.info("Filtering out None values from messages...")
         for message in messages:
             cleaned_message = {k: v for k, v in message.items() if v is not None}
@@ -156,6 +156,10 @@ class MLXLMHandler:
         Yields:
             str or dict: Response chunks (str) followed by usage info (dict) at the end.
         """
+        cache: list[Any] | None = None
+        cache_key: list[int] | None = None
+        cache_inserted = False
+
         try:
             chat_messages, model_params = await self._prepare_text_request(request)
 
@@ -188,7 +192,7 @@ class MLXLMHandler:
             if self.debug:
                 log_debug_cache_stats(total_input_tokens, total_remaining_tokens)
 
-                
+
             enable_thinking = chat_template_kwargs.get("enable_thinking", True)
 
             # Create parsers using ParserManager
@@ -217,7 +221,7 @@ class MLXLMHandler:
                 "prompt_progress_callback": prompt_progress_callback,
                 **model_params
             }
-            
+
             if self.debug:
                 log_debug_request(request_data)
                 request_data["verbose"] = True
@@ -239,7 +243,7 @@ class MLXLMHandler:
             final_chunk = None
             is_first_chunk = True
             raw_text = "" # only use for debugging
-            
+
             # Handle unified parser streaming
             if parsers_result.is_unified:
                 unified_parser = parsers_result.unified_parser
@@ -280,7 +284,7 @@ class MLXLMHandler:
                 # Handle separate parsers streaming
                 reasoning_parser = parsers_result.reasoning_parser
                 tool_parser = parsers_result.tool_parser
-                
+
                 async for chunk in response_generator:
                     if chunk is None:
                         continue
@@ -321,6 +325,7 @@ class MLXLMHandler:
 
             total_tokens = final_chunk.prompt_tokens + final_chunk.generation_tokens
             self.prompt_cache.insert_cache(cache_key, cache)
+            cache_inserted = True
 
             if self.debug:
                 log_debug_raw_text_response(raw_text)
@@ -347,10 +352,18 @@ class MLXLMHandler:
             logger.error("Too many requests. Service is at capacity.")
             content = create_error_response("Too many requests. Service is at capacity.", "rate_limit_exceeded", HTTPStatus.TOO_MANY_REQUESTS)
             raise HTTPException(status_code=429, detail=content)
+        except asyncio.CancelledError:
+            raise
         except Exception as e:
             logger.error(f"Error in text stream generation: {str(e)}")
             content = create_error_response(f"Failed to generate text stream: {str(e)}", "server_error", HTTPStatus.INTERNAL_SERVER_ERROR)
             raise HTTPException(status_code=500, detail=content)
+        finally:
+            if cache is not None and cache_key is not None and not cache_inserted:
+                try:
+                    self.prompt_cache.insert_cache(cache_key, cache)
+                except Exception as cache_error:
+                    logger.warning(f"Failed to persist prompt cache during stream finalization: {cache_error}")
 
     async def generate_text_response(self, request: ChatCompletionRequest) -> Dict[str, Any]:
         """
@@ -393,7 +406,7 @@ class MLXLMHandler:
 
             if self.debug:
                 log_debug_cache_stats(total_input_tokens, total_remaining_tokens)
-            
+
             prompt_progress_callback = make_prompt_progress_callback() if self.debug else None
 
             request_data = {
@@ -416,7 +429,7 @@ class MLXLMHandler:
                 stream=False,
                 **request_data,
             )
-            
+
             # Create parsers using ParserManager
             parsers_result = ParserManager.create_parsers(
                 reasoning_parser_name=self.reasoning_parser_name,
@@ -502,7 +515,7 @@ class MLXLMHandler:
             )
 
             return {"response": parsed_response, "usage": usage}
-                        
+
         except asyncio.QueueFull:
             logger.error("Too many requests. Service is at capacity.")
             content = create_error_response("Too many requests. Service is at capacity.", "rate_limit_exceeded", HTTPStatus.TOO_MANY_REQUESTS)
@@ -511,7 +524,7 @@ class MLXLMHandler:
             logger.error(f"Error in text response generation: {str(e)}")
             content = create_error_response(f"Failed to generate text response: {str(e)}", "server_error", HTTPStatus.INTERNAL_SERVER_ERROR)
             raise HTTPException(status_code=500, detail=content)
-        
+
 
     async def get_queue_stats(self) -> Dict[str, Any]:
         """Get statistics from the inference worker.
@@ -524,7 +537,7 @@ class MLXLMHandler:
         return {
             "queue_stats": self.inference_worker.get_stats(),
         }
-        
+
     async def cleanup(self) -> None:
         """Cleanup resources and stop the inference worker before shutdown.
 
@@ -571,12 +584,12 @@ class MLXLMHandler:
                 response_format = request_dict.pop("response_format")
                 if response_format.get("type") == "json_schema":
                     request_dict["schema"] = response_format.get("json_schema", {}).get("schema")
-            
+
             # Format chat messages and merge system messages into index 0
             chat_messages = []
             system_messages = []
             non_system_messages = []
-            
+
             for message in request_dict.pop("messages", []):
                 # Handle content that might be a list of dictionaries (multimodal format)
                 content = message.get("content")
@@ -593,26 +606,26 @@ class MLXLMHandler:
                         if isinstance(item, dict) and item.get("type") == "text" and item.get("text"):
                             text_parts.append(item["text"])
                     content = "\n".join(text_parts) if text_parts else ""
-                
-                message["content"] = content                
+
+                message["content"] = content
                 # Separate system messages from other messages
                 if message.get("role") == "system":
                     system_messages.append(message)
                 else:
                     non_system_messages.append(message)
-            
+
             # If there are system messages, merge them into a single system message at index 0
             if system_messages:
                 # Combine all system message contents
                 combined_system_content = "\n\n".join([msg["content"] for msg in system_messages if msg.get("content")])
-                
+
                 # Create merged system message using the first system message as template
                 merged_system_message = system_messages[0].copy()
                 merged_system_message["content"] = combined_system_content
-                
+
                 # Add merged system message at index 0
                 chat_messages.append(merged_system_message)
-            
+
             # Add all non-system messages after the merged system message
             chat_messages.extend(non_system_messages)
 
@@ -632,7 +645,7 @@ class MLXLMHandler:
                 chat_template_kwargs["_partial_mode"] = True
 
             return chat_messages, request_dict
-        
+
         except Exception as e:
             logger.error(f"Failed to prepare text request: {str(e)}")
             content = create_error_response(f"Failed to process request: {str(e)}", "bad_request", HTTPStatus.BAD_REQUEST)
