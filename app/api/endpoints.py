@@ -59,6 +59,19 @@ from ..schemas.openai import (
     UsageInfo,
     random_uuid,
 )
+from openai.types.responses import FunctionTool
+from openai.types.responses.response_output_message import (
+    ResponseOutputText,
+    ResponseOutputMessage
+)
+from openai.types.responses.response_function_tool_call import (
+    ResponseFunctionToolCall
+)
+from openai.types.responses.response_reasoning_item import (
+    Summary,
+    Content,
+    ResponseReasoningItem
+)
 from ..utils.debug_logging import log_debug_server_request
 from ..utils.errors import create_error_response
 
@@ -301,6 +314,8 @@ def refine_chat_completion_request(
         request.top_p = _parse_env_float("DEFAULT_TOP_P")
     if request.top_k is None:
         request.top_k = _parse_env_int("DEFAULT_TOP_K")
+    if request.min_p is None:
+        request.min_p = _parse_env_float("DEFAULT_MIN_P")
     if request.seed is None:
         request.seed = _parse_env_int("DEFAULT_SEED")
     if request.repetition_penalty is None:
@@ -352,6 +367,12 @@ async def chat_completions(
 
     # Get request ID from middleware
     request_id = getattr(raw_request.state, "request_id", None)
+    if getattr(handler, "debug", False):
+        log_debug_server_request(
+            route="/v1/chat/completions",
+            request_payload=request.model_dump(exclude_none=True),
+            request_id=request_id,
+        )
 
     try:
         if handler_type == "multimodal":
@@ -1726,6 +1747,14 @@ async def responses_endpoint(
                 HTTPStatus.BAD_REQUEST,
             ),
             status_code=HTTPStatus.BAD_REQUEST,
+        )
+
+    request_id = getattr(raw_request.state, "request_id", None)
+    if getattr(handler, "debug", False):
+        log_debug_server_request(
+            route="/v1/responses",
+            request_payload=request.model_dump(exclude_none=True),
+            request_id=request_id,
         )
 
     try:

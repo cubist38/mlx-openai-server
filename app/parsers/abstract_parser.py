@@ -1,3 +1,5 @@
+"""Base parser abstractions and shared streaming parser state machines."""
+
 from __future__ import annotations
 
 from enum import Enum
@@ -246,6 +248,48 @@ class AbstractToolParser:
             - extracted_content: Tool calls dict, passthrough chunk, or None
             - is_complete: True if chunk should be sent, False if buffering
         """
+        def _merge_content_payload(
+            payload: dict[str, list] | None,
+            leading_content: str = "",
+            trailing_content: str = "",
+        ) -> dict[str, list | str]:
+            merged: dict[str, list | str] = (
+                dict(payload) if isinstance(payload, dict) else {}
+            )
+            pieces: list[str] = []
+            if leading_content:
+                pieces.append(leading_content)
+            existing_content = merged.get("content")
+            if isinstance(existing_content, str) and existing_content:
+                pieces.append(existing_content)
+            if trailing_content:
+                pieces.append(trailing_content)
+            if pieces:
+                merged["content"] = "".join(pieces)
+            return merged
+
+        def _extract_parseable_and_tail(buffer_text: str) -> tuple[str, str]:
+            last_close_idx = buffer_text.rfind(self.tool_close)
+            if last_close_idx < 0:
+                return buffer_text, ""
+            close_end_idx = last_close_idx + len(self.tool_close)
+            return buffer_text[:close_end_idx], buffer_text[close_end_idx:]
+
+        def _consume_tail_for_next_chunk(tail_text: str) -> str:
+            if not tail_text:
+                self.buffer = ""
+                self.state = ToolParserState.NORMAL
+                return ""
+            overlap = _suffix_prefix_overlap(tail_text, self.tool_open)
+            if overlap > 0:
+                passthrough_tail = tail_text[:-overlap]
+                self.buffer = tail_text[-overlap:]
+            else:
+                passthrough_tail = tail_text
+                self.buffer = ""
+            self.state = ToolParserState.NORMAL
+            return passthrough_tail
+
         if self.state == ToolParserState.NORMAL:
             combined = self.buffer + chunk
             open_idx = combined.find(self.tool_open)
@@ -255,18 +299,15 @@ class AbstractToolParser:
                 self.buffer = combined[open_idx:]
 
                 if self.tool_close in self.buffer:
-                    result = self.extract_tool_calls(self.buffer)
-                    self.buffer = ""
-                    self.state = ToolParserState.NORMAL
-                    if passthrough:
-                        merged = dict(result) if isinstance(result, dict) else {}
-                        merged_content = merged.get("content")
-                        if merged_content:
-                            merged["content"] = f"{passthrough}{merged_content}"
-                        else:
-                            merged["content"] = passthrough
-                        return merged, True
-                    return result, True
+                    parseable_text, tail_text = _extract_parseable_and_tail(self.buffer)
+                    result = self.extract_tool_calls(parseable_text)
+                    passthrough_tail = _consume_tail_for_next_chunk(tail_text)
+                    merged = _merge_content_payload(
+                        result,
+                        leading_content=passthrough,
+                        trailing_content=passthrough_tail,
+                    )
+                    return merged, True
 
                 if passthrough:
                     return {"content": passthrough}, False
@@ -286,11 +327,14 @@ class AbstractToolParser:
 
         combined = self.buffer + chunk
         if self.tool_close in combined:
-            self.buffer = combined
-            result = self.extract_tool_calls(self.buffer)
-            self.buffer = ""
-            self.state = ToolParserState.NORMAL
-            return result, True
+            parseable_text, tail_text = _extract_parseable_and_tail(combined)
+            result = self.extract_tool_calls(parseable_text)
+            passthrough_tail = _consume_tail_for_next_chunk(tail_text)
+            merged = _merge_content_payload(
+                result,
+                trailing_content=passthrough_tail,
+            )
+            return merged, True
 
         self.buffer = combined
         return None, False

@@ -178,3 +178,124 @@ def make_prompt_progress_callback(start_time: float | None = None) -> callable:
         logger.info(f"⚡ Processed {processed:6d}/{total_tokens} tokens ({speed:6.2f} tok/s)")
     
     return callback
+
+
+def _preview_text(value: str, max_chars: int = 220) -> str:
+    """Return a single-line preview string with a hard size cap."""
+    escaped = value.replace("\n", "\\n")
+    if len(escaped) <= max_chars:
+        return escaped
+    return f"{escaped[:max_chars]}...(+{len(escaped) - max_chars} chars)"
+
+
+def _summarize_for_debug(value: Any, max_depth: int = 2) -> Any:
+    """Summarize nested values to keep debug logs readable."""
+    if max_depth <= 0:
+        return type(value).__name__
+
+    if isinstance(value, str):
+        return _preview_text(value)
+
+    if isinstance(value, (int, float, bool)) or value is None:
+        return value
+
+    if isinstance(value, list):
+        preview_items = [_summarize_for_debug(item, max_depth - 1) for item in value[:5]]
+        if len(value) > 5:
+            preview_items.append(f"...(+{len(value) - 5} items)")
+        return {"type": "list", "len": len(value), "preview": preview_items}
+
+    if isinstance(value, tuple):
+        preview_items = [_summarize_for_debug(item, max_depth - 1) for item in value[:5]]
+        if len(value) > 5:
+            preview_items.append(f"...(+{len(value) - 5} items)")
+        return {"type": "tuple", "len": len(value), "preview": preview_items}
+
+    if isinstance(value, dict):
+        summary: dict[str, Any] = {}
+        for key, item in list(value.items())[:20]:
+            summary[str(key)] = _summarize_for_debug(item, max_depth - 1)
+        if len(value) > 20:
+            summary["..."] = f"+{len(value) - 20} more keys"
+        return summary
+
+    return f"<{type(value).__name__}>"
+
+
+def log_debug_server_request(
+    route: str,
+    request_payload: dict[str, Any],
+    request_id: str | None = None,
+) -> None:
+    """Log inbound API payload after request parsing on the server."""
+    logger.info("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+    logger.info("🛰️  DEBUG: Inbound Server Request")
+    logger.info("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+    logger.info(f"Route: {route}")
+    if request_id:
+        logger.info(f"Request ID: {request_id}")
+    logger.info(f"Payload: {_summarize_for_debug(request_payload, max_depth=3)}")
+    logger.info("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+
+
+def log_debug_model_dispatch(
+    op_name: str,
+    payload: dict[str, Any],
+) -> None:
+    """Log payload forwarded from handler to inference worker/model."""
+    logger.info("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+    logger.info("🚀 DEBUG: Model Dispatch Payload")
+    logger.info("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+    logger.info(f"Operation: {op_name}")
+    logger.info(f"Payload: {_summarize_for_debug(payload, max_depth=2)}")
+    logger.info("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+
+
+def log_debug_parser_event(
+    component: str,
+    chunk_index: int,
+    phase: str,
+    parser: Any,
+    text: str | None = None,
+    parsed_content: Any | None = None,
+    is_complete: bool | None = None,
+) -> None:
+    """Log parser state transitions and parse outputs for a chunk."""
+    parser_name = parser.__class__.__name__ if parser is not None else "None"
+    parser_state = getattr(parser, "state", None)
+    state_repr = getattr(parser_state, "value", parser_state)
+    parser_buffer = getattr(parser, "buffer", None)
+    buffer_len = len(parser_buffer) if isinstance(parser_buffer, str) else None
+
+    logger.info("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+    logger.info("🧩 DEBUG: Parser Event")
+    logger.info("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+    logger.info(f"Component: {component}")
+    logger.info(f"Chunk: {chunk_index}")
+    logger.info(f"Phase: {phase}")
+    logger.info(f"Parser: {parser_name}")
+    logger.info(f"State: {state_repr}")
+    if buffer_len is not None:
+        logger.info(f"Buffer len: {buffer_len}")
+    if text is not None:
+        logger.info(f"Chunk text: {_preview_text(text)}")
+    if parsed_content is not None:
+        logger.info(f"Parsed: {_summarize_for_debug(parsed_content, max_depth=2)}")
+    if is_complete is not None:
+        logger.info(f"Is complete: {is_complete}")
+    logger.info("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+
+
+def log_debug_tool_call_emission(
+    component: str,
+    chunk_index: int,
+    tool_call: dict[str, Any],
+) -> None:
+    """Log each emitted tool call payload."""
+    logger.info("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+    logger.info("🛠️  DEBUG: Tool Call Emission")
+    logger.info("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+    logger.info(f"Component: {component}")
+    logger.info(f"Chunk: {chunk_index}")
+    logger.info(f"Tool call: {_summarize_for_debug(tool_call, max_depth=3)}")
+    logger.info("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
