@@ -757,6 +757,10 @@ class MLXLMHandler:
             non_system_messages = []
 
             for message in request_dict.pop("messages", []):
+                # Reasoning content is output metadata and should not be replayed
+                # into subsequent prompt history turns.
+                message.pop("reasoning_content", None)
+
                 # Handle content that might be a list of dictionaries (multimodal format)
                 content = message.get("content")
                 if content is None:
