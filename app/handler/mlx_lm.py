@@ -908,7 +908,9 @@ class MLXLMHandler:
                     # For LM models, extract only text content and concatenate
                     text_parts = []
                     for item in content:
-                        if isinstance(item, dict) and item.get("type") == "text" and item.get("text"):
+                        if isinstance(item, str):
+                            text_parts.append(item)
+                        elif isinstance(item, dict) and item.get("type") == "text" and item.get("text"):
                             text_parts.append(item["text"])
                     content = "\n".join(text_parts) if text_parts else ""
 
