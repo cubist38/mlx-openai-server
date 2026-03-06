@@ -310,6 +310,8 @@ def refine_chat_completion_request(
         request.top_p = _parse_env_float("DEFAULT_TOP_P")
     if request.top_k is None:
         request.top_k = _parse_env_int("DEFAULT_TOP_K")
+    if request.min_p is None:
+        request.min_p = _parse_env_float("DEFAULT_MIN_P")
     if request.seed is None:
         request.seed = _parse_env_int("DEFAULT_SEED")
     if request.repetition_penalty is None:
