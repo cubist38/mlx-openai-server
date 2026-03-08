@@ -72,6 +72,7 @@ python3.11 -m venv .venv
 source .venv/bin/activate
 
 # Install from PyPI
+# Note: image-generation support currently installs `mflux` from the maintained fork
 pip install mlx-openai-server
 
 # Or install from GitHub
