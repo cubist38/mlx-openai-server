@@ -1,6 +1,6 @@
 [project]
 name = "mlx-openai-server"
-version = "1.6.2"
+version = "1.6.3"
 description = "A high-performance API server that provides OpenAI-compatible endpoints for MLX models."
 readme = "README.md"
 requires-python = ">=3.11,<3.13"
