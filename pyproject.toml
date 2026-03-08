@@ -1,10 +1,10 @@
 [project]
 name = "mlx-openai-server"
+version = "1.6.2"
 description = "A high-performance API server that provides OpenAI-compatible endpoints for MLX models."
 readme = "README.md"
 requires-python = ">=3.11,<3.13"
 license = { text = "MIT" }
-dynamic = ["version"]
 authors = [{ name = "Gia-Huy Vuong", email = "cubist38@gmail.com" }]
 keywords = [
   "mlx",
@@ -74,9 +74,6 @@ include = ["app*"]
 
 [tool.setuptools.package-data]
 app = ["py.typed"]
-
-[tool.setuptools.dynamic]
-version = { attr = "app.version.__version__" }
 
 [project.urls]
 Homepage = "https://github.com/cubist38/mlx-openai-server"
