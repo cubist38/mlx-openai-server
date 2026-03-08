@@ -18,15 +18,12 @@ models:
     enable_auto_tool_choice: true
     tool_call_parser: glm4_moe
     reasoning_parser: glm47_flash
-    message_converter: glm4_moe
 
   # Another language model
   - model_path: mlx-community/Qwen3-Coder-Next-4bit
     model_type: lm
     max_concurrency: 1
     tool_call_parser: qwen3_coder
-    message_converter: qwen3_coder
-
 
   - model_path: mlx-community/Qwen3-VL-2B-Instruct-4bit
     model_type: multimodal
