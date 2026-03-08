@@ -91,6 +91,7 @@ class MLXLMHandler:
         chat_template_file: str = None,
         debug: bool = False,
         prompt_cache_size: int = 10,
+        prompt_cache_max_bytes: int = 1 << 63,
     ):
         """
         Initialize the handler with the specified model path.
@@ -123,6 +124,8 @@ class MLXLMHandler:
             Enable debug mode.
         prompt_cache_size : int
             Maximum number of prompt KV cache entries to store. Default is 10.
+        prompt_cache_max_bytes : int
+            Maximum total bytes retained by prompt KV caches before eviction.
         """
         self.model_path = model_path
         self.model = MLX_LM(
@@ -143,7 +146,10 @@ class MLXLMHandler:
         self.debug = debug
         self.reasoning_parser_name = reasoning_parser
         self.tool_parser_name = tool_call_parser
-        self.prompt_cache = LRUPromptCache(max_size=prompt_cache_size)
+        self.prompt_cache = LRUPromptCache(
+            max_size=prompt_cache_size,
+            max_bytes=prompt_cache_max_bytes,
+        )
         self.message_converter = MessageConverterManager.create_converter(
             converter_name=message_converter,
             tool_parser_name=tool_call_parser,

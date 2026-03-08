@@ -17,17 +17,17 @@ Key exports:
 
 from __future__ import annotations
 
+from contextlib import asynccontextmanager
 import gc
 import time
-from contextlib import asynccontextmanager
 from typing import Any
 
-import mlx.core as mx
-import uvicorn
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from loguru import logger
+import mlx.core as mx
+import uvicorn
 
 from .api.endpoints import router
 from .config import MLXServerConfig, ModelEntryConfig, MultiModelServerConfig
@@ -76,7 +76,7 @@ def configure_logging(
         colorize=True,
     )
     if not no_log_file:
-        file_path = log_file if log_file else "logs/app.log"
+        file_path = log_file or "logs/app.log"
         logger.add(
             file_path,
             rotation="500 MB",
@@ -209,6 +209,7 @@ def create_lifespan(config_args: MLXServerConfig):
                     chat_template_file=config_args.chat_template_file,
                     debug=config_args.debug,
                     prompt_cache_size=config_args.prompt_cache_size,
+                    prompt_cache_max_bytes=config_args.prompt_cache_max_bytes,
                     draft_model_path=config_args.draft_model_path,
                     num_draft_tokens=config_args.num_draft_tokens,
                 )
@@ -224,7 +225,7 @@ def create_lifespan(config_args: MLXServerConfig):
             app.state.handler = handler
 
         except Exception as e:
-            logger.error(f"Failed to initialize MLX handler: {str(e)}")
+            logger.error(f"Failed to initialize MLX handler: {e!s}")
             raise
 
         # Initial memory cleanup
@@ -242,7 +243,7 @@ def create_lifespan(config_args: MLXServerConfig):
                 await app.state.handler.cleanup()
                 logger.info("Resources cleaned up successfully")
             except Exception as e:
-                logger.error(f"Error during shutdown: {str(e)}")
+                logger.error(f"Error during shutdown: {e!s}")
 
         # Final memory cleanup
         mx.clear_cache()
@@ -336,6 +337,7 @@ def create_handler_from_config(model_cfg: ModelEntryConfig) -> Any:
         chat_template_file=model_cfg.chat_template_file,
         debug=model_cfg.debug,
         prompt_cache_size=model_cfg.prompt_cache_size,
+        prompt_cache_max_bytes=model_cfg.prompt_cache_max_bytes,
         draft_model_path=model_cfg.draft_model_path,
         num_draft_tokens=model_cfg.num_draft_tokens,
     )
@@ -418,9 +420,7 @@ def create_multi_lifespan(config: MultiModelServerConfig):
                     model_type=model_cfg.model_type,
                     context_length=model_cfg.context_length,
                 )
-                logger.info(
-                    f"Model '{model_id}' spawned and registered successfully"
-                )
+                logger.info(f"Model '{model_id}' spawned and registered successfully")
 
             # Store registry on app state for endpoint access
             app.state.registry = registry
@@ -561,7 +561,7 @@ def setup_server(config_args: MLXServerConfig | MultiModelServerConfig) -> uvico
         response with a 500 status code so internal errors do not leak
         implementation details to clients.
         """
-        logger.error(f"Global exception handler caught: {str(exc)}", exc_info=True)
+        logger.error(f"Global exception handler caught: {exc!s}", exc_info=True)
         return JSONResponse(
             status_code=500,
             content={"error": {"message": "Internal server error", "type": "internal_error"}},

@@ -26,8 +26,8 @@ from __future__ import annotations
 import os
 import sys
 
-import uvicorn
 from loguru import logger
+import uvicorn
 
 from .config import MLXServerConfig, MultiModelServerConfig
 from .server import setup_server
@@ -83,6 +83,7 @@ def print_startup_banner(config_args: MLXServerConfig) -> None:
             logger.info(f"🔧 Message Converter: {config_args.message_converter}")
     if config_args.model_type == "lm":
         logger.info(f"💾 Prompt Cache Size: {config_args.prompt_cache_size} entries")
+        logger.info(f"💾 Prompt Cache Max Bytes: {config_args.prompt_cache_max_bytes}")
     logger.info(f"📝 Log Level: {config_args.log_level}")
     if config_args.no_log_file:
         logger.info("📝 File Logging: Disabled")
@@ -134,9 +135,7 @@ def _apply_sampling_env(config: MLXServerConfig) -> None:
     if config.default_seed is not None:
         os.environ["DEFAULT_SEED"] = str(config.default_seed)
     if config.default_repetition_context_size is not None:
-        os.environ["DEFAULT_REPETITION_CONTEXT_SIZE"] = str(
-            config.default_repetition_context_size
-        )
+        os.environ["DEFAULT_REPETITION_CONTEXT_SIZE"] = str(config.default_repetition_context_size)
 
 
 async def start(config: MLXServerConfig) -> None:
@@ -166,7 +165,7 @@ async def start(config: MLXServerConfig) -> None:
     except KeyboardInterrupt:
         logger.info("Server shutdown requested by user. Exiting...")
     except Exception as e:
-        logger.error(f"Server startup failed: {str(e)}")
+        logger.error(f"Server startup failed: {e!s}")
         sys.exit(1)
 
 
@@ -192,7 +191,7 @@ async def start_multi(config: MultiModelServerConfig) -> None:
     except KeyboardInterrupt:
         logger.info("Server shutdown requested by user. Exiting...")
     except Exception as e:
-        logger.error(f"Multi-handler server startup failed: {str(e)}")
+        logger.error(f"Multi-handler server startup failed: {e!s}")
         sys.exit(1)
 
 
