@@ -148,6 +148,9 @@ mlx-openai-server launch \
 | | | | | **Speculative decoding** (lm only) |
 | `--draft-model-path` | No | path | — | Path to draft model for speculative decoding |
 | `--num-draft-tokens` | No | int | 2 | Draft tokens per step |
+| | | | | **Prompt cache** (lm only) |
+| `--prompt-cache-size` | No | int | 100 | Maximum number of prompt KV cache entries to store |
+| `--max-bytes` | No | int | (unbounded) | Maximum total bytes retained by prompt KV caches before eviction |
 | | | | | **Advanced options** |
 | `--lora-paths` | No | string | — | Comma-separated LoRA adapter paths (image models) |
 | `--lora-scales` | No | string | — | Comma-separated LoRA scales (must match paths) |
@@ -181,6 +184,8 @@ Create a YAML file with a `server` section (host, port, logging) and a `models` 
 | `model_id` | No | ID used in API requests; defaults to `model_path` if omitted |
 | `context_length` | No | Max context length (lm / multimodal) |
 | `max_concurrency`, `queue_timeout`, `queue_size` | No | Per-model queue settings |
+| `prompt_cache_size` | No | Max prompt KV cache entries (lm only; default: 10) |
+| `prompt_cache_max_bytes` | No | Max total bytes for prompt KV caches before eviction (lm only) |
 
 Example `config.yaml`:
 
@@ -643,29 +648,6 @@ mlx-openai-server launch \
 - **`--draft-model-path`**: Path or HuggingFace repo of the draft model (smaller size model).
 - **`--num-draft-tokens`**: Number of tokens the draft model generates per verification step (default: 2). Higher values can increase throughput at the cost of more draft compute.
 
-## Request Queue System
-
-The server includes a request queue system with monitoring:
-
-```bash
-# Check queue status
-curl http://localhost:8000/v1/queue/stats
-```
-
-Response:
-```json
-{
-  "status": "ok",
-  "queue_stats": {
-    "running": true,
-    "queue_size": 3,
-    "max_queue_size": 100,
-    "active_requests": 1,
-    "max_concurrency": 1
-  }
-}
-```
-
 ## Example Notebooks
 
 Check the `examples/` directory for comprehensive guides:
@@ -744,6 +726,26 @@ Follow [Conventional Commits](https://www.conventionalcommits.org/) for commit m
 - **Issues**: [GitHub Issues](https://github.com/cubist38/mlx-openai-server/issues)
 - **Discussions**: [GitHub Discussions](https://github.com/cubist38/mlx-openai-server/discussions)
 - **Video Tutorials**: [Setup Demo](https://youtu.be/J1gkEMvmTSE), [RAG Demo](https://youtu.be/ANUEZkmR-0s), [Testing Qwen3-Coder-Next-4bit with Qwen-Code](https://youtu.be/X5Hsd3QR_E8), [Serving Multiple Models at Once? mlx-openai-server + OpenWebUI Test](https://www.youtube.com/watch?v=f7WXSOPZ5H4)
+
+## License
+
+MIT License - see [LICENSE](LICENSE) file for details.
+
+## Acknowledgments
+
+Built on top of:
+- [MLX](https://github.com/ml-explore/mlx) - Apple's ML framework
+- [mlx-lm](https://github.com/ml-explore/mlx-lm) - Language models
+- [mlx-vlm](https://github.com/Blaizzy/mlx-vlm) - Multimodal models
+- [mlx-embeddings](https://github.com/Blaizzy/mlx-embeddings) - Embeddings
+- [mflux](https://github.com/filipstrand/mflux) - Flux image models
+- [mlx-whisper](https://github.com/ml-explore/mlx-examples/tree/main/whisper) - Audio transcription
+- [mlx-community](https://huggingface.co/mlx-community) - Model repository
+
+---
+
+[![GitHub stars](https://img.shields.io/github/stars/cubist38/mlx-openai-server?style=social&label=Star)](https://github.com/cubist38/mlx-openai-server)
+WXSOPZ5H4)
 
 ## License
 

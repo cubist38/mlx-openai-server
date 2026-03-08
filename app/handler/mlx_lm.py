@@ -91,6 +91,7 @@ class MLXLMHandler:
         chat_template_file: str = None,
         debug: bool = False,
         prompt_cache_size: int = 10,
+        prompt_cache_max_bytes: int = 1 << 63,
     ):
         """
         Initialize the handler with the specified model path.
@@ -123,6 +124,8 @@ class MLXLMHandler:
             Enable debug mode.
         prompt_cache_size : int
             Maximum number of prompt KV cache entries to store. Default is 10.
+        prompt_cache_max_bytes : int
+            Maximum total bytes retained by prompt KV caches before eviction.
         """
         self.model_path = model_path
         self.model = MLX_LM(
@@ -143,7 +146,10 @@ class MLXLMHandler:
         self.debug = debug
         self.reasoning_parser_name = reasoning_parser
         self.tool_parser_name = tool_call_parser
-        self.prompt_cache = LRUPromptCache(max_size=prompt_cache_size)
+        self.prompt_cache = LRUPromptCache(
+            max_size=prompt_cache_size,
+            max_bytes=prompt_cache_max_bytes,
+        )
         self.message_converter = MessageConverterManager.create_converter(
             converter_name=message_converter,
             tool_parser_name=tool_call_parser,
@@ -596,6 +602,7 @@ class MLXLMHandler:
             cache_inserted = True
 
             if self.debug:
+                self.prompt_cache.log_cache_stats()
                 log_debug_raw_text_response(raw_text)
                 log_debug_stats(
                     final_chunk.prompt_tokens,
@@ -636,6 +643,8 @@ class MLXLMHandler:
             if cache is not None and cache_key is not None and not cache_inserted:
                 try:
                     self.prompt_cache.insert_cache(cache_key, cache)
+                    if self.debug:
+                        self.prompt_cache.log_cache_stats()
                 except Exception as cache_error:
                     logger.warning(
                         f"Failed to persist prompt cache during stream finalization: {cache_error}"
@@ -835,6 +844,7 @@ class MLXLMHandler:
                         )
 
             if self.debug:
+                self.prompt_cache.log_cache_stats()
                 log_debug_raw_text_response(response.text)
                 log_debug_stats(
                     response.prompt_tokens,

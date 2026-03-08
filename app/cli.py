@@ -217,6 +217,13 @@ def cli():
     help="Maximum number of prompt KV cache entries to store. Only works with language models (lm). Default is 10.",
 )
 @click.option(
+    "--max-bytes",
+    "prompt_cache_max_bytes",
+    default=1 << 63,
+    type=int,
+    help="Maximum total bytes retained by prompt KV caches before eviction. Only works with language models (lm).",
+)
+@click.option(
     "--draft-model-path",
     default=None,
     type=str,
@@ -292,6 +299,7 @@ def launch(
     chat_template_file,
     debug,
     prompt_cache_size,
+    prompt_cache_max_bytes,
     draft_model_path,
     num_draft_tokens,
     max_tokens,
@@ -356,6 +364,7 @@ def launch(
         chat_template_file=chat_template_file,
         debug=debug,
         prompt_cache_size=prompt_cache_size,
+        prompt_cache_max_bytes=prompt_cache_max_bytes,
         draft_model_path=draft_model_path,
         num_draft_tokens=num_draft_tokens,
         default_max_tokens=max_tokens,

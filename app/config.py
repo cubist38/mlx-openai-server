@@ -55,6 +55,7 @@ class MLXServerConfig:
     chat_template_file: str | None = None
     debug: bool = False
     prompt_cache_size: int = 10
+    prompt_cache_max_bytes: int = 1 << 63
     draft_model_path: str | None = None
     num_draft_tokens: int = 2
 
@@ -193,6 +194,7 @@ class ModelEntryConfig:
     chat_template_file: str | None = None
     debug: bool = False
     prompt_cache_size: int = 10
+    prompt_cache_max_bytes: int = 1 << 63
     draft_model_path: str | None = None
     num_draft_tokens: int = 2
 
