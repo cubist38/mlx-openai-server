@@ -600,7 +600,17 @@ mlx-openai-server launch \
   --enable-auto-tool-choice
 ```
 
-Available parsers: `qwen3`, `glm4_moe`, `qwen3_coder`, `qwen3_moe`, `qwen3_next`, `qwen3_vl`, `harmony`, `minimax_m2`
+**Qwen3.5 models** (multimodal):
+
+```bash
+mlx-openai-server launch \
+  --model-path mlx-community/Qwen3.5-122B-A10B-4bit \
+  --model-type multimodal \
+  --reasoning-parser qwen3_5 \
+  --tool-call-parser qwen3_coder
+```
+
+Available parsers: `qwen3`, `qwen3_5`, `glm4_moe`, `qwen3_coder`, `qwen3_moe`, `qwen3_next`, `qwen3_vl`, `harmony`, `minimax_m2`
 
 ### Message Converters
 
