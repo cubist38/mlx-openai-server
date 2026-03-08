@@ -616,7 +616,7 @@ Available parsers: `qwen3`, `qwen3_5`, `glm4_moe`, `qwen3_coder`, `qwen3_moe`, `
 
 Message converters are **auto-detected** from parser selection. When you set `tool_call_parser` (or `reasoning_parser`), the server uses the same name for message preprocessing when a compatible converter exists. You do not need to pass `--message-converter`.
 
-Auto-detected converters: `glm4_moe`, `minimax_m2`, `minimax`, `nemotron3_nano`, `qwen3_coder`, `longcat_flash_lite`
+Auto-detected converters: `glm4_moe`, `minimax_m2`, `minimax`, `nemotron3_nano`, `qwen3_coder`, `longcat_flash_lite`, `step_35`
 
 ### Custom Chat Templates
 

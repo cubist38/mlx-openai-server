@@ -19,6 +19,7 @@ from app.message_converters import (
         ("qwen3_coder", "qwen3_coder"),
         ("minimax_m2", "minimax_m2"),
         ("qwen3", None),
+        ("step_35", "step_35"),
     ],
 )
 def test_resolve_message_converter_name_from_tool_parser(

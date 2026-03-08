@@ -11,6 +11,7 @@ MESSAGE_CONVERTER_MAP: dict[str, type[AbstractMessageConverter]] = {
     "nemotron3_nano": GLM4MoEMessageConverter,  # use the same converter as glm4_moe
     "qwen3_coder": GLM4MoEMessageConverter,  # use the same converter as glm4_moe
     "longcat_flash_lite": GLM4MoEMessageConverter,  # use the same converter as glm4_moe
+    "step_35": GLM4MoEMessageConverter,  # use the same converter as glm4_moe (Opencode compatibility)
 }
 
 
