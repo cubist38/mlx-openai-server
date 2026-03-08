@@ -1,5 +1,6 @@
 import asyncio
 from collections.abc import AsyncGenerator
+import json
 import gc
 from http import HTTPStatus
 import time
@@ -947,6 +948,17 @@ class MLXLMHandler:
             non_system_messages = []
 
             for message in request_dict.pop("messages", []):
+                # Convert tool_call arguments from JSON string to dict
+                # (OpenAI API spec: string, HuggingFace chat template: dict)
+                for tc in message.get("tool_calls") or []:
+                    fn = tc.get("function") or {}
+                    args = fn.get("arguments")
+                    if isinstance(args, str):
+                        try:
+                            fn["arguments"] = json.loads(args)
+                        except (json.JSONDecodeError, TypeError):
+                            pass
+
                 # Reasoning content is output metadata and should not be replayed
                 # into subsequent prompt history turns.
                 message.pop("reasoning_content", None)
