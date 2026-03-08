@@ -29,7 +29,6 @@ dependencies = [
   "httpx>=0.28,<1",
   "json_repair>=0.52.1,<0.60",
   "librosa>=0.11.0,<0.12",
-  "mflux @ git+https://github.com/cubist38/mflux.git",
   "loguru>=0.7.3,<0.8",
   "mlx-embeddings>=0.0.5,<0.1",
   "mlx-lm>=0.31.0,<0.32",
@@ -66,6 +65,7 @@ dev = [
   "types-requests",
   "types-setuptools",
 ]
+image = ["mflux @ git+https://github.com/cubist38/mflux.git"]
 enhanced-caching = ["spacy", "regex", "tiktoken", "torch", "transformers"]
 
 [tool.setuptools.packages.find]

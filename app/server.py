@@ -40,6 +40,23 @@ from .handler.mlx_vlm import MLXVLMHandler
 from .handler.mlx_whisper import MLXWhisperHandler
 from .version import __version__
 
+MFLUX_INSTALL_HINT = (
+    "Image generation and editing require the optional `mflux` package. "
+    "Install a compatible build separately, for example "
+    "`pip install git+https://github.com/cubist38/mflux.git`."
+)
+
+
+def ensure_image_handler_available(model_type: str) -> None:
+    """Validate that optional image generation support is installed."""
+    if model_type not in {"image-generation", "image-edit"}:
+        return
+
+    if MLXFluxHandler is not None:
+        return
+
+    raise RuntimeError(MFLUX_INSTALL_HINT)
+
 
 def configure_logging(
     log_file: str | None = None, no_log_file: bool = False, log_level: str = "INFO"
@@ -171,6 +188,7 @@ def create_lifespan(config_args: MLXServerConfig):
                     debug=config_args.debug,
                 )
             elif config_args.model_type == "image-generation":
+                ensure_image_handler_available(config_args.model_type)
                 handler = MLXFluxHandler(
                     model_path=model_identifier,
                     max_concurrency=config_args.max_concurrency,
@@ -184,6 +202,7 @@ def create_lifespan(config_args: MLXServerConfig):
                     model_path=model_identifier, max_concurrency=config_args.max_concurrency
                 )
             elif config_args.model_type == "image-edit":
+                ensure_image_handler_available(config_args.model_type)
                 handler = MLXFluxHandler(
                     model_path=model_identifier,
                     max_concurrency=config_args.max_concurrency,
@@ -293,6 +312,7 @@ def create_handler_from_config(model_cfg: ModelEntryConfig) -> Any:
         )
 
     if model_cfg.model_type == "image-generation":
+        ensure_image_handler_available(model_cfg.model_type)
         return MLXFluxHandler(
             model_path=model_path,
             max_concurrency=model_cfg.max_concurrency,
@@ -303,6 +323,7 @@ def create_handler_from_config(model_cfg: ModelEntryConfig) -> Any:
         )
 
     if model_cfg.model_type == "image-edit":
+        ensure_image_handler_available(model_cfg.model_type)
         return MLXFluxHandler(
             model_path=model_path,
             max_concurrency=model_cfg.max_concurrency,
