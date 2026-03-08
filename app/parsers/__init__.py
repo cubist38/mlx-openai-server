@@ -20,15 +20,18 @@ from .kimi_k2 import KimiK2ToolParser
 from .longcat_flash_lite import LongCatFlashLiteToolParser
 from .minimax_m2 import MiniMaxM2ToolParser
 from .mixed_think_tool_handoff import MixedThinkToolHandoffReasoningParser, Step35ReasoningParser
+from .qwen3 import Qwen3ReasoningParser
+from .qwen3_5 import Qwen35ReasoningParser
 from .qwen3_moe import Qwen3MoEReasoningParser
 from .solar_open import SolarOpenReasoningParser, SolarOpenToolParser
 
 # Mapping from parser name strings to reasoning parser classes
 REASONING_PARSER_MAP: dict[str, type[AbstractReasoningParser]] = {
     "hermes": HermesReasoningParser,
-    "qwen3": HermesReasoningParser,  # use HermesReasoningParser for Qwen3
+    "qwen3": Qwen3ReasoningParser,
     "qwen3_moe": Qwen3MoEReasoningParser,
     "qwen3_vl": Qwen3MoEReasoningParser,  # use Qwen3MoEReasoningParser for Qwen3 VL
+    "qwen3_5": Qwen35ReasoningParser,
     "glm4_moe": GLM4MoEReasoningParser,
     "glm47_flash": Qwen3MoEReasoningParser,  # use Qwen3MoEReasoningParser for GLM47 Flash
     "minimax_m2": Qwen3MoEReasoningParser,  # use Qwen3MoEReasoningParser for MiniMax M2
@@ -303,7 +306,9 @@ __all__ = [
     "ToolParserState",
     # Reasoning parsers
     "HermesReasoningParser",
+    "Qwen3ReasoningParser",
     "Qwen3MoEReasoningParser",
+    "Qwen35ReasoningParser",
     "GLM4MoEReasoningParser",
     "SolarOpenReasoningParser",
     "MixedThinkToolHandoffReasoningParser",
