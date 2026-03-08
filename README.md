@@ -71,12 +71,16 @@ Then point your OpenAI client to `http://localhost:8000/v1`. For full setup, see
 python3.11 -m venv .venv
 source .venv/bin/activate
 
-# Install from PyPI
-# Note: image-generation support currently installs `mflux` from the maintained fork
-pip install mlx-openai-server
+# Install core server from PyPI
+uv pip install mlx-openai-server
+
+# Optional: install image generation/editing support separately
+# `mlx-openai-server[image]` is not available yet because PyPI rejects
+# git-based direct dependencies in published package metadata.
+uv pip install git+https://github.com/cubist38/mflux.git
 
 # Or install from GitHub
-pip install git+https://github.com/cubist38/mlx-openai-server.git
+uv pip install git+https://github.com/cubist38/mlx-openai-server.git
 ```
 
 ### Optional: Whisper Support

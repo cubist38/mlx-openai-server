@@ -17,9 +17,24 @@ from loguru import logger
 from .config import MLXServerConfig, load_config_from_yaml
 from .main import start, start_multi
 from .message_converters import MESSAGE_CONVERTER_MAP
-from .models.mflux import IMAGE_CONFIG_NAMES
 from .parsers import REASONING_PARSER_MAP, TOOL_PARSER_MAP, UNIFIED_PARSER_MAP
 from .version import __version__
+
+try:
+    from .models.mflux import IMAGE_CONFIG_NAMES
+except ImportError as exc:
+    IMAGE_CONFIG_NAMES: tuple[str, ...] = ()
+    MFLUX_AVAILABLE = False
+    MFLUX_IMPORT_ERROR: ImportError | None = exc
+else:
+    MFLUX_AVAILABLE = True
+    MFLUX_IMPORT_ERROR = None
+
+MFLUX_INSTALL_HINT = (
+    "Image generation and editing require the optional `mflux` package. "
+    "Install a compatible build separately, for example "
+    "`pip install git+https://github.com/cubist38/mflux.git`."
+)
 
 
 class UpperChoice(click.Choice):
@@ -56,6 +71,32 @@ class UpperChoice(click.Choice):
         raise click.BadParameter(
             f"invalid choice: {choice!r}. (choose from {', '.join(map(repr, self.choices))})"
         )
+
+
+def validate_image_config_name(
+    _ctx: click.Context, _param: click.Parameter, value: str | None
+) -> str | None:
+    """Validate image config names when optional mflux support is installed."""
+    if value is None or not IMAGE_CONFIG_NAMES:
+        return value
+
+    if value not in IMAGE_CONFIG_NAMES:
+        choices = ", ".join(sorted(IMAGE_CONFIG_NAMES))
+        raise click.BadParameter(f"invalid choice: {value!r}. (choose from {choices})")
+
+    return value
+
+
+def ensure_image_support_available(model_types: set[str]) -> None:
+    """Raise a usage error when image features are requested without mflux."""
+    if not any(model_type in {"image-generation", "image-edit"} for model_type in model_types):
+        return
+
+    if MFLUX_AVAILABLE:
+        return
+
+    detail = f" Optional import failed: {MFLUX_IMPORT_ERROR!s}" if MFLUX_IMPORT_ERROR else ""
+    raise click.UsageError(f"{MFLUX_INSTALL_HINT}{detail}")
 
 
 # Configure basic logging for CLI (will be overridden by main.py)
@@ -133,7 +174,9 @@ def cli():
 @click.option(
     "--config-name",
     default=None,
-    type=click.Choice(list(IMAGE_CONFIG_NAMES)),
+    type=str,
+    callback=validate_image_config_name,
+    metavar="CONFIG_NAME",
     help="Config name of the model. Only used for image-generation and image-edit models.",
 )
 @click.option(
@@ -330,6 +373,7 @@ def launch(
             multi_config = load_config_from_yaml(config_file)
         except (FileNotFoundError, ValueError) as e:
             raise click.BadParameter(str(e), param_hint="'--config'") from e
+        ensure_image_support_available({model.model_type for model in multi_config.models})
         asyncio.run(start_multi(multi_config))
         return
 
@@ -338,6 +382,8 @@ def launch(
         raise click.UsageError(
             "Either --config (multi-handler YAML) or --model-path (single model) is required."
         )
+
+    ensure_image_support_available({model_type})
 
     args = MLXServerConfig(
         model_path=model_path,
