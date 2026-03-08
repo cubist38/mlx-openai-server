@@ -16,8 +16,8 @@ from loguru import logger
 
 from .config import MLXServerConfig, load_config_from_yaml
 from .main import start, start_multi
-from .models.mflux import IMAGE_CONFIG_NAMES
 from .message_converters import MESSAGE_CONVERTER_MAP
+from .models.mflux import IMAGE_CONFIG_NAMES
 from .parsers import REASONING_PARSER_MAP, TOOL_PARSER_MAP, UNIFIED_PARSER_MAP
 from .version import __version__
 
@@ -86,7 +86,6 @@ def cli():
     Subcommands (such as ``launch``) are registered on this group and
     invoked by the console entry point.
     """
-    pass
 
 
 @cli.command()
@@ -192,7 +191,8 @@ def cli():
     "--message-converter",
     default=None,
     type=click.Choice(sorted(MESSAGE_CONVERTER_MAP.keys())),
-    help="Specify message converter to use for preprocessing messages. Only works with language models.",
+    hidden=True,
+    help="Deprecated override for message preprocessing. Message converters are auto-detected from parser selection.",
 )
 @click.option(
     "--trust-remote-code",
@@ -212,7 +212,7 @@ def cli():
 )
 @click.option(
     "--prompt-cache-size",
-    default=10,
+    default=100,
     type=int,
     help="Maximum number of prompt KV cache entries to store. Only works with language models (lm). Default is 10.",
 )
@@ -236,7 +236,9 @@ def cli():
     help="Default maximum number of tokens to generate.",
 )
 @click.option("--temperature", default=1.0, type=float, help="Default sampling temperature.")
-@click.option("--top-p", default=1.0, type=float, help="Default nucleus sampling (top-p) probability.")
+@click.option(
+    "--top-p", default=1.0, type=float, help="Default nucleus sampling (top-p) probability."
+)
 @click.option("--top-k", default=20, type=int, help="Default top-k sampling parameter.")
 @click.option("--min-p", default=0.0, type=float, help="Default min-p sampling parameter.")
 @click.option(

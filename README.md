@@ -199,14 +199,12 @@ models:
     enable_auto_tool_choice: true
     tool_call_parser: glm4_moe
     reasoning_parser: glm47_flash
-    message_converter: glm4_moe
 
   # Another language model
   - model_path: mlx-community/Qwen3-Coder-Next-4bit
     model_type: lm
     max_concurrency: 1
     tool_call_parser: qwen3_coder
-    message_converter: qwen3_coder
 
 
   - model_path: mlx-community/Qwen3-VL-2B-Instruct-4bit
@@ -602,20 +600,23 @@ mlx-openai-server launch \
   --enable-auto-tool-choice
 ```
 
-Available parsers: `qwen3`, `glm4_moe`, `qwen3_coder`, `qwen3_moe`, `qwen3_next`, `qwen3_vl`, `harmony`, `minimax_m2`
-
-### Message Converters
-
-For models requiring message format conversion:
+**Qwen3.5 models** (multimodal):
 
 ```bash
 mlx-openai-server launch \
-  --model-path <path-to-model> \
-  --model-type lm \
-  --message-converter glm4_moe
+  --model-path mlx-community/Qwen3.5-122B-A10B-4bit \
+  --model-type multimodal \
+  --reasoning-parser qwen3_5 \
+  --tool-call-parser qwen3_coder
 ```
 
-Available converters: `glm4_moe`, `minimax_m2`, `nemotron3_nano`, `qwen3_coder`
+Available parsers: `qwen3`, `qwen3_5`, `glm4_moe`, `qwen3_coder`, `qwen3_moe`, `qwen3_next`, `qwen3_vl`, `harmony`, `minimax_m2`
+
+### Message Converters
+
+Message converters are **auto-detected** from parser selection. When you set `tool_call_parser` (or `reasoning_parser`), the server uses the same name for message preprocessing when a compatible converter exists. You do not need to pass `--message-converter`.
+
+Auto-detected converters: `glm4_moe`, `minimax_m2`, `minimax`, `nemotron3_nano`, `qwen3_coder`, `longcat_flash_lite`, `step_35`
 
 ### Custom Chat Templates
 

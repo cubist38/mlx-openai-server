@@ -18,6 +18,8 @@ from pathlib import Path
 
 from loguru import logger
 
+from .message_converters import resolve_message_converter_name
+
 
 @dataclass
 class MLXServerConfig:
@@ -72,7 +74,7 @@ class MLXServerConfig:
     lora_paths_str: str | None = None
     lora_scales_str: str | None = None
 
-    def __post_init__(self):
+    def __post_init__(self) -> None:
         """Normalize certain CLI fields after instantiation.
 
         - Convert comma-separated ``lora_paths`` and ``lora_scales`` into
@@ -126,6 +128,14 @@ class MLXServerConfig:
             )
             self.draft_model_path = None
             self.num_draft_tokens = 2
+
+        if self.message_converter is not None:
+            self.message_converter = self.message_converter.lower()
+        elif self.model_type in {"lm", "multimodal"}:
+            self.message_converter = resolve_message_converter_name(
+                tool_parser_name=self.tool_call_parser,
+                reasoning_parser_name=self.reasoning_parser,
+            )
 
     @property
     def model_identifier(self) -> str:
@@ -201,15 +211,13 @@ class ModelEntryConfig:
         # Apply image-generation / image-edit defaults (same as MLXServerConfig)
         if self.model_type == "image-generation" and not self.config_name:
             logger.warning(
-                "Model '%s' (image-generation) has no config_name. "
-                "Defaulting to 'flux-schnell'.",
+                "Model '%s' (image-generation) has no config_name. Defaulting to 'flux-schnell'.",
                 self.model_path,
             )
             self.config_name = "flux-schnell"
         elif self.model_type == "image-edit" and not self.config_name:
             logger.warning(
-                "Model '%s' (image-edit) has no config_name. "
-                "Defaulting to 'flux-kontext-dev'.",
+                "Model '%s' (image-edit) has no config_name. Defaulting to 'flux-kontext-dev'.",
                 self.model_path,
             )
             self.config_name = "flux-kontext-dev"
@@ -217,12 +225,19 @@ class ModelEntryConfig:
         # Speculative decoding is LM-only
         if self.draft_model_path and self.model_type != "lm":
             logger.warning(
-                "Draft model is only supported for 'lm'. "
-                "Ignoring for model '%s'.",
+                "Draft model is only supported for 'lm'. Ignoring for model '%s'.",
                 self.model_path,
             )
             self.draft_model_path = None
             self.num_draft_tokens = 2
+
+        if self.message_converter is not None:
+            self.message_converter = self.message_converter.lower()
+        elif self.model_type in {"lm", "multimodal"}:
+            self.message_converter = resolve_message_converter_name(
+                tool_parser_name=self.tool_call_parser,
+                reasoning_parser_name=self.reasoning_parser,
+            )
 
 
 @dataclass
