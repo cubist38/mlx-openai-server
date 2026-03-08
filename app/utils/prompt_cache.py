@@ -1,4 +1,4 @@
-# copied from https://github.com/ml-explore/mlx-lm/blob/d3dc2e3f337679cb666382c94b583566d2f492b2/mlx_lm/server.py
+# modified from https://github.com/ml-explore/mlx-lm/blob/main/mlx_lm/server.py
 
 from __future__ import annotations
 
