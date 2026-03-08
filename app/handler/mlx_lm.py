@@ -596,6 +596,7 @@ class MLXLMHandler:
             cache_inserted = True
 
             if self.debug:
+                self.prompt_cache.log_cache_stats()
                 log_debug_raw_text_response(raw_text)
                 log_debug_stats(
                     final_chunk.prompt_tokens,
@@ -636,6 +637,8 @@ class MLXLMHandler:
             if cache is not None and cache_key is not None and not cache_inserted:
                 try:
                     self.prompt_cache.insert_cache(cache_key, cache)
+                    if self.debug:
+                        self.prompt_cache.log_cache_stats()
                 except Exception as cache_error:
                     logger.warning(
                         f"Failed to persist prompt cache during stream finalization: {cache_error}"
@@ -835,6 +838,7 @@ class MLXLMHandler:
                         )
 
             if self.debug:
+                self.prompt_cache.log_cache_stats()
                 log_debug_raw_text_response(response.text)
                 log_debug_stats(
                     response.prompt_tokens,

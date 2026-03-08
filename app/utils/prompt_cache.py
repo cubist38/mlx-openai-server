@@ -335,7 +335,7 @@ class LRUPromptCache:
     def log_cache_stats(self) -> None:
         """Log the current cache size, bytes, and latest checkpoint token count."""
         latest_checkpoint_tokens = (
-            len(self._lru._lru_checkpoints[-1][1]) if self._lru._lru_checkpoints else 0
+            len(self._lru._lru_checkpoints[-1]) if self._lru._lru_checkpoints else 0
         )
         logger.info(
             "KV Caches: {} seq, {:.2f} GB, latest user cache {} tokens",
