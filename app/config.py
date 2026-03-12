@@ -65,6 +65,7 @@ class MLXServerConfig:
     default_top_p: float = 1.0
     default_top_k: int = 20
     default_min_p: float = 0.0
+    default_repetition_penalty: float = 1.0
     default_presence_penalty: float = 0.0
     default_xtc_probability: float = 0.0
     default_xtc_threshold: float = 0.0
@@ -202,6 +203,7 @@ class ModelEntryConfig:
     default_top_p: float | None = None
     default_top_k: int | None = None
     default_min_p: float | None = None
+    default_repetition_penalty: float | None = None
     default_presence_penalty: float | None = None
     default_xtc_probability: float | None = None
     default_xtc_threshold: float | None = None

@@ -59,19 +59,6 @@ from ..schemas.openai import (
     UsageInfo,
     random_uuid,
 )
-from openai.types.responses import FunctionTool
-from openai.types.responses.response_output_message import (
-    ResponseOutputText,
-    ResponseOutputMessage
-)
-from openai.types.responses.response_function_tool_call import (
-    ResponseFunctionToolCall
-)
-from openai.types.responses.response_reasoning_item import (
-    Summary,
-    Content,
-    ResponseReasoningItem
-)
 from ..utils.debug_logging import log_debug_server_request
 from ..utils.errors import create_error_response
 
@@ -345,7 +332,12 @@ def refine_chat_completion_request(
             handler, "default_seed", "DEFAULT_SEED", _parse_env_int
         )
     if request.repetition_penalty is None:
-        request.repetition_penalty = _parse_env_float("DEFAULT_REPETITION_PENALTY")
+        request.repetition_penalty = _get_sampling_default(
+            handler,
+            "default_repetition_penalty",
+            "DEFAULT_REPETITION_PENALTY",
+            _parse_env_float,
+        )
     if request.max_completion_tokens is None and request.max_tokens is None:
         request.max_completion_tokens = _get_sampling_default(
             handler, "default_max_tokens", "DEFAULT_MAX_TOKENS", _parse_env_int
@@ -1385,7 +1377,12 @@ def refine_responses_request(
             handler, "default_seed", "DEFAULT_SEED", _parse_env_int
         )
     if request.repetition_penalty is None:
-        request.repetition_penalty = _parse_env_float("DEFAULT_REPETITION_PENALTY")
+        request.repetition_penalty = _get_sampling_default(
+            handler,
+            "default_repetition_penalty",
+            "DEFAULT_REPETITION_PENALTY",
+            _parse_env_float,
+        )
     if request.max_output_tokens is None:
         request.max_output_tokens = _get_sampling_default(
             handler, "default_max_tokens", "DEFAULT_MAX_TOKENS", _parse_env_int
@@ -1779,8 +1776,6 @@ async def responses_endpoint(
     request: ResponsesRequest, raw_request: Request
 ) -> ResponsesResponse | StreamingResponse | JSONResponse:
     """Handle Responses API requests (OpenAI-compatible)."""
-    if not request.model:
-        request.model = Config.TEXT_MODEL
     handler = _resolve_handler(raw_request, model_id=request.model)
     if handler is None:
         return JSONResponse(
