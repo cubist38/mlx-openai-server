@@ -20,8 +20,9 @@ A high-performance OpenAI-compatible API server for MLX models. Run text, vision
 - [Server Parameters](#server-parameters)
 - [Launching Multiple Models](#launching-multiple-models)
 - [Supported Model Types](#supported-model-types)
-- [Using the API](#using-the-api)
 - [Common Use Cases](#common-use-cases)
+- [Featured Launch: MiniMax-M2.5-Uncensored-4bit](#featured-launch-minimax-m25-uncensored-4bit)
+- [Using the API](#using-the-api)
 - [Advanced Configuration](#advanced-configuration)
 - [Request Queue System](#request-queue-system)
 - [Example Notebooks](#example-notebooks)
@@ -316,6 +317,34 @@ print(r2.choices[0].message.content)
 | **Image editing** | `mlx-openai-server launch --model-type image-edit --model-path <path> --config-name flux-kontext-dev` |
 | **Audio transcription** | `mlx-openai-server launch --model-type whisper --model-path mlx-community/whisper-large-v3-mlx` |
 | **Embeddings** | `mlx-openai-server launch --model-type embeddings --model-path <path>` |
+
+---
+
+## Featured Launch: MiniMax-M2.5-Uncensored-4bit
+
+Want a frontier-style assistant on Apple Silicon without the usual heavyweight setup? [mlx-community/MiniMax-M2.5-Uncensored-4bit](https://huggingface.co/mlx-community/MiniMax-M2.5-Uncensored-4bit) is a 4-bit quantized, uncensored MiniMax-M2.5 release that pairs especially well with `mlx-openai-server` for coding, tool use, search, and agent-style workflows.
+
+This is one of the most compelling demos of what the server can do: OpenAI-compatible serving, streaming, structured outputs, and native support for MiniMax reasoning and tool-call parsing in one local stack.
+
+### Launch It in One Command
+
+```bash
+mlx-openai-server launch \
+  --model-path mlx-community/MiniMax-M2.5-Uncensored-4bit \
+  --model-type lm \
+  --reasoning-parser minimax_m2 \
+  --tool-call-parser minimax_m2 \
+  --trust-remote-code
+```
+
+Once it is running, point your OpenAI client to `http://localhost:8000/v1` and use it like any other chat-completions endpoint.
+
+### Why This Model Stands Out
+
+- **4-bit efficiency** for lower memory use and faster local inference
+- **Uncensored behavior** for research, creative, and less-filtered assistant use cases
+- **MiniMax-native parsing** with `minimax_m2` for cleaner reasoning and tool-call handling
+- **Drop-in compatibility** with OpenAI SDKs, OpenWebUI, and agent frameworks
 
 ---
 
