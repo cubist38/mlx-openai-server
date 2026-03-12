@@ -32,7 +32,6 @@ the ``resource_tracker`` semaphore leak warning on macOS).
 from __future__ import annotations
 
 import asyncio
-from collections import deque
 from collections.abc import AsyncGenerator, Callable
 import concurrent.futures
 from contextlib import suppress
@@ -55,6 +54,57 @@ from loguru import logger
 _SHUTDOWN = "__SHUTDOWN__"
 _STREAM_END = "__STREAM_END__"
 _CANCEL = "__CANCEL__"
+
+
+async def _stream_until_cancelled(
+    stream: AsyncGenerator[Any, None],
+    should_cancel: Callable[[], bool],
+    poll_interval: float = 0.1,
+) -> AsyncGenerator[Any, None]:
+    """Yield stream chunks until exhaustion or cancellation.
+
+    Parameters
+    ----------
+    stream : AsyncGenerator[Any, None]
+        Source async generator producing stream chunks.
+    should_cancel : Callable[[], bool]
+        Callback returning ``True`` when caller cancellation was requested.
+    poll_interval : float
+        Timeout in seconds used to periodically poll cancellation while
+        awaiting the next chunk.
+
+    Yields
+    ------
+    Any
+        Chunks produced by ``stream`` until cancellation or exhaustion.
+    """
+    try:
+        while True:
+            next_chunk_task = asyncio.create_task(stream.__anext__())
+            while True:
+                try:
+                    chunk = await asyncio.wait_for(
+                        asyncio.shield(next_chunk_task),
+                        timeout=poll_interval,
+                    )
+                    yield chunk
+                    break
+                except TimeoutError:
+                    if not should_cancel():
+                        continue
+                    next_chunk_task.cancel()
+                    with suppress(asyncio.CancelledError, StopAsyncIteration):
+                        await next_chunk_task
+                    return
+                except asyncio.CancelledError:
+                    if should_cancel():
+                        return
+                    raise
+    except StopAsyncIteration:
+        return
+    finally:
+        with suppress(Exception):
+            await stream.aclose()
 
 
 # ---------------------------------------------------------------------------
@@ -107,8 +157,8 @@ def _handler_worker(
     import asyncio
     import gc
 
-    import mlx.core as mx
     from loguru import logger
+    import mlx.core as mx
 
     from app.config import ModelEntryConfig
     from app.server import create_handler_from_config
@@ -928,7 +978,7 @@ class HandlerProcessProxy:
                 try:
                     await asyncio.wait_for(shutdown_queue.get(), timeout=10)
                     graceful = True
-                except asyncio.TimeoutError:
+                except TimeoutError:
                     logger.warning(
                         f"Handler process for '{self.model_id}' did not "
                         "acknowledge shutdown within 10 s; terminating"
