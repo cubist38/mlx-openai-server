@@ -197,6 +197,16 @@ class ModelEntryConfig:
     prompt_cache_max_bytes: int = 1 << 63
     draft_model_path: str | None = None
     num_draft_tokens: int = 2
+    default_max_tokens: int | None = None
+    default_temperature: float | None = None
+    default_top_p: float | None = None
+    default_top_k: int | None = None
+    default_min_p: float | None = None
+    default_presence_penalty: float | None = None
+    default_xtc_probability: float | None = None
+    default_xtc_threshold: float | None = None
+    default_seed: int | None = None
+    default_repetition_context_size: int | None = None
 
     def __post_init__(self) -> None:
         """Resolve ``model_id`` and validate ``model_type``."""

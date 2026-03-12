@@ -32,7 +32,10 @@ the ``resource_tracker`` semaphore leak warning on macOS).
 from __future__ import annotations
 
 import asyncio
+from collections import deque
+from collections.abc import AsyncGenerator, Callable
 import concurrent.futures
+from contextlib import suppress
 import multiprocessing as mp
 import os
 import queue
@@ -40,8 +43,8 @@ import tempfile
 import threading
 import time
 import traceback
+from typing import Any
 import uuid
-from typing import Any, AsyncGenerator
 
 from loguru import logger
 
@@ -135,9 +138,7 @@ def _handler_worker(
                 with _cancelled_lock:
                     _cancelled_ids.add(req_id)
 
-    _control_thread = threading.Thread(
-        target=_control_reader, daemon=True, name="control-reader"
-    )
+    _control_thread = threading.Thread(target=_control_reader, daemon=True, name="control-reader")
     _control_thread.start()
 
     async def _main() -> None:
@@ -192,12 +193,8 @@ def _handler_worker(
                 try:
                     await handler.cleanup()
                 except Exception as exc:
-                    logger.error(
-                        f"Error during handler cleanup in subprocess: {exc}"
-                    )
-                response_queue.put(
-                    {"id": req_id, "type": "shutdown_complete"}
-                )
+                    logger.error(f"Error during handler cleanup in subprocess: {exc}")
+                response_queue.put({"id": req_id, "type": "shutdown_complete"})
                 break
 
             args: tuple[Any, ...] = request.get("args", ())
@@ -208,29 +205,26 @@ def _handler_worker(
                 method = getattr(handler, method_name)
 
                 if is_stream:
-                    cancelled_early = False
-                    async for chunk in method(*args, **kwargs):
+                    stream = method(*args, **kwargs)
+
+                    def _request_cancelled(_req_id: str = req_id) -> bool:
                         with _cancelled_lock:
-                            if req_id in _cancelled_ids:
-                                cancelled_early = True
-                                break
-                        response_queue.put(
-                            {"id": req_id, "type": "chunk", "value": chunk}
-                        )
+                            return _req_id in _cancelled_ids
+
+                    async for chunk in _stream_until_cancelled(
+                        stream=stream,
+                        should_cancel=_request_cancelled,
+                    ):
+                        response_queue.put({"id": req_id, "type": "chunk", "value": chunk})
                     response_queue.put({"id": req_id, "type": _STREAM_END})
                     with _cancelled_lock:
                         _cancelled_ids.discard(req_id)
                 else:
                     result = await method(*args, **kwargs)
-                    response_queue.put(
-                        {"id": req_id, "type": "result", "value": result}
-                    )
+                    response_queue.put({"id": req_id, "type": "result", "value": result})
             except Exception as exc:
                 tb = traceback.format_exc()
-                logger.error(
-                    f"Error handling request {req_id} "
-                    f"(method={method_name}): {exc}\n{tb}"
-                )
+                logger.error(f"Error handling request {req_id} (method={method_name}): {exc}\n{tb}")
                 response_queue.put(
                     {
                         "id": req_id,
@@ -290,6 +284,18 @@ class HandlerProcessProxy:
         "image-edit": "image",
         "whisper": "whisper",
     }
+    _SAMPLING_DEFAULT_FIELDS: tuple[str, ...] = (
+        "default_max_tokens",
+        "default_temperature",
+        "default_top_p",
+        "default_top_k",
+        "default_min_p",
+        "default_presence_penalty",
+        "default_xtc_probability",
+        "default_xtc_threshold",
+        "default_seed",
+        "default_repetition_context_size",
+    )
 
     def __init__(
         self,
@@ -313,12 +319,13 @@ class HandlerProcessProxy:
         """
         self.model_path = model_path
         self.model_id = model_id
-        self.handler_type = self._MODEL_TYPE_TO_HANDLER_TYPE.get(
-            model_type, model_type
-        )
+        self.handler_type = self._MODEL_TYPE_TO_HANDLER_TYPE.get(model_type, model_type)
         self.model_created: int = 0
 
         self._model_cfg_dict = model_cfg_dict
+        for field_name in self._SAMPLING_DEFAULT_FIELDS:
+            setattr(self, field_name, model_cfg_dict.get(field_name))
+        self._uses_model_sampling_defaults = True
 
         # Use the ``spawn`` start method for clean Metal runtime isolation.
         self._ctx = mp.get_context("spawn")
@@ -357,12 +364,8 @@ class HandlerProcessProxy:
         """
         self._loop = asyncio.get_running_loop()
         self._running = True
-        self._rpc_timeout = float(
-            queue_config.get("timeout", 300)
-        )
-        self._stream_queue_size = int(
-            queue_config.get("stream_queue_size", 64)
-        )
+        self._rpc_timeout = float(queue_config.get("timeout", 300))
+        self._stream_queue_size = int(queue_config.get("stream_queue_size", 64))
 
         # Start the response reader thread.
         self._reader_thread = threading.Thread(
@@ -395,21 +398,26 @@ class HandlerProcessProxy:
         self._pending["__ready__"] = ready_queue
 
         try:
-            response = await asyncio.wait_for(ready_queue.get(), timeout=300)
-        except asyncio.TimeoutError:
-            raise RuntimeError(
-                f"Handler process for '{self.model_id}' "
-                "did not become ready within 300 s"
-            )
-        finally:
-            self._pending.pop("__ready__", None)
+            try:
+                response = await asyncio.wait_for(ready_queue.get(), timeout=300)
+            except TimeoutError as exc:
+                raise RuntimeError(
+                    f"Handler process for '{self.model_id}' did not become ready within 300 s"
+                ) from exc
+            finally:
+                self._pending.pop("__ready__", None)
 
-        if not response.get("success"):
-            error_msg = response.get("error", "unknown error")
-            raise RuntimeError(
-                f"Handler process for '{self.model_id}' "
-                f"failed to initialize: {error_msg}"
-            )
+            if not response.get("success"):
+                error_msg = response.get("error", "unknown error")
+                raise RuntimeError(
+                    f"Handler process for '{self.model_id}' failed to initialize: {error_msg}"
+                )
+        except Exception:
+            try:
+                await self.cleanup()
+            except Exception:
+                logger.exception(f"Failed to rollback startup for '{self.model_id}'")
+            raise
 
         self.model_created = int(time.time())
         logger.info(f"Handler process for '{self.model_id}' is ready")
@@ -437,9 +445,7 @@ class HandlerProcessProxy:
             if response.get("type") == "ready":
                 pending = self._pending.get("__ready__")
                 if pending and self._loop:
-                    self._loop.call_soon_threadsafe(
-                        pending.put_nowait, response
-                    )
+                    self._loop.call_soon_threadsafe(pending.put_nowait, response)
                 continue
 
             req_id = response.get("id", "")
@@ -465,9 +471,7 @@ class HandlerProcessProxy:
     # Generic RPC helpers
     # ------------------------------------------------------------------
 
-    async def _call(
-        self, method_name: str, *args: Any, **kwargs: Any
-    ) -> Any:
+    async def _call(self, method_name: str, *args: Any, **kwargs: Any) -> Any:
         """Send a non-streaming RPC call to the child and return the result.
 
         Parameters
@@ -505,9 +509,7 @@ class HandlerProcessProxy:
                 },
             )
 
-            response = await asyncio.wait_for(
-                result_queue.get(), timeout=self._rpc_timeout
-            )
+            response = await asyncio.wait_for(result_queue.get(), timeout=self._rpc_timeout)
 
             if response["type"] == "error":
                 self._raise_remote_error(response)
@@ -541,9 +543,7 @@ class HandlerProcessProxy:
             When the child reports an error.
         """
         req_id = str(uuid.uuid4())
-        result_queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue(
-            maxsize=self._stream_queue_size
-        )
+        result_queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue(maxsize=self._stream_queue_size)
         self._pending[req_id] = result_queue
 
         try:
@@ -559,9 +559,7 @@ class HandlerProcessProxy:
             )
 
             while True:
-                response = await asyncio.wait_for(
-                    result_queue.get(), timeout=self._rpc_timeout
-                )
+                response = await asyncio.wait_for(result_queue.get(), timeout=self._rpc_timeout)
 
                 if response["type"] == _STREAM_END:
                     break
@@ -604,9 +602,7 @@ class HandlerProcessProxy:
     # ------------------------------------------------------------------
 
     @staticmethod
-    async def _save_upload_file(
-        upload_file: Any, suffix: str = ".bin"
-    ) -> str:
+    async def _save_upload_file(upload_file: Any, suffix: str = ".bin") -> str:
         """Save an ``UploadFile`` to a temporary file and return the path.
 
         Parameters
@@ -628,9 +624,7 @@ class HandlerProcessProxy:
             if ext:
                 suffix = ext
 
-        with tempfile.NamedTemporaryFile(
-            delete=False, suffix=suffix
-        ) as tmp:
+        with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
             tmp.write(content)
             return tmp.name
 
@@ -638,9 +632,7 @@ class HandlerProcessProxy:
     # Public handler interface (forwarded to child process)
     # ------------------------------------------------------------------
 
-    async def initialize(
-        self, queue_config: dict[str, Any] | None = None
-    ) -> None:
+    async def initialize(self, queue_config: dict[str, Any] | None = None) -> None:
         """No-op — initialization is handled by ``start()``.
 
         Parameters
@@ -671,9 +663,7 @@ class HandlerProcessProxy:
 
     # -- LM handler methods --
 
-    async def generate_text_stream(
-        self, request: Any
-    ) -> AsyncGenerator[Any, None]:
+    async def generate_text_stream(self, request: Any) -> AsyncGenerator[Any, None]:
         """Forward a streaming text generation request to the subprocess.
 
         Parameters
@@ -686,9 +676,7 @@ class HandlerProcessProxy:
         Any
             Text generation chunks (str, dict, or usage info).
         """
-        async for chunk in self._call_stream(
-            "generate_text_stream", request
-        ):
+        async for chunk in self._call_stream("generate_text_stream", request):
             yield chunk
 
     async def generate_text_response(self, request: Any) -> dict[str, Any]:
@@ -708,9 +696,7 @@ class HandlerProcessProxy:
 
     # -- VLM handler methods --
 
-    async def generate_multimodal_stream(
-        self, request: Any
-    ) -> AsyncGenerator[Any, None]:
+    async def generate_multimodal_stream(self, request: Any) -> AsyncGenerator[Any, None]:
         """Forward a streaming multimodal generation request to the subprocess.
 
         Parameters
@@ -723,14 +709,10 @@ class HandlerProcessProxy:
         Any
             Multimodal generation chunks.
         """
-        async for chunk in self._call_stream(
-            "generate_multimodal_stream", request
-        ):
+        async for chunk in self._call_stream("generate_multimodal_stream", request):
             yield chunk
 
-    async def generate_multimodal_response(
-        self, request: Any
-    ) -> dict[str, Any]:
+    async def generate_multimodal_response(self, request: Any) -> dict[str, Any]:
         """Forward a non-streaming multimodal generation request to the subprocess.
 
         Parameters
@@ -799,11 +781,7 @@ class HandlerProcessProxy:
         """
         # ImageEditRequest.image contains UploadFile(s) — not picklable.
         # Save files locally and forward paths to the subprocess.
-        images = (
-            request.image
-            if isinstance(request.image, list)
-            else [request.image]
-        )
+        images = request.image if isinstance(request.image, list) else [request.image]
 
         temp_paths: list[str] = []
         for img in images:
@@ -832,9 +810,7 @@ class HandlerProcessProxy:
 
     # -- Whisper handler methods --
 
-    async def prepare_transcription_request(
-        self, request: Any
-    ) -> dict[str, Any]:
+    async def prepare_transcription_request(self, request: Any) -> dict[str, Any]:
         """Pre-process a transcription request by saving the uploaded file.
 
         Since ``UploadFile`` objects are not picklable, file I/O is
@@ -885,9 +861,7 @@ class HandlerProcessProxy:
             The transcription result.
         """
         request_data = await self.prepare_transcription_request(request)
-        return await self._call(
-            "transcribe_from_data", request_data
-        )
+        return await self._call("transcribe_from_data", request_data)
 
     async def generate_transcription_stream_from_data(
         self, request_data: dict[str, Any], *args: Any, **kwargs: Any
@@ -948,15 +922,11 @@ class HandlerProcessProxy:
                     {"id": req_id, "method": _SHUTDOWN},
                 )
             except (BrokenPipeError, EOFError, OSError) as exc:
-                logger.warning(
-                    f"Could not send shutdown to '{self.model_id}': {exc}"
-                )
+                logger.warning(f"Could not send shutdown to '{self.model_id}': {exc}")
             else:
                 # Wait for the child to acknowledge the shutdown.
                 try:
-                    await asyncio.wait_for(
-                        shutdown_queue.get(), timeout=10
-                    )
+                    await asyncio.wait_for(shutdown_queue.get(), timeout=10)
                     graceful = True
                 except asyncio.TimeoutError:
                     logger.warning(
@@ -978,9 +948,7 @@ class HandlerProcessProxy:
             pass  # Process handle already closed / invalid.
 
         if self._process.is_alive():
-            logger.warning(
-                f"Force-killing handler process for '{self.model_id}'"
-            )
+            logger.warning(f"Force-killing handler process for '{self.model_id}'")
             try:
                 self._process.kill()
             except (OSError, ProcessLookupError):
@@ -994,6 +962,4 @@ class HandlerProcessProxy:
         if self._reader_thread and self._reader_thread.is_alive():
             self._reader_thread.join(timeout=2)
 
-        logger.info(
-            f"Handler process for '{self.model_id}' shut down successfully"
-        )
+        logger.info(f"Handler process for '{self.model_id}' shut down successfully")
