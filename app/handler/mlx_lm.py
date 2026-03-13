@@ -1,5 +1,6 @@
 import asyncio
 from collections.abc import AsyncGenerator
+from dataclasses import dataclass, field
 import gc
 from http import HTTPStatus
 import time
@@ -66,6 +67,19 @@ def _strip_complete_tool_blocks(text: str, tool_open: str, tool_close: str) -> s
         cursor = close_idx + len(tool_close)
 
     return "".join(pieces)
+
+
+@dataclass
+class _InferenceContext:
+    """Pre-processed inference state shared by stream and non-stream paths."""
+
+    rest_input_ids: list[int]
+    cache: list[Any]
+    cache_key: list[int]
+    total_cached_tokens: int
+    model_params: dict[str, Any]
+    parsers_result: Any
+    prompt_progress_callback: Any = None
 
 
 class MLXLMHandler:
@@ -203,19 +217,75 @@ class MLXLMHandler:
         """
         Refine the messages to be more suitable for the model.
         """
-        refined_messages = []
-
         if self.message_converter:
-            logger.info("Message converter is enabled, converting messages...")
+            logger.debug("Message converter is enabled, converting messages")
             messages = self.message_converter.convert_messages(messages)
-            logger.info("Messages converted successfully")
 
-        logger.info("Filtering out None values from messages...")
-        for message in messages:
-            cleaned_message = {k: v for k, v in message.items() if v is not None}
-            refined_messages.append(cleaned_message)
-        logger.info("Messages filtered successfully")
-        return refined_messages
+        return [{k: v for k, v in message.items() if v is not None} for message in messages]
+
+    async def _build_inference_context(
+        self, request: ChatCompletionRequest
+    ) -> "_InferenceContext":
+        """Build the common inference context shared by stream and non-stream paths.
+
+        Handles: request parsing, message refinement, prompt encoding, KV cache
+        lookup, parser creation, and model-param preparation.
+        """
+        chat_messages, model_params = await self._prepare_text_request(request)
+        refined_messages = self.refine_messages(chat_messages)
+        chat_template_kwargs = model_params.get("chat_template_kwargs", {})
+
+        input_prompt = self.model.create_input_prompt(refined_messages, chat_template_kwargs)
+        if self.debug:
+            log_debug_prompt(input_prompt)
+
+        input_ids = self.model.encode_prompt(input_prompt)
+        cache, rest_input_ids = self.prompt_cache.fetch_nearest_cache(input_ids)
+
+        # Cache key must be the FULL input_ids, not rest_input_ids.
+        # Using rest_input_ids causes memory leaks: on "longer" cache hits,
+        # rest_input_ids is a suffix (e.g., [B] from input [A,B]), creating
+        # new cache entries [B,X,Y,Z] instead of updating [A,B,X,Y,Z].
+        cache_key = input_ids[:]
+
+        if cache is None:
+            cache = self.model.create_prompt_cache()
+
+        total_input_tokens = len(input_ids)
+        total_remaining_tokens = len(rest_input_ids)
+        total_cached_tokens = total_input_tokens - total_remaining_tokens
+
+        if self.debug:
+            log_debug_cache_stats(total_input_tokens, total_remaining_tokens)
+
+        enable_thinking = chat_template_kwargs.get("enable_thinking", True)
+
+        parsers_result = ParserManager.create_parsers(
+            reasoning_parser_name=self.reasoning_parser_name,
+            tool_parser_name=self.tool_parser_name,
+        )
+
+        if not enable_thinking and parsers_result.reasoning_parser:
+            if parsers_result.reasoning_parser.respects_enable_thinking():
+                parsers_result.reasoning_parser = None
+
+        if model_params.get("schema"):
+            logger.info("JSON schema is enabled, disabling reasoning parser and tool parser")
+            parsers_result.reasoning_parser = None
+            parsers_result.tool_parser = None
+            parsers_result.unified_parser = None
+
+        prompt_progress_callback = make_prompt_progress_callback() if self.debug else None
+
+        return _InferenceContext(
+            rest_input_ids=rest_input_ids,
+            cache=cache,
+            cache_key=cache_key,
+            total_cached_tokens=total_cached_tokens,
+            model_params=model_params,
+            parsers_result=parsers_result,
+            prompt_progress_callback=prompt_progress_callback,
+        )
 
     async def generate_text_stream(
         self, request: ChatCompletionRequest
@@ -235,63 +305,15 @@ class MLXLMHandler:
         cache_inserted = False
 
         try:
-            chat_messages, model_params = await self._prepare_text_request(request)
-
-            refined_messages = self.refine_messages(chat_messages)
-            chat_template_kwargs = model_params.get("chat_template_kwargs", {})
-
-            input_prompt = self.model.create_input_prompt(refined_messages, chat_template_kwargs)
-
-            if self.debug:
-                log_debug_prompt(input_prompt)
-
-            input_ids = self.model.encode_prompt(input_prompt)
-
-            cache, rest_input_ids = self.prompt_cache.fetch_nearest_cache(input_ids)
-
-            # Cache key must be the FULL input_ids, not rest_input_ids.
-            # Using rest_input_ids causes memory leaks: on "longer" cache hits,
-            # rest_input_ids is a suffix (e.g., [B] from input [A,B]), creating
-            # new cache entries [B,X,Y,Z] instead of updating [A,B,X,Y,Z].
-            # The original entry is never evicted and duplicates accumulate.
-            cache_key = input_ids[:]
-
-            if cache is None:
-                cache = self.model.create_prompt_cache()
-
-            total_input_tokens = len(input_ids)
-            total_remaining_tokens = len(rest_input_ids)
-            total_cached_tokens = total_input_tokens - total_remaining_tokens
-
-            if self.debug:
-                log_debug_cache_stats(total_input_tokens, total_remaining_tokens)
-
-            enable_thinking = chat_template_kwargs.get("enable_thinking", True)
-
-            # Create parsers using ParserManager
-            parsers_result = ParserManager.create_parsers(
-                reasoning_parser_name=self.reasoning_parser_name,
-                tool_parser_name=self.tool_parser_name,
-            )
-
-            # Handle enable_thinking flag for separate reasoning parsers
-            if not enable_thinking and parsers_result.reasoning_parser:
-                if parsers_result.reasoning_parser.respects_enable_thinking():
-                    parsers_result.reasoning_parser = None
-
-            if model_params.get("schema"):
-                logger.info("JSON schema is enabled, disabling reasoning parser and tool parser")
-                parsers_result.reasoning_parser = None
-                parsers_result.tool_parser = None
-                parsers_result.unified_parser = None
-
-            prompt_progress_callback = make_prompt_progress_callback() if self.debug else None
+            ctx = await self._build_inference_context(request)
+            cache = ctx.cache
+            cache_key = ctx.cache_key
+            total_cached_tokens = ctx.total_cached_tokens
+            model_params = ctx.model_params
+            parsers_result = ctx.parsers_result
 
             request_data = {
-                "input_ids": rest_input_ids,
-                "prompt_cache": cache,
-                "stream": True,
-                "prompt_progress_callback": prompt_progress_callback,
+                "prompt_progress_callback": ctx.prompt_progress_callback,
                 **model_params,
             }
 
@@ -300,15 +322,10 @@ class MLXLMHandler:
                 log_debug_model_dispatch("mlx_lm.generate_text_stream.submit_stream", request_data)
                 request_data["verbose"] = True
 
-            # Extract explicit model args; remaining kwargs are forwarded.
-            input_ids = request_data.pop("input_ids")
-            prompt_cache = request_data.pop("prompt_cache")
-            request_data.pop("stream")
-
             response_generator = self.inference_worker.submit_stream(
                 self.model,
-                input_ids=input_ids,
-                prompt_cache=prompt_cache,
+                input_ids=ctx.rest_input_ids,
+                prompt_cache=cache,
                 stream=True,
                 **request_data,
             )
@@ -662,85 +679,32 @@ class MLXLMHandler:
             dict: Response content and usage info.
         """
         try:
-            chat_messages, model_params = await self._prepare_text_request(request)
-            # Refine messages to remove None values and convert to the correct format
-            refined_messages = self.refine_messages(chat_messages)
-
-            # Count prompt tokens
-            chat_template_kwargs = model_params.get("chat_template_kwargs", {})
-
-            input_prompt = self.model.create_input_prompt(refined_messages, chat_template_kwargs)
-
-            if self.debug:
-                log_debug_prompt(input_prompt)
-
-            input_ids = self.model.encode_prompt(input_prompt)
-
-            cache, rest_input_ids = self.prompt_cache.fetch_nearest_cache(input_ids)
-
-            # Cache key must be the FULL input_ids, not rest_input_ids.
-            # See generate_text_stream for detailed explanation.
-            cache_key = input_ids[:]
-
-            if cache is None:
-                cache = self.model.create_prompt_cache()
-
-            total_input_tokens = len(input_ids)
-            total_remaining_tokens = len(rest_input_ids)
-            total_cached_tokens = total_input_tokens - total_remaining_tokens
-
-            if self.debug:
-                log_debug_cache_stats(total_input_tokens, total_remaining_tokens)
-
-            prompt_progress_callback = make_prompt_progress_callback() if self.debug else None
+            ctx = await self._build_inference_context(request)
+            model_params = ctx.model_params
+            parsers_result = ctx.parsers_result
+            total_cached_tokens = ctx.total_cached_tokens
 
             request_data = {
-                "input_ids": rest_input_ids,
-                "prompt_cache": cache,
-                "stream": False,
-                "prompt_progress_callback": prompt_progress_callback,
+                "prompt_progress_callback": ctx.prompt_progress_callback,
                 **model_params,
             }
 
             if self.debug:
                 log_debug_model_dispatch("mlx_lm.generate_text_response.submit", request_data)
 
-            # Extract explicit model args; remaining kwargs are forwarded.
-            input_ids = request_data.pop("input_ids")
-            prompt_cache = request_data.pop("prompt_cache")
-            request_data.pop("stream")
-
             response = await self.inference_worker.submit(
                 self.model,
-                input_ids=input_ids,
-                prompt_cache=prompt_cache,
+                input_ids=ctx.rest_input_ids,
+                prompt_cache=ctx.cache,
                 stream=False,
                 **request_data,
             )
 
-            # Create parsers using ParserManager
-            parsers_result = ParserManager.create_parsers(
-                reasoning_parser_name=self.reasoning_parser_name,
-                tool_parser_name=self.tool_parser_name,
-            )
-
-            enable_thinking = chat_template_kwargs.get("enable_thinking", True)
-
-            # Handle enable_thinking flag for separate reasoning parsers
-            if not enable_thinking and parsers_result.reasoning_parser:
-                if parsers_result.reasoning_parser.respects_enable_thinking():
-                    parsers_result.reasoning_parser = None
-
-            if model_params.get("schema"):
-                logger.info("JSON schema is enabled, disabling reasoning parser and tool parser")
-                parsers_result.reasoning_parser = None
-                parsers_result.tool_parser = None
-                parsers_result.unified_parser = None
-
             response_text = response.text
+            cache_key = ctx.cache_key
             cache_key += response.tokens
 
-            self.prompt_cache.insert_cache(cache_key, cache)
+            self.prompt_cache.insert_cache(cache_key, ctx.cache)
 
             parsed_response = {"reasoning_content": None, "tool_calls": None, "content": None}
 
@@ -924,29 +888,47 @@ class MLXLMHandler:
         """
 
         try:
-            request_dict = request.model_dump()
-            tools = request_dict.pop("tools")
-            tool_choice = request_dict.pop("tool_choice")
-            chat_template_kwargs = request_dict.get("chat_template_kwargs", {})
+            # Extract only the fields consumed by MLX_LM.__call__ instead of
+            # serializing the entire Pydantic model with model_dump().
+            chat_template_kwargs = request.chat_template_kwargs.model_dump() if request.chat_template_kwargs else {}
 
-            if tools:
+            if request.tools:
+                tools = [t.model_dump() for t in request.tools]
                 chat_template_kwargs["tools"] = tools
-                if tool_choice:
+                if request.tool_choice:
+                    tool_choice = request.tool_choice
+                    if hasattr(tool_choice, "model_dump"):
+                        tool_choice = tool_choice.model_dump()
                     chat_template_kwargs["tool_choice"] = tool_choice
 
-            request_dict["chat_template_kwargs"] = chat_template_kwargs
+            model_params: dict[str, Any] = {
+                "temperature": request.temperature,
+                "top_p": request.top_p,
+                "top_k": request.top_k,
+                "min_p": request.min_p,
+                "max_tokens": request.max_tokens,
+                "max_completion_tokens": request.max_completion_tokens,
+                "seed": request.seed,
+                "repetition_penalty": request.repetition_penalty,
+                "repetition_context_size": request.repetition_context_size,
+                "xtc_probability": request.xtc_probability,
+                "xtc_threshold": request.xtc_threshold,
+                "logit_bias": request.logit_bias,
+                "chat_template_kwargs": chat_template_kwargs,
+            }
 
-            if request_dict.get("response_format"):
-                response_format = request_dict.pop("response_format")
+            if request.response_format:
+                response_format = request.response_format
                 if response_format.get("type") == "json_schema":
-                    request_dict["schema"] = response_format.get("json_schema", {}).get("schema")
+                    model_params["schema"] = response_format.get("json_schema", {}).get("schema")
 
-            # Format chat messages and merge system messages into index 0
-            chat_messages = []
-            system_messages = []
-            non_system_messages = []
+            # Format chat messages: single-pass system merge + content normalization
+            chat_messages: list[dict[str, Any]] = []
+            merged_system: dict[str, Any] | None = None
 
-            for message in request_dict.pop("messages", []):
+            raw_messages = [m.model_dump() for m in request.messages] if request.messages else []
+
+            for message in raw_messages:
                 # Reasoning content is output metadata and should not be replayed
                 # into subsequent prompt history turns.
                 message.pop("reasoning_content", None)
@@ -974,28 +956,19 @@ class MLXLMHandler:
                     content = "\n".join(text_parts) if text_parts else ""
 
                 message["content"] = content
-                # Separate system messages from other messages
+
+                # Single-pass: merge system messages in-place
                 if message.get("role") == "system":
-                    system_messages.append(message)
+                    if merged_system is None:
+                        merged_system = message.copy()
+                    elif message.get("content"):
+                        merged_system["content"] += "\n\n" + message["content"]
                 else:
-                    non_system_messages.append(message)
+                    chat_messages.append(message)
 
-            # If there are system messages, merge them into a single system message at index 0
-            if system_messages:
-                # Combine all system message contents
-                combined_system_content = "\n\n".join(
-                    [msg["content"] for msg in system_messages if msg.get("content")]
-                )
-
-                # Create merged system message using the first system message as template
-                merged_system_message = system_messages[0].copy()
-                merged_system_message["content"] = combined_system_content
-
-                # Add merged system message at index 0
-                chat_messages.append(merged_system_message)
-
-            # Add all non-system messages after the merged system message
-            chat_messages.extend(non_system_messages)
+            # Prepend merged system message
+            if merged_system:
+                chat_messages.insert(0, merged_system)
 
             # Detect partial mode: last assistant message with partial=True
             is_partial = (
@@ -1012,7 +985,7 @@ class MLXLMHandler:
             if is_partial:
                 chat_template_kwargs["_partial_mode"] = True
 
-            return chat_messages, request_dict
+            return chat_messages, model_params
 
         except Exception as e:
             logger.error(f"Failed to prepare text request: {e!s}")
