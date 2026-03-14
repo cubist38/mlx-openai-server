@@ -103,9 +103,7 @@ def _make_raw_request(registry: _FakeRegistry, handler: Any | None = None) -> An
     """Build a minimal request-like object for endpoint unit tests."""
 
     return types.SimpleNamespace(
-        app=types.SimpleNamespace(
-            state=types.SimpleNamespace(registry=registry, handler=handler)
-        ),
+        app=types.SimpleNamespace(state=types.SimpleNamespace(registry=registry, handler=handler)),
         state=types.SimpleNamespace(request_id="req-test"),
     )
 
@@ -335,7 +333,9 @@ async def test_single_model_implicit_handler_defaults_do_not_shadow_env_defaults
 
     await endpoints_module.chat_completions(request, _make_raw_request(registry))
 
-    assert captured_requests[0].temperature == pytest.approx(float(GLOBAL_ENV_DEFAULTS["DEFAULT_TEMPERATURE"]))
+    assert captured_requests[0].temperature == pytest.approx(
+        float(GLOBAL_ENV_DEFAULTS["DEFAULT_TEMPERATURE"])
+    )
     assert captured_requests[0].top_p == pytest.approx(float(GLOBAL_ENV_DEFAULTS["DEFAULT_TOP_P"]))
     assert captured_requests[0].top_k == int(GLOBAL_ENV_DEFAULTS["DEFAULT_TOP_K"])
     assert captured_requests[0].min_p == pytest.approx(float(GLOBAL_ENV_DEFAULTS["DEFAULT_MIN_P"]))
@@ -343,7 +343,9 @@ async def test_single_model_implicit_handler_defaults_do_not_shadow_env_defaults
         float(GLOBAL_ENV_DEFAULTS["DEFAULT_REPETITION_PENALTY"])
     )
     assert captured_requests[0].seed == int(GLOBAL_ENV_DEFAULTS["DEFAULT_SEED"])
-    assert captured_requests[0].max_completion_tokens == int(GLOBAL_ENV_DEFAULTS["DEFAULT_MAX_TOKENS"])
+    assert captured_requests[0].max_completion_tokens == int(
+        GLOBAL_ENV_DEFAULTS["DEFAULT_MAX_TOKENS"]
+    )
     assert captured_requests[0].xtc_probability == pytest.approx(
         float(GLOBAL_ENV_DEFAULTS["DEFAULT_XTC_PROBABILITY"])
     )
@@ -509,7 +511,9 @@ async def test_responses_single_model_implicit_handler_defaults_do_not_shadow_en
 
     refined_request = endpoints_module.refine_responses_request(request, handler)
 
-    assert refined_request.temperature == pytest.approx(float(GLOBAL_ENV_DEFAULTS["DEFAULT_TEMPERATURE"]))
+    assert refined_request.temperature == pytest.approx(
+        float(GLOBAL_ENV_DEFAULTS["DEFAULT_TEMPERATURE"])
+    )
     assert refined_request.top_p == pytest.approx(float(GLOBAL_ENV_DEFAULTS["DEFAULT_TOP_P"]))
     assert refined_request.top_k == int(GLOBAL_ENV_DEFAULTS["DEFAULT_TOP_K"])
     assert refined_request.min_p == pytest.approx(float(GLOBAL_ENV_DEFAULTS["DEFAULT_MIN_P"]))

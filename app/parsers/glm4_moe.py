@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-import re
 import json
+import re
 
 from .abstract_parser import AbstractToolParser
 from .hermes import HermesReasoningParser
@@ -19,13 +19,15 @@ class GLM4MoEReasoningParser(HermesReasoningParser):
     <think>reasoning_content</think>
     """
 
-    def __init__(self, reasoning_open: str = REASONING_OPEN, reasoning_close: str = REASONING_CLOSE) -> None:
+    def __init__(
+        self, reasoning_open: str = REASONING_OPEN, reasoning_close: str = REASONING_CLOSE
+    ) -> None:
         """Initialize the Hermes4 reasoning parser with appropriate regex patterns."""
         super().__init__(reasoning_open=reasoning_open, reasoning_close=reasoning_close)
-    
+
     def respects_enable_thinking(self) -> bool:
         """Check if the reasoning parser respects the enable_thinking flag.
-        
+
         Returns
         -------
         bool
@@ -52,7 +54,7 @@ class GLM4MoEToolParser(AbstractToolParser):
     def __init__(self, tool_open: str = TOOL_OPEN, tool_close: str = TOOL_CLOSE) -> None:
         """Initialize the GLM4 MoE tool parser with appropriate regex patterns."""
         super().__init__(tool_open=tool_open, tool_close=tool_close)
-        
+
         self.func_call_regex = re.compile(r"<tool_call>.*?</tool_call>", re.DOTALL)
         self.func_detail_regex = re.compile(
             r"<tool_call>(.*?)(<arg_key>.*?)?</tool_call>", re.DOTALL
@@ -64,12 +66,12 @@ class GLM4MoEToolParser(AbstractToolParser):
 
     def extract_tool_calls(self, model_output: str) -> dict[str, list] | None:
         """Extract tool calls from complete model output.
-        
+
         Parameters
         ----------
         model_output : str
             Complete model output containing tool calls in JSON format.
-            
+
         Returns
         -------
         dict[str, list] | None
@@ -78,9 +80,7 @@ class GLM4MoEToolParser(AbstractToolParser):
         """
         matches = self.func_call_regex.findall(model_output)
         if not matches:
-            return {
-                "content": model_output
-            }
+            return {"content": model_output}
         tool_calls = []
         for match in matches:
             tc_detail = self.func_detail_regex.search(match)
@@ -92,10 +92,7 @@ class GLM4MoEToolParser(AbstractToolParser):
                 arg_key = key.strip()
                 arg_value = value.strip()
                 arg_dct[arg_key] = arg_value
-            tool_calls.append({
-                "name": tc_name.strip(),
-                "arguments": json.dumps(arg_dct, ensure_ascii=False)
-            })
-        return {
-            "tool_calls": tool_calls
-        }
+            tool_calls.append(
+                {"name": tc_name.strip(), "arguments": json.dumps(arg_dct, ensure_ascii=False)}
+            )
+        return {"tool_calls": tool_calls}
