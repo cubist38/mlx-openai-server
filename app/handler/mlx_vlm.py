@@ -201,7 +201,7 @@ class MLXVLMHandler:
 
         return input_prompt, model_params, parsers_result
 
-    async def generate_multimodal_stream(self, request: ChatCompletionRequest):
+    async def generate_multimodal_stream(self, request: ChatCompletionRequest):  # noqa: C901
         """
         Generate a streaming response for multimodal chat completion requests.
 
@@ -213,7 +213,9 @@ class MLXVLMHandler:
         """
 
         try:
-            input_prompt, model_params, parsers_result = await self._build_inference_context(request)
+            input_prompt, model_params, parsers_result = await self._build_inference_context(
+                request
+            )
 
             if self.debug:
                 log_debug_model_dispatch(
@@ -478,7 +480,9 @@ class MLXVLMHandler:
             str: Complete response.
         """
         try:
-            input_prompt, model_params, parsers_result = await self._build_inference_context(request)
+            input_prompt, model_params, parsers_result = await self._build_inference_context(
+                request
+            )
 
             if self.debug:
                 log_debug_model_dispatch(
@@ -783,7 +787,9 @@ class MLXVLMHandler:
 
         # Extract only the fields consumed downstream instead of serializing
         # the entire Pydantic model with model_dump().
-        chat_template_kwargs = request.chat_template_kwargs.model_dump() if request.chat_template_kwargs else {}
+        chat_template_kwargs = (
+            request.chat_template_kwargs.model_dump() if request.chat_template_kwargs else {}
+        )
 
         if request.tools:
             tools = [t.model_dump() for t in request.tools]
