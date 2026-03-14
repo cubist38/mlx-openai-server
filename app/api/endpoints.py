@@ -59,19 +59,6 @@ from ..schemas.openai import (
     UsageInfo,
     random_uuid,
 )
-from openai.types.responses import FunctionTool
-from openai.types.responses.response_output_message import (
-    ResponseOutputText,
-    ResponseOutputMessage
-)
-from openai.types.responses.response_function_tool_call import (
-    ResponseFunctionToolCall
-)
-from openai.types.responses.response_reasoning_item import (
-    Summary,
-    Content,
-    ResponseReasoningItem
-)
 from ..utils.debug_logging import log_debug_server_request
 from ..utils.errors import create_error_response
 
@@ -304,32 +291,76 @@ def _parse_env_int(key: str, default: int | None = None) -> int | None:
         return default
 
 
+def _get_sampling_default(
+    handler: Any | None,
+    handler_attr: str,
+    env_key: str,
+    parser: Any,
+) -> Any | None:
+    """Return a sampling default from the handler first, then env fallback."""
+
+    if handler is not None and getattr(handler, "_uses_model_sampling_defaults", False):
+        handler_value = getattr(handler, handler_attr, None)
+        if handler_value is not None:
+            return handler_value
+    return parser(env_key)
+
+
 def refine_chat_completion_request(
     request: ChatCompletionRequest,
+    handler: Any | None = None,
 ) -> ChatCompletionRequest:
-    """Refine chat completion request with defaults from env for sampling params and model."""
+    """Refine chat completion request with handler-aware sampling defaults."""
     if request.temperature is None:
-        request.temperature = _parse_env_float("DEFAULT_TEMPERATURE")
+        request.temperature = _get_sampling_default(
+            handler, "default_temperature", "DEFAULT_TEMPERATURE", _parse_env_float
+        )
     if request.top_p is None:
-        request.top_p = _parse_env_float("DEFAULT_TOP_P")
+        request.top_p = _get_sampling_default(
+            handler, "default_top_p", "DEFAULT_TOP_P", _parse_env_float
+        )
     if request.top_k is None:
-        request.top_k = _parse_env_int("DEFAULT_TOP_K")
+        request.top_k = _get_sampling_default(
+            handler, "default_top_k", "DEFAULT_TOP_K", _parse_env_int
+        )
     if request.min_p is None:
-        request.min_p = _parse_env_float("DEFAULT_MIN_P")
+        request.min_p = _get_sampling_default(
+            handler, "default_min_p", "DEFAULT_MIN_P", _parse_env_float
+        )
     if request.seed is None:
-        request.seed = _parse_env_int("DEFAULT_SEED")
+        request.seed = _get_sampling_default(
+            handler, "default_seed", "DEFAULT_SEED", _parse_env_int
+        )
     if request.repetition_penalty is None:
-        request.repetition_penalty = _parse_env_float("DEFAULT_REPETITION_PENALTY")
+        request.repetition_penalty = _get_sampling_default(
+            handler,
+            "default_repetition_penalty",
+            "DEFAULT_REPETITION_PENALTY",
+            _parse_env_float,
+        )
     if request.max_completion_tokens is None and request.max_tokens is None:
-        request.max_completion_tokens = _parse_env_int("DEFAULT_MAX_TOKENS")
+        request.max_completion_tokens = _get_sampling_default(
+            handler, "default_max_tokens", "DEFAULT_MAX_TOKENS", _parse_env_int
+        )
     if request.xtc_probability is None:
-        request.xtc_probability = _parse_env_float("DEFAULT_XTC_PROBABILITY")
+        request.xtc_probability = _get_sampling_default(
+            handler, "default_xtc_probability", "DEFAULT_XTC_PROBABILITY", _parse_env_float
+        )
     if request.xtc_threshold is None:
-        request.xtc_threshold = _parse_env_float("DEFAULT_XTC_THRESHOLD")
+        request.xtc_threshold = _get_sampling_default(
+            handler, "default_xtc_threshold", "DEFAULT_XTC_THRESHOLD", _parse_env_float
+        )
     if request.presence_penalty is None:
-        request.presence_penalty = _parse_env_float("DEFAULT_PRESENCE_PENALTY")
+        request.presence_penalty = _get_sampling_default(
+            handler, "default_presence_penalty", "DEFAULT_PRESENCE_PENALTY", _parse_env_float
+        )
     if request.repetition_context_size is None:
-        request.repetition_context_size = _parse_env_int("DEFAULT_REPETITION_CONTEXT_SIZE")
+        request.repetition_context_size = _get_sampling_default(
+            handler,
+            "default_repetition_context_size",
+            "DEFAULT_REPETITION_CONTEXT_SIZE",
+            _parse_env_int,
+        )
     if not request.model:
         request.model = Config.TEXT_MODEL
     return request
@@ -340,7 +371,8 @@ async def chat_completions(
     request: ChatCompletionRequest, raw_request: Request
 ) -> ChatCompletionResponse | StreamingResponse | JSONResponse:
     """Handle chat completion requests."""
-    request = refine_chat_completion_request(request)
+    if not request.model:
+        request.model = Config.TEXT_MODEL
     handler = _resolve_handler(raw_request, model_id=request.model)
     if handler is None:
         return JSONResponse(
@@ -351,6 +383,7 @@ async def chat_completions(
             ),
             status_code=HTTPStatus.SERVICE_UNAVAILABLE,
         )
+    request = refine_chat_completion_request(request, handler)
 
     handler_type = _get_handler_type(handler)
     if handler_type not in ("lm", "multimodal"):
@@ -1320,22 +1353,40 @@ def format_final_responses_response(
 
 def refine_responses_request(
     request: ResponsesRequest,
+    handler: Any | None = None,
 ) -> ResponsesRequest:
-    """Refine Responses API request with defaults from env for sampling params and model."""
+    """Refine Responses API request with handler-aware sampling defaults."""
     if request.temperature is None:
-        request.temperature = _parse_env_float("DEFAULT_TEMPERATURE")
+        request.temperature = _get_sampling_default(
+            handler, "default_temperature", "DEFAULT_TEMPERATURE", _parse_env_float
+        )
     if request.top_p is None:
-        request.top_p = _parse_env_float("DEFAULT_TOP_P")
+        request.top_p = _get_sampling_default(
+            handler, "default_top_p", "DEFAULT_TOP_P", _parse_env_float
+        )
     if request.top_k is None:
-        request.top_k = _parse_env_int("DEFAULT_TOP_K")
+        request.top_k = _get_sampling_default(
+            handler, "default_top_k", "DEFAULT_TOP_K", _parse_env_int
+        )
     if request.min_p is None:
-        request.min_p = _parse_env_float("DEFAULT_MIN_P")
+        request.min_p = _get_sampling_default(
+            handler, "default_min_p", "DEFAULT_MIN_P", _parse_env_float
+        )
     if request.seed is None:
-        request.seed = _parse_env_int("DEFAULT_SEED")
+        request.seed = _get_sampling_default(
+            handler, "default_seed", "DEFAULT_SEED", _parse_env_int
+        )
     if request.repetition_penalty is None:
-        request.repetition_penalty = _parse_env_float("DEFAULT_REPETITION_PENALTY")
+        request.repetition_penalty = _get_sampling_default(
+            handler,
+            "default_repetition_penalty",
+            "DEFAULT_REPETITION_PENALTY",
+            _parse_env_float,
+        )
     if request.max_output_tokens is None:
-        request.max_output_tokens = _parse_env_int("DEFAULT_MAX_TOKENS")
+        request.max_output_tokens = _get_sampling_default(
+            handler, "default_max_tokens", "DEFAULT_MAX_TOKENS", _parse_env_int
+        )
     if not request.model:
         request.model = Config.TEXT_MODEL
     return request
@@ -1661,7 +1712,7 @@ async def process_text_responses_request(
     request: ResponsesRequest
 ) -> ResponsesResponse | StreamingResponse | JSONResponse:
     """Handle text-only Responses API requests."""
-    refined_request = refine_responses_request(request)
+    refined_request = refine_responses_request(request, handler)
     chat_request = convert_responses_request_to_chat_request(refined_request)
     if refined_request.stream:
         return StreamingResponse(
@@ -1693,7 +1744,7 @@ async def process_multimodal_responses_request(
     request: ResponsesRequest,
 ) -> ResponsesResponse | StreamingResponse | JSONResponse:
     """Handle multimodal Responses API requests."""
-    refined_request = refine_responses_request(request)
+    refined_request = refine_responses_request(request, handler)
     chat_request = convert_responses_request_to_chat_request(refined_request)
 
     if refined_request.stream:

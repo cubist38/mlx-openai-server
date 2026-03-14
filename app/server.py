@@ -57,6 +57,29 @@ def ensure_image_handler_available(model_type: str) -> None:
 
     raise RuntimeError(MFLUX_INSTALL_HINT)
 
+_SAMPLING_DEFAULT_FIELDS: tuple[str, ...] = (
+    "default_max_tokens",
+    "default_temperature",
+    "default_top_p",
+    "default_top_k",
+    "default_min_p",
+    "default_repetition_penalty",
+    "default_presence_penalty",
+    "default_xtc_probability",
+    "default_xtc_threshold",
+    "default_seed",
+    "default_repetition_context_size",
+)
+
+
+def _attach_sampling_defaults(handler: Any, config: Any) -> Any:
+    """Attach configured sampling-default attributes to a handler or proxy."""
+
+    for field_name in _SAMPLING_DEFAULT_FIELDS:
+        setattr(handler, field_name, getattr(config, field_name, None))
+    setattr(handler, "_uses_model_sampling_defaults", True)
+    return handler
+
 
 def configure_logging(
     log_file: str | None = None, no_log_file: bool = False, log_level: str = "INFO"
@@ -232,7 +255,9 @@ def create_lifespan(config_args: MLXServerConfig):
                     draft_model_path=config_args.draft_model_path,
                     num_draft_tokens=config_args.num_draft_tokens,
                 )
-            # Initialize queue
+            # Single-model mode historically relies on process-global DEFAULT_*
+            # env fallbacks. Keep that behavior for programmatic setup paths
+            # rather than attaching the dataclass's implicit defaults here.
             await handler.initialize(
                 {
                     "max_concurrency": config_args.max_concurrency,
@@ -297,11 +322,75 @@ def create_handler_from_config(model_cfg: ModelEntryConfig) -> Any:
     model_path = model_cfg.model_path
 
     if model_cfg.model_type == "multimodal":
-        return MLXVLMHandler(
+        return _attach_sampling_defaults(
+            MLXVLMHandler(
+                model_path=model_path,
+                context_length=model_cfg.context_length,
+                max_concurrency=model_cfg.max_concurrency,
+                disable_auto_resize=model_cfg.disable_auto_resize,
+                enable_auto_tool_choice=model_cfg.enable_auto_tool_choice,
+                tool_call_parser=model_cfg.tool_call_parser,
+                reasoning_parser=model_cfg.reasoning_parser,
+                message_converter=model_cfg.message_converter,
+                trust_remote_code=model_cfg.trust_remote_code,
+                chat_template_file=model_cfg.chat_template_file,
+                debug=model_cfg.debug,
+            ),
+            model_cfg,
+        )
+
+    if model_cfg.model_type == "image-generation":
+        ensure_image_handler_available(model_cfg.model_type)
+        return _attach_sampling_defaults(
+            MLXFluxHandler(
+                model_path=model_path,
+                max_concurrency=model_cfg.max_concurrency,
+                quantize=model_cfg.quantize,
+                config_name=model_cfg.config_name,
+                lora_paths=model_cfg.lora_paths,
+                lora_scales=model_cfg.lora_scales,
+            ),
+            model_cfg,
+        )
+
+    if model_cfg.model_type == "image-edit":
+        ensure_image_handler_available(model_cfg.model_type)
+        return _attach_sampling_defaults(
+            MLXFluxHandler(
+                model_path=model_path,
+                max_concurrency=model_cfg.max_concurrency,
+                quantize=model_cfg.quantize,
+                config_name=model_cfg.config_name,
+                lora_paths=model_cfg.lora_paths,
+                lora_scales=model_cfg.lora_scales,
+            ),
+            model_cfg,
+        )
+
+    if model_cfg.model_type == "embeddings":
+        return _attach_sampling_defaults(
+            MLXEmbeddingsHandler(
+                model_path=model_path,
+                max_concurrency=model_cfg.max_concurrency,
+            ),
+            model_cfg,
+        )
+
+    if model_cfg.model_type == "whisper":
+        return _attach_sampling_defaults(
+            MLXWhisperHandler(
+                model_path=model_path,
+                max_concurrency=model_cfg.max_concurrency,
+            ),
+            model_cfg,
+        )
+
+    # Default: language model ("lm")
+    return _attach_sampling_defaults(
+        MLXLMHandler(
             model_path=model_path,
             context_length=model_cfg.context_length,
             max_concurrency=model_cfg.max_concurrency,
-            disable_auto_resize=model_cfg.disable_auto_resize,
             enable_auto_tool_choice=model_cfg.enable_auto_tool_choice,
             tool_call_parser=model_cfg.tool_call_parser,
             reasoning_parser=model_cfg.reasoning_parser,
@@ -309,58 +398,12 @@ def create_handler_from_config(model_cfg: ModelEntryConfig) -> Any:
             trust_remote_code=model_cfg.trust_remote_code,
             chat_template_file=model_cfg.chat_template_file,
             debug=model_cfg.debug,
-        )
-
-    if model_cfg.model_type == "image-generation":
-        ensure_image_handler_available(model_cfg.model_type)
-        return MLXFluxHandler(
-            model_path=model_path,
-            max_concurrency=model_cfg.max_concurrency,
-            quantize=model_cfg.quantize,
-            config_name=model_cfg.config_name,
-            lora_paths=model_cfg.lora_paths,
-            lora_scales=model_cfg.lora_scales,
-        )
-
-    if model_cfg.model_type == "image-edit":
-        ensure_image_handler_available(model_cfg.model_type)
-        return MLXFluxHandler(
-            model_path=model_path,
-            max_concurrency=model_cfg.max_concurrency,
-            quantize=model_cfg.quantize,
-            config_name=model_cfg.config_name,
-            lora_paths=model_cfg.lora_paths,
-            lora_scales=model_cfg.lora_scales,
-        )
-
-    if model_cfg.model_type == "embeddings":
-        return MLXEmbeddingsHandler(
-            model_path=model_path,
-            max_concurrency=model_cfg.max_concurrency,
-        )
-
-    if model_cfg.model_type == "whisper":
-        return MLXWhisperHandler(
-            model_path=model_path,
-            max_concurrency=model_cfg.max_concurrency,
-        )
-
-    # Default: language model ("lm")
-    return MLXLMHandler(
-        model_path=model_path,
-        context_length=model_cfg.context_length,
-        max_concurrency=model_cfg.max_concurrency,
-        enable_auto_tool_choice=model_cfg.enable_auto_tool_choice,
-        tool_call_parser=model_cfg.tool_call_parser,
-        reasoning_parser=model_cfg.reasoning_parser,
-        message_converter=model_cfg.message_converter,
-        trust_remote_code=model_cfg.trust_remote_code,
-        chat_template_file=model_cfg.chat_template_file,
-        debug=model_cfg.debug,
-        prompt_cache_size=model_cfg.prompt_cache_size,
-        prompt_cache_max_bytes=model_cfg.prompt_cache_max_bytes,
-        draft_model_path=model_cfg.draft_model_path,
-        num_draft_tokens=model_cfg.num_draft_tokens,
+            prompt_cache_size=model_cfg.prompt_cache_size,
+            prompt_cache_max_bytes=model_cfg.prompt_cache_max_bytes,
+            draft_model_path=model_cfg.draft_model_path,
+            num_draft_tokens=model_cfg.num_draft_tokens,
+        ),
+        model_cfg,
     )
 
 
