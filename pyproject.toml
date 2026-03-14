@@ -34,7 +34,7 @@ dependencies = [
   "mlx-lm>=0.31.0,<0.32",
   "mlx-vlm>=0.4.0,<0.5",
   "mlx-whisper>=0.4.3,<0.5",
-  "mlx>=0.31.0",                      
+  "mlx>=0.31.0",
   "numpy>=2.2.0,<2.4",
   "openai>=2.21,<3",
   "openai-harmony>=0.0.8,<0.1",
@@ -172,7 +172,6 @@ select = [
   "RUF005", # Consider iterable unpacking instead of concatenation
   #"RUF006", # Store a reference to the return value of asyncio.create_task
   "RUF010", # Use explicit conversion flag
-  "RUF013", # PEP 484 prohibits implicit Optional
   "RUF017", # Avoid quadratic list summation
   "RUF018", # Avoid assignment expressions in assert statements
   "RUF019", # Unnecessary key check before dictionary access
@@ -209,15 +208,34 @@ select = [
 ]
 
 ignore = [
+  "ANN001", # Missing type annotation for function argument (TODO: fix incrementally)
+  "ANN003", # Missing type annotation for **kwargs (TODO: fix incrementally)
+  "ANN201", # Missing return type annotation for public function (TODO: fix incrementally)
+  "ANN202", # Missing return type annotation for private function (TODO: fix incrementally)
+  "ANN204", # Missing return type annotation for special method (TODO: fix incrementally)
+  "ANN206", # Missing return type annotation for classmethod (TODO: fix incrementally)
   "ANN401", # Dynamically typed expressions (typing.Any) are allowed when necessary
+  "D100",   # Missing docstring in public module (TODO: fix incrementally)
+  "D101",   # Missing docstring in public class (TODO: fix incrementally)
+  "D102",   # Missing docstring in public method (TODO: fix incrementally)
+  "D103",   # Missing docstring in public function (TODO: fix incrementally)
+  "D104",   # Missing docstring in public package (TODO: fix incrementally)
+  "D105",   # Missing docstring in magic method (TODO: fix incrementally)
+  "D200",   # One-line docstring should fit on one line (TODO: fix incrementally)
   "D202",   # No blank lines allowed after function docstring
   "D203",   # 1 blank line required before class docstring
+  "D205",   # 1 blank line required between summary line and description (TODO: fix incrementally)
   "D213",   # Multi-line docstring summary should start at the second line
+  "D400",   # First line should end with a period (TODO: fix incrementally)
   "D401",   # First line should be in imperative mood
   "D406",   # Section name should end with a newline
   "D407",   # Section name underlining
+  "E402",   # Module level import not at top of file
   "E501",   # line too long
 
+  "ASYNC230", # Async functions should not open files with blocking methods (TODO: fix incrementally)
+  "B904",   # Use raise from to specify exception cause (TODO: fix incrementally)
+  "PLC0415", # import should be at the top-level of a file (TODO: fix incrementally)
   "PLC1901", # {existing} can be simplified to {replacement} as an empty string is falsey; too many false positives
   "PLR0904", # Too many public methods
   "PLR0911", # Too many return statements ({returns} > {max_returns})
@@ -232,14 +250,20 @@ ignore = [
   "PLW2901", # Outer {outer_kind} variable {name} overwritten by inner {inner_kind} target
   "PT011",   # pytest.raises({exception}) is too broad, set the `match` parameter or use a more specific exception
   "PT018",   # Assertion should be broken down into multiple parts
+  "PTH",     # flake8-pathlib (TODO: migrate os.path to pathlib incrementally)
   "RUF001",  # String contains ambiguous unicode character.
+  "RUF013",  # PEP 484 prohibits implicit Optional (TODO: fix incrementally)
   "RUF002",  # Docstring contains ambiguous unicode character.
   "RUF003",  # Comment contains ambiguous unicode character.
   "RUF015",  # Prefer next(...) over single element slice
   "SIM102",  # Use a single if statement instead of nested if statements
   "SIM103",  # Return the condition {condition} directly
+  "SIM105",  # Use contextlib.suppress (TODO: fix incrementally)
   "SIM108",  # Use ternary operator {contents} instead of if-else-block
   "SIM115",  # Use context handler for opening files
+  "T201",    # print found (TODO: replace with logging incrementally)
+  "TRY004",  # Prefer TypeError exception for invalid type (TODO: fix incrementally)
+  "TRY300",  # Consider moving this statement to an else block (TODO: fix incrementally)
 
   # Moving imports into type-checking blocks can mess with pytest.patch()
   "TC001",  # Move application import {} into a type-checking block

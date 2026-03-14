@@ -1,18 +1,18 @@
-import os
-import mlx.core as mx
-from loguru import logger
-from mlx_lm.utils import load
-from mlx_lm.generate import (
-    stream_generate
-)
+from collections.abc import Generator
 from dataclasses import dataclass
-from mlx_lm.generate import GenerationResponse
-from outlines.processors import JSONLogitsProcessor
+import os
+from typing import Any
+
+from loguru import logger
+import mlx.core as mx
+from mlx_lm.generate import GenerationResponse, stream_generate
 from mlx_lm.models.cache import make_prompt_cache
-from mlx_lm.sample_utils import make_sampler, make_logits_processors
-from ..utils.outlines_transformer_tokenizer import OutlinesTransformerTokenizer
+from mlx_lm.sample_utils import make_logits_processors, make_sampler
+from mlx_lm.utils import load
+from outlines.processors import JSONLogitsProcessor
+
 from ..utils.debug_logging import log_debug_chat_template
-from typing import List, Dict, Union, Generator, Any
+from ..utils.outlines_transformer_tokenizer import OutlinesTransformerTokenizer
 
 DEFAULT_TEMPERATURE = float(os.getenv("DEFAULT_TEMPERATURE", "0.7"))
 DEFAULT_TOP_P = float(os.getenv("DEFAULT_TOP_P", "0.95"))
@@ -23,6 +23,7 @@ DEFAULT_XTC_THRESHOLD = float(os.getenv("DEFAULT_XTC_THRESHOLD", "0.0"))
 DEFAULT_SEED = int(os.getenv("DEFAULT_SEED", "0"))
 DEFAULT_MAX_TOKENS = int(os.getenv("DEFAULT_MAX_TOKENS", "1000000"))
 DEFAULT_REPETITION_CONTEXT_SIZE = int(os.getenv("DEFAULT_REPETITION_CONTEXT_SIZE", "20"))
+
 
 @dataclass
 class CompletionResponse:
@@ -40,24 +41,36 @@ class CompletionResponse:
     """
 
     text: str = None
-    tokens: List[int] = None
+    tokens: list[int] = None
     peak_memory: float = None
     generation_tps: float = None
     prompt_tps: float = None
     prompt_tokens: int = None
     generation_tokens: int = None
 
+
 class MLX_LM:
     """
     A wrapper class for MLX Language Model that handles both streaming and non-streaming inference.
-    
+
     This class provides a unified interface for generating text responses from text prompts,
     supporting both streaming and non-streaming modes.
     """
 
-    def __init__(self, model_path: str, draft_model_path: str = None, num_draft_tokens: int = 2, context_length: int | None = None, trust_remote_code: bool = False, chat_template_file: str = None, debug: bool = False):
+    def __init__(
+        self,
+        model_path: str,
+        draft_model_path: str = None,
+        num_draft_tokens: int = 2,
+        context_length: int | None = None,
+        trust_remote_code: bool = False,
+        chat_template_file: str = None,
+        debug: bool = False,
+    ):
         try:
-            self.model, self.tokenizer = load(model_path, lazy=False, tokenizer_config = {"trust_remote_code": trust_remote_code})
+            self.model, self.tokenizer = load(
+                model_path, lazy=False, tokenizer_config={"trust_remote_code": trust_remote_code}
+            )
             self.context_length = context_length
             self.draft_model = None
             self.draft_tokenizer = None
@@ -72,21 +85,29 @@ class MLX_LM:
             if chat_template_file:
                 if not os.path.exists(chat_template_file):
                     raise ValueError(f"Chat template file {chat_template_file} does not exist")
-                with open(chat_template_file, "r") as f:
+                with open(chat_template_file) as f:
                     template_content = f.read()
                     self.tokenizer.chat_template = template_content
                 if self.debug:
-                    log_debug_chat_template(chat_template_file=chat_template_file, template_content=template_content)
+                    log_debug_chat_template(
+                        chat_template_file=chat_template_file, template_content=template_content
+                    )
         except Exception as e:
-            raise ValueError(f"Error loading model: {str(e)}")
+            raise ValueError(f"Error loading model: {e!s}")
 
     def _load_draft_model(self, draft_model_path: str, trust_remote_code: bool) -> None:
         try:
-            self.draft_model, self.draft_tokenizer = load(draft_model_path, lazy=False, tokenizer_config = {"trust_remote_code": trust_remote_code})
-            self.context_length = None # speculative decoding does not support context length, should be set to None
+            self.draft_model, self.draft_tokenizer = load(
+                draft_model_path,
+                lazy=False,
+                tokenizer_config={"trust_remote_code": trust_remote_code},
+            )
+            self.context_length = (
+                None  # speculative decoding does not support context length, should be set to None
+            )
             self._validate_draft_tokenizer()
         except Exception as e:
-            raise ValueError(f"Error loading draft model: {str(e)}")
+            raise ValueError(f"Error loading draft model: {e!s}")
 
     def _validate_draft_tokenizer(self) -> None:
         if self.draft_tokenizer.vocab_size != self.tokenizer.vocab_size:
@@ -95,7 +116,7 @@ class MLX_LM:
                 "Speculative decoding may not work as expected."
             )
 
-    def create_prompt_cache(self) -> List[Any]:
+    def create_prompt_cache(self) -> list[Any]:
         cache = make_prompt_cache(self.model, max_kv_size=self.context_length)
         if self.draft_model:
             cache += make_prompt_cache(self.draft_model, max_kv_size=self.context_length)
@@ -104,7 +125,9 @@ class MLX_LM:
     def get_model_type(self) -> str:
         return self.model_type
 
-    def create_input_prompt(self, messages: List[Dict[str, str]], chat_template_kwargs: Dict[str, Any]) -> str:
+    def create_input_prompt(
+        self, messages: list[dict[str, str]], chat_template_kwargs: dict[str, Any]
+    ) -> str:
         use_partial = chat_template_kwargs.pop("_partial_mode", False)
 
         return self.tokenizer.apply_chat_template(
@@ -115,16 +138,12 @@ class MLX_LM:
             **chat_template_kwargs,
         )
 
-    def encode_prompt(self, input_prompt: str) -> List[int]:
+    def encode_prompt(self, input_prompt: str) -> list[int]:
         return self.tokenizer.encode(input_prompt)
 
     def __call__(
-        self, 
-        input_ids: List[int],
-        prompt_cache: List[Any] = None,
-        stream: bool = False, 
-        **kwargs
-    ) -> Union[CompletionResponse, Generator[GenerationResponse, None, None]]:
+        self, input_ids: list[int], prompt_cache: list[Any] = None, stream: bool = False, **kwargs
+    ) -> CompletionResponse | Generator[GenerationResponse, None, None]:
         """
         Generate text response from the model.
 
@@ -137,6 +156,7 @@ class MLX_LM:
                 - seed: Random seed (default: 0)
                 - max_tokens: Maximum number of tokens to generate (default: 256)
         """
+
         # Set default parameters if not provided (use 'is not None' to preserve valid 0 values)
         def _get(key, default):
             v = kwargs.get(key)
@@ -158,8 +178,9 @@ class MLX_LM:
         # Add XTC special tokens (EOS and newline) when XTC is enabled
         if sampler_kwargs["xtc_probability"] > 0:
             sampler_kwargs["xtc_special_tokens"] = [
-                self.tokenizer.eos_token_id
-            ] + self.tokenizer.encode("\n")
+                self.tokenizer.eos_token_id,
+                *self.tokenizer.encode("\n"),
+            ]
 
         repetition_penalty = kwargs.get("repetition_penalty")
         repetition_context_size = _get("repetition_context_size", DEFAULT_REPETITION_CONTEXT_SIZE)
@@ -172,16 +193,14 @@ class MLX_LM:
         logits_processors = make_logits_processors(
             logit_bias=logit_bias,
             repetition_penalty=repetition_penalty,
-            repetition_context_size=repetition_context_size
+            repetition_context_size=repetition_context_size,
         )
 
         json_schema = kwargs.get("schema")
         if json_schema:
             logits_processors.append(
                 JSONLogitsProcessor(
-                    schema=json_schema,
-                    tokenizer=self.outlines_tokenizer,
-                    tensor_library_name="mlx"
+                    schema=json_schema, tokenizer=self.outlines_tokenizer, tensor_library_name="mlx"
                 )
             )
 
@@ -189,12 +208,10 @@ class MLX_LM:
         # None or negative values (e.g., -1) result in non-deterministic generation
         if seed and seed >= 0:
             mx.random.seed(seed)
-        
+
         prompt_progress_callback = kwargs.get("prompt_progress_callback")
-        
-        sampler = make_sampler(
-           **sampler_kwargs
-        )
+
+        sampler = make_sampler(**sampler_kwargs)
 
         stream_response = stream_generate(
             self.model,
@@ -206,7 +223,7 @@ class MLX_LM:
             num_draft_tokens=self.num_draft_tokens,
             prompt_cache=prompt_cache,
             logits_processors=logits_processors,
-            prompt_progress_callback=prompt_progress_callback
+            prompt_progress_callback=prompt_progress_callback,
         )
         if stream:
             return stream_response
@@ -219,7 +236,7 @@ class MLX_LM:
             tokens.append(chunk.token)
             if chunk.finish_reason:
                 final_chunk = chunk
-        
+
         return CompletionResponse(
             text=text,
             tokens=tokens,

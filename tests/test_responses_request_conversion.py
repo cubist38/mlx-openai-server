@@ -133,7 +133,7 @@ def test_convert_responses_stream_history_skips_reasoning_but_keeps_tool_turns()
                 "status": "completed",
                 "call_id": "call_123",
                 "name": "du",
-                "arguments": "{\"path\":\"/tmp\"}",
+                "arguments": '{"path":"/tmp"}',
             },
             {
                 "type": "function_call_output",
@@ -180,10 +180,12 @@ def test_convert_responses_stream_history_skips_reasoning_but_keeps_tool_turns()
         "user",
     ]
 
-    tool_call_messages = [m for m in chat_request.messages if m.role == "assistant" and m.tool_calls]
+    tool_call_messages = [
+        m for m in chat_request.messages if m.role == "assistant" and m.tool_calls
+    ]
     assert len(tool_call_messages) == 1
     assert tool_call_messages[0].tool_calls[0].function.name == "du"
-    assert tool_call_messages[0].tool_calls[0].function.arguments == "{\"path\":\"/tmp\"}"
+    assert tool_call_messages[0].tool_calls[0].function.arguments == '{"path":"/tmp"}'
     assert tool_call_messages[0].tool_calls[0].id == "call_123"
 
     tool_output_messages = [m for m in chat_request.messages if m.role == "tool"]

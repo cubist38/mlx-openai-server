@@ -1,8 +1,7 @@
 import gc
-import time
-import uuid
 from http import HTTPStatus
-from typing import Any, Dict, List
+import time
+from typing import Any
 
 from fastapi import HTTPException
 from loguru import logger
@@ -11,6 +10,7 @@ from ..core import InferenceWorker
 from ..models.mlx_embeddings import MLX_Embeddings
 from ..schemas.openai import EmbeddingRequest
 from ..utils.errors import create_error_response
+
 
 class MLXEmbeddingsHandler:
     """
@@ -23,7 +23,7 @@ class MLXEmbeddingsHandler:
     def __init__(self, model_path: str, max_concurrency: int = 1):
         """
         Initialize the handler with the specified model path.
-        
+
         Args:
             model_path (str): Path to the embeddings model to load.
             max_concurrency (int): Maximum number of concurrent model inference tasks.
@@ -37,23 +37,25 @@ class MLXEmbeddingsHandler:
         self.inference_worker = InferenceWorker()
 
         logger.info(f"Initialized MLXEmbeddingsHandler with model path: {model_path}")
-    
-    async def get_models(self) -> List[Dict[str, Any]]:
+
+    async def get_models(self) -> list[dict[str, Any]]:
         """
         Get list of available models with their metadata.
         """
         try:
-            return [{
-                "id": self.model_path,
-                "object": "model",
-                "created": self.model_created,
-                "owned_by": "local" 
-            }]
+            return [
+                {
+                    "id": self.model_path,
+                    "object": "model",
+                    "created": self.model_created,
+                    "owned_by": "local",
+                }
+            ]
         except Exception as e:
-            logger.error(f"Error getting models: {str(e)}")
+            logger.error(f"Error getting models: {e!s}")
             return []
 
-    async def initialize(self, config: Dict[str, Any]) -> None:
+    async def initialize(self, config: dict[str, Any]) -> None:
         """Initialize the handler and start the inference worker.
 
         Parameters
@@ -72,33 +74,33 @@ class MLXEmbeddingsHandler:
     async def generate_embeddings_response(self, request: EmbeddingRequest):
         """
         Generate embeddings for a given text input.
-        
+
         Args:
             request: EmbeddingRequest object containing the text input.
-        
+
         Returns:
             List[float]: Embeddings for the input text.
         """
         try:
-            # Create a unique request ID
-            request_id = f"embeddings-{uuid.uuid4()}"
             if isinstance(request.input, str):
                 request.input = [request.input]
             # Submit directly to the inference thread
-            response = await self.inference_worker.submit(
+            return await self.inference_worker.submit(
                 self.model,
                 texts=request.input,
-                max_length=getattr(request, 'max_length', 512),
+                max_length=getattr(request, "max_length", 512),
             )
-            
-            return response
 
         except Exception as e:
-            logger.error(f"Error in embeddings generation: {str(e)}")
-            content = create_error_response(f"Failed to generate embeddings: {str(e)}", "server_error", HTTPStatus.INTERNAL_SERVER_ERROR)
+            logger.error(f"Error in embeddings generation: {e!s}")
+            content = create_error_response(
+                f"Failed to generate embeddings: {e!s}",
+                "server_error",
+                HTTPStatus.INTERNAL_SERVER_ERROR,
+            )
             raise HTTPException(status_code=500, detail=content)
 
-    async def get_queue_stats(self) -> Dict[str, Any]:
+    async def get_queue_stats(self) -> dict[str, Any]:
         """Get statistics from the inference worker.
 
         Returns
@@ -118,15 +120,15 @@ class MLXEmbeddingsHandler:
         """
         try:
             logger.info("Cleaning up MLXEmbeddingsHandler resources")
-            if hasattr(self, 'inference_worker'):
+            if hasattr(self, "inference_worker"):
                 self.inference_worker.stop()
-            if hasattr(self, 'model'):
+            if hasattr(self, "model"):
                 self.model.cleanup()
             # Force garbage collection
             gc.collect()
             logger.info("MLXEmbeddingsHandler cleanup completed successfully")
         except Exception as e:
-            logger.error(f"Error during MLXEmbeddingsHandler cleanup: {str(e)}")
+            logger.error(f"Error during MLXEmbeddingsHandler cleanup: {e!s}")
             raise
 
     def __del__(self):
@@ -135,7 +137,7 @@ class MLXEmbeddingsHandler:
         Note: Async cleanup cannot be reliably performed in __del__.
         Please use 'await cleanup()' explicitly.
         """
-        if hasattr(self, '_cleaned') and self._cleaned:
+        if hasattr(self, "_cleaned") and self._cleaned:
             return
         # Set flag to prevent multiple cleanup attempts
-        self._cleaned = True 
+        self._cleaned = True

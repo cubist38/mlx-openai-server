@@ -57,6 +57,7 @@ def ensure_image_handler_available(model_type: str) -> None:
 
     raise RuntimeError(MFLUX_INSTALL_HINT)
 
+
 _SAMPLING_DEFAULT_FIELDS: tuple[str, ...] = (
     "default_max_tokens",
     "default_temperature",
@@ -549,7 +550,7 @@ def setup_server(config_args: MLXServerConfig | MultiModelServerConfig) -> uvico
         A configuration object that can be passed to
         ``uvicorn.Server(config).run()`` to start the application.
     """
-    global app
+    global app  # noqa: PLW0603
 
     # Extract logging parameters (available on both config types)
     log_file = getattr(config_args, "log_file", None)

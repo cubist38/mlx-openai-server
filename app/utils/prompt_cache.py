@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-import copy
 from collections import deque
+import copy
 from dataclasses import dataclass
 from typing import Any
 
@@ -139,6 +139,7 @@ class LRUPromptCache:
         ----------
         tokens_ids : list[int]
             Token sequence to search for.
+
         Returns
         -------
         SearchResult
@@ -175,13 +176,11 @@ class LRUPromptCache:
                     if best is None or len(extra) < len(best):
                         best = extra
                 else:
-                    for tok in current:
-                        stack.append((current[tok], extra + [tok]))
+                    stack.extend((current[tok], [*extra, tok]) for tok in current)
             if best is not None:
                 longer = tokens_ids[:index] + best
 
         return self.SearchResult(None, shorter, longer, common_prefix)
-
 
     def fetch_nearest_cache(
         self,
@@ -193,6 +192,7 @@ class LRUPromptCache:
         ----------
         tokens_ids : list[int]
             Token sequence to find a cache for.
+
         Returns
         -------
         tuple[list[Any] | None, list[int]]
@@ -227,6 +227,7 @@ class LRUPromptCache:
         ----------
         tokens_ids : list[int]
             Token sequence identifying the cache entry.
+
         Returns
         -------
         CacheEntry
@@ -335,7 +336,7 @@ class LRUPromptCache:
     def log_cache_stats(self) -> None:
         """Log the current cache size, bytes, and latest checkpoint token count."""
         latest_checkpoint_tokens = (
-            len(self._lru._lru_checkpoints[-1]) if self._lru._lru_checkpoints else 0
+            len(self._lru._lru_checkpoints[-1]) if self._lru._lru_checkpoints else 0  # noqa: SLF001
         )
         logger.info(
             "KV Caches: {} seq, {:.2f} GB, latest user cache {} tokens",
@@ -344,8 +345,10 @@ class LRUPromptCache:
             latest_checkpoint_tokens,
         )
 
+
 if __name__ == "__main__":
     from app.models.mlx_lm import MLX_LM
+
     model_path = "mlx-community/Qwen3-Coder-Next-8bit"
     draft_model_path = "mlx-community/Qwen3-Coder-Next-4bit"
     model = MLX_LM(model_path, draft_model_path)
@@ -374,7 +377,6 @@ if __name__ == "__main__":
                 first_token = False
             cache_key.append(chunk.token)
 
-
     prompt_cache.insert_cache(cache_key, cache)
 
     start_time = time.time()
@@ -383,7 +385,7 @@ if __name__ == "__main__":
     input_prompt_2 = model.create_input_prompt([{"role": "user", "content": prompt_2}], {})
     input_ids_2 = model.encode_prompt(input_prompt_2)
     cache, rest_input_ids_2 = prompt_cache.fetch_nearest_cache(input_ids_2)
-   
+
     if cache is None:
         cache = model.create_prompt_cache()
     # Use full input_ids for cache_key, not rest_input_ids

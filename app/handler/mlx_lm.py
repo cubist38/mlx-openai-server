@@ -1,6 +1,6 @@
 import asyncio
 from collections.abc import AsyncGenerator
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 import gc
 from http import HTTPStatus
 import time
@@ -223,9 +223,7 @@ class MLXLMHandler:
 
         return [{k: v for k, v in message.items() if v is not None} for message in messages]
 
-    async def _build_inference_context(
-        self, request: ChatCompletionRequest
-    ) -> "_InferenceContext":
+    async def _build_inference_context(self, request: ChatCompletionRequest) -> "_InferenceContext":
         """Build the common inference context shared by stream and non-stream paths.
 
         Handles: request parsing, message refinement, prompt encoding, KV cache
@@ -287,7 +285,7 @@ class MLXLMHandler:
             prompt_progress_callback=prompt_progress_callback,
         )
 
-    async def generate_text_stream(
+    async def generate_text_stream(  # noqa: C901
         self, request: ChatCompletionRequest
     ) -> AsyncGenerator[str, None]:
         """
@@ -890,7 +888,9 @@ class MLXLMHandler:
         try:
             # Extract only the fields consumed by MLX_LM.__call__ instead of
             # serializing the entire Pydantic model with model_dump().
-            chat_template_kwargs = request.chat_template_kwargs.model_dump() if request.chat_template_kwargs else {}
+            chat_template_kwargs = (
+                request.chat_template_kwargs.model_dump() if request.chat_template_kwargs else {}
+            )
 
             if request.tools:
                 tools = [t.model_dump() for t in request.tools]

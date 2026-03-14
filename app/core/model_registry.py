@@ -82,8 +82,7 @@ class ModelRegistry:
             self._metadata[model_id] = metadata
 
             logger.info(
-                f"Registered model: {model_id} (type={model_type}, "
-                f"context_length={context_length})"
+                f"Registered model: {model_id} (type={model_type}, context_length={context_length})"
             )
 
     def get_handler(self, model_id: str) -> Any:
@@ -107,8 +106,7 @@ class ModelRegistry:
         if model_id not in self._handlers:
             available = ", ".join(sorted(self._handlers.keys())) or "(none)"
             raise KeyError(
-                f"Model '{model_id}' not found in registry. "
-                f"Available models: {available}"
+                f"Model '{model_id}' not found in registry. Available models: {available}"
             )
         return self._handlers[model_id]
 
@@ -203,9 +201,7 @@ class ModelRegistry:
             logger.info("All models unregistered and cleaned up")
 
     @staticmethod
-    async def _cleanup_single_handler(
-        model_id: str, handler: Any
-    ) -> None:
+    async def _cleanup_single_handler(model_id: str, handler: Any) -> None:
         """Clean up a single handler, logging success or failure.
 
         Parameters
