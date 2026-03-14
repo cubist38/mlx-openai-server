@@ -15,13 +15,15 @@ class Qwen3MoEReasoningParser(HermesReasoningParser):
     reasoning_content</think>
     """
 
-    def __init__(self, reasoning_open: str = REASONING_OPEN, reasoning_close: str = REASONING_CLOSE) -> None:
+    def __init__(
+        self, reasoning_open: str = REASONING_OPEN, reasoning_close: str = REASONING_CLOSE
+    ) -> None:
         """Initialize the Qwen3 MoE reasoning parser with appropriate regex patterns."""
         super().__init__(reasoning_open=reasoning_open, reasoning_close=reasoning_close)
 
     def needs_redacted_reasoning_prefix(self) -> bool:
         """Check if the reasoning parser needs a redacted reasoning prefix.
-        
+
         Returns
         -------
         bool
