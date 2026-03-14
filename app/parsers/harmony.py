@@ -1,25 +1,25 @@
 from __future__ import annotations
 
 from enum import Enum
-from openai_harmony import (
-    load_harmony_encoding,
-    HarmonyEncodingName,
-    StreamableParser,
-    Role
-)
+
+from openai_harmony import HarmonyEncodingName, Role, StreamableParser, load_harmony_encoding
+
 
 class ChannelType(Enum):
     """Enumeration of harmony channel types."""
 
     ANALYSIS = "analysis"
-    COMMENTARY = "commentary" 
+    COMMENTARY = "commentary"
     FINAL = "final"
+
 
 class ToolParserState(Enum):
     """Enumeration of parser states."""
+
     NORMAL = "normal"
     FOUND_ARGUMENTS = "found_arguments"
     END_STREAM = "end_stream"
+
 
 class HarmonyParser:
     """Parser for Harmony encoding."""
@@ -39,7 +39,7 @@ class HarmonyParser:
         """
         if self.end_tool_chunk in text:
             end_tool_index = text.find(self.end_tool_chunk)
-            text = text[:end_tool_index + len(self.end_tool_chunk)]
+            text = text[: end_tool_index + len(self.end_tool_chunk)]
 
         result = {
             "content": None,
@@ -47,24 +47,28 @@ class HarmonyParser:
             "reasoning_content": None,
         }
         tokens = self.encoding.encode(text, allowed_special="all")
-        parsed_messages = self.encoding.parse_messages_from_completion_tokens(tokens, role=Role.ASSISTANT)
+        parsed_messages = self.encoding.parse_messages_from_completion_tokens(
+            tokens, role=Role.ASSISTANT
+        )
         for message in parsed_messages:
             if message.channel == ChannelType.ANALYSIS.value:
                 result["reasoning_content"] = message.content[0].text
             elif message.channel == ChannelType.COMMENTARY.value:
-                result["tool_calls"].append({
-                    "name": message.recipient.replace("functions.", ""),
-                    "arguments": message.content[0].text
-                })
+                result["tool_calls"].append(
+                    {
+                        "name": message.recipient.replace("functions.", ""),
+                        "arguments": message.content[0].text,
+                    }
+                )
             elif message.channel == ChannelType.FINAL.value:
                 result["content"] = message.content[0].text
         return result
-    
+
     def _build_result(
-        self, 
-        reasoning_contents: list[str], 
-        tool_calls: list[dict[str, str]] | None, 
-        contents: list[str]
+        self,
+        reasoning_contents: list[str],
+        tool_calls: list[dict[str, str]] | None,
+        contents: list[str],
     ) -> dict[str, str | list | None]:
         """Build the result dictionary from accumulated content."""
         return {
@@ -72,7 +76,7 @@ class HarmonyParser:
             "tool_calls": tool_calls,
             "content": "".join(contents) or None,
         }
-        
+
     def parse_streaming(self, chunk: str) -> tuple[dict[str, str | list | None] | None, bool]:
         """Parse the chunk and return the parsed content."""
         if self.state == ToolParserState.END_STREAM:
@@ -85,9 +89,9 @@ class HarmonyParser:
         # Check for end marker and truncate
         if self.end_tool_chunk in chunk:
             end_tool_index = chunk.find(self.end_tool_chunk)
-            chunk = chunk[:end_tool_index + len(self.end_tool_chunk)]
+            chunk = chunk[: end_tool_index + len(self.end_tool_chunk)]
             end_stream_state = True
-        
+
         # Process chunk tokens
         chunk_tokens = self.encoding.encode(chunk, allowed_special="all")
         for chunk_token in chunk_tokens:
@@ -115,15 +119,14 @@ class HarmonyParser:
 
         # Handle end of stream
         if end_stream_state:
-            tool_calls = [{
-                "name": self.function_name_buffer,
-                "arguments": "".join(self.arguments_buffer)
-            }]
+            tool_calls = [
+                {"name": self.function_name_buffer, "arguments": "".join(self.arguments_buffer)}
+            ]
             self.arguments_buffer = []
             self.function_name_buffer = ""
             self.state = ToolParserState.END_STREAM
             return self._build_result(reasoning_contents, tool_calls, contents), True
-        
+
         return self._build_result(reasoning_contents, None, contents), False
 
     def handle_parse_streaming_end(self) -> tuple[dict[str, str | list | None] | None, bool]:
