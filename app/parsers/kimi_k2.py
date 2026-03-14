@@ -1,8 +1,9 @@
 from __future__ import annotations
 
-import re
-import json
 from enum import Enum
+import json
+import re
+
 from .hermes import HermesToolParser
 
 TOOL_CALL_SECTION_BEGIN = "<|tool_calls_section_begin|>"
@@ -18,17 +19,20 @@ class KimiK2ToolState(Enum):
     NORMAL = "normal"
     FOUND_TOOL_SECTION = "found_tool_section"
 
+
 class KimiK2ToolParser(HermesToolParser):
     """Kimi K2 tool parser.
-    
+
     Handles tool calls in format:
     <|tool_calls_section_begin|><|tool_call_begin|>functions.get_weather:0<|tool_call_argument_begin|>{"city": "New York"}<|tool_call_end|><|tool_calls_section_end|>
     """
 
-    def __init__(self, tool_open: str = TOOL_CALL_SECTION_BEGIN, tool_close: str = TOOL_CALL_SECTION_END) -> None:
+    def __init__(
+        self, tool_open: str = TOOL_CALL_SECTION_BEGIN, tool_close: str = TOOL_CALL_SECTION_END
+    ) -> None:
         """Initialize Solar Open tool parser."""
         super().__init__(tool_open=tool_open, tool_close=tool_close)
-        
+
         self.state = KimiK2ToolState.NORMAL
         self.tool_call_section_regex = re.compile(
             re.escape(self.tool_open) + r"(.*?)" + re.escape(self.tool_close),
