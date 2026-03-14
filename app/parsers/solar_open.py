@@ -1,12 +1,12 @@
 from __future__ import annotations
 
-import json
 from enum import Enum
+import json
 
 from loguru import logger
 
-from .hermes import HermesReasoningParser
 from .abstract_parser import AbstractToolParser
+from .hermes import HermesReasoningParser
 
 REASONING_OPEN = "<|think|>"
 REASONING_CLOSE = "<|end|>"
@@ -30,18 +30,20 @@ class SolarOpenToolState(Enum):
 
 class SolarOpenReasoningParser(HermesReasoningParser):
     """Solar Open reasoning parser.
-    
+
     Handles reasoning content in format: <|think|>reasoning_content<|end|>
     """
 
-    def __init__(self, reasoning_open: str = REASONING_OPEN, reasoning_close: str = REASONING_CLOSE) -> None:
+    def __init__(
+        self, reasoning_open: str = REASONING_OPEN, reasoning_close: str = REASONING_CLOSE
+    ) -> None:
         """Initialize Solar Open reasoning parser."""
         super().__init__(reasoning_open=reasoning_open, reasoning_close=reasoning_close)
 
 
 class SolarOpenToolParser(AbstractToolParser):
     """Solar Open tool parser.
-    
+
     Handles tool calls in format:
     <|tool_call:begin|><tool-call-id><|tool_call:name|><tool-name><|tool_call:args|><args-json-object><|tool_call:end|>
     """
@@ -56,12 +58,12 @@ class SolarOpenToolParser(AbstractToolParser):
 
     def extract_tool_calls(self, model_output: str) -> dict[str, list] | None:
         """Extract tool calls from complete model output.
-        
+
         Parameters
         ----------
         model_output : str
             Complete model output containing tool calls.
-            
+
         Returns
         -------
         dict[str, list] | None
@@ -79,22 +81,12 @@ class SolarOpenToolParser(AbstractToolParser):
 
         while self.tool_open in remaining_output:
             tool_call_open_idx = remaining_output.find(self.tool_open)
-            tool_call_name_idx = remaining_output.find(
-                self.tool_name_prefix, tool_call_open_idx
-            )
-            tool_call_args_idx = remaining_output.find(
-                self.tool_args_prefix, tool_call_name_idx
-            )
-            tool_call_close_idx = remaining_output.find(
-                self.tool_close, tool_call_args_idx
-            )
+            tool_call_name_idx = remaining_output.find(self.tool_name_prefix, tool_call_open_idx)
+            tool_call_args_idx = remaining_output.find(self.tool_args_prefix, tool_call_name_idx)
+            tool_call_close_idx = remaining_output.find(self.tool_close, tool_call_args_idx)
 
             # Validate all required tokens were found
-            if (
-                tool_call_name_idx == -1
-                or tool_call_args_idx == -1
-                or tool_call_close_idx == -1
-            ):
+            if tool_call_name_idx == -1 or tool_call_args_idx == -1 or tool_call_close_idx == -1:
                 logger.warning(
                     f"Malformed tool call in output, missing required tokens: {remaining_output[:100]}"
                 )
@@ -113,31 +105,25 @@ class SolarOpenToolParser(AbstractToolParser):
                 json.loads(tool_args)  # Validate JSON format
                 tool_calls.append({"name": tool_name, "arguments": tool_args})
             except json.JSONDecodeError as e:
-                logger.warning(
-                    f"Invalid JSON in tool arguments for '{tool_name}': {e}"
-                )
+                logger.warning(f"Invalid JSON in tool arguments for '{tool_name}': {e}")
                 # Skip this malformed tool call and continue
 
             # Move past this tool call
-            remaining_output = remaining_output[
-                tool_call_close_idx + len(self.tool_close) :
-            ]
+            remaining_output = remaining_output[tool_call_close_idx + len(self.tool_close) :]
 
         return {
             "tool_calls": tool_calls,
             "content": remaining_output if remaining_output else None,
         }
 
-    def extract_tool_calls_streaming(
-        self, chunk: str
-    ) -> tuple[dict[str, list] | str | None, bool]:
+    def extract_tool_calls_streaming(self, chunk: str) -> tuple[dict[str, list] | str | None, bool]:
         """Extract tool calls from streaming chunks.
-        
+
         Parameters
         ----------
         chunk : str
             Chunk of model output to process.
-            
+
         Returns
         -------
         tuple[dict[str, list] | str | None, bool]
