@@ -439,10 +439,7 @@ class HandlerProcessProxy:
             name=f"handler-{self.model_id}",
         )
         self._process.start()
-        logger.info(
-            f"Spawned handler process for '{self.model_id}' "
-            f"(pid={self._process.pid})"
-        )
+        logger.info(f"Spawned handler process for '{self.model_id}' (pid={self._process.pid})")
 
         # Wait for the ready signal.
         ready_queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
@@ -503,14 +500,10 @@ class HandlerProcessProxy:
             pending = self._pending.get(req_id)
             if pending and self._loop:
                 try:
-                    future = asyncio.run_coroutine_threadsafe(
-                        pending.put(response), self._loop
-                    )
+                    future = asyncio.run_coroutine_threadsafe(pending.put(response), self._loop)
                     future.result(timeout=60)
                 except concurrent.futures.TimeoutError:
-                    logger.warning(
-                        f"Timeout delivering stream chunk for {req_id}"
-                    )
+                    logger.warning(f"Timeout delivering stream chunk for {req_id}")
                 except Exception:
                     if self._running:
                         logger.debug(

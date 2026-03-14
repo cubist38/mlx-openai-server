@@ -64,7 +64,9 @@ class FunctionParameterToolParser(AbstractToolParser):
         )
 
     @staticmethod
-    def _coerce_parameter_value(param_value: str) -> str | int | float | bool | list[Any] | dict[str, Any]:
+    def _coerce_parameter_value(
+        param_value: str,
+    ) -> str | int | float | bool | list[Any] | dict[str, Any]:
         """Parse tool argument values as JSON when possible."""
         try:
             loaded = json.loads(param_value)
@@ -121,7 +123,9 @@ class FunctionParameterToolParser(AbstractToolParser):
                 function_content = block[function_content_start:function_close_idx]
 
             arguments: dict[str, str | int | float | bool | list[Any] | dict[str, Any]] = {}
-            for param_name_raw, param_value_raw in self.permissive_parameter_regex.findall(function_content):
+            for param_name_raw, param_value_raw in self.permissive_parameter_regex.findall(
+                function_content
+            ):
                 param_name = param_name_raw.strip()
                 param_value = param_value_raw.strip()
                 arguments[param_name] = self._coerce_parameter_value(param_value)

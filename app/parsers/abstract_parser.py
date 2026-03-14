@@ -248,14 +248,13 @@ class AbstractToolParser:
             - extracted_content: Tool calls dict, passthrough chunk, or None
             - is_complete: True if chunk should be sent, False if buffering
         """
+
         def _merge_content_payload(
             payload: dict[str, list] | None,
             leading_content: str = "",
             trailing_content: str = "",
         ) -> dict[str, list | str]:
-            merged: dict[str, list | str] = (
-                dict(payload) if isinstance(payload, dict) else {}
-            )
+            merged: dict[str, list | str] = dict(payload) if isinstance(payload, dict) else {}
             pieces: list[str] = []
             if leading_content:
                 pieces.append(leading_content)
