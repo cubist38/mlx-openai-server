@@ -40,20 +40,31 @@ This project uses the following tools to maintain consistent code quality:
 
 - **ruff**: Automatic code formatter with options configured in `pyproject.toml`
 
+### Pre-commit Hooks
+
+This project uses [pre-commit](https://pre-commit.com/) to enforce code quality. All hooks **must** pass before submitting a pull request.
+
+**Install hooks (one-time setup):**
+
+```bash
+pre-commit install
+```
+
+**Run all hooks manually:**
+
+```bash
+pre-commit run --all-files
+```
+
+Pre-commit runs automatically on `git commit` once installed. The configured hooks include: trailing whitespace, end-of-file fixer, YAML/TOML validation, shellcheck, codespell, and ruff (linting + formatting).
+
 ### Formatting Workflow
 
-Before committing code changes:
+You can also run ruff directly on specific files:
 
 ```bash
 ./.venv/bin/ruff check --fix <file_or_directory>
 ./.venv/bin/ruff format <file_or_directory>
-```
-
-Alternatively, format the entire project:
-
-```bash
-./.venv/bin/ruff check --fix app/ tests/
-./.venv/bin/ruff format app/ tests/
 ```
 
 ---
@@ -308,6 +319,7 @@ When an agent cannot or chooses not to follow one or more guidelines in this doc
 Before finalizing any code contribution, verify:
 
 - ✅ Virtual environment (`./.venv`) is used for all operations
+- ✅ All pre-commit hooks pass (`pre-commit run --all-files`)
 - ✅ Code passes ruff linting and formatting
 - ✅ Type annotations are present on all functions/methods
 - ✅ Docstrings follow NumPy style conventions
