@@ -14,15 +14,15 @@ from ..utils.outlines_transformer_tokenizer import OutlinesTransformerTokenizer
 from ..utils.debug_logging import log_debug_chat_template
 from typing import List, Dict, Union, Generator, Any
 
-DEFAULT_TEMPERATURE = os.getenv("DEFAULT_TEMPERATURE", 0.7)
-DEFAULT_TOP_P = os.getenv("DEFAULT_TOP_P", 0.95)
-DEFAULT_TOP_K = os.getenv("DEFAULT_TOP_K", 20)
-DEFAULT_MIN_P = os.getenv("DEFAULT_MIN_P", 0.0)
-DEFAULT_XTC_PROBABILITY = os.getenv("DEFAULT_XTC_PROBABILITY", 0.0)
-DEFAULT_XTC_THRESHOLD = os.getenv("DEFAULT_XTC_THRESHOLD", 0.0)
-DEFAULT_SEED = os.getenv("DEFAULT_SEED", 0)
-DEFAULT_MAX_TOKENS = os.getenv("DEFAULT_MAX_TOKENS", 1000000)
-DEFAULT_REPETITION_CONTEXT_SIZE = os.getenv("DEFAULT_REPETITION_CONTEXT_SIZE", 20)
+DEFAULT_TEMPERATURE = float(os.getenv("DEFAULT_TEMPERATURE", "0.7"))
+DEFAULT_TOP_P = float(os.getenv("DEFAULT_TOP_P", "0.95"))
+DEFAULT_TOP_K = int(os.getenv("DEFAULT_TOP_K", "20"))
+DEFAULT_MIN_P = float(os.getenv("DEFAULT_MIN_P", "0.0"))
+DEFAULT_XTC_PROBABILITY = float(os.getenv("DEFAULT_XTC_PROBABILITY", "0.0"))
+DEFAULT_XTC_THRESHOLD = float(os.getenv("DEFAULT_XTC_THRESHOLD", "0.0"))
+DEFAULT_SEED = int(os.getenv("DEFAULT_SEED", "0"))
+DEFAULT_MAX_TOKENS = int(os.getenv("DEFAULT_MAX_TOKENS", "1000000"))
+DEFAULT_REPETITION_CONTEXT_SIZE = int(os.getenv("DEFAULT_REPETITION_CONTEXT_SIZE", "20"))
 
 @dataclass
 class CompletionResponse:
@@ -138,21 +138,21 @@ class MLX_LM:
                 - max_tokens: Maximum number of tokens to generate (default: 256)
         """
         # Set default parameters if not provided (use 'is not None' to preserve valid 0 values)
-        seed = kwargs.get("seed") if kwargs.get("seed") is not None else DEFAULT_SEED
-        max_tokens = (
-            kwargs.get("max_tokens")
-            if kwargs.get("max_tokens") is not None
-            else kwargs.get("max_completion_tokens")
-            if kwargs.get("max_completion_tokens") is not None
-            else DEFAULT_MAX_TOKENS
-        )
+        def _get(key, default):
+            v = kwargs.get(key)
+            return default if v is None else v
+
+        seed = _get("seed", DEFAULT_SEED)
+        max_tokens = _get("max_tokens", None)
+        if max_tokens is None:
+            max_tokens = _get("max_completion_tokens", DEFAULT_MAX_TOKENS)
         sampler_kwargs = {
-            "temp": kwargs.get("temperature") if kwargs.get("temperature") is not None else DEFAULT_TEMPERATURE,
-            "top_p": kwargs.get("top_p") if kwargs.get("top_p") is not None else DEFAULT_TOP_P,
-            "top_k": kwargs.get("top_k") if kwargs.get("top_k") is not None else DEFAULT_TOP_K,
-            "min_p": kwargs.get("min_p") if kwargs.get("min_p") is not None else DEFAULT_MIN_P,
-            "xtc_probability": kwargs.get("xtc_probability") if kwargs.get("xtc_probability") is not None else DEFAULT_XTC_PROBABILITY,
-            "xtc_threshold": kwargs.get("xtc_threshold") if kwargs.get("xtc_threshold") is not None else DEFAULT_XTC_THRESHOLD,
+            "temp": _get("temperature", DEFAULT_TEMPERATURE),
+            "top_p": _get("top_p", DEFAULT_TOP_P),
+            "top_k": _get("top_k", DEFAULT_TOP_K),
+            "min_p": _get("min_p", DEFAULT_MIN_P),
+            "xtc_probability": _get("xtc_probability", DEFAULT_XTC_PROBABILITY),
+            "xtc_threshold": _get("xtc_threshold", DEFAULT_XTC_THRESHOLD),
         }
 
         # Add XTC special tokens (EOS and newline) when XTC is enabled
@@ -162,11 +162,7 @@ class MLX_LM:
             ] + self.tokenizer.encode("\n")
 
         repetition_penalty = kwargs.get("repetition_penalty")
-        repetition_context_size = (
-            kwargs.get("repetition_context_size")
-            if kwargs.get("repetition_context_size") is not None
-            else DEFAULT_REPETITION_CONTEXT_SIZE
-        )
+        repetition_context_size = _get("repetition_context_size", DEFAULT_REPETITION_CONTEXT_SIZE)
         logit_bias = kwargs.get("logit_bias")
 
         # Convert string keys to int if logit_bias is provided (OpenAI API uses string keys)

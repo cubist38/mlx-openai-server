@@ -145,6 +145,62 @@ class MLXVLMHandler:
         self.inference_worker.start()
         logger.info("Initialized MLXVLMHandler and started inference worker")
 
+    async def _build_inference_context(
+        self, request: ChatCompletionRequest
+    ) -> tuple[str, dict[str, Any], Any]:
+        """Build the common inference context shared by stream and non-stream paths.
+
+        Returns a tuple of (input_prompt, model_params, parsers_result).
+        """
+        request_dict = await self._prepare_multimodal_request(request)
+
+        messages = request_dict["messages"]
+        chat_template_kwargs = request_dict["chat_template_kwargs"]
+
+        input_prompt = self.model.create_input_prompt(messages, chat_template_kwargs)
+        if self.debug:
+            log_debug_prompt(input_prompt)
+
+        image_inputs, video_inputs = process_vision_info(messages)
+        vision_inputs = self.model.create_inputs(input_prompt, image_inputs, video_inputs)
+
+        for key, value in vision_inputs.items():
+            if isinstance(value, torch.Tensor):
+                vision_inputs[key] = mx.array(value)
+
+        if self.debug:
+            log_debug_request(request_dict)
+
+        model_params = {
+            "seed": request_dict.get("seed"),
+            "max_tokens": request_dict.get("max_tokens"),
+            "max_completion_tokens": request_dict.get("max_completion_tokens"),
+            "temperature": request_dict.get("temperature"),
+            "repetition_penalty": request_dict.get("repetition_penalty"),
+            "repetition_context_size": request_dict.get("repetition_context_size"),
+            "top_p": request_dict.get("top_p"),
+            "schema": request_dict.get("schema"),
+            "vision_inputs": vision_inputs,
+        }
+
+        parsers_result = ParserManager.create_parsers(
+            reasoning_parser_name=self.reasoning_parser_name,
+            tool_parser_name=self.tool_parser_name,
+        )
+
+        enable_thinking = chat_template_kwargs.get("enable_thinking", True)
+        if not enable_thinking and parsers_result.reasoning_parser:
+            if parsers_result.reasoning_parser.respects_enable_thinking():
+                parsers_result.reasoning_parser = None
+
+        if request_dict.get("schema"):
+            logger.info("JSON schema is enabled, disabling reasoning parser and tool parser")
+            parsers_result.reasoning_parser = None
+            parsers_result.tool_parser = None
+            parsers_result.unified_parser = None
+
+        return input_prompt, model_params, parsers_result
+
     async def generate_multimodal_stream(self, request: ChatCompletionRequest):
         """
         Generate a streaming response for multimodal chat completion requests.
@@ -157,43 +213,7 @@ class MLXVLMHandler:
         """
 
         try:
-            request_dict = await self._prepare_multimodal_request(request)
-
-            # Extract messages, images, videos, audios
-            messages = request_dict["messages"]
-            chat_template_kwargs = request_dict["chat_template_kwargs"]
-
-            # Create input prompt
-            input_prompt = self.model.create_input_prompt(messages, chat_template_kwargs)
-
-            if self.debug:
-                log_debug_prompt(input_prompt)
-
-            # Process vision info and create inputs
-            image_inputs, video_inputs = process_vision_info(messages)
-            vision_inputs = self.model.create_inputs(input_prompt, image_inputs, video_inputs)
-
-            # Convert torch tensors to mlx arrays
-            for key, value in vision_inputs.items():
-                if isinstance(value, torch.Tensor):
-                    vision_inputs[key] = mx.array(value)
-
-            if self.debug:
-                log_debug_request(request_dict)
-
-            model_params = {
-                # sampling params
-                "seed": request_dict.get("seed"),
-                "max_tokens": request_dict.get("max_tokens"),
-                "temperature": request_dict.get("temperature"),
-                "repetition_penalty": request_dict.get("repetition_penalty"),
-                "repetition_context_size": request_dict.get("repetition_context_size"),
-                "top_p": request_dict.get("top_p"),
-                # json schema
-                "schema": request_dict.get("schema"),
-                # vision inputs
-                "vision_inputs": vision_inputs,
-            }
+            input_prompt, model_params, parsers_result = await self._build_inference_context(request)
 
             if self.debug:
                 log_debug_model_dispatch(
@@ -208,25 +228,6 @@ class MLXVLMHandler:
                 verbose=self.debug,
                 **model_params,
             )
-
-            # Create parsers using ParserManager
-            parsers_result = ParserManager.create_parsers(
-                reasoning_parser_name=self.reasoning_parser_name,
-                tool_parser_name=self.tool_parser_name,
-            )
-
-            enable_thinking = chat_template_kwargs.get("enable_thinking", True)
-
-            # Handle enable_thinking flag for separate reasoning parsers
-            if not enable_thinking and parsers_result.reasoning_parser:
-                if parsers_result.reasoning_parser.respects_enable_thinking():
-                    parsers_result.reasoning_parser = None
-
-            # Disable parsers when JSON schema is enabled
-            if request_dict.get("schema"):
-                logger.info("JSON schema is enabled, disabling reasoning parser and tool parser")
-                parsers_result.reasoning_parser = None
-                parsers_result.tool_parser = None
 
             after_reasoning_close_content = None
             final_chunk = None
@@ -477,44 +478,7 @@ class MLXVLMHandler:
             str: Complete response.
         """
         try:
-            request_dict = await self._prepare_multimodal_request(request)
-
-            # Extract messages, images, videos, audios
-            messages = request_dict["messages"]
-            chat_template_kwargs = request_dict["chat_template_kwargs"]
-
-            # Create input prompt
-            input_prompt = self.model.create_input_prompt(messages, chat_template_kwargs)
-
-            if self.debug:
-                log_debug_prompt(input_prompt)
-
-            # Process vision info and create inputs
-            image_inputs, video_inputs = process_vision_info(messages)
-            vision_inputs = self.model.create_inputs(input_prompt, image_inputs, video_inputs)
-
-            # Convert torch tensors to mlx arrays
-            for key, value in vision_inputs.items():
-                if isinstance(value, torch.Tensor):
-                    vision_inputs[key] = mx.array(value)
-
-            if self.debug:
-                log_debug_request(request_dict)
-
-            model_params = {
-                # sampling params
-                "seed": request_dict.get("seed"),
-                "max_tokens": request_dict.get("max_tokens"),
-                "max_completion_tokens": request_dict.get("max_completion_tokens"),
-                "temperature": request_dict.get("temperature"),
-                "repetition_penalty": request_dict.get("repetition_penalty"),
-                "repetition_context_size": request_dict.get("repetition_context_size"),
-                "top_p": request_dict.get("top_p"),
-                # json schema
-                "schema": request_dict.get("schema"),
-                # vision inputs
-                "vision_inputs": vision_inputs,
-            }
+            input_prompt, model_params, parsers_result = await self._build_inference_context(request)
 
             if self.debug:
                 log_debug_model_dispatch(
@@ -529,26 +493,6 @@ class MLXVLMHandler:
                 verbose=self.debug,
                 **model_params,
             )
-
-            # Create parsers using ParserManager
-            parsers_result = ParserManager.create_parsers(
-                reasoning_parser_name=self.reasoning_parser_name,
-                tool_parser_name=self.tool_parser_name,
-            )
-
-            chat_template_kwargs = request_dict.get("chat_template_kwargs", {})
-            enable_thinking = chat_template_kwargs.get("enable_thinking", True)
-
-            # Handle enable_thinking flag for separate reasoning parsers
-            if not enable_thinking and parsers_result.reasoning_parser:
-                if parsers_result.reasoning_parser.respects_enable_thinking():
-                    parsers_result.reasoning_parser = None
-
-            # Disable parsers when JSON schema is enabled
-            if request_dict.get("schema"):
-                logger.info("JSON schema is enabled, disabling reasoning parser and tool parser")
-                parsers_result.reasoning_parser = None
-                parsers_result.tool_parser = None
 
             parsed_response = {"reasoning_content": None, "tool_calls": None, "content": None}
             response_text = response.text
@@ -837,24 +781,39 @@ class MLXVLMHandler:
             chat_messages.append({"role": "system", "content": "\n\n".join(system_messages)})
         chat_messages.extend(non_system_messages)
 
-        request_dict = request.model_dump()
-        request_dict.pop("messages")
-        request_dict["messages"] = chat_messages
-        request_dict["images"] = images
-        request_dict["audios"] = audios
-        request_dict["videos"] = videos
+        # Extract only the fields consumed downstream instead of serializing
+        # the entire Pydantic model with model_dump().
+        chat_template_kwargs = request.chat_template_kwargs.model_dump() if request.chat_template_kwargs else {}
 
-        tools = request_dict.pop("tools")
-        tool_choice = request_dict.pop("tool_choice")
-
-        chat_template_kwargs = request_dict.get("chat_template_kwargs", {})
-
-        if tools:
+        if request.tools:
+            tools = [t.model_dump() for t in request.tools]
             chat_template_kwargs["tools"] = tools
-            if tool_choice:
+            if request.tool_choice:
+                tool_choice = request.tool_choice
+                if hasattr(tool_choice, "model_dump"):
+                    tool_choice = tool_choice.model_dump()
                 chat_template_kwargs["tool_choice"] = tool_choice
 
-        request_dict["chat_template_kwargs"] = chat_template_kwargs
+        request_dict: dict[str, Any] = {
+            "messages": chat_messages,
+            "images": images,
+            "audios": audios,
+            "videos": videos,
+            "chat_template_kwargs": chat_template_kwargs,
+            # Sampling params
+            "temperature": request.temperature,
+            "top_p": request.top_p,
+            "max_tokens": request.max_tokens,
+            "max_completion_tokens": request.max_completion_tokens,
+            "seed": request.seed,
+            "repetition_penalty": request.repetition_penalty,
+            "repetition_context_size": request.repetition_context_size,
+        }
+
+        if request.response_format:
+            response_format = request.response_format
+            if response_format.get("type") == "json_schema":
+                request_dict["schema"] = response_format.get("json_schema", {}).get("schema")
 
         return request_dict
 

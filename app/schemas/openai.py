@@ -39,7 +39,7 @@ class OpenAIBaseModel(BaseModel):
         # Compare against both field names and aliases
         if any(k not in field_names for k in data):
             logger.warning(
-                "The following fields were present in the request but ignored: %s",
+                "The following fields were present in the request but ignored: {}",
                 data.keys() - field_names,
             )
         return result
