@@ -57,6 +57,7 @@ def ensure_image_handler_available(model_type: str) -> None:
 
     raise RuntimeError(MFLUX_INSTALL_HINT)
 
+
 _SAMPLING_DEFAULT_FIELDS: tuple[str, ...] = (
     "default_max_tokens",
     "default_temperature",

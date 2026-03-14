@@ -5,17 +5,18 @@ from typing import Any
 
 from .abstract_converter import AbstractMessageConverter
 
+
 class GLM4MoEMessageConverter(AbstractMessageConverter):
     """GLM4 MoE-specific message format converter"""
 
     def convert_messages(self, messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
         """Convert message format to be compatible with GLM4 MoE chat templates.
-        
+
         Parameters
         ----------
         messages : list[dict[str, Any]]
             List of messages in OpenAI API format.
-            
+
         Returns
         -------
         list[dict[str, Any]]
@@ -32,12 +33,12 @@ class GLM4MoEMessageConverter(AbstractMessageConverter):
 
     def _convert_single_message(self, message: dict[str, Any]) -> dict[str, Any]:
         """Convert a single message.
-        
+
         Parameters
         ----------
         message : dict[str, Any]
             Single message to convert.
-            
+
         Returns
         -------
         dict[str, Any]
@@ -53,7 +54,7 @@ class GLM4MoEMessageConverter(AbstractMessageConverter):
 
     def _convert_tool_calls(self, tool_calls: list[dict[str, Any]]) -> None:
         """Convert arguments format in tool calls.
-        
+
         Parameters
         ----------
         tool_calls : list[dict[str, Any]]
@@ -69,12 +70,12 @@ class GLM4MoEMessageConverter(AbstractMessageConverter):
 
     def _parse_arguments_string(self, arguments_str: str) -> Any:
         """Parse GLM4 MoE-specific argument string format.
-        
+
         Parameters
         ----------
         arguments_str : str
             Arguments in string format.
-            
+
         Returns
         -------
         Any
