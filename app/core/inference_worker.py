@@ -3,11 +3,11 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import AsyncGenerator, Callable, Generator
 import queue
 import threading
-from collections.abc import AsyncGenerator, Generator
 from threading import Thread
-from typing import Any, Callable
+from typing import Any
 
 from loguru import logger
 
@@ -85,9 +85,7 @@ class InferenceWorker:
             else:
                 self._failed += 1
 
-    async def submit(
-        self, func: Callable[..., Any], *args: Any, **kwargs: Any
-    ) -> Any:
+    async def submit(self, func: Callable[..., Any], *args: Any, **kwargs: Any) -> Any:
         """Run func on the worker thread; await its result. Raises QueueFull, TimeoutError, or func's exception."""
         loop = asyncio.get_running_loop()
         future: asyncio.Future[Any] = loop.create_future()
@@ -107,7 +105,7 @@ class InferenceWorker:
             raise asyncio.QueueFull("Inference queue is full")
         try:
             return await asyncio.wait_for(future, timeout=self._timeout)
-        except asyncio.TimeoutError:
+        except TimeoutError:
             raise TimeoutError(f"Inference timed out after {self._timeout}s")
 
     def submit_stream(

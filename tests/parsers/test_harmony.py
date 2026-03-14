@@ -31,11 +31,11 @@ def test_harmony_reasoning_and_tool_parsing_streaming() -> None:
         "json",
         "<|message|>",
         "{",
-        "\"city\"",
+        '"city"',
         ":",
-        "\"Tokyo\"",
+        '"Tokyo"',
         "}",
-        "<|call|>"
+        "<|call|>",
     ]
 
     results = []
@@ -57,7 +57,7 @@ def test_harmony_reasoning_and_tool_parsing_streaming() -> None:
     assert "tool_calls" in final_result
     assert final_result["tool_calls"] is not None
     assert len(final_result["tool_calls"]) == 1
-    
+
     tool_call = final_result["tool_calls"][0]
     assert tool_call["name"] == "get_weather"
     assert "Tokyo" in tool_call["arguments"]
@@ -79,13 +79,17 @@ def test_harmony_non_streaming_parse() -> None:
     assert result is not None
     assert "reasoning_content" in result
     assert result["reasoning_content"] is not None
-    assert "need" in result["reasoning_content"].lower() or "call" in result["reasoning_content"].lower()
+    assert (
+        "need" in result["reasoning_content"].lower()
+        or "call" in result["reasoning_content"].lower()
+    )
 
     # Verify tool calls
     assert "tool_calls" in result
     assert len(result["tool_calls"]) == 1
     assert result["tool_calls"][0]["name"] == "get_weather"
     assert "Tokyo" in result["tool_calls"][0]["arguments"]
+
 
 if __name__ == "__main__":
     test_harmony_reasoning_and_tool_parsing_streaming()
