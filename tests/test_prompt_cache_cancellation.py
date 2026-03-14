@@ -87,7 +87,9 @@ async def test_prompt_cache_inserted_on_stream_cancellation(
         chunk.token = 4
         yield chunk
 
-    mock_inference_worker.submit_stream = Mock(side_effect=lambda *args, **kwargs: mock_response_gen())
+    mock_inference_worker.submit_stream = Mock(
+        side_effect=lambda *args, **kwargs: mock_response_gen()
+    )
 
     mock_prompt_cache = Mock()
     mock_prompt_cache.fetch_nearest_cache.return_value = (Mock(name="cache_obj"), [])
@@ -115,7 +117,7 @@ async def test_prompt_cache_inserted_on_stream_cancellation(
     mock_parsers_result.is_unified = False
     mock_parsers_result.reasoning_parser = None
     mock_parsers_result.tool_parser = None
-    with patch('app.handler.mlx_lm.ParserManager.create_parsers', return_value=mock_parsers_result):
+    with patch("app.handler.mlx_lm.ParserManager.create_parsers", return_value=mock_parsers_result):
         fake_request = Mock()
         gen = handler.generate_text_stream(fake_request)
         try:
@@ -158,7 +160,9 @@ async def test_prompt_cache_inserted_on_normal_completion(
                 chunk.generation_tokens = 20
             yield chunk
 
-    mock_inference_worker.submit_stream = Mock(side_effect=lambda *args, **kwargs: mock_response_gen())
+    mock_inference_worker.submit_stream = Mock(
+        side_effect=lambda *args, **kwargs: mock_response_gen()
+    )
 
     mock_prompt_cache = Mock()
     mock_prompt_cache.fetch_nearest_cache.return_value = (Mock(name="cache_obj"), [])
@@ -184,7 +188,7 @@ async def test_prompt_cache_inserted_on_normal_completion(
     mock_parsers_result.is_unified = False
     mock_parsers_result.reasoning_parser = None
     mock_parsers_result.tool_parser = None
-    with patch('app.handler.mlx_lm.ParserManager.create_parsers', return_value=mock_parsers_result):
+    with patch("app.handler.mlx_lm.ParserManager.create_parsers", return_value=mock_parsers_result):
         fake_request = Mock()
         gen = handler.generate_text_stream(fake_request)
         try:
@@ -246,7 +250,7 @@ async def test_prompt_cache_inserted_on_cancellation_before_any_chunk(
     mock_parsers_result.is_unified = False
     mock_parsers_result.reasoning_parser = None
     mock_parsers_result.tool_parser = None
-    with patch('app.handler.mlx_lm.ParserManager.create_parsers', return_value=mock_parsers_result):
+    with patch("app.handler.mlx_lm.ParserManager.create_parsers", return_value=mock_parsers_result):
         fake_request = Mock()
         gen = handler.generate_text_stream(fake_request)
         task = asyncio.create_task(gen.__anext__())
@@ -284,7 +288,9 @@ async def test_prompt_cache_inserted_on_cancellation_after_multiple_chunks(
             chunk.token = token
             yield chunk
 
-    mock_inference_worker.submit_stream = Mock(side_effect=lambda *args, **kwargs: mock_response_gen())
+    mock_inference_worker.submit_stream = Mock(
+        side_effect=lambda *args, **kwargs: mock_response_gen()
+    )
 
     mock_prompt_cache = Mock()
     mock_prompt_cache.fetch_nearest_cache.return_value = (Mock(name="cache_obj"), [])
@@ -310,7 +316,7 @@ async def test_prompt_cache_inserted_on_cancellation_after_multiple_chunks(
     mock_parsers_result.is_unified = False
     mock_parsers_result.reasoning_parser = None
     mock_parsers_result.tool_parser = None
-    with patch('app.handler.mlx_lm.ParserManager.create_parsers', return_value=mock_parsers_result):
+    with patch("app.handler.mlx_lm.ParserManager.create_parsers", return_value=mock_parsers_result):
         fake_request = Mock()
         gen = handler.generate_text_stream(fake_request)
         try:

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-import re
 import json
+import re
 
 from .abstract_parser import AbstractToolParser
 
@@ -32,12 +32,12 @@ class FunctionGemmaToolParser(AbstractToolParser):
 
     def extract_tool_calls(self, model_output: str) -> dict[str, list] | None:
         """Extract tool calls from complete model output.
-        
+
         Parameters
         ----------
         model_output : str
             Complete model output containing tool calls.
-            
+
         Returns
         -------
         dict[str, list] | None
@@ -46,9 +46,7 @@ class FunctionGemmaToolParser(AbstractToolParser):
         """
         matches = self.tool_call_regex.findall(model_output)
         if not matches:
-            return {
-                "content": model_output
-            }
+            return {"content": model_output}
         tool_calls = []
         for match in matches:
             function_name = match[0]
@@ -59,4 +57,3 @@ class FunctionGemmaToolParser(AbstractToolParser):
         return {
             "tool_calls": tool_calls,
         }
-        

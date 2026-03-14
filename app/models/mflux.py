@@ -1,21 +1,21 @@
 from __future__ import annotations
 
-from loguru import logger
-import inspect
-from PIL import Image
 from abc import ABC, abstractmethod
-from typing import Any, Callable, Optional
+from collections.abc import Callable
+import inspect
+from typing import Any
 
+from loguru import logger
 from mflux.models.common.config import ModelConfig
-from mflux.models.z_image.variants import ZImageTurbo
 from mflux.models.fibo.variants.txt2img.fibo import FIBO
-from mflux.models.flux.variants.txt2img.flux import Flux1
-from mflux.models.qwen.variants.txt2img.qwen_image import QwenImage
 from mflux.models.flux.variants.kontext.flux_kontext import Flux1Kontext
-from mflux.models.qwen.variants.edit.qwen_image_edit import QwenImageEdit
-from mflux.models.flux2.variants.txt2img.flux2_klein import Flux2Klein
+from mflux.models.flux.variants.txt2img.flux import Flux1
 from mflux.models.flux2.variants.edit.flux2_klein_edit import Flux2KleinEdit
-
+from mflux.models.flux2.variants.txt2img.flux2_klein import Flux2Klein
+from mflux.models.qwen.variants.edit.qwen_image_edit import QwenImageEdit
+from mflux.models.qwen.variants.txt2img.qwen_image import QwenImage
+from mflux.models.z_image.variants import ZImageTurbo
+from PIL import Image
 
 # -----------------------------------------------------------------------------
 # Exceptions
@@ -24,22 +24,18 @@ from mflux.models.flux2.variants.edit.flux2_klein_edit import Flux2KleinEdit
 
 class ImageModelError(Exception):
     """Base exception for image generation model errors."""
-    pass
 
 
 class ModelLoadError(ImageModelError):
     """Raised when model loading fails."""
-    pass
 
 
 class ModelGenerationError(ImageModelError):
     """Raised when image generation fails."""
-    pass
 
 
 class InvalidConfigurationError(ImageModelError):
     """Raised when configuration is invalid."""
-    pass
 
 
 # -----------------------------------------------------------------------------
@@ -48,8 +44,8 @@ class InvalidConfigurationError(ImageModelError):
 
 
 def _lora_validate(
-    lora_paths: Optional[list[str]] | None,
-    lora_scales: Optional[list[float]] | None,
+    lora_paths: list[str] | None,
+    lora_scales: list[float] | None,
 ) -> None:
     if (lora_paths is None) != (lora_scales is None):
         raise InvalidConfigurationError(
@@ -69,9 +65,9 @@ class ModelConfiguration:
         self,
         model_type: str,
         model_config: ModelConfig,
-        quantize: Optional[int] = None,
-        lora_paths: Optional[list[str]] = None,
-        lora_scales: Optional[list[float]] = None,
+        quantize: int | None = None,
+        lora_paths: list[str] | None = None,
+        lora_scales: list[float] | None = None,
     ) -> None:
         if quantize is not None and quantize not in (4, 8, 16):
             raise InvalidConfigurationError(
@@ -88,9 +84,9 @@ class ModelConfiguration:
     def from_name(
         cls,
         config_name: str,
-        quantize: Optional[int] = None,
-        lora_paths: Optional[list[str]] = None,
-        lora_scales: Optional[list[float]] = None,
+        quantize: int | None = None,
+        lora_paths: list[str] | None = None,
+        lora_scales: list[float] | None = None,
     ) -> ModelConfiguration:
         if config_name not in _CONFIG_REGISTRY:
             available = ", ".join(_CONFIG_REGISTRY.keys())
@@ -147,15 +143,12 @@ class BaseImageModel(ABC):
     @abstractmethod
     def _load_model(self) -> None:
         """Load the specific model implementation."""
-        pass
 
     def _generate_image(self, prompt: str, seed: int = 42, **kwargs: Any) -> Image.Image:
         sig = inspect.signature(self._model.generate_image)
         valid = set(sig.parameters.keys())
         filtered = {k: v for k, v in kwargs.items() if k in valid}
-        result = self._model.generate_image(
-            prompt=prompt, seed=seed, **filtered
-        )
+        result = self._model.generate_image(prompt=prompt, seed=seed, **filtered)
         return result.image
 
     def __call__(self, prompt: str, seed: int = 42, **kwargs: Any) -> Image.Image:
@@ -262,9 +255,9 @@ class ImageGenerationModel:
         self,
         model_path: str,
         config_name: str,
-        quantize: Optional[int] = None,
-        lora_paths: Optional[list[str]] = None,
-        lora_scales: Optional[list[float]] = None,
+        quantize: int | None = None,
+        lora_paths: list[str] | None = None,
+        lora_scales: list[float] | None = None,
     ) -> None:
         self.model_path = model_path
         self.config_name = config_name
