@@ -419,6 +419,7 @@ async def chat_completions(
             content=create_error_response(str(e)), status_code=HTTPStatus.INTERNAL_SERVER_ERROR
         )
 
+
 @router.post("/v1/embeddings", response_model=None)
 async def embeddings(
     request: EmbeddingRequest, raw_request: Request
@@ -855,7 +856,6 @@ async def process_multimodal_request(
     return JSONResponse(content=final_response.model_dump(exclude_none=True))
 
 
-
 async def process_text_request(
     handler: MLXLMHandler | MLXVLMHandler,
     request: ChatCompletionRequest,
@@ -990,9 +990,11 @@ def format_final_response(
         request_id=request_id,
     )
 
+
 # =============================================================================
 # Responses API Handlers
 # =============================================================================
+
 
 def _normalize_responses_item(item: Any) -> dict[str, Any]:
     """Normalize TypedDict/BaseModel response item to a plain dictionary."""
@@ -1014,7 +1016,9 @@ def _serialize_responses_tool_output(output: Any) -> str:
         text_parts: list[str] = []
         for output_item in output:
             normalized = _normalize_responses_item(output_item)
-            if normalized.get("type") in {"input_text", "output_text", "text"} and normalized.get("text"):
+            if normalized.get("type") in {"input_text", "output_text", "text"} and normalized.get(
+                "text"
+            ):
                 text_parts.append(str(normalized["text"]))
         if text_parts:
             return "\n".join(text_parts)
@@ -1104,9 +1108,7 @@ def _convert_responses_tool_choice(tool_choice: Any) -> Any:
     return "auto"
 
 
-def convert_responses_request_to_chat_request(
-    request: ResponsesRequest
-) -> ChatCompletionRequest:
+def convert_responses_request_to_chat_request(request: ResponsesRequest) -> ChatCompletionRequest:
     """Convert a Responses request into a ChatCompletionRequest with full turn history."""
     chat_messages: list[Message] = []
     pending_tool_calls: list[ChatCompletionMessageToolCall] = []
@@ -1188,7 +1190,9 @@ def convert_responses_request_to_chat_request(
             if item_type in {"input_text", "text"}:
                 text = item.get("text")
                 if text:
-                    pending_user_parts.append(ChatCompletionContentPartText(type="text", text=str(text)))
+                    pending_user_parts.append(
+                        ChatCompletionContentPartText(type="text", text=str(text))
+                    )
             elif item_type in {"input_image", "image_url"} and item.get("image_url"):
                 pending_user_parts.append(
                     ChatCompletionContentPartImage(
@@ -1253,10 +1257,9 @@ def convert_responses_request_to_chat_request(
 
     return ChatCompletionRequest(**chat_request_payload)
 
+
 def format_final_responses_response(
-    response: str | dict[str, Any],
-    request: ResponsesRequest,
-    usage: UsageInfo | None = None
+    response: str | dict[str, Any], request: ResponsesRequest, usage: UsageInfo | None = None
 ) -> ResponsesResponse:
     """Format the final non-streaming response."""
     response_payload: dict[str, Any]
@@ -1391,6 +1394,7 @@ def refine_responses_request(
         request.model = Config.TEXT_MODEL
     return request
 
+
 async def handle_responses_stream_response(
     generator: AsyncGenerator[Any, None],
     request: ResponsesRequest,
@@ -1438,9 +1442,7 @@ async def handle_responses_stream_response(
         text_val = None
         if request.text:
             text_val = (
-                request.text.model_dump()
-                if hasattr(request.text, "model_dump")
-                else request.text
+                request.text.model_dump() if hasattr(request.text, "model_dump") else request.text
             )
         return {
             "id": resp_id,
@@ -1666,7 +1668,12 @@ async def handle_responses_stream_response(
                 {
                     "id": msg_item_id,
                     "content": [
-                        {"annotations": [], "text": full_text, "type": "output_text", "logprobs": None}
+                        {
+                            "annotations": [],
+                            "text": full_text,
+                            "type": "output_text",
+                            "logprobs": None,
+                        }
                     ],
                     "role": "assistant",
                     "status": "completed",
@@ -1707,9 +1714,9 @@ async def handle_responses_stream_response(
             f"data: {json.dumps({'response': final_response_obj, 'sequence_number': _next_seq(), 'type': 'response.completed'})}\n\n"
         )
 
+
 async def process_text_responses_request(
-    handler: MLXLMHandler,
-    request: ResponsesRequest
+    handler: MLXLMHandler, request: ResponsesRequest
 ) -> ResponsesResponse | StreamingResponse | JSONResponse:
     """Handle text-only Responses API requests."""
     refined_request = refine_responses_request(request, handler)
@@ -1764,12 +1771,9 @@ async def process_multimodal_responses_request(
     result = await handler.generate_multimodal_response(chat_request)
     response_data = result.get("response")
     usage = result.get("usage")
-    final_response = format_final_responses_response(
-        response_data,
-        refined_request,
-        usage
-    )
+    final_response = format_final_responses_response(response_data, refined_request, usage)
     return JSONResponse(content=final_response.model_dump(exclude_none=True))
+
 
 @router.post("/v1/responses", response_model=None)
 async def responses_endpoint(
