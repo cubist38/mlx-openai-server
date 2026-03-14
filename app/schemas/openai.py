@@ -2,18 +2,19 @@
 
 from __future__ import annotations
 
-import uuid
-import time
 from enum import Enum
+import time
 from typing import Any, ClassVar, Literal, TypeAlias
+import uuid
 
-from loguru import logger
 from fastapi import UploadFile
+from loguru import logger
 from pydantic import BaseModel, ConfigDict, Field, model_validator
+
 
 class OpenAIBaseModel(BaseModel):
     """Base model for OpenAI API schemas."""
-    
+
     # OpenAI API does allow extra fields
     model_config = ConfigDict(extra="allow")
 
@@ -154,9 +155,10 @@ class PromptTokenUsageInfo(OpenAIBaseModel):
 
     cached_tokens: int | None = None
 
+
 class StreamOptions(OpenAIBaseModel):
     """Stream options for a request."""
-    
+
     include_usage: bool | None = True
     continuous_usage_stats: bool | None = False
 
@@ -178,15 +180,16 @@ class FunctionCall(OpenAIBaseModel):
     name: str
     arguments: str
 
+
 def random_uuid() -> str:
     return str(uuid.uuid4().hex)
+
 
 def make_tool_call_id(id_type: str = "random", func_name=None, idx=None):
     if id_type == "kimi_k2":
         return f"functions.{func_name}:{idx}"
-    else:
-        # by default return random
-        return f"chatcmpl-tool-{random_uuid()}"
+    # by default return random
+    return f"chatcmpl-tool-{random_uuid()}"
 
 
 class ChatCompletionMessageToolCall(OpenAIBaseModel):
@@ -224,6 +227,7 @@ class Message(OpenAIBaseModel):
         "from this message instead of starting a new assistant turn (prefill / partial mode).",
     )
 
+
 class ChatTemplateKwargs(OpenAIBaseModel):
     """Represents the arguments for a chat template."""
 
@@ -232,44 +236,45 @@ class ChatTemplateKwargs(OpenAIBaseModel):
         default="medium", description="The reasoning effort level."
     )
 
+
 class FunctionDefinition(OpenAIBaseModel):
     name: str
     description: str | None = None
     parameters: dict[str, Any] | None = None
 
+
 class ChatCompletionToolsParam(OpenAIBaseModel):
     type: Literal["function"] = "function"
     function: FunctionDefinition
 
+
 class ChatCompletionNamedFunction(OpenAIBaseModel):
     name: str
+
 
 class ChatCompletionNamedToolChoiceParam(OpenAIBaseModel):
     function: ChatCompletionNamedFunction
     type: Literal["function"] = "function"
 
-class ChatCompletionRequest(OpenAIBaseModel):
 
+class ChatCompletionRequest(OpenAIBaseModel):
     """Request schema for OpenAI-compatible chat completion API."""
-    
+
     model: str = Field(Config.TEXT_MODEL, description="The model to use for completion.")
     messages: list[Message] = Field(..., description="The list of messages in the conversation.")
     tools: list[ChatCompletionToolsParam] | None = Field(
         None, description="List of tools available for the request."
     )
-    tool_choice: (
-        Literal["none"]
-        | Literal["auto"]
-        | Literal["required"]
-        | ChatCompletionNamedToolChoiceParam
-        | None
-    ) = "none"
+    tool_choice: Literal["none", "auto", "required"] | ChatCompletionNamedToolChoiceParam | None = (
+        "none"
+    )
     max_tokens: int | None = Field(
         default=None,
-        deprecated="max_tokens is deprecated in favor of "
-        "the max_completion_tokens field",
+        deprecated="max_tokens is deprecated in favor of the max_completion_tokens field",
     )
-    max_completion_tokens: int | None = Field(None, description="Maximum number of tokens to generate.")
+    max_completion_tokens: int | None = Field(
+        None, description="Maximum number of tokens to generate."
+    )
     temperature: float | None = Field(None, description="Sampling temperature.")
     top_p: float | None = Field(None, description="Nucleus sampling probability.")
     top_k: int | None = Field(None, description="Top-k sampling parameter.")
@@ -284,7 +289,8 @@ class ChatCompletionRequest(OpenAIBaseModel):
     n: int | None = Field(None, description="Number of completions to generate.")
     response_format: dict[str, Any] | None = Field(None, description="Format for the response.")
     seed: int | None = Field(
-        None, description="The seed to use for sampling.",
+        None,
+        description="The seed to use for sampling.",
     )
     user: str | None = Field(None, description="User identifier.")
     repetition_penalty: float | None = Field(
@@ -296,11 +302,10 @@ class ChatCompletionRequest(OpenAIBaseModel):
     xtc_probability: float | None = Field(
         None, description="XTC (eXclude Top Choices) sampling probability (0.0-1.0)."
     )
-    xtc_threshold: float | None = Field(
-        None, description="XTC sampling threshold (0.0-0.5)."
-    )
+    xtc_threshold: float | None = Field(None, description="XTC sampling threshold (0.0-0.5).")
     logit_bias: dict[str, float] | None = Field(
-        None, description="Modify the likelihood of specified tokens appearing in the completion. Maps token IDs (as strings) to bias values from -100 to 100."
+        None,
+        description="Modify the likelihood of specified tokens appearing in the completion. Maps token IDs (as strings) to bias values from -100 to 100.",
     )
     stream: bool = Field(False, description="Whether to stream the response.")
     stream_options: StreamOptions | None = None
@@ -452,6 +457,7 @@ class ImageSize(str, Enum):
     MEDIUM = "512x512"
     LARGE = "1024x1024"
 
+
 class Priority(str, Enum):
     """Task priority levels."""
 
@@ -485,13 +491,9 @@ class TranscriptionResponseFormat(str, Enum):
 class ImageGenerationRequest(OpenAIBaseModel):
     """Request schema for OpenAI-compatible image generation API."""
 
-    prompt: str = Field(
-        ...,
-        description="A text description of the desired image(s)."
-    )
+    prompt: str = Field(..., description="A text description of the desired image(s).")
     negative_prompt: str | None = Field(
-        None,
-        description="A text description of the desired image(s)."
+        None, description="A text description of the desired image(s)."
     )
     model: str | None = Field(
         default=Config.IMAGE_GENERATION_MODEL, description="The model to use for image generation"
@@ -546,7 +548,9 @@ class ImageGenerationError(OpenAIBaseModel):
 class ImageEditRequest(OpenAIBaseModel):
     """Request data for OpenAI-compatible image edit API."""
 
-    image: UploadFile | list[UploadFile] = Field(..., description="The image(s) to edit. Must be a file upload or a list of file uploads")
+    image: UploadFile | list[UploadFile] = Field(
+        ..., description="The image(s) to edit. Must be a file upload or a list of file uploads"
+    )
     prompt: str = Field(..., description="The prompt for the image edit")
     model: str | None = Field(
         default=Config.IMAGE_EDIT_MODEL, description="The model to use for image edit"
@@ -650,14 +654,9 @@ class TranscriptionResponseStream(OpenAIBaseModel):
 
 # --- Responses API Schemas ---
 
-from openai.types.responses import (
-    ResponseStatus,
-    ResponseInputItemParam,
-    ResponseOutputItem,
-)
+from openai.types.responses import ResponseInputItemParam, ResponseOutputItem, ResponseStatus
+from openai.types.responses.response import IncompleteDetails, Tool, ToolChoice
 from openai.types.shared import Reasoning
-from openai.types.responses.response import Tool, ToolChoice
-from openai.types.responses.response import IncompleteDetails
 
 ResponseInputOutputItem: TypeAlias = ResponseInputItemParam | ResponseOutputItem
 
@@ -696,9 +695,7 @@ class ResponsesRequest(OpenAIBaseModel):
     )
     seed: int | None = Field(None, description="The seed for the response.")
     text: ResponseTextConfig | None = None
-    tools: list[Tool] | None = Field(
-        None, description="List of tools to use for the response."
-    )
+    tools: list[Tool] | None = Field(None, description="List of tools to use for the response.")
     tool_choice: ToolChoice | None = Field(
         default="auto", description="The tool choice to use for the response."
     )
@@ -717,13 +714,14 @@ class OutputTokensDetails(OpenAIBaseModel):
     output_tokens_per_turn: list[int] = Field(default_factory=list)
     tool_output_tokens_per_turn: list[int] = Field(default_factory=list)
 
+
 class ResponseUsage(OpenAIBaseModel):
     input_tokens: int
     input_tokens_details: InputTokensDetails
     output_tokens: int
     output_tokens_details: OutputTokensDetails
     total_tokens: int
-    
+
 
 class ResponsesResponse(OpenAIBaseModel):
     """Represents a complete response from the Responses API."""
