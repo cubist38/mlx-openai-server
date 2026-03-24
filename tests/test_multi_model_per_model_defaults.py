@@ -94,11 +94,31 @@ def _load_endpoints_module() -> Any:
 class _FakeRegistry:
     """Minimal registry stub that resolves handlers by model id."""
 
-    def __init__(self, handlers: dict[str, Any]) -> None:
+    def __init__(
+        self,
+        handlers: dict[str, Any],
+        on_demand_handlers: dict[str, Any] | None = None,
+    ) -> None:
         self._handlers = handlers
+        self._on_demand_handlers = on_demand_handlers or {}
 
     def get_handler(self, model_id: str) -> Any:
         return self._handlers[model_id]
+
+    def is_on_demand(self, model_id: str) -> bool:
+        return model_id in self._on_demand_handlers
+
+    async def ensure_on_demand_loaded(self, model_id: str) -> Any:
+        handler = self._on_demand_handlers[model_id]
+        self._handlers[model_id] = handler
+        return handler
+
+    async def release_on_demand(self, model_id: str) -> None:
+        if model_id in self._on_demand_handlers:
+            self._handlers.pop(model_id, None)
+
+    def list_model_ids(self) -> list[str]:
+        return sorted(set(self._handlers.keys()) | set(self._on_demand_handlers.keys()))
 
 
 def _make_raw_request(registry: _FakeRegistry | None, handler: Any | None = None) -> Any:
@@ -597,6 +617,73 @@ async def test_responses_omitted_model_uses_backward_compatible_fallback_handler
 
     assert isinstance(response, JSONResponse)
     assert captured_handlers == [fallback_handler]
+
+
+@pytest.mark.asyncio
+async def test_responses_omitted_model_does_not_fallback_to_non_text_handler() -> None:
+    """Omitted Responses requests should not route to a non-text fallback handler."""
+
+    endpoints_module = _load_endpoints_module()
+
+    fallback_handler = types.SimpleNamespace(handler_type="whisper")
+    registry_handler = types.SimpleNamespace(
+        handler_type="lm", _uses_model_sampling_defaults=True, **PER_MODEL_DEFAULTS_A
+    )
+    registry = _FakeRegistry({"model-a": registry_handler})
+
+    request = ResponsesRequest(input="hello", model=None)
+    with pytest.raises(HTTPException) as exc_info:
+        await endpoints_module.responses_endpoint(
+            request, _make_raw_request(registry, handler=fallback_handler)
+        )
+
+    assert exc_info.value.status_code == 404
+    assert exc_info.value.detail["error"]["type"] == "model_not_found"
+
+
+@pytest.mark.asyncio
+async def test_responses_omitted_model_non_text_fallback_uses_on_demand_default_alias(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Omitted Responses should resolve ``local-text-model`` via on-demand load."""
+
+    endpoints_module = _load_endpoints_module()
+    captured_handlers: list[Any] = []
+
+    async def _fake_process_text_responses_request(
+        handler: Any,
+        request: ResponsesRequest,
+    ) -> JSONResponse:
+        del request
+        captured_handlers.append(handler)
+        return JSONResponse(content={"ok": True})
+
+    fallback_handler = types.SimpleNamespace(handler_type="whisper")
+    on_demand_text_handler = types.SimpleNamespace(
+        handler_type="lm",
+        served_model_name=Config.TEXT_MODEL,
+        model_path="mlx-community/model-text",
+        debug=False,
+    )
+    registry = _FakeRegistry(
+        {"model-a": types.SimpleNamespace(handler_type="lm")},
+        on_demand_handlers={Config.TEXT_MODEL: on_demand_text_handler},
+    )
+
+    monkeypatch.setattr(
+        endpoints_module,
+        "process_text_responses_request",
+        _fake_process_text_responses_request,
+    )
+
+    request = ResponsesRequest(input="hello", model=None)
+    response = await endpoints_module.responses_endpoint(
+        request, _make_raw_request(registry, handler=fallback_handler)
+    )
+
+    assert isinstance(response, JSONResponse)
+    assert response.status_code == 200
+    assert captured_handlers == [on_demand_text_handler]
 
 
 @pytest.mark.asyncio
