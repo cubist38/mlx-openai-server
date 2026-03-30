@@ -11,6 +11,7 @@ from mlx_lm.sample_utils import make_logits_processors, make_sampler
 from mlx_lm.utils import load
 from outlines.processors import JSONLogitsProcessor
 
+from ..utils.chat_template import map_developer_role
 from ..utils.debug_logging import log_debug_chat_template
 from ..utils.outlines_transformer_tokenizer import OutlinesTransformerTokenizer
 
@@ -132,6 +133,8 @@ class MLX_LM:
         self, messages: list[dict[str, str]], chat_template_kwargs: dict[str, Any]
     ) -> str:
         use_partial = chat_template_kwargs.pop("_partial_mode", False)
+
+        messages = map_developer_role(messages, self.tokenizer.chat_template)
 
         return self.tokenizer.apply_chat_template(
             messages,

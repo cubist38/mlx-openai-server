@@ -208,7 +208,7 @@ class Message(OpenAIBaseModel):
         description="The content of the message, either text or a list of content items (vision, audio, or multimodal).",
     )
     refusal: str | None = Field(None, description="The refusal reason, if any.")
-    role: Literal["system", "user", "assistant", "tool"] = Field(
+    role: Literal["system", "user", "assistant", "tool", "developer"] = Field(
         ..., description="The role of the message sender."
     )
     name: str | None = Field(

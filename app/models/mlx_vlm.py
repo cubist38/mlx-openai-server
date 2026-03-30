@@ -10,6 +10,7 @@ from mlx_vlm.video_generate import process_vision_info
 from outlines.processors import JSONLogitsProcessor
 import torch
 
+from ..utils.chat_template import map_developer_role
 from ..utils.outlines_transformer_tokenizer import OutlinesTransformerTokenizer
 from ..utils.prompt_cache import LRUPromptCache
 
@@ -99,6 +100,9 @@ class MLX_VLM:
         self, messages: list[dict[str, str]], chat_template_kwargs: dict[str, Any]
     ) -> str:
         chat_template_kwargs.pop("_partial_mode", None)
+
+        chat_template = getattr(self.processor, "chat_template", None)
+        messages = map_developer_role(messages, chat_template)
 
         return self.processor.apply_chat_template(
             messages, tokenize=False, add_generation_prompt=True, **chat_template_kwargs
