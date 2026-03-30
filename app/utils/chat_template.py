@@ -20,6 +20,4 @@ def map_developer_role(
         return messages
     if chat_template and _DEVELOPER_ROLE_RE.search(chat_template):
         return messages
-    return [
-        {**m, "role": "system"} if m.get("role") == "developer" else m for m in messages
-    ]
+    return [{**m, "role": "system"} if m.get("role") == "developer" else m for m in messages]
