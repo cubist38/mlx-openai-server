@@ -15,7 +15,7 @@ import click
 from loguru import logger
 
 from .config import MLXServerConfig, load_config_from_yaml
-from .main import start, start_multi
+from .main import start_multi
 from .parsers import REASONING_PARSER_MAP, TOOL_PARSER_MAP, UNIFIED_PARSER_MAP
 from .version import __version__
 
@@ -488,4 +488,10 @@ def launch(
         default_repetition_context_size=repetition_context_size,
     )
 
-    asyncio.run(start(args))
+    # Single-model launches always run through the HandlerProcessProxy
+    # subprocess path — same isolation used by multi-model YAML mode — to
+    # avoid the MLX Metal command-buffer race (``Completed handler
+    # provided after commit call``) that crashes the in-process path when
+    # the continuous batcher runs on a thread other than the one that
+    # loaded the model. See https://github.com/ml-explore/mlx/issues/2457.
+    asyncio.run(start_multi(args.to_multi_model_server_config()))

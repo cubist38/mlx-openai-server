@@ -202,6 +202,39 @@ class MLXServerConfig:
             batch_completion_size=self.batch_completion_size,
             batch_prefill_size=self.batch_prefill_size,
             batch_prefill_step_size=self.batch_prefill_step_size,
+            # Sampling defaults: the subprocess path reads them off the
+            # handler proxy rather than the ``DEFAULT_*`` env vars (which
+            # would not be set inside the child process).
+            default_max_tokens=self.default_max_tokens,
+            default_temperature=self.default_temperature,
+            default_top_p=self.default_top_p,
+            default_top_k=self.default_top_k,
+            default_min_p=self.default_min_p,
+            default_repetition_penalty=self.default_repetition_penalty,
+            default_presence_penalty=self.default_presence_penalty,
+            default_xtc_probability=self.default_xtc_probability,
+            default_xtc_threshold=self.default_xtc_threshold,
+            default_seed=self.default_seed,
+            default_repetition_context_size=self.default_repetition_context_size,
+        )
+
+    def to_multi_model_server_config(self) -> MultiModelServerConfig:
+        """Wrap this single-model config in a one-entry ``MultiModelServerConfig``.
+
+        Used by :mod:`app.cli` when ``--no-isolate`` is not set (the default),
+        so ``mlx-openai-server launch --model-path ...`` goes through the
+        ``HandlerProcessProxy`` path — the same subprocess isolation that
+        multi-handler YAML mode uses to avoid the MLX Metal command-buffer
+        races and ``resource_tracker`` semaphore leaks documented in
+        https://github.com/ml-explore/mlx/issues/2457.
+        """
+        return MultiModelServerConfig(
+            models=[self.to_model_entry_config()],
+            host=self.host,
+            port=self.port,
+            log_level=self.log_level,
+            log_file=self.log_file,
+            no_log_file=self.no_log_file,
         )
 
 
