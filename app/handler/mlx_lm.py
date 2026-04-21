@@ -1054,6 +1054,20 @@ class MLXLMHandler:
         ``.generation_tokens``, ``.generation_tps``, ``.peak_memory``,
         ``.prompt_tokens``, ``.prompt_tps``), so the downstream streaming and
         parser logic stays unchanged.
+
+        Notes
+        -----
+        This sends the *full* input_ids to the scheduler with ``prompt_cache``
+        set to ``None``. The scheduler thread allocates a fresh cache on its
+        own thread; we deliberately do NOT reuse ``ctx.cache`` from the
+        handler's LRU pool here because that cache was allocated on the
+        main/event-loop thread and handing it to the scheduler thread would
+        cause the cross-thread Metal command-buffer race documented in
+        https://github.com/ml-explore/mlx/issues/2457 (``-[_MTLCommandBuffer
+        addCompletedHandler:]: Completed handler provided after commit
+        call``). Prompt-cache reuse for the batched path can be added back
+        once the BatchGenerator exposes a cache interface that's safe to
+        hand off across threads.
         """
         params = ctx.model_params
         sampler = self.model.build_sampler(params)
@@ -1065,11 +1079,13 @@ class MLXLMHandler:
         if max_tokens is None:
             max_tokens = 1 << 20  # matches the "effectively unlimited" default used by MLX_LM
 
-        cached_prefix_len = ctx.total_input_tokens - len(ctx.rest_input_ids)
+        # Full prompt goes into the batcher; cache is allocated on the
+        # scheduler thread via BatchGenerator._make_new_cache.
+        full_input_ids = list(ctx.cache_key)
         return scheduler.submit_stream(
-            input_ids=ctx.rest_input_ids,
-            prompt_cache=ctx.cache,
-            cached_prefix_len=cached_prefix_len,
+            input_ids=full_input_ids,
+            prompt_cache=None,
+            cached_prefix_len=0,
             max_tokens=int(max_tokens),
             sampler=sampler,
             logits_processors=logits_processors or None,

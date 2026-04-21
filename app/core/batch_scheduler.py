@@ -203,51 +203,50 @@ class BatchScheduler:
     def start(self) -> None:
         """Start the background generation thread (idempotent).
 
-        The underlying :class:`BatchGenerator` is constructed *here*, on the
-        caller's thread, rather than inside the worker thread. This matters
-        because ``BatchGenerator.__init__`` touches Metal state
-        (``mx.set_wired_limit``) and MLX Metal is not safe to initialize from
-        a thread other than the one that loaded the model — doing so causes
-        intermittent segfaults and the ``resource_tracker`` semaphore leaks
-        flagged in https://github.com/ml-explore/mlx/issues/2457.
+        The underlying :class:`BatchGenerator` is constructed *inside* the
+        worker thread (see :meth:`_run`) so every Metal call — init, forward
+        pass, and close — happens on a single thread. This matches the
+        pattern used by mlx-lm's own HTTP server and avoids
+        ``-[_MTLCommandBuffer addCompletedHandler:]: Completed handler
+        provided after commit call`` assertion failures when MLX command
+        buffers are touched from more than one thread.
         """
         with self._state_lock:
             if self._running:
                 return
-            if self._batch_generator is None:
-                if BatchGenerator is None:
-                    raise RuntimeError(
-                        "mlx_lm.generate.BatchGenerator is not available in the"
-                        " installed mlx-lm; upgrade mlx-lm to enable batching."
-                    )
-                self._batch_generator = BatchGenerator(
-                    self._model,
-                    completion_batch_size=self._completion_batch_size,
-                    prefill_batch_size=self._prefill_batch_size,
-                    prefill_step_size=self._prefill_step_size,
-                    max_kv_size=self._max_kv_size,
+            if BatchGenerator is None:
+                raise RuntimeError(
+                    "mlx_lm.generate.BatchGenerator is not available in the"
+                    " installed mlx-lm; upgrade mlx-lm to enable batching."
                 )
             self._running = True
+            self._ready_event = threading.Event()
+            self._start_error: BaseException | None = None
             self._thread = threading.Thread(
                 target=self._run, daemon=True, name="mlx-batch-scheduler"
             )
             self._thread.start()
-            logger.info(
-                "BatchScheduler started (completion={}, prefill={}, prefill_step={}, max_kv={})",
-                self._completion_batch_size,
-                self._prefill_batch_size,
-                self._prefill_step_size,
-                self._max_kv_size,
-            )
+        # Wait briefly for the worker thread to finish constructing the
+        # BatchGenerator so start() surfaces init errors synchronously rather
+        # than deferring them to the first submit.
+        self._ready_event.wait(timeout=30.0)
+        if self._start_error is not None:
+            raise self._start_error
+        logger.info(
+            "BatchScheduler started (completion={}, prefill={}, prefill_step={}, max_kv={})",
+            self._completion_batch_size,
+            self._prefill_batch_size,
+            self._prefill_step_size,
+            self._max_kv_size,
+        )
 
     def stop(self) -> None:
-        """Signal the scheduler thread to stop, wait for it, close the generator.
+        """Signal the scheduler thread to stop and wait for it to join.
 
-        The :class:`BatchGenerator` is closed *after* the worker thread has
-        joined so the scheduler thread can't be mid-``next()`` while we run
-        Metal teardown. Closing happens on the caller's thread to mirror
-        where :meth:`start` constructed it — this is what keeps us on the
-        right side of https://github.com/ml-explore/mlx/issues/2457.
+        The worker thread is solely responsible for closing the
+        :class:`BatchGenerator` in its own ``finally`` block, keeping every
+        Metal call (init, forward passes, close) on one thread — see
+        :meth:`start` for rationale.
         """
         with self._state_lock:
             if not self._running:
@@ -257,13 +256,6 @@ class BatchScheduler:
             self._thread = None
         if thread is not None:
             thread.join(timeout=10.0)
-        generator = self._batch_generator
-        self._batch_generator = None
-        if generator is not None:
-            try:
-                generator.close()
-            except Exception as exc:  # noqa: BLE001 — teardown best-effort
-                logger.warning(f"Error closing BatchGenerator during stop(): {exc!s}")
         logger.info("BatchScheduler stopped")
 
     def submit_stream(
@@ -349,15 +341,29 @@ class BatchScheduler:
         return _stream()
 
     def _run(self) -> None:
-        """Main worker loop: admit requests, step the batch, dispatch chunks.
+        """Main worker loop: construct the generator, admit requests, dispatch.
 
-        The :class:`BatchGenerator` itself is constructed by :meth:`start` on
-        the caller's thread — see that method's docstring for the thread-
-        safety rationale. This loop only *uses* the generator; all forward
-        passes happen here, which is fine because MLX tolerates a model
-        forward running off the load thread as long as setup stayed on one
-        thread.
+        Metal command buffers are bound to the thread that creates them and
+        MLX asserts ``Completed handler provided after commit call`` if they
+        are touched from more than one thread. Constructing and closing the
+        :class:`BatchGenerator` here, *and* running every ``next()`` here,
+        keeps all Metal work pinned to this single OS thread.
         """
+        try:
+            self._batch_generator = BatchGenerator(
+                self._model,
+                completion_batch_size=self._completion_batch_size,
+                prefill_batch_size=self._prefill_batch_size,
+                prefill_step_size=self._prefill_step_size,
+                max_kv_size=self._max_kv_size,
+            )
+        except BaseException as exc:  # noqa: BLE001 — surface to start()
+            self._start_error = exc
+            self._ready_event.set()
+            self._running = False
+            return
+        self._ready_event.set()
+
         try:
             while self._running:
                 self._admit_pending(block_if_empty=len(self._active) == 0)
@@ -366,8 +372,9 @@ class BatchScheduler:
                     continue
 
                 try:
-                    with mx.stream(self._generation_stream()):
-                        prompt_responses, gen_responses = self._batch_generator.next()
+                    # ``BatchGenerator.next()`` already wraps itself in
+                    # ``mx.stream(generation_stream)``; don't double-wrap.
+                    prompt_responses, gen_responses = self._batch_generator.next()
                 except Exception as exc:  # noqa: BLE001 — propagate per-request
                     logger.exception(f"BatchGenerator.next() raised: {exc!s}")
                     self._fail_all_active(exc)
@@ -383,9 +390,12 @@ class BatchScheduler:
 
                 self._process_cancellations()
         finally:
-            # Do NOT close the BatchGenerator here — that runs Metal teardown,
-            # which must stay on the thread that set it up. :meth:`stop` takes
-            # care of closing after join.
+            try:
+                if self._batch_generator is not None:
+                    self._batch_generator.close()
+            except Exception as exc:  # noqa: BLE001 — teardown best-effort
+                logger.warning(f"Error closing BatchGenerator: {exc!s}")
+            self._batch_generator = None
             self._fail_all_active(RuntimeError("BatchScheduler stopped"))
 
     def _generation_stream(self) -> Any:
