@@ -756,6 +756,8 @@ mlx-openai-server launch \
 
 Concurrent chat/completion requests against an `lm` model are served through a continuous-batch scheduler backed by `mlx_lm.generate.BatchGenerator` — the same primitive mlx-lm's own HTTP server uses. New requests are admitted between decode steps, so a slow 2000-token request does not block a fast 10-token request behind it.
 
+> **Process isolation note.** The single-model `--model-path` path always runs the handler inside a dedicated subprocess via `HandlerProcessProxy` — the same isolation used by multi-model YAML mode. This is required because the batch scheduler runs MLX forward passes on a worker thread, and Metal command-buffer state cannot safely be shared with the FastAPI event-loop thread (see [ml-explore/mlx#2457](https://github.com/ml-explore/mlx/issues/2457)). Launch-time cost is ~1s extra for the subprocess spawn; runtime performance is unaffected.
+
 The scheduler is on by default and kicks in as soon as a second request arrives; a single in-flight request just runs as a batch of one. Per-request sampling settings (`temperature`, `top_p`, `top_k`, `min_p`, `repetition_penalty`, `logit_bias`, XTC, and outlines JSON-schema constraints) are forwarded to `BatchGenerator` on a per-sequence lane, so they keep working while batched.
 
 The scheduler is **not** used when a request cannot be batched. Those requests transparently fall back to the single-request path:
