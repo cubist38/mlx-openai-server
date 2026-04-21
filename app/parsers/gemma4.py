@@ -199,7 +199,7 @@ class Gemma4ReasoningParser(AbstractReasoningParser):
                     result["content"] = before
                 if emitted:
                     result["reasoning_content"] = emitted
-                return result if result else None, False
+                return result or None, False
 
             # No full opening tag — check for partial match at end of combined
             overlap = _suffix_prefix_overlap(combined, self.reasoning_open)

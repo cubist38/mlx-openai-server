@@ -10,7 +10,8 @@ from typing import Any
 from fastapi import HTTPException
 from loguru import logger
 
-from ..core import InferenceWorker
+from ..core import BatchScheduler, InferenceWorker
+from ..core.batch_scheduler import BATCHING_AVAILABLE
 from ..message_converters import MessageConverterManager
 from ..models.mlx_lm import MLX_LM
 from ..parsers import ParserManager, ReasoningParserState, ToolParserState
@@ -112,6 +113,10 @@ class MLXLMHandler:
         kv_bits: int | None = None,
         kv_group_size: int = 64,
         quantized_kv_start: int = 0,
+        batch_completion_size: int = 32,
+        batch_prefill_size: int = 8,
+        batch_prefill_step_size: int = 2048,
+        batch_max_kv_size: int | None = None,
     ):
         """
         Initialize the handler with the specified model path.
@@ -150,6 +155,15 @@ class MLXLMHandler:
             Group size for KV cache quantization. Default is 64.
         quantized_kv_start : int
             Step to begin using a quantized KV cache. Default is 0.
+        batch_completion_size : int
+            Maximum number of concurrent sequences in the decode batch.
+        batch_prefill_size : int
+            Maximum number of sequences that can be prefilled simultaneously.
+        batch_prefill_step_size : int
+            Maximum tokens processed per prefill step.
+        batch_max_kv_size : int | None
+            Rotating-KV-cache size for the scheduler; ``None`` keeps full
+            history (same default used by ``mlx_lm``).
         """
         self.model_path = model_path
         self.model = MLX_LM(
@@ -187,6 +201,13 @@ class MLXLMHandler:
         # Dedicated inference thread — keeps the event loop free during
         # blocking MLX model computation.
         self.inference_worker = InferenceWorker()
+
+        self._batch_completion_size = batch_completion_size
+        self._batch_prefill_size = batch_prefill_size
+        self._batch_prefill_step_size = batch_prefill_step_size
+        self._batch_max_kv_size = batch_max_kv_size
+        self._batch_scheduler: BatchScheduler | None = None
+        self._batch_scheduler_lock = asyncio.Lock()
 
         logger.info(f"Initialized MLXHandler with model path: {model_path}")
 
@@ -449,13 +470,18 @@ class MLXLMHandler:
                 log_debug_model_dispatch("mlx_lm.generate_text_stream.submit_stream", request_data)
                 request_data["verbose"] = True
 
-            response_generator = self.inference_worker.submit_stream(
-                self.model,
-                input_ids=ctx.rest_input_ids,
-                prompt_cache=cache,
-                stream=True,
-                **request_data,
-            )
+            use_batch = self._is_request_batchable(request) and ctx.checkpoint_position is None
+            if use_batch:
+                scheduler = await self._get_or_start_scheduler()
+                response_generator = self._submit_batched_stream(scheduler, ctx)
+            else:
+                response_generator = self.inference_worker.submit_stream(
+                    self.model,
+                    input_ids=ctx.rest_input_ids,
+                    prompt_cache=cache,
+                    stream=True,
+                    **request_data,
+                )
 
             after_reasoning_close_content = None
             final_chunk = None
@@ -823,13 +849,7 @@ class MLXLMHandler:
             if self.debug:
                 log_debug_model_dispatch("mlx_lm.generate_text_response.submit", request_data)
 
-            response = await self.inference_worker.submit(
-                self.model,
-                input_ids=ctx.rest_input_ids,
-                prompt_cache=ctx.cache,
-                stream=False,
-                **request_data,
-            )
+            response = await self._run_nonstream_generation(request, ctx, request_data)
 
             response_text = response.text
             cache_key = ctx.cache_key
@@ -975,16 +995,156 @@ class MLXLMHandler:
             )
             raise HTTPException(status_code=500, detail=content)
 
+    def _is_request_batchable(self, request: ChatCompletionRequest) -> bool:
+        """Return True if the request can be served by the continuous batcher.
+
+        The scheduler is the default generation path (even for a batch of
+        one). This predicate only returns False for features that the batched
+        ``BatchGenerator`` does not support: per-request ``seed`` (the batch
+        path shares a single RNG, matching the behavior of ``mlx_lm``'s HTTP
+        server) and speculative decoding via ``draft_model``. Requests that
+        require a mid-prefill cache checkpoint are also routed through the
+        single-request path — that check is applied at the call site where
+        the checkpoint position is known.
+        """
+        if not BATCHING_AVAILABLE:
+            return False
+        if self.model.has_draft_model:
+            return False
+        if request.seed is not None:
+            return False
+        return True
+
+    async def _get_or_start_scheduler(self) -> BatchScheduler:
+        """Lazily construct and start the batch scheduler on first use."""
+        if self._batch_scheduler is not None and self._batch_scheduler.is_running:
+            return self._batch_scheduler
+        async with self._batch_scheduler_lock:
+            if self._batch_scheduler is None or not self._batch_scheduler.is_running:
+                scheduler = BatchScheduler(
+                    self.model.model,
+                    self.model.tokenizer,
+                    completion_batch_size=self._batch_completion_size,
+                    prefill_batch_size=self._batch_prefill_size,
+                    prefill_step_size=self._batch_prefill_step_size,
+                    max_kv_size=self._batch_max_kv_size,
+                )
+                scheduler.start()
+                self._batch_scheduler = scheduler
+        return self._batch_scheduler
+
+    def _submit_batched_stream(
+        self,
+        scheduler: BatchScheduler,
+        ctx: "_InferenceContext",
+    ) -> AsyncGenerator[Any, None]:
+        """Submit a batched request and return an async chunk generator.
+
+        The returned generator yields objects that duck-type match the
+        :class:`mlx_lm.generate.GenerationResponse` instances produced by the
+        single-request path (``.text``, ``.token``, ``.finish_reason``,
+        ``.generation_tokens``, ``.generation_tps``, ``.peak_memory``,
+        ``.prompt_tokens``, ``.prompt_tps``), so the downstream streaming and
+        parser logic stays unchanged.
+        """
+        params = ctx.model_params
+        sampler = self.model.build_sampler(params)
+        logits_processors = self.model.build_logits_processors(params)
+
+        max_tokens = params.get("max_tokens")
+        if max_tokens is None:
+            max_tokens = params.get("max_completion_tokens")
+        if max_tokens is None:
+            max_tokens = 1 << 20  # matches the "effectively unlimited" default used by MLX_LM
+
+        cached_prefix_len = ctx.total_input_tokens - len(ctx.rest_input_ids)
+        return scheduler.submit_stream(
+            input_ids=ctx.rest_input_ids,
+            prompt_cache=ctx.cache,
+            cached_prefix_len=cached_prefix_len,
+            max_tokens=int(max_tokens),
+            sampler=sampler,
+            logits_processors=logits_processors or None,
+        )
+
+    async def _run_nonstream_generation(
+        self,
+        request: ChatCompletionRequest,
+        ctx: "_InferenceContext",
+        request_data: dict[str, Any],
+    ) -> Any:
+        """Dispatch a non-streaming request to the batcher or the worker.
+
+        Kept as a standalone method so :meth:`generate_text_response` stays
+        under the complexity budget enforced by ruff.
+        """
+        if self._is_request_batchable(request) and ctx.checkpoint_position is None:
+            scheduler = await self._get_or_start_scheduler()
+            return await self._collect_batched_response(scheduler, ctx)
+        return await self.inference_worker.submit(
+            self.model,
+            input_ids=ctx.rest_input_ids,
+            prompt_cache=ctx.cache,
+            stream=False,
+            **request_data,
+        )
+
+    async def _collect_batched_response(
+        self,
+        scheduler: BatchScheduler,
+        ctx: "_InferenceContext",
+    ) -> Any:
+        """Drain a batched stream into a ``CompletionResponse``-compatible object.
+
+        The MLX_LM non-streaming path returns a
+        :class:`~app.models.mlx_lm.CompletionResponse`. The batched scheduler
+        produces incremental chunks, so we accumulate them here to yield the
+        same surface area for :meth:`generate_text_response`.
+        """
+        from ..models.mlx_lm import CompletionResponse
+
+        stream = self._submit_batched_stream(scheduler, ctx)
+        text_parts: list[str] = []
+        tokens: list[int] = []
+        final_chunk = None
+        async for chunk in stream:
+            if chunk.text:
+                text_parts.append(chunk.text)
+            tokens.append(chunk.token)
+            if chunk.finish_reason is not None:
+                final_chunk = chunk
+                break
+
+        generation_tokens = final_chunk.generation_tokens if final_chunk else len(tokens)
+        generation_tps = final_chunk.generation_tps if final_chunk else 0.0
+        peak_memory = final_chunk.peak_memory if final_chunk else 0.0
+        prompt_tokens = final_chunk.prompt_tokens if final_chunk else len(ctx.rest_input_ids)
+        return CompletionResponse(
+            text="".join(text_parts),
+            tokens=tokens,
+            peak_memory=peak_memory,
+            generation_tps=generation_tps,
+            prompt_tps=0.0,
+            prompt_tokens=prompt_tokens,
+            generation_tokens=generation_tokens,
+        )
+
     async def get_queue_stats(self) -> dict[str, Any]:
-        """Get statistics from the inference worker.
+        """Get statistics from the inference worker and batch scheduler.
 
         Returns
         -------
         dict[str, Any]
-            Dictionary with ``queue_stats`` sub-dictionary.
+            Dictionary with ``queue_stats`` and ``batch_stats`` sub-dictionaries.
         """
+        batch_running = self._batch_scheduler is not None and self._batch_scheduler.is_running
         return {
             "queue_stats": self.inference_worker.get_stats(),
+            "batch_stats": {
+                "running": batch_running,
+                "completion_batch_size": self._batch_completion_size,
+                "prefill_batch_size": self._batch_prefill_size,
+            },
         }
 
     async def cleanup(self) -> None:
@@ -995,6 +1155,9 @@ class MLXLMHandler:
         """
         try:
             logger.info("Cleaning up MLXLMHandler resources")
+            if self._batch_scheduler is not None:
+                self._batch_scheduler.stop()
+                self._batch_scheduler = None
             if hasattr(self, "inference_worker"):
                 self.inference_worker.stop()
 
