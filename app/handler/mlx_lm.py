@@ -826,12 +826,20 @@ class MLXLMHandler:
                     final_chunk.peak_memory,
                 )
 
+            # The batched path doesn't populate ``ctx.total_cached_tokens``
+            # because its cache lookup happens on the scheduler thread. When
+            # the scheduler reports a cache hit via ``final_chunk``, prefer
+            # that over the context value.
+            batched_cached = getattr(final_chunk, "cached_prompt_tokens", 0)
+            if not isinstance(batched_cached, int):
+                batched_cached = 0
+            cached_tokens = max(total_cached_tokens, batched_cached)
             yield {
                 "__usage__": UsageInfo(
                     prompt_tokens=total_input_tokens,
                     completion_tokens=final_chunk.generation_tokens,
                     total_tokens=total_tokens,
-                    prompt_tokens_details=PromptTokenUsageInfo(cached_tokens=total_cached_tokens),
+                    prompt_tokens_details=PromptTokenUsageInfo(cached_tokens=cached_tokens),
                 )
             }
 
@@ -1012,11 +1020,18 @@ class MLXLMHandler:
                     response.peak_memory,
                 )
 
+            # Batched path reports cache hits via ``response.cached_prompt_tokens``
+            # (the scheduler thread owns cache lookup). Non-batched path uses
+            # ``ctx.total_cached_tokens`` from the event-loop-thread lookup.
+            batched_cached = getattr(response, "cached_prompt_tokens", 0)
+            if not isinstance(batched_cached, int):
+                batched_cached = 0
+            cached_tokens = max(total_cached_tokens, batched_cached)
             usage = UsageInfo(
                 prompt_tokens=total_input_tokens,
                 completion_tokens=response.generation_tokens,
                 total_tokens=total_tokens,
-                prompt_tokens_details=PromptTokenUsageInfo(cached_tokens=total_cached_tokens),
+                prompt_tokens_details=PromptTokenUsageInfo(cached_tokens=cached_tokens),
             )
 
             return {"response": parsed_response, "usage": usage}
@@ -1198,6 +1213,7 @@ class MLXLMHandler:
         generation_tps = final_chunk.generation_tps if final_chunk else 0.0
         peak_memory = final_chunk.peak_memory if final_chunk else 0.0
         prompt_tokens = final_chunk.prompt_tokens if final_chunk else len(ctx.rest_input_ids)
+        cached_prompt_tokens = final_chunk.cached_prompt_tokens if final_chunk else 0
         return CompletionResponse(
             text="".join(text_parts),
             tokens=tokens,
@@ -1206,6 +1222,7 @@ class MLXLMHandler:
             prompt_tps=0.0,
             prompt_tokens=prompt_tokens,
             generation_tokens=generation_tokens,
+            cached_prompt_tokens=cached_prompt_tokens,
         )
 
     async def get_queue_stats(self) -> dict[str, Any]:

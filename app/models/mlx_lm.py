@@ -38,6 +38,10 @@ class CompletionResponse:
         generation_tokens (int): The number of generated tokens.
         prompt_tps (float): The prompt processing tokens-per-second.
         prompt_tokens (int): The number of tokens in the prompt.
+        cached_prompt_tokens (int): The number of prompt tokens that were
+            served from a pre-computed cache. ``0`` when no cache hit — only
+            the batched path currently populates this; the non-batched path
+            reports its cache hits via ``ctx.total_cached_tokens``.
     """
 
     text: str = None
@@ -47,6 +51,7 @@ class CompletionResponse:
     prompt_tps: float = None
     prompt_tokens: int = None
     generation_tokens: int = None
+    cached_prompt_tokens: int = 0
 
 
 class MLX_LM:

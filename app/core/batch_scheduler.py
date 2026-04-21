@@ -88,6 +88,7 @@ class BatchChunk:
     generation_tokens: int = 0
     generation_tps: float = 0.0
     prompt_tokens: int = 0
+    cached_prompt_tokens: int = 0
     prompt_tps: float = 0.0
     peak_memory: float = 0.0
 
@@ -117,6 +118,7 @@ class _ActiveRequest:
     detokenizer: Any
     cancel_event: threading.Event
     prompt_tokens: int
+    cached_prompt_tokens: int
     first_token_time: float | None = None
     generation_tokens: int = 0
 
@@ -486,6 +488,7 @@ class BatchScheduler:
                 detokenizer=detokenizer,
                 cancel_event=request.cancel_event,
                 prompt_tokens=len(request.input_ids),
+                cached_prompt_tokens=cached_prefix_len,
             )
             logger.info(
                 f"BatchScheduler admitted uid={uid} "
@@ -529,6 +532,7 @@ class BatchScheduler:
             generation_tokens=state.generation_tokens,
             generation_tps=self._compute_tps(state) if is_final else 0.0,
             prompt_tokens=state.prompt_tokens,
+            cached_prompt_tokens=state.cached_prompt_tokens,
             prompt_tps=0.0,
             peak_memory=(mx.get_peak_memory() / 1e9) if is_final else 0.0,
         )
@@ -587,6 +591,7 @@ class BatchScheduler:
                 generation_tokens=state.generation_tokens,
                 generation_tps=self._compute_tps(state),
                 prompt_tokens=state.prompt_tokens,
+                cached_prompt_tokens=state.cached_prompt_tokens,
                 peak_memory=mx.get_peak_memory() / 1e9,
             )
             self._send(state.loop, state.out_queue, chunk)
