@@ -64,6 +64,12 @@ class MLXServerConfig:
     kv_group_size: int = 64
     quantized_kv_start: int = 0
 
+    # Continuous-batching concurrency (mirrors --decode-concurrency /
+    # --prompt-concurrency / --prefill-step-size in mlx-lm's own server).
+    batch_completion_size: int = 32
+    batch_prefill_size: int = 8
+    batch_prefill_step_size: int = 2048
+
     # Default sampling parameters (override DEFAULT_* env when set via CLI)
     default_max_tokens: int = 100000
     default_temperature: float = 1.0
@@ -193,6 +199,9 @@ class MLXServerConfig:
             kv_bits=self.kv_bits,
             kv_group_size=self.kv_group_size,
             quantized_kv_start=self.quantized_kv_start,
+            batch_completion_size=self.batch_completion_size,
+            batch_prefill_size=self.batch_prefill_size,
+            batch_prefill_step_size=self.batch_prefill_step_size,
         )
 
 
@@ -252,6 +261,9 @@ class ModelEntryConfig:
     kv_bits: int | None = None
     kv_group_size: int = 64
     quantized_kv_start: int = 0
+    batch_completion_size: int = 32
+    batch_prefill_size: int = 8
+    batch_prefill_step_size: int = 2048
     default_max_tokens: int | None = None
     default_temperature: float | None = None
     default_top_p: float | None = None
