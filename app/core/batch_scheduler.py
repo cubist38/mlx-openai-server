@@ -154,6 +154,7 @@ class BatchScheduler:
         model: Any,
         tokenizer: TokenizerWrapper,
         *,
+        prompt_cache: Any = None,
         completion_batch_size: int = 32,
         prefill_batch_size: int = 8,
         prefill_step_size: int = 2048,
@@ -162,6 +163,11 @@ class BatchScheduler:
     ) -> None:
         self._model = model
         self._tokenizer = tokenizer
+        # Optional :class:`~app.utils.prompt_cache.LRUPromptCache`. When
+        # provided, the scheduler fetches and inserts cache entries on its
+        # *own* thread — the same single-thread discipline ``mlx_lm.server``
+        # uses — to avoid cross-thread Metal command-buffer races.
+        self._prompt_cache = prompt_cache
         self._completion_batch_size = completion_batch_size
         self._prefill_batch_size = prefill_batch_size
         self._prefill_step_size = prefill_step_size
@@ -425,11 +431,37 @@ class BatchScheduler:
                 self._send(request.loop, request.out_queue, _STREAM_SENTINEL)
                 continue
 
+            # Fetch a matching cache from the LRU on *this* thread (matching
+            # mlx_lm.server's architecture). If a caller already supplied a
+            # cache via prompt_cache=..., use it directly.
+            cache_from_lru: list[Any] | None = request.prompt_cache
+            rest_input_ids = request.input_ids
+            cached_prefix_len = 0
+            if cache_from_lru is None and self._prompt_cache is not None:
+                try:
+                    fetched_cache, fetched_rest = self._prompt_cache.fetch_nearest_cache(
+                        request.input_ids
+                    )
+                except Exception as exc:  # noqa: BLE001 — fallback to fresh cache
+                    logger.warning(f"prompt_cache.fetch_nearest_cache failed: {exc!s}")
+                    fetched_cache, fetched_rest = None, request.input_ids
+                if fetched_cache is not None:
+                    cache_from_lru = fetched_cache
+                    rest_input_ids = fetched_rest
+                    cached_prefix_len = len(request.input_ids) - len(fetched_rest)
+
+            if not rest_input_ids:
+                # The cache already covers the entire prompt; keep one token
+                # so BatchGenerator has a kickoff input.
+                rest_input_ids = request.input_ids[-1:]
+                cached_prefix_len = len(request.input_ids) - 1
+
             try:
                 uids = self._batch_generator.insert(
-                    prompts=[request.input_ids],
+                    prompts=[rest_input_ids],
                     max_tokens=[request.max_tokens],
-                    caches=[request.prompt_cache] if request.prompt_cache is not None else None,
+                    caches=[cache_from_lru] if cache_from_lru is not None else None,
+                    all_tokens=[request.input_ids[:cached_prefix_len]],
                     samplers=[request.sampler] if request.sampler is not None else None,
                     logits_processors=(
                         [request.logits_processors]
@@ -505,6 +537,23 @@ class BatchScheduler:
         self._send(state.loop, state.out_queue, chunk)
 
         if is_final:
+            # Persist the final KV cache back into the LRU from *this* thread.
+            # Matches ``mlx_lm.server`` (which also does ``insert_cache`` on
+            # its generation thread) and keeps all cache mutations off the
+            # FastAPI event-loop thread.
+            if (
+                self._prompt_cache is not None
+                and resp.prompt_cache is not None
+                and resp.all_tokens
+            ):
+                try:
+                    self._prompt_cache.insert_cache(
+                        list(resp.all_tokens),
+                        resp.prompt_cache,
+                        cache_type="assistant",
+                    )
+                except Exception as exc:  # noqa: BLE001 — cache save is best-effort
+                    logger.warning(f"prompt_cache.insert_cache failed for uid={resp.uid}: {exc!s}")
             self._send(state.loop, state.out_queue, _STREAM_SENTINEL)
             self._active.pop(resp.uid, None)
 

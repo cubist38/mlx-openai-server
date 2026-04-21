@@ -83,6 +83,7 @@ class FakeBatchGenerator:
         prompts: list[list[int]],
         max_tokens: list[int] | None = None,
         caches: Any = None,
+        all_tokens: Any = None,
         samplers: Any = None,
         logits_processors: Any = None,
         state_machines: Any = None,

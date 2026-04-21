@@ -323,6 +323,16 @@ class MLXLMHandler:
 
         Handles: request parsing, message refinement, prompt encoding, KV cache
         lookup, parser creation, and model-param preparation.
+
+        For batchable requests the cache-related work (``fetch_nearest_cache``
+        + ``create_prompt_cache`` + checkpoint boundary computation) is
+        *skipped* on the event-loop thread: those operations touch
+        ``mx.array`` state, and doing them here would race with the scheduler
+        thread's ``BatchGenerator`` forward passes (producing
+        ``AGXG14XFamilyCommandBuffer.tryCoalescingPreviousComputeCommandEncoder``
+        assertion failures on Metal). Instead, the scheduler thread owns the
+        prompt cache end-to-end for the batched path — matching
+        ``mlx_lm.server``'s single-generation-thread architecture.
         """
         chat_messages, model_params = await self._prepare_text_request(request)
         refined_messages = self.refine_messages(chat_messages)
@@ -333,6 +343,36 @@ class MLXLMHandler:
             log_debug_prompt(input_prompt)
 
         input_ids = self.model.encode_prompt(input_prompt)
+
+        if self._is_request_batchable(request):
+            parsers_result = ParserManager.create_parsers(
+                reasoning_parser_name=self.reasoning_parser_name,
+                tool_parser_name=self.tool_parser_name,
+            )
+            enable_thinking = chat_template_kwargs.get("enable_thinking", True)
+            if not enable_thinking and parsers_result.reasoning_parser:
+                if parsers_result.reasoning_parser.respects_enable_thinking():
+                    parsers_result.reasoning_parser = None
+            if model_params.get("schema"):
+                parsers_result.reasoning_parser = None
+                parsers_result.tool_parser = None
+                parsers_result.unified_parser = None
+
+            return _InferenceContext(
+                rest_input_ids=input_ids,
+                cache=None,
+                cache_key=input_ids[:],
+                total_input_tokens=len(input_ids),
+                total_cached_tokens=0,
+                model_params=model_params,
+                parsers_result=parsers_result,
+                prompt_progress_callback=(
+                    make_prompt_progress_callback() if self.debug else None
+                ),
+                checkpoint_position=None,
+                checkpoint_callback=None,
+            )
+
         cache, rest_input_ids = self.prompt_cache.fetch_nearest_cache(input_ids)
 
         # Cache key must be the FULL input_ids, not rest_input_ids.
@@ -768,7 +808,11 @@ class MLXLMHandler:
                         yield text
 
             total_tokens = total_input_tokens + final_chunk.generation_tokens
-            self.prompt_cache.insert_cache(cache_key, cache)
+            if cache is not None:
+                # Non-batch path owns the cache on the event-loop thread.
+                # The batched path stores its final cache from the scheduler
+                # thread instead (see BatchScheduler._handle_generation_response).
+                self.prompt_cache.insert_cache(cache_key, cache)
             cache_inserted = True
 
             if self.debug:
@@ -854,8 +898,7 @@ class MLXLMHandler:
             response_text = response.text
             cache_key = ctx.cache_key
             cache_key += response.tokens
-
-            self.prompt_cache.insert_cache(cache_key, ctx.cache)
+            self._persist_cache_if_owned(cache_key, ctx.cache)
 
             parsed_response = {"reasoning_content": None, "tool_calls": None, "content": None}
 
@@ -1032,6 +1075,7 @@ class MLXLMHandler:
                 scheduler = BatchScheduler(
                     self.model.model,
                     self.model.tokenizer,
+                    prompt_cache=self.prompt_cache,
                     completion_batch_size=self._batch_completion_size,
                     prefill_batch_size=self._batch_prefill_size,
                     prefill_step_size=self._batch_prefill_step_size,
@@ -1090,6 +1134,21 @@ class MLXLMHandler:
             sampler=sampler,
             logits_processors=logits_processors or None,
         )
+
+    def _persist_cache_if_owned(
+        self,
+        cache_key: list[int],
+        cache: list[Any] | None,
+    ) -> None:
+        """Store ``cache`` into the LRU only when the event-loop thread owns it.
+
+        The batched path delegates cache persistence to the scheduler thread
+        (see :meth:`BatchScheduler._handle_generation_response`), so this
+        helper is a no-op when ``cache`` is ``None``.
+        """
+        if cache is None:
+            return
+        self.prompt_cache.insert_cache(cache_key, cache)
 
     async def _run_nonstream_generation(
         self,
