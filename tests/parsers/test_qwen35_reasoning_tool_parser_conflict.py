@@ -213,7 +213,9 @@ class TestExtractReasoningStreaming:
         if first_token.startswith("<think>"):
             chunks[0] = first_token[len("<think>") :]
         elif full.startswith("<think>"):
-            chunks = [full[len("<think>") :][i : i + 8] for i in range(0, len(full) - len("<think>"), 8)]
+            chunks = [
+                full[len("<think>") :][i : i + 8] for i in range(0, len(full) - len("<think>"), 8)
+            ]
 
         reasoning_results, tool_call_results = _run_streaming(
             chunks, Qwen35ReasoningParser(), FunctionParameterToolParser()
