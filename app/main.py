@@ -34,6 +34,25 @@ from .server import setup_server
 from .version import __version__
 
 
+def _format_bytes(n: int) -> str:
+    """Render a byte count in a human-friendly unit.
+
+    The prompt-cache byte budget defaults to ``1 << 63`` as a sentinel for
+    "unbounded", which reads as a 19-digit integer in the startup banner.
+    This helper turns that (and more ordinary values) into something a human
+    can read at a glance.
+    """
+    if n >= (1 << 60):
+        return "unbounded"
+    gib = n / (1024**3)
+    if gib >= 1:
+        return f"{gib:.2f} GiB"
+    mib = n / (1024**2)
+    if mib >= 1:
+        return f"{mib:.2f} MiB"
+    return f"{n} B"
+
+
 def print_startup_banner(config_args: MLXServerConfig) -> None:
     """Log a compact startup banner describing the selected config.
 
@@ -84,7 +103,14 @@ def print_startup_banner(config_args: MLXServerConfig) -> None:
             logger.info(f"🔧 Message Converter: {config_args.message_converter}")
     if config_args.model_type == "lm":
         logger.info(f"💾 Prompt Cache Size: {config_args.prompt_cache_size} entries")
-        logger.info(f"💾 Prompt Cache Max Bytes: {config_args.prompt_cache_max_bytes}")
+        logger.info(
+            f"💾 Prompt Cache Max Bytes: {_format_bytes(config_args.prompt_cache_max_bytes)}"
+        )
+        logger.info(
+            f"🧵 Batch Scheduler: decode={config_args.batch_completion_size}, "
+            f"prefill={config_args.batch_prefill_size}, "
+            f"prefill_step={config_args.batch_prefill_step_size}"
+        )
     logger.info(f"📝 Log Level: {config_args.log_level}")
     if config_args.no_log_file:
         logger.info("📝 File Logging: Disabled")
