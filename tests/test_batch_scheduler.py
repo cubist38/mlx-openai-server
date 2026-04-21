@@ -338,3 +338,30 @@ def test_admission_queue_accepts_before_start(patched_scheduler):
     assert isinstance(scheduler._admission_queue.qsize(), int)
     assert scheduler._thread is None
     assert isinstance(threading.current_thread(), threading.Thread)  # sanity
+
+
+# ---------------------------------------------------------------------------
+# Regression: seed=0 (the CLI default that the endpoint backfills into every
+# request) must NOT disable batching. If it does, every request is routed
+# through the single-request path and the scheduler never sees concurrent
+# work.
+# ---------------------------------------------------------------------------
+
+
+def test_default_seed_zero_does_not_disable_batching():
+    from app.handler.mlx_lm import MLXLMHandler
+
+    class _FakeModel:
+        has_draft_model = False
+
+    class _Req:
+        def __init__(self, seed):
+            self.seed = seed
+
+    handler = MLXLMHandler.__new__(MLXLMHandler)
+    handler.model = _FakeModel()
+
+    assert handler._is_request_batchable(_Req(seed=None)) is True
+    assert handler._is_request_batchable(_Req(seed=0)) is True
+    assert handler._is_request_batchable(_Req(seed=-1)) is True
+    assert handler._is_request_batchable(_Req(seed=42)) is False

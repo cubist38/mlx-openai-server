@@ -1000,18 +1000,26 @@ class MLXLMHandler:
 
         The scheduler is the default generation path (even for a batch of
         one). This predicate only returns False for features that the batched
-        ``BatchGenerator`` does not support: per-request ``seed`` (the batch
-        path shares a single RNG, matching the behavior of ``mlx_lm``'s HTTP
-        server) and speculative decoding via ``draft_model``. Requests that
-        require a mid-prefill cache checkpoint are also routed through the
-        single-request path — that check is applied at the call site where
-        the checkpoint position is known.
+        ``BatchGenerator`` does not support:
+
+        * A non-trivial per-request ``seed`` — the batch path shares a single
+          RNG, matching ``mlx_lm``'s own server. We mirror
+          :meth:`MLX_LM.__call__`'s seeding rule (``seed and seed >= 0``)
+          rather than ``seed is not None``, because the CLI default
+          ``--seed 0`` is backfilled into every request by the endpoint as
+          "no explicit seed"; treating that as non-batchable would pin every
+          request to the single-request path.
+        * Speculative decoding via ``draft_model``.
+
+        Requests that require a mid-prefill cache checkpoint are also routed
+        through the single-request path — that check is applied at the call
+        site where the checkpoint position is known.
         """
         if not BATCHING_AVAILABLE:
             return False
         if self.model.has_draft_model:
             return False
-        if request.seed is not None:
+        if request.seed is not None and request.seed > 0:
             return False
         return True
 

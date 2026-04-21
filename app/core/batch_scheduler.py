@@ -420,6 +420,10 @@ class BatchScheduler:
                     0, len(request.input_ids) - 0
                 ),  # cached prefix is already in the cache
             )
+            logger.info(
+                f"BatchScheduler admitted uid={uid} "
+                f"(active={len(self._active)}, prompt_tokens={len(request.input_ids)})"
+            )
 
     def _handle_generation_response(self, resp: Any) -> None:
         """Forward a single generation-batch response to the owning request."""
