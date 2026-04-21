@@ -20,7 +20,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import AsyncGenerator, Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 import queue
 import threading
 import time
@@ -34,12 +34,13 @@ if TYPE_CHECKING:
 
 
 try:
-    from mlx_lm.generate import BatchGenerator, SequenceStateMachine
+    from mlx_lm.generate import BatchGenerator, SequenceStateMachine, generation_stream
 
     BATCHING_AVAILABLE = True
 except ImportError:  # pragma: no cover — only exercised on older mlx-lm pins
     BatchGenerator = None  # type: ignore[assignment,misc]
     SequenceStateMachine = None  # type: ignore[assignment,misc]
+    generation_stream = None  # type: ignore[assignment]
     BATCHING_AVAILABLE = False
     logger.warning(
         "mlx_lm.generate.BatchGenerator is unavailable — continuous batching is"
@@ -105,8 +106,6 @@ class _PendingRequest:
     loop: asyncio.AbstractEventLoop
     out_queue: asyncio.Queue[Any]
     cancel_event: threading.Event
-    admission_event: threading.Event
-    uid_slot: dict[str, int]
 
 
 @dataclass
@@ -117,11 +116,9 @@ class _ActiveRequest:
     out_queue: asyncio.Queue[Any]
     detokenizer: Any
     cancel_event: threading.Event
-    start_time: float
+    prompt_tokens: int
     first_token_time: float | None = None
     generation_tokens: int = 0
-    prompt_tokens: int = 0
-    all_tokens: list[int] = field(default_factory=list)
 
 
 _STREAM_SENTINEL: Any = object()
@@ -182,6 +179,8 @@ class BatchScheduler:
         self._thread: threading.Thread | None = None
         self._running = False
         self._state_lock = threading.Lock()
+        self._ready_event = threading.Event()
+        self._start_error: BaseException | None = None
 
     @staticmethod
     def _build_default_state_machine(tokenizer: TokenizerWrapper) -> Any:
@@ -225,17 +224,26 @@ class BatchScheduler:
                     "mlx_lm.generate.BatchGenerator is not available in the"
                     " installed mlx-lm; upgrade mlx-lm to enable batching."
                 )
+            self._ready_event.clear()
+            self._start_error = None
             self._running = True
-            self._ready_event = threading.Event()
-            self._start_error: BaseException | None = None
             self._thread = threading.Thread(
                 target=self._run, daemon=True, name="mlx-batch-scheduler"
             )
             self._thread.start()
-        # Wait briefly for the worker thread to finish constructing the
-        # BatchGenerator so start() surfaces init errors synchronously rather
-        # than deferring them to the first submit.
-        self._ready_event.wait(timeout=30.0)
+        # Wait for the worker thread to finish constructing the BatchGenerator
+        # so start() surfaces init errors synchronously rather than deferring
+        # them to the first submit.
+        if not self._ready_event.wait(timeout=60.0):
+            # Timed out waiting for init — the worker may be stuck inside
+            # ``mx.set_wired_limit`` or model plumbing. Roll back to a clean
+            # state so subsequent calls to start() can retry.
+            with self._state_lock:
+                self._running = False
+            raise RuntimeError(
+                "BatchScheduler did not finish initializing within 60s;"
+                " check the scheduler thread for a hang in BatchGenerator init"
+            )
         if self._start_error is not None:
             raise self._start_error
         logger.info(
@@ -313,8 +321,6 @@ class BatchScheduler:
         loop = asyncio.get_running_loop()
         out_queue: asyncio.Queue[Any] = asyncio.Queue()
         cancel_event = threading.Event()
-        admission_event = threading.Event()
-        uid_slot: dict[str, int] = {}
 
         request = _PendingRequest(
             input_ids=list(input_ids),
@@ -327,8 +333,6 @@ class BatchScheduler:
             loop=loop,
             out_queue=out_queue,
             cancel_event=cancel_event,
-            admission_event=admission_event,
-            uid_slot=uid_slot,
         )
         self._admission_queue.put(request)
 
@@ -404,12 +408,6 @@ class BatchScheduler:
             self._batch_generator = None
             self._fail_all_active(RuntimeError("BatchScheduler stopped"))
 
-    def _generation_stream(self) -> Any:
-        """Return the mlx generation stream used by ``BatchGenerator`` internally."""
-        from mlx_lm.generate import generation_stream
-
-        return generation_stream
-
     def _admit_pending(self, *, block_if_empty: bool) -> None:
         """Drain the admission queue into the batch generator."""
         first_wait = block_if_empty
@@ -431,13 +429,14 @@ class BatchScheduler:
                 self._send(request.loop, request.out_queue, _STREAM_SENTINEL)
                 continue
 
-            # Fetch a matching cache from the LRU on *this* thread (matching
-            # mlx_lm.server's architecture). If a caller already supplied a
-            # cache via prompt_cache=..., use it directly.
-            cache_from_lru: list[Any] | None = request.prompt_cache
-            rest_input_ids = request.input_ids
-            cached_prefix_len = 0
-            if cache_from_lru is None and self._prompt_cache is not None:
+            # Resolve the prompt cache on *this* thread (matching
+            # ``mlx_lm.server``'s architecture). Priority: caller-supplied
+            # cache → LRU lookup → fresh cache created by BatchGenerator.
+            if request.prompt_cache is not None:
+                cache_from_lru: list[Any] | None = request.prompt_cache
+                cached_prefix_len = request.cached_prefix_len
+                rest_input_ids = request.input_ids[cached_prefix_len:]
+            elif self._prompt_cache is not None:
                 try:
                     fetched_cache, fetched_rest = self._prompt_cache.fetch_nearest_cache(
                         request.input_ids
@@ -445,10 +444,13 @@ class BatchScheduler:
                 except Exception as exc:  # noqa: BLE001 — fallback to fresh cache
                     logger.warning(f"prompt_cache.fetch_nearest_cache failed: {exc!s}")
                     fetched_cache, fetched_rest = None, request.input_ids
-                if fetched_cache is not None:
-                    cache_from_lru = fetched_cache
-                    rest_input_ids = fetched_rest
-                    cached_prefix_len = len(request.input_ids) - len(fetched_rest)
+                cache_from_lru = fetched_cache
+                rest_input_ids = fetched_rest
+                cached_prefix_len = len(request.input_ids) - len(fetched_rest)
+            else:
+                cache_from_lru = None
+                rest_input_ids = request.input_ids
+                cached_prefix_len = 0
 
             if not rest_input_ids:
                 # The cache already covers the entire prompt; keep one token
@@ -475,8 +477,6 @@ class BatchScheduler:
                 continue
 
             (uid,) = uids
-            request.uid_slot["uid"] = uid
-            request.admission_event.set()
 
             detokenizer = self._tokenizer.detokenizer
             detokenizer.reset()
@@ -485,14 +485,12 @@ class BatchScheduler:
                 out_queue=request.out_queue,
                 detokenizer=detokenizer,
                 cancel_event=request.cancel_event,
-                start_time=time.perf_counter(),
-                prompt_tokens=max(
-                    0, len(request.input_ids) - 0
-                ),  # cached prefix is already in the cache
+                prompt_tokens=len(request.input_ids),
             )
             logger.info(
                 f"BatchScheduler admitted uid={uid} "
-                f"(active={len(self._active)}, prompt_tokens={len(request.input_ids)})"
+                f"(active={len(self._active)}, prompt_tokens={len(request.input_ids)}, "
+                f"cached_prefix={cached_prefix_len})"
             )
 
     def _handle_generation_response(self, resp: Any) -> None:
@@ -572,7 +570,7 @@ class BatchScheduler:
         if not cancelled_uids:
             return
         try:
-            with mx.stream(self._generation_stream()):
+            with mx.stream(generation_stream):
                 self._batch_generator.remove(cancelled_uids)
         except Exception as exc:  # noqa: BLE001 — removal errors are non-fatal
             logger.warning(f"BatchGenerator.remove failed for {cancelled_uids}: {exc!s}")

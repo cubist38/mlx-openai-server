@@ -1101,17 +1101,13 @@ class MLXLMHandler:
 
         Notes
         -----
-        This sends the *full* input_ids to the scheduler with ``prompt_cache``
-        set to ``None``. The scheduler thread allocates a fresh cache on its
-        own thread; we deliberately do NOT reuse ``ctx.cache`` from the
-        handler's LRU pool here because that cache was allocated on the
-        main/event-loop thread and handing it to the scheduler thread would
-        cause the cross-thread Metal command-buffer race documented in
-        https://github.com/ml-explore/mlx/issues/2457 (``-[_MTLCommandBuffer
-        addCompletedHandler:]: Completed handler provided after commit
-        call``). Prompt-cache reuse for the batched path can be added back
-        once the BatchGenerator exposes a cache interface that's safe to
-        hand off across threads.
+        The scheduler owns the prompt cache end-to-end for the batched path:
+        it calls :meth:`LRUPromptCache.fetch_nearest_cache` on admission and
+        :meth:`LRUPromptCache.insert_cache` on finish, both from its worker
+        thread. That keeps every ``mx.array`` mutation on a single OS thread,
+        matching ``mlx_lm.server``'s architecture and avoiding the
+        cross-thread Metal command-buffer race documented in
+        https://github.com/ml-explore/mlx/issues/2457.
         """
         params = ctx.model_params
         sampler = self.model.build_sampler(params)
@@ -1123,13 +1119,10 @@ class MLXLMHandler:
         if max_tokens is None:
             max_tokens = 1 << 20  # matches the "effectively unlimited" default used by MLX_LM
 
-        # Full prompt goes into the batcher; cache is allocated on the
-        # scheduler thread via BatchGenerator._make_new_cache.
-        full_input_ids = list(ctx.cache_key)
+        # Hand the full prompt to the scheduler; it does its own LRU lookup
+        # and cache construction on its worker thread.
         return scheduler.submit_stream(
-            input_ids=full_input_ids,
-            prompt_cache=None,
-            cached_prefix_len=0,
+            input_ids=list(ctx.cache_key),
             max_tokens=int(max_tokens),
             sampler=sampler,
             logits_processors=logits_processors or None,
@@ -1184,6 +1177,9 @@ class MLXLMHandler:
         produces incremental chunks, so we accumulate them here to yield the
         same surface area for :meth:`generate_text_response`.
         """
+        # Lazy import — tests stub ``app.models.mlx_lm`` with a minimal fake
+        # that doesn't export CompletionResponse; a module-level import would
+        # break those test setups.
         from ..models.mlx_lm import CompletionResponse
 
         stream = self._submit_batched_stream(scheduler, ctx)

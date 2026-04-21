@@ -189,14 +189,9 @@ def patched_scheduler(monkeypatch):
 
     monkeypatch.setattr(bsm, "BatchGenerator", FakeBatchGenerator)
     monkeypatch.setattr(bsm, "SequenceStateMachine", _FakeSequenceStateMachine)
+    monkeypatch.setattr(bsm, "generation_stream", object())
     monkeypatch.setattr(bsm.mx, "stream", _fake_stream_cm)
     monkeypatch.setattr(bsm.mx, "get_peak_memory", lambda: 0)
-    # ``_generation_stream`` does a deferred import from mlx_lm.generate; stub it too
-    monkeypatch.setattr(
-        bsm.BatchScheduler,
-        "_generation_stream",
-        lambda self: object(),
-    )
     # Reset shared state each test.
     FakeBatchGenerator.script_queue = []
     FakeBatchGenerator.step_delay = 0.0
