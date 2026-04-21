@@ -286,6 +286,35 @@ class TestExtractReasoningStreaming:
         )
         assert tool_calls[0]["name"] == "read"
 
+    def test_pure_thinking_delegates_to_parent_across_chunks(self) -> None:
+        """No <tool_call> present: the override must fall through to the
+        parent so a </think> split across chunks is still recognized.
+        """
+        # `<think>thinking</think>summary` — handler prepends <think>, so the
+        # raw chunks look like `['thinking</th', 'ink>summary']`.
+        chunks = ["thinking</th", "ink>summary"]
+        parser = Qwen35ReasoningParser()
+        # First chunk gets the synthetic <think> prefix
+        first = parser.get_reasoning_open() + chunks[0]
+
+        results: list[dict] = []
+        parsed, _ = parser.extract_reasoning_streaming(first)
+        if isinstance(parsed, dict):
+            results.append(parsed)
+        parsed, _ = parser.extract_reasoning_streaming(chunks[1])
+        if isinstance(parsed, dict):
+            results.append(parsed)
+
+        reasoning_text = "".join(r.get("reasoning_content", "") for r in results)
+        after_text = "".join(r.get("after_reasoning_close_content", "") for r in results)
+
+        assert reasoning_text == "thinking", (
+            f"Expected reasoning_content == 'thinking', got: {reasoning_text!r}"
+        )
+        assert after_text == "summary", (
+            f"Expected after_reasoning_close_content == 'summary', got: {after_text!r}"
+        )
+
     def test_chunk_boundary_split_on_tool_open_tag(self) -> None:
         """<tool_call> split across chunks at tag boundary — still detected."""
         # Simulate chunk split mid-tag: '<tool_' | 'call>'
