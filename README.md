@@ -90,6 +90,7 @@ Then point your OpenAI client to `http://localhost:8000/v1`. For full setup, see
 - 🔌 **Easy integration** - Works with existing OpenAI client libraries
 - 📦 **Multi-model mode** - Run multiple models in one server via a YAML config; route requests by model ID
 - ⚡ **Performance** - Configurable quantization (4/8/16-bit), context length, and speculative decoding (lm)
+- 🧵 **Continuous batching** - Concurrent `lm` requests are served through `mlx_lm.generate.BatchGenerator`, mirroring the scheduling used by mlx-lm's own server (vLLM-style)
 - 🎛️ **LoRA adapters** - Fine-tuned image generation and editing
 - 📈 **Queue management** - Built-in request queuing and monitoring
 
@@ -185,6 +186,10 @@ mlx-openai-server launch \
 | | | | | **Speculative decoding** (lm only) |
 | `--draft-model-path` | No | path | — | Path to draft model for speculative decoding |
 | `--num-draft-tokens` | No | int | 2 | Draft tokens per step |
+| | | | | **Continuous batching** (lm only) |
+| `--decode-concurrency` | No | int | 32 | Max number of batchable requests decoded in parallel |
+| `--prompt-concurrency` | No | int | 8 | Max number of batchable prompts prefilled in parallel |
+| `--prefill-step-size` | No | int | 2048 | Max tokens processed per prefill step |
 | | | | | **Prompt cache** (lm only) |
 | `--prompt-cache-size` | No | int | 10 | Maximum number of prompt KV cache entries to store |
 | `--max-bytes` | No | int | (unbounded) | Maximum total bytes retained by prompt KV caches before eviction |
@@ -227,6 +232,9 @@ Create a YAML file with a `server` section (host, port, logging) and a `models` 
 | `queue_timeout`, `queue_size` | No | Per-model queue settings |
 | `prompt_cache_size` | No | Max prompt KV cache entries (lm only; default: 10) |
 | `prompt_cache_max_bytes` | No | Max total bytes for prompt KV caches before eviction (lm only) |
+| `batch_completion_size` | No | Max batchable requests decoded in parallel (lm only; default: 32) |
+| `batch_prefill_size` | No | Max batchable prompts prefilled in parallel (lm only; default: 8) |
+| `batch_prefill_step_size` | No | Max tokens processed per prefill step (lm only; default: 2048) |
 | `on_demand` | No | Enable dynamic swapping — model is loaded on first request, unloaded after idle (default: `false`) |
 | `on_demand_idle_timeout` | No | Seconds to wait before unloading an idle on-demand model (default: `60`) |
 
@@ -743,6 +751,30 @@ mlx-openai-server launch \
 
 - **`--draft-model-path`**: Path or HuggingFace repo of the draft model (smaller size model).
 - **`--num-draft-tokens`**: Number of tokens the draft model generates per verification step (default: 2). Higher values can increase throughput at the cost of more draft compute.
+
+### Continuous Batching (lm)
+
+Concurrent chat/completion requests against an `lm` model are served through a continuous-batch scheduler backed by `mlx_lm.generate.BatchGenerator` — the same primitive mlx-lm's own HTTP server uses. New requests are admitted between decode steps, so a slow 2000-token request does not block a fast 10-token request behind it.
+
+The scheduler is on by default and kicks in as soon as a second request arrives; a single in-flight request just runs as a batch of one. Per-request sampling settings (`temperature`, `top_p`, `top_k`, `min_p`, `repetition_penalty`, `logit_bias`, XTC, and outlines JSON-schema constraints) are forwarded to `BatchGenerator` on a per-sequence lane, so they keep working while batched.
+
+The scheduler is **not** used when a request cannot be batched. Those requests transparently fall back to the single-request path:
+
+- The request specifies an explicit `seed` (the batch path shares a single RNG — same condition mlx-lm applies).
+- The handler was launched with `--draft-model-path` (speculative decoding).
+- The model uses a non-trimmable hybrid cache (SSM / recurrent) and the request triggers a mid-prefill cache checkpoint.
+
+```bash
+mlx-openai-server launch \
+  --model-path mlx-community/Llama-3.2-3B-Instruct-4bit \
+  --decode-concurrency 32 \
+  --prompt-concurrency 8 \
+  --prefill-step-size 2048
+```
+
+- **`--decode-concurrency`**: Upper bound on sequences decoded in parallel (default: 32). Increase for higher throughput if VRAM allows; decrease to cap memory.
+- **`--prompt-concurrency`**: Upper bound on prompts prefilled in parallel (default: 8). Larger values admit new requests faster but compete with decode for compute.
+- **`--prefill-step-size`**: Tokens per prefill forward pass (default: 2048). Lower values reduce peak memory for very long prompts.
 
 ## Example Notebooks
 
