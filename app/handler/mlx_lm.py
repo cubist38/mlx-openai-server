@@ -31,6 +31,22 @@ from ..utils.errors import create_error_response
 from ..utils.prompt_cache import LRUPromptCache
 
 
+def _coerce_cached_tokens(ctx_cached: int, source: Any) -> int:
+    """Return ``cached_tokens`` for the OpenAI usage payload.
+
+    The batched path reports its LRU hit count via
+    ``source.cached_prompt_tokens`` (populated on the scheduler thread); the
+    non-batched path reports it via ``ctx.total_cached_tokens`` computed
+    during ``_build_inference_context``. We take whichever is larger so
+    either path's value flows through, and defensively coerce non-int values
+    (some unit tests pass ``Mock()``) back to ``0``.
+    """
+    batched = getattr(source, "cached_prompt_tokens", 0)
+    if not isinstance(batched, int):
+        batched = 0
+    return max(ctx_cached, batched)
+
+
 def _strip_complete_tool_blocks(text: str, tool_open: str, tool_close: str) -> str:
     """Remove fully formed tool-call blocks while preserving surrounding literal text.
 
@@ -85,6 +101,11 @@ class _InferenceContext:
     prompt_progress_callback: Any = None
     checkpoint_position: int | None = None
     checkpoint_callback: Any = None
+    # Optional segmentation used by the batched path for non-trimmable cache
+    # models: splits ``rest_input_ids`` at a useful boundary so the scheduler
+    # can save a prefix checkpoint during prefill.
+    batched_segments: list[list[int]] | None = None
+    batched_segment_types: list[str] | None = None
 
 
 class MLXLMHandler:
@@ -358,6 +379,26 @@ class MLXLMHandler:
                 parsers_result.tool_parser = None
                 parsers_result.unified_parser = None
 
+            # For non-trimmable caches (hybrid / SSM / recurrent) the default
+            # "longer match trim" path in LRUPromptCache.fetch_nearest_cache
+            # is blocked. Split the prompt at the last-user-message boundary
+            # so the scheduler can save a ``system`` checkpoint there —
+            # subsequent requests with the same prefix will then find a
+            # shorter-prefix match without needing to trim. Mirrors the
+            # non-batched path's ``checkpoint_callback`` behaviour, and the
+            # segment-based cache saves in ``mlx_lm.server``.
+            segments: list[list[int]] | None = None
+            segment_types: list[str] | None = None
+            if not self.model.cache_is_trimmable:
+                boundary = self._compute_checkpoint_boundary(
+                    refined_messages, input_ids, chat_template_kwargs
+                )
+                if boundary is None and len(input_ids) > 1:
+                    boundary = len(input_ids) - 1
+                if boundary is not None and 0 < boundary < len(input_ids):
+                    segments = [input_ids[:boundary], input_ids[boundary:]]
+                    segment_types = ["system", "assistant"]
+
             return _InferenceContext(
                 rest_input_ids=input_ids,
                 cache=None,
@@ -371,6 +412,8 @@ class MLXLMHandler:
                 ),
                 checkpoint_position=None,
                 checkpoint_callback=None,
+                batched_segments=segments,
+                batched_segment_types=segment_types,
             )
 
         cache, rest_input_ids = self.prompt_cache.fetch_nearest_cache(input_ids)
@@ -826,20 +869,14 @@ class MLXLMHandler:
                     final_chunk.peak_memory,
                 )
 
-            # The batched path doesn't populate ``ctx.total_cached_tokens``
-            # because its cache lookup happens on the scheduler thread. When
-            # the scheduler reports a cache hit via ``final_chunk``, prefer
-            # that over the context value.
-            batched_cached = getattr(final_chunk, "cached_prompt_tokens", 0)
-            if not isinstance(batched_cached, int):
-                batched_cached = 0
-            cached_tokens = max(total_cached_tokens, batched_cached)
             yield {
                 "__usage__": UsageInfo(
                     prompt_tokens=total_input_tokens,
                     completion_tokens=final_chunk.generation_tokens,
                     total_tokens=total_tokens,
-                    prompt_tokens_details=PromptTokenUsageInfo(cached_tokens=cached_tokens),
+                    prompt_tokens_details=PromptTokenUsageInfo(
+                        cached_tokens=_coerce_cached_tokens(total_cached_tokens, final_chunk)
+                    ),
                 )
             }
 
@@ -1020,18 +1057,13 @@ class MLXLMHandler:
                     response.peak_memory,
                 )
 
-            # Batched path reports cache hits via ``response.cached_prompt_tokens``
-            # (the scheduler thread owns cache lookup). Non-batched path uses
-            # ``ctx.total_cached_tokens`` from the event-loop-thread lookup.
-            batched_cached = getattr(response, "cached_prompt_tokens", 0)
-            if not isinstance(batched_cached, int):
-                batched_cached = 0
-            cached_tokens = max(total_cached_tokens, batched_cached)
             usage = UsageInfo(
                 prompt_tokens=total_input_tokens,
                 completion_tokens=response.generation_tokens,
                 total_tokens=total_tokens,
-                prompt_tokens_details=PromptTokenUsageInfo(cached_tokens=cached_tokens),
+                prompt_tokens_details=PromptTokenUsageInfo(
+                    cached_tokens=_coerce_cached_tokens(total_cached_tokens, response)
+                ),
             )
 
             return {"response": parsed_response, "usage": usage}
@@ -1135,12 +1167,17 @@ class MLXLMHandler:
             max_tokens = 1 << 20  # matches the "effectively unlimited" default used by MLX_LM
 
         # Hand the full prompt to the scheduler; it does its own LRU lookup
-        # and cache construction on its worker thread.
+        # and cache construction on its worker thread. For non-trimmable
+        # cache models the context also carries pre-computed segment
+        # boundaries so the scheduler can save a prefix checkpoint — see
+        # ``_build_inference_context``.
         return scheduler.submit_stream(
             input_ids=list(ctx.cache_key),
             max_tokens=int(max_tokens),
             sampler=sampler,
             logits_processors=logits_processors or None,
+            segments=ctx.batched_segments,
+            segment_types=ctx.batched_segment_types,
         )
 
     def _persist_cache_if_owned(

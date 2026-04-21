@@ -101,6 +101,34 @@ class FakeBatchGenerator:
             uids.append(uid)
         return uids
 
+    def insert_segments(
+        self,
+        segments: list[list[list[int]]],
+        max_tokens: list[int] | None = None,
+        caches: Any = None,
+        all_tokens: Any = None,
+        samplers: Any = None,
+        logits_processors: Any = None,
+        state_machines: Any = None,
+    ) -> list[int]:
+        # Flatten segments back into a single prompt per sequence; the fake
+        # does not model segment-boundary prefill events.
+        flattened = [[tok for seg in seqs for tok in seg] for seqs in segments]
+        return self.insert(
+            flattened,
+            max_tokens=max_tokens,
+            caches=caches,
+            all_tokens=all_tokens,
+            samplers=samplers,
+            logits_processors=logits_processors,
+            state_machines=state_machines,
+        )
+
+    def extract_cache(self, uids: list[int]) -> dict[int, tuple[Any, list[int]]]:
+        # Return empty cache payloads so the scheduler's extract-on-segment
+        # path is exercised without the fake needing to track real state.
+        return {uid: ([], []) for uid in uids}
+
     def next(self) -> tuple[list[Any], list[Any]]:
         if self.step_delay > 0:
             import time as _time

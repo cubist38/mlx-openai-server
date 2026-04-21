@@ -107,6 +107,13 @@ class _PendingRequest:
     loop: asyncio.AbstractEventLoop
     out_queue: asyncio.Queue[Any]
     cancel_event: threading.Event
+    # Optional prompt-level segments for non-trimmable caches. ``segments``
+    # partitions ``input_ids`` — e.g. ``[system_and_history, current_turn]``
+    # — and ``segment_types`` labels each one (``"system"`` / ``"user"`` /
+    # ``"assistant"``) so the scheduler can save an LRU checkpoint at each
+    # segment boundary (matching ``mlx_lm.server``'s approach).
+    segments: list[list[int]] | None = None
+    segment_types: list[str] | None = None
 
 
 @dataclass
@@ -119,6 +126,10 @@ class _ActiveRequest:
     cancel_event: threading.Event
     prompt_tokens: int
     cached_prompt_tokens: int
+    # Reversed ``segment_types`` list; pop()'d each time a non-terminal
+    # segment boundary fires during prefill so the popped label becomes the
+    # ``cache_type`` for the extracted checkpoint.
+    pending_segment_types: list[str]
     first_token_time: float | None = None
     generation_tokens: int = 0
 
@@ -284,6 +295,8 @@ class BatchScheduler:
         sampler: Callable[[mx.array], mx.array] | None = None,
         logits_processors: list[Callable[[mx.array, mx.array], mx.array]] | None = None,
         state_machine: Any | None = None,
+        segments: list[list[int]] | None = None,
+        segment_types: list[str] | None = None,
     ) -> AsyncGenerator[BatchChunk, None]:
         """Submit a request and return an async generator of :class:`BatchChunk`.
 
@@ -307,6 +320,18 @@ class BatchScheduler:
             Per-request logits processors.
         state_machine : SequenceStateMachine, optional
             Overrides the default EOS-only stop state machine.
+        segments : list[list[int]], optional
+            Partition of ``input_ids`` into segments. When provided, the
+            scheduler uses ``BatchGenerator.insert_segments`` and extracts a
+            cache checkpoint at each non-terminal segment boundary. Required
+            to get cache reuse on models with non-trimmable (hybrid / SSM)
+            caches — the default ``fetch_nearest_cache`` "longer match"
+            trimming path is blocked on those.
+        segment_types : list[str], optional
+            Parallel labels for ``segments`` (``"system"``, ``"user"``,
+            ``"assistant"``). Used as ``cache_type`` when each segment's
+            checkpoint is saved into the LRU. Must be the same length as
+            ``segments``.
 
         Returns
         -------
@@ -314,6 +339,12 @@ class BatchScheduler:
             An async generator yielding incremental chunks; the final chunk
             has ``finish_reason`` set.
         """
+        if segments is not None and segment_types is not None and len(segments) != len(
+            segment_types
+        ):
+            raise ValueError(
+                f"segments / segment_types length mismatch: {len(segments)} vs {len(segment_types)}"
+            )
         if not input_ids:
             raise ValueError("input_ids must contain at least one token for batch generation")
 
@@ -335,6 +366,8 @@ class BatchScheduler:
             loop=loop,
             out_queue=out_queue,
             cancel_event=cancel_event,
+            segments=[list(s) for s in segments] if segments is not None else None,
+            segment_types=list(segment_types) if segment_types is not None else None,
         )
         self._admission_queue.put(request)
 
@@ -392,13 +425,10 @@ class BatchScheduler:
                     self._fail_all_active(exc)
                     continue
 
+                self._handle_prompt_responses(prompt_responses)
+
                 for resp in gen_responses:
                     self._handle_generation_response(resp)
-
-                # Prompt-phase responses are advisory (progress); we don't
-                # surface them to clients in this first cut, but we clean up
-                # cancelled prompts below.
-                del prompt_responses
 
                 self._process_cancellations()
         finally:
@@ -437,7 +467,6 @@ class BatchScheduler:
             if request.prompt_cache is not None:
                 cache_from_lru: list[Any] | None = request.prompt_cache
                 cached_prefix_len = request.cached_prefix_len
-                rest_input_ids = request.input_ids[cached_prefix_len:]
             elif self._prompt_cache is not None:
                 try:
                     fetched_cache, fetched_rest = self._prompt_cache.fetch_nearest_cache(
@@ -447,22 +476,47 @@ class BatchScheduler:
                     logger.warning(f"prompt_cache.fetch_nearest_cache failed: {exc!s}")
                     fetched_cache, fetched_rest = None, request.input_ids
                 cache_from_lru = fetched_cache
-                rest_input_ids = fetched_rest
                 cached_prefix_len = len(request.input_ids) - len(fetched_rest)
             else:
                 cache_from_lru = None
-                rest_input_ids = request.input_ids
                 cached_prefix_len = 0
 
-            if not rest_input_ids:
-                # The cache already covers the entire prompt; keep one token
-                # so BatchGenerator has a kickoff input.
-                rest_input_ids = request.input_ids[-1:]
+            # Resolve segments + trim against cached prefix. If the caller
+            # didn't supply segments, treat the whole prompt as one
+            # "assistant" segment (matches ``mlx_lm.server``'s default for
+            # non-chat or assistant-terminated prompts).
+            segments: list[list[int]]
+            segment_types: list[str]
+            if request.segments is not None and request.segment_types is not None:
+                segments = [list(s) for s in request.segments]
+                segment_types = list(request.segment_types)
+            else:
+                segments = [list(request.input_ids)]
+                segment_types = ["assistant"]
+
+            # Drop segments fully covered by the cache; trim the first
+            # partially-covered one (mirrors mlx_lm.server ``while N > 0``).
+            remaining = cached_prefix_len
+            while remaining > 0 and segments:
+                if remaining >= len(segments[0]):
+                    remaining -= len(segments.pop(0))
+                    segment_types.pop(0)
+                else:
+                    segments[0] = segments[0][remaining:]
+                    remaining = 0
+
+            if not segments or not any(segments):
+                # Cache covered the whole prompt; keep a single-token
+                # kickoff segment so BatchGenerator has something to
+                # process. Non-trimmable caches get here when the trie
+                # returned a "longer" match via insert_segments fallback.
+                segments = [request.input_ids[-1:]]
+                segment_types = ["assistant"]
                 cached_prefix_len = len(request.input_ids) - 1
 
             try:
-                uids = self._batch_generator.insert(
-                    prompts=[rest_input_ids],
+                uids = self._batch_generator.insert_segments(
+                    segments=[segments],
                     max_tokens=[request.max_tokens],
                     caches=[cache_from_lru] if cache_from_lru is not None else None,
                     all_tokens=[request.input_ids[:cached_prefix_len]],
@@ -482,6 +536,9 @@ class BatchScheduler:
 
             detokenizer = self._tokenizer.detokenizer
             detokenizer.reset()
+            # Reversed so we can ``pop()`` each label as its segment
+            # boundary fires during prefill.
+            pending_segment_types = list(reversed(segment_types))
             self._active[uid] = _ActiveRequest(
                 loop=request.loop,
                 out_queue=request.out_queue,
@@ -489,12 +546,68 @@ class BatchScheduler:
                 cancel_event=request.cancel_event,
                 prompt_tokens=len(request.input_ids),
                 cached_prompt_tokens=cached_prefix_len,
+                pending_segment_types=pending_segment_types,
             )
             logger.info(
                 f"BatchScheduler admitted uid={uid} "
                 f"(active={len(self._active)}, prompt_tokens={len(request.input_ids)}, "
-                f"cached_prefix={cached_prefix_len})"
+                f"cached_prefix={cached_prefix_len}, segments={len(segments)})"
             )
+
+    def _handle_prompt_responses(self, prompt_responses: list[Any]) -> None:
+        """Save cache checkpoints at non-terminal segment boundaries.
+
+        ``BatchGenerator`` reports ``end_of_segment=True`` after it finishes
+        prefilling each segment of a multi-segment insert. For every such
+        event that is *not* the end of the whole prompt, we extract the cache
+        state and save it into the LRU under the matching ``cache_type``
+        label — same approach as ``mlx_lm.server``. This is what gives
+        non-trimmable caches (hybrid / SSM / recurrent) a reusable prefix:
+        the "system" or "user" checkpoint sits in the trie so future
+        requests with the same prefix find it via the normal ``shorter``
+        match path.
+        """
+        if not prompt_responses or self._prompt_cache is None:
+            return
+        eos_uids: list[int] = []
+        for r in prompt_responses:
+            if not getattr(r, "end_of_segment", False):
+                continue
+            if getattr(r, "end_of_prompt", False):
+                # Final segment's checkpoint is redundant with the post-
+                # generation save in _handle_generation_response; skip to
+                # avoid a duplicate insert.
+                continue
+            state = self._active.get(r.uid)
+            if state is None or not state.pending_segment_types:
+                continue
+            eos_uids.append(r.uid)
+        if not eos_uids:
+            return
+        try:
+            caches = self._batch_generator.extract_cache(eos_uids)
+        except Exception as exc:  # noqa: BLE001 — extraction failures are non-fatal
+            logger.warning(f"BatchGenerator.extract_cache failed for {eos_uids}: {exc!s}")
+            return
+        for uid, (cache, cache_key) in caches.items():
+            state = self._active.get(uid)
+            if state is None or not state.pending_segment_types:
+                continue
+            cache_type = state.pending_segment_types.pop()
+            try:
+                self._prompt_cache.insert_cache(
+                    list(cache_key),
+                    cache,
+                    cache_type=cache_type,
+                )
+                logger.debug(
+                    f"BatchScheduler saved {cache_type} checkpoint for uid={uid}"
+                    f" (key_len={len(cache_key)})"
+                )
+            except Exception as exc:  # noqa: BLE001 — cache save is best-effort
+                logger.warning(
+                    f"prompt_cache.insert_cache ({cache_type}) failed for uid={uid}: {exc!s}"
+                )
 
     def _handle_generation_response(self, resp: Any) -> None:
         """Forward a single generation-batch response to the owning request."""
@@ -543,19 +656,34 @@ class BatchScheduler:
             # Matches ``mlx_lm.server`` (which also does ``insert_cache`` on
             # its generation thread) and keeps all cache mutations off the
             # FastAPI event-loop thread.
-            if (
-                self._prompt_cache is not None
-                and resp.prompt_cache is not None
-                and resp.all_tokens
-            ):
-                try:
-                    self._prompt_cache.insert_cache(
-                        list(resp.all_tokens),
-                        resp.prompt_cache,
-                        cache_type="assistant",
+            saved = False
+            key_len = 0
+            if self._prompt_cache is not None:
+                if resp.prompt_cache is None or not resp.all_tokens:
+                    logger.debug(
+                        f"Skipping cache save for uid={resp.uid}: "
+                        f"prompt_cache={'present' if resp.prompt_cache else 'missing'}, "
+                        f"all_tokens_len={len(resp.all_tokens) if resp.all_tokens else 0}"
                     )
-                except Exception as exc:  # noqa: BLE001 — cache save is best-effort
-                    logger.warning(f"prompt_cache.insert_cache failed for uid={resp.uid}: {exc!s}")
+                else:
+                    key_len = len(resp.all_tokens)
+                    try:
+                        self._prompt_cache.insert_cache(
+                            list(resp.all_tokens),
+                            resp.prompt_cache,
+                            cache_type="assistant",
+                        )
+                        saved = True
+                    except Exception as exc:  # noqa: BLE001 — cache save is best-effort
+                        logger.warning(
+                            f"prompt_cache.insert_cache failed for uid={resp.uid}: {exc!s}"
+                        )
+            logger.info(
+                f"BatchScheduler uid={resp.uid} finished "
+                f"(finish_reason={chunk_finish}, "
+                f"generated={state.generation_tokens}, "
+                f"cache_saved={saved}, cache_key_len={key_len})"
+            )
             self._send(state.loop, state.out_queue, _STREAM_SENTINEL)
             self._active.pop(resp.uid, None)
 
