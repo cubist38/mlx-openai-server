@@ -219,38 +219,20 @@ def _handler_worker(
             return
 
         # ------------------------------------------------------------------
-        # Request loop
+        # Per-request handler
+        #
+        # Each inbound request runs as its own asyncio task so multiple
+        # requests can be in flight inside the subprocess concurrently —
+        # that's what lets the continuous batcher (BatchScheduler) actually
+        # see more than one request at a time. Without this, the subprocess
+        # request loop would drain one stream to completion before polling
+        # for the next, serializing everything upstream of the batcher.
         # ------------------------------------------------------------------
-        while True:
-            try:
-                request = request_queue.get(timeout=1.0)
-            except queue.Empty:
-                # Detect orphaned child: if the parent died the queue will
-                # never receive a _SHUTDOWN, so we exit proactively.
-                try:
-                    os.kill(_parent_pid, 0)
-                except (ProcessLookupError, PermissionError):
-                    logger.warning(
-                        f"Parent process (pid={_parent_pid}) exited; "
-                        f"handler subprocess for '{model_id}' shutting down"
-                    )
-                    break
-                continue
-            except Exception:
-                break
+        _inflight: set[asyncio.Task[None]] = set()
 
+        async def _handle_request(request: dict[str, Any]) -> None:
             req_id: str = request.get("id", "")
             method_name: str = request.get("method", "")
-
-            # Shutdown signal
-            if method_name == _SHUTDOWN:
-                try:
-                    await handler.cleanup()
-                except Exception as exc:
-                    logger.error(f"Error during handler cleanup in subprocess: {exc}")
-                response_queue.put({"id": req_id, "type": "shutdown_complete"})
-                break
-
             args: tuple[Any, ...] = request.get("args", ())
             kwargs: dict[str, Any] = request.get("kwargs", {})
             is_stream: bool = request.get("stream", False)
@@ -289,6 +271,56 @@ def _handler_worker(
                         "detail": getattr(exc, "detail", None),
                     }
                 )
+
+        # ------------------------------------------------------------------
+        # Request loop — pulls messages from the (blocking) mp.Queue and
+        # fans them out to concurrent tasks. The ``request_queue.get`` call
+        # is blocking, so we run it on the default thread executor to keep
+        # the event loop free to make progress on in-flight tasks.
+        # ------------------------------------------------------------------
+        loop = asyncio.get_running_loop()
+
+        def _blocking_get() -> dict[str, Any] | None:
+            try:
+                return request_queue.get(timeout=1.0)
+            except queue.Empty:
+                return None
+
+        while True:
+            request = await loop.run_in_executor(None, _blocking_get)
+            if request is None:
+                # Detect orphaned child: if the parent died the queue will
+                # never receive a _SHUTDOWN, so we exit proactively.
+                try:
+                    os.kill(_parent_pid, 0)
+                except (ProcessLookupError, PermissionError):
+                    logger.warning(
+                        f"Parent process (pid={_parent_pid}) exited; "
+                        f"handler subprocess for '{model_id}' shutting down"
+                    )
+                    break
+                continue
+
+            req_id = request.get("id", "")
+            method_name = request.get("method", "")
+
+            # Shutdown signal
+            if method_name == _SHUTDOWN:
+                if _inflight:
+                    logger.info(
+                        f"Shutdown requested; waiting for {len(_inflight)} in-flight request(s) to finish"
+                    )
+                    await asyncio.gather(*_inflight, return_exceptions=True)
+                try:
+                    await handler.cleanup()
+                except Exception as exc:
+                    logger.error(f"Error during handler cleanup in subprocess: {exc}")
+                response_queue.put({"id": req_id, "type": "shutdown_complete"})
+                break
+
+            task = asyncio.create_task(_handle_request(request))
+            _inflight.add(task)
+            task.add_done_callback(_inflight.discard)
 
             now = time.monotonic()
             if now - _gc_state["last_time"] >= _GC_INTERVAL_SECONDS:
