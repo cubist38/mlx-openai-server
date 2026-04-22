@@ -151,7 +151,9 @@ def _model_entry_extras(m: ModelEntryConfig) -> list[tuple[str, object]]:
         extras.append(("draft_model_path", m.draft_model_path))
         extras.append(("num_draft_tokens", m.num_draft_tokens))
     if m.kv_bits is not None:
-        extras.append(("kv_bits", f"{m.kv_bits} (group={m.kv_group_size}, start={m.quantized_kv_start})"))
+        extras.append(
+            ("kv_bits", f"{m.kv_bits} (group={m.kv_group_size}, start={m.quantized_kv_start})")
+        )
     if m.quantize is not None:
         extras.append(("quantize", m.quantize))
     if m.config_name:
