@@ -29,7 +29,7 @@ import sys
 from loguru import logger
 import uvicorn
 
-from .config import MLXServerConfig, MultiModelServerConfig
+from .config import MLXServerConfig, ModelEntryConfig, MultiModelServerConfig
 from .server import setup_server
 from .version import __version__
 
@@ -121,6 +121,54 @@ def print_startup_banner(config_args: MLXServerConfig) -> None:
     logger.info("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
 
 
+def _model_entry_extras(m: ModelEntryConfig) -> list[tuple[str, object]]:
+    """Return non-default per-model settings worth surfacing in the banner.
+
+    Only fields that differ from their dataclass default are included —
+    this keeps the banner quiet for minimal configs and lights up every
+    knob that was actually touched (parsers, tool choice, LoRA, draft
+    model, KV quant, on-demand, etc.).
+    """
+    extras: list[tuple[str, object]] = []
+
+    if m.served_model_name and m.served_model_name != m.model_path:
+        extras.append(("served_model_name", m.served_model_name))
+    if m.context_length is not None:
+        extras.append(("context_length", m.context_length))
+    if m.enable_auto_tool_choice:
+        extras.append(("auto_tool_choice", True))
+    if m.tool_call_parser:
+        extras.append(("tool_call_parser", m.tool_call_parser))
+    if m.reasoning_parser:
+        extras.append(("reasoning_parser", m.reasoning_parser))
+    if m.message_converter:
+        extras.append(("message_converter", m.message_converter))
+    if m.chat_template_file:
+        extras.append(("chat_template_file", m.chat_template_file))
+    if m.trust_remote_code:
+        extras.append(("trust_remote_code", True))
+    if m.draft_model_path:
+        extras.append(("draft_model_path", m.draft_model_path))
+        extras.append(("num_draft_tokens", m.num_draft_tokens))
+    if m.kv_bits is not None:
+        extras.append(("kv_bits", f"{m.kv_bits} (group={m.kv_group_size}, start={m.quantized_kv_start})"))
+    if m.quantize is not None:
+        extras.append(("quantize", m.quantize))
+    if m.config_name:
+        extras.append(("config_name", m.config_name))
+    if m.lora_paths:
+        extras.append(("lora_paths", m.lora_paths))
+    if m.lora_scales:
+        extras.append(("lora_scales", m.lora_scales))
+    if m.disable_auto_resize:
+        extras.append(("auto_resize", False))
+    if m.on_demand:
+        extras.append(("on_demand", f"idle_timeout={m.on_demand_idle_timeout}s"))
+    if m.debug:
+        extras.append(("debug", True))
+    return extras
+
+
 def print_multi_startup_banner(config: MultiModelServerConfig) -> None:
     """Log a startup banner for multi-handler mode.
 
@@ -138,6 +186,8 @@ def print_multi_startup_banner(config: MultiModelServerConfig) -> None:
     logger.info(f"🔢 Models to load: {len(config.models)}")
     for idx, m in enumerate(config.models, start=1):
         logger.info(f"  [{idx}] {m.served_model_name} (type={m.model_type}, path={m.model_path})")
+        for key, value in _model_entry_extras(m):
+            logger.info(f"       • {key}: {value}")
     logger.info("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
 
 
