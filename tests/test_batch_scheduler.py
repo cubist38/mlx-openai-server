@@ -523,9 +523,11 @@ async def test_exact_cache_hit_is_backed_off_before_kickoff_token(patched_schedu
             pass
 
     trimmed: list[int] = []
-    monkeypatch = patched_scheduler.pytest_monkeypatch if hasattr(
-        patched_scheduler, "pytest_monkeypatch"
-    ) else None
+    monkeypatch = (
+        patched_scheduler.pytest_monkeypatch
+        if hasattr(patched_scheduler, "pytest_monkeypatch")
+        else None
+    )
     if monkeypatch is None:
         pytest.skip("patched scheduler fixture does not expose monkeypatch")
 
@@ -577,9 +579,11 @@ async def test_exact_non_trimmable_cache_hit_falls_back_to_reprefill(patched_sch
         def trim_to(self, **_kwargs):
             pass
 
-    monkeypatch = patched_scheduler.pytest_monkeypatch if hasattr(
-        patched_scheduler, "pytest_monkeypatch"
-    ) else None
+    monkeypatch = (
+        patched_scheduler.pytest_monkeypatch
+        if hasattr(patched_scheduler, "pytest_monkeypatch")
+        else None
+    )
     if monkeypatch is None:
         pytest.skip("patched scheduler fixture does not expose monkeypatch")
 
