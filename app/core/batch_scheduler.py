@@ -701,20 +701,30 @@ class BatchScheduler:
         if state.first_token_time is None:
             state.first_token_time = time.perf_counter()
 
-        state.detokenizer.add_token(resp.token)
-        segment = state.detokenizer.last_segment
-        state.generation_tokens += 1
-
         chunk_finish = resp.finish_reason
         is_final = chunk_finish is not None
+        state.generation_tokens += 1
 
-        if is_final:
-            # Flush any remaining text pieces before reporting the final chunk.
+        # When a stop sequence fires (``finish_reason == "stop"``), the current
+        # ``resp.token`` is the matched stop/EOS token — skip it so the raw
+        # ``<|im_end|>`` (or other EOS) text doesn't leak into the response.
+        # Any non-stop terminator (e.g. ``"length"``) is still real output.
+        if chunk_finish == "stop":
+            segment = ""
             try:
                 state.detokenizer.finalize()
-                segment += state.detokenizer.last_segment
+                segment = state.detokenizer.last_segment
             except Exception:  # noqa: BLE001 — finalize is best-effort
                 pass
+        else:
+            state.detokenizer.add_token(resp.token)
+            segment = state.detokenizer.last_segment
+            if is_final:
+                try:
+                    state.detokenizer.finalize()
+                    segment += state.detokenizer.last_segment
+                except Exception:  # noqa: BLE001 — finalize is best-effort
+                    pass
 
         chunk = BatchChunk(
             text=segment,
