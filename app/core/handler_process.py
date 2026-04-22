@@ -160,16 +160,22 @@ def _ensure_model_downloaded(
                 {
                     "type": "progress",
                     "stage": "download",
+                    "kind": "start",
                     "message": f"Fetching '{model_path}' from HuggingFace...",
                 }
             )
-        while not done.wait(timeout=5.0):
+        # Silent heartbeats: exist only so the parent can reset its
+        # ready-wait deadline while a large download progresses. The
+        # user-facing progress comes from huggingface_hub's tqdm bar
+        # in the child's stderr.
+        while not done.wait(timeout=15.0):
             elapsed = time.monotonic() - start
             with suppress(Exception):
                 response_queue.put(
                     {
                         "type": "progress",
                         "stage": "download",
+                        "kind": "heartbeat",
                         "message": f"Fetching '{model_path}' ({elapsed:.0f}s elapsed)",
                     }
                 )
@@ -190,6 +196,7 @@ def _ensure_model_downloaded(
             {
                 "type": "progress",
                 "stage": "download",
+                "kind": "end",
                 "message": f"Fetched '{model_path}'",
             }
         )
@@ -659,7 +666,15 @@ class HandlerProcessProxy:
                 continue
 
             if msg.get("type") == "progress":
-                logger.info(f"'{self.served_model_name}': {msg.get('message', 'progress...')}")
+                # Bookend messages (start / end of a stage) are worth
+                # surfacing at INFO; the intermediate heartbeats only
+                # exist to reset the deadline and stay at DEBUG so they
+                # don't drown out the child's own tqdm progress bar.
+                line = f"'{self.served_model_name}': {msg.get('message', 'progress...')}"
+                if msg.get("kind") in ("start", "end"):
+                    logger.info(line)
+                else:
+                    logger.debug(line)
                 # Reset the deadline on every progress message so a
                 # slow-but-steady download doesn't trip the timeout. A
                 # genuine hang (no progress, no crash) still fails after
