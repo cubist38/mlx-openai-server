@@ -418,7 +418,8 @@ def test_non_mergeable_cache_disables_batching():
 async def test_admission_reclaims_lru_based_on_live_batch(patched_scheduler):
     """LRU trim_to must subtract the live batch's prompt cache bytes
     from the LRU cap at admission time — mirroring mlx_lm.server's
-    ``total - active`` reclaim so the batch and the LRU share a budget."""
+    ``total - active`` reclaim so the batch and the LRU share a budget.
+    """
     FakeBatchGenerator.script_queue = [_FakeScript(tokens=[42], finish_reason="length")]
 
     class _FakeLRU:
@@ -466,7 +467,8 @@ async def test_admission_reclaims_lru_based_on_live_batch(patched_scheduler):
 @pytest.mark.asyncio
 async def test_stop_drains_pending_admission_queue(patched_scheduler):
     """Requests submitted just before stop() must receive a terminal error
-    instead of hanging forever on out_queue.get()."""
+    instead of hanging forever on out_queue.get().
+    """
 
     scheduler = patched_scheduler.BatchScheduler(
         model=object(),

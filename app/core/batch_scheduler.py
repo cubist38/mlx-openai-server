@@ -353,8 +353,10 @@ class BatchScheduler:
             An async generator yielding incremental chunks; the final chunk
             has ``finish_reason`` set.
         """
-        if segments is not None and segment_types is not None and len(segments) != len(
-            segment_types
+        if (
+            segments is not None
+            and segment_types is not None
+            and len(segments) != len(segment_types)
         ):
             raise ValueError(
                 f"segments / segment_types length mismatch: {len(segments)} vs {len(segment_types)}"

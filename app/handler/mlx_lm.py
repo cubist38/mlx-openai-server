@@ -407,9 +407,7 @@ class MLXLMHandler:
                 total_cached_tokens=0,
                 model_params=model_params,
                 parsers_result=parsers_result,
-                prompt_progress_callback=(
-                    make_prompt_progress_callback() if self.debug else None
-                ),
+                prompt_progress_callback=(make_prompt_progress_callback() if self.debug else None),
                 checkpoint_position=None,
                 checkpoint_callback=None,
                 batched_segments=segments,
