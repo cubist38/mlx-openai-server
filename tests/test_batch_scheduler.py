@@ -77,6 +77,9 @@ class FakeBatchGenerator:
         self._pending: list[tuple[int, _FakeScript, int]] = []
         self.removed: list[int] = []
         self.closed = False
+        # Overridable by tests so the scheduler's admission-time reclaim
+        # has a non-zero ``active`` figure to subtract against the LRU cap.
+        self.prompt_cache_nbytes = 0
 
     def insert(
         self,
@@ -217,8 +220,10 @@ def patched_scheduler(monkeypatch):
 
     monkeypatch.setattr(bsm, "BatchGenerator", FakeBatchGenerator)
     monkeypatch.setattr(bsm, "SequenceStateMachine", _FakeSequenceStateMachine)
-    monkeypatch.setattr(bsm, "generation_stream", object())
     monkeypatch.setattr(bsm.mx, "stream", _fake_stream_cm)
+    monkeypatch.setattr(bsm.mx, "new_stream", lambda _device: object())
+    monkeypatch.setattr(bsm.mx, "new_thread_local_stream", lambda _device: object(), raising=False)
+    monkeypatch.setattr(bsm.mx, "default_device", lambda: object())
     monkeypatch.setattr(bsm.mx, "get_peak_memory", lambda: 0)
     # Reset shared state each test.
     FakeBatchGenerator.script_queue = []
@@ -377,6 +382,7 @@ def test_default_seed_zero_does_not_disable_batching():
 
     class _FakeModel:
         has_draft_model = False
+        cache_is_batchable = True
 
     class _Req:
         def __init__(self, seed):
@@ -389,3 +395,104 @@ def test_default_seed_zero_does_not_disable_batching():
     assert handler._is_request_batchable(_Req(seed=0)) is True
     assert handler._is_request_batchable(_Req(seed=-1)) is True
     assert handler._is_request_batchable(_Req(seed=42)) is False
+
+
+def test_non_mergeable_cache_disables_batching():
+    """Models whose prompt caches don't expose ``merge`` must fall back."""
+    from app.handler.mlx_lm import MLXLMHandler
+
+    class _FakeModel:
+        has_draft_model = False
+        cache_is_batchable = False
+
+    class _Req:
+        seed = None
+
+    handler = MLXLMHandler.__new__(MLXLMHandler)
+    handler.model = _FakeModel()
+
+    assert handler._is_request_batchable(_Req()) is False
+
+
+@pytest.mark.asyncio
+async def test_admission_reclaims_lru_based_on_live_batch(patched_scheduler):
+    """LRU trim_to must subtract the live batch's prompt cache bytes
+    from the LRU cap at admission time — mirroring mlx_lm.server's
+    ``total - active`` reclaim so the batch and the LRU share a budget."""
+    FakeBatchGenerator.script_queue = [_FakeScript(tokens=[42], finish_reason="length")]
+
+    class _FakeLRU:
+        max_bytes = 1_000
+        trim_calls: list[int] = []
+
+        def fetch_nearest_cache(self, _tokens):
+            return None, list(_tokens)
+
+        def trim_to(self, *, n_bytes):
+            self.trim_calls.append(n_bytes)
+
+        def insert_cache(self, *_args, **_kwargs):
+            pass
+
+    lru = _FakeLRU()
+    scheduler = patched_scheduler.BatchScheduler(
+        model=object(),
+        tokenizer=FakeTokenizer(),
+        prompt_cache=lru,
+        idle_poll_timeout=0.01,
+    )
+    scheduler.start()
+    try:
+        # Pretend the batch is already holding 400 bytes of live KV cache;
+        # after admission the LRU should be trimmed to (1000 - 400) = 600.
+        for _ in range(100):
+            fake = getattr(scheduler, "_batch_generator", None)
+            if isinstance(fake, FakeBatchGenerator):
+                fake.prompt_cache_nbytes = 400
+                break
+            await asyncio.sleep(0.01)
+        assert isinstance(fake, FakeBatchGenerator)
+
+        stream = scheduler.submit_stream(input_ids=[1, 2, 3], max_tokens=4)
+        _ = [c async for c in stream]
+    finally:
+        scheduler.stop()
+
+    assert 600 in lru.trim_calls, (
+        f"expected trim_to(n_bytes=600) after admission, got {lru.trim_calls}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_stop_drains_pending_admission_queue(patched_scheduler):
+    """Requests submitted just before stop() must receive a terminal error
+    instead of hanging forever on out_queue.get()."""
+
+    scheduler = patched_scheduler.BatchScheduler(
+        model=object(),
+        tokenizer=FakeTokenizer(),
+        idle_poll_timeout=0.01,
+    )
+    scheduler.start()
+
+    # Submit a batch of requests, then stop immediately. Some of them will
+    # race past ``_admit_pending`` before the worker notices ``_running``
+    # flipped; the rest must be drained by the finally handler.
+    streams = [scheduler.submit_stream(input_ids=[i], max_tokens=8) for i in range(8)]
+    scheduler.stop()
+
+    async def _collect(stream):
+        try:
+            async for _ in stream:
+                pass
+        except RuntimeError:
+            return "errored"
+        return "ended"
+
+    # Must complete quickly — no stream may be left hanging.
+    results = await asyncio.wait_for(
+        asyncio.gather(*[_collect(s) for s in streams]),
+        timeout=2.0,
+    )
+    # Every stream terminated one way or another (clean end or explicit error).
+    assert all(r in {"errored", "ended"} for r in results)

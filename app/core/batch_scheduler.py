@@ -21,6 +21,7 @@ from __future__ import annotations
 import asyncio
 from collections.abc import AsyncGenerator, Callable
 from dataclasses import dataclass
+import inspect
 import queue
 import threading
 import time
@@ -34,14 +35,21 @@ if TYPE_CHECKING:
 
 
 try:
-    from mlx_lm.generate import BatchGenerator, SequenceStateMachine, generation_stream
+    from mlx_lm.generate import BatchGenerator, SequenceStateMachine
 
     BATCHING_AVAILABLE = True
+    # ``BatchGenerator`` gained a ``stream=`` kwarg in mlx-lm PR #1090.
+    # We feature-detect it so the scheduler can forward its own thread-local
+    # stream automatically once the installed mlx-lm ships that change —
+    # older versions fall back to BatchGenerator's module-level stream.
+    _BATCH_GENERATOR_ACCEPTS_STREAM = (
+        "stream" in inspect.signature(BatchGenerator.__init__).parameters
+    )
 except ImportError:  # pragma: no cover — only exercised on older mlx-lm pins
     BatchGenerator = None  # type: ignore[assignment,misc]
     SequenceStateMachine = None  # type: ignore[assignment,misc]
-    generation_stream = None  # type: ignore[assignment]
     BATCHING_AVAILABLE = False
+    _BATCH_GENERATOR_ACCEPTS_STREAM = False
     logger.warning(
         "mlx_lm.generate.BatchGenerator is unavailable — continuous batching is"
         " disabled. Upgrade mlx-lm (git main or the next PyPI release after"
@@ -194,6 +202,12 @@ class BatchScheduler:
         self._state_lock = threading.Lock()
         self._ready_event = threading.Event()
         self._start_error: BaseException | None = None
+        # MLX stream owned by the scheduler thread. Allocated in ``_run`` so
+        # the stream is created on the same OS thread that will use it —
+        # mlx ≥ 0.31.2 binds streams to their creating thread (see mlx
+        # PR #3355 / mlx-lm PR #1090) and touching a cross-thread stream
+        # raises "no Stream(gpu, 0) in current thread".
+        self._stream: Any | None = None
 
     @staticmethod
     def _build_default_state_machine(tokenizer: TokenizerWrapper) -> Any:
@@ -395,13 +409,33 @@ class BatchScheduler:
         keeps all Metal work pinned to this single OS thread.
         """
         try:
-            self._batch_generator = BatchGenerator(
-                self._model,
-                completion_batch_size=self._completion_batch_size,
-                prefill_batch_size=self._prefill_batch_size,
-                prefill_step_size=self._prefill_step_size,
-                max_kv_size=self._max_kv_size,
-            )
+            # Allocate the scheduler's MLX stream on *this* thread so that
+            # every Metal command buffer submitted by the BatchGenerator is
+            # bound to the thread that will actually poll it. Prefer
+            # ``new_thread_local_stream`` (mlx ≥ 0.31.2 / PR #3355) when
+            # available — it refuses cross-thread use at the MLX layer
+            # instead of silently failing at submit time. Fall back to a
+            # plain ``new_stream`` on older mlx.
+            #
+            # On mlx-lm versions that accept ``stream=`` (post PR #1090) we
+            # also hand the stream into BatchGenerator so its internal
+            # ``mx.stream(...)`` wraps run against *our* stream rather than
+            # the module-level one; older versions silently ignore this
+            # branch and keep using ``generation_stream``.
+            new_thread_local_stream = getattr(mx, "new_thread_local_stream", None)
+            if new_thread_local_stream is not None:
+                self._stream = new_thread_local_stream(mx.default_device())
+            else:
+                self._stream = mx.new_stream(mx.default_device())
+            batch_generator_kwargs: dict[str, Any] = {
+                "completion_batch_size": self._completion_batch_size,
+                "prefill_batch_size": self._prefill_batch_size,
+                "prefill_step_size": self._prefill_step_size,
+                "max_kv_size": self._max_kv_size,
+            }
+            if _BATCH_GENERATOR_ACCEPTS_STREAM:
+                batch_generator_kwargs["stream"] = self._stream
+            self._batch_generator = BatchGenerator(self._model, **batch_generator_kwargs)
         except BaseException as exc:  # noqa: BLE001 — surface to start()
             self._start_error = exc
             self._ready_event.set()
@@ -417,8 +451,11 @@ class BatchScheduler:
                     continue
 
                 try:
-                    # ``BatchGenerator.next()`` already wraps itself in
-                    # ``mx.stream(generation_stream)``; don't double-wrap.
+                    # ``BatchGenerator.next()`` already wraps itself in its
+                    # own ``mx.stream(...)`` context, so we don't double-wrap
+                    # here. (On mlx-lm ≤ 0.31.3 that stream is the module-
+                    # level ``generation_stream``; after PR #1090 it becomes
+                    # whatever was passed via ``BatchGenerator(stream=...)``.)
                     prompt_responses, gen_responses = self._batch_generator.next()
                 except Exception as exc:  # noqa: BLE001 — propagate per-request
                     logger.exception(f"BatchGenerator.next() raised: {exc!s}")
@@ -438,7 +475,17 @@ class BatchScheduler:
             except Exception as exc:  # noqa: BLE001 — teardown best-effort
                 logger.warning(f"Error closing BatchGenerator: {exc!s}")
             self._batch_generator = None
+            # Release the stream reference on the thread that owns it so the
+            # next ``start()`` gets a fresh stream rather than reusing a
+            # handle that may now be invalid.
+            self._stream = None
             self._fail_all_active(RuntimeError("BatchScheduler stopped"))
+            # Drain any requests that were enqueued during shutdown (or that
+            # raced past ``submit_stream``'s ``is_running`` check after
+            # ``stop()`` flipped the flag). Without this, callers blocked on
+            # ``out_queue.get()`` would hang forever — the main loop has
+            # already exited and nothing else will deliver a sentinel.
+            self._drain_admission_queue(RuntimeError("BatchScheduler stopped"))
 
     def _admit_pending(self, *, block_if_empty: bool) -> None:
         """Drain the admission queue into the batch generator."""
@@ -553,6 +600,35 @@ class BatchScheduler:
                 f"(active={len(self._active)}, prompt_tokens={len(request.input_ids)}, "
                 f"cached_prefix={cached_prefix_len}, segments={len(segments)})"
             )
+
+            self._reclaim_prompt_cache()
+
+    def _reclaim_prompt_cache(self) -> None:
+        """Shrink the LRU so the live batch's caches stay within budget.
+
+        Mirrors ``mlx_lm.server``: after each admission, subtract the bytes
+        currently held by ``BatchGenerator`` (live, in-flight caches) from
+        the LRU's byte cap and trim the LRU to whatever remains. Without
+        this, a saturated batch can push total KV usage past the cap
+        because the LRU only accounts for its own cached entries.
+
+        No-op when the LRU has no byte cap configured or when the installed
+        mlx-lm does not expose ``prompt_cache_nbytes`` (older versions).
+        """
+        if self._prompt_cache is None or self._batch_generator is None:
+            return
+        max_bytes = getattr(self._prompt_cache, "max_bytes", None)
+        if not max_bytes or max_bytes >= (1 << 62):
+            # Either unbounded (default) or effectively so — nothing useful
+            # to reclaim; avoid the cost of computing ``prompt_cache_nbytes``.
+            return
+        active = getattr(self._batch_generator, "prompt_cache_nbytes", None)
+        if active is None:
+            return
+        try:
+            self._prompt_cache.trim_to(n_bytes=max_bytes - active)
+        except Exception as exc:  # noqa: BLE001 — reclaim is best-effort
+            logger.warning(f"prompt_cache.trim_to failed: {exc!s}")
 
     def _handle_prompt_responses(self, prompt_responses: list[Any]) -> None:
         """Save cache checkpoints at non-terminal segment boundaries.
@@ -702,7 +778,7 @@ class BatchScheduler:
         if not cancelled_uids:
             return
         try:
-            with mx.stream(generation_stream):
+            with mx.stream(self._stream):
                 self._batch_generator.remove(cancelled_uids)
         except Exception as exc:  # noqa: BLE001 — removal errors are non-fatal
             logger.warning(f"BatchGenerator.remove failed for {cancelled_uids}: {exc!s}")
@@ -730,6 +806,22 @@ class BatchScheduler:
             self._send(state.loop, state.out_queue, exc)
             self._send(state.loop, state.out_queue, _STREAM_SENTINEL)
             self._active.pop(uid, None)
+
+    def _drain_admission_queue(self, exc: BaseException) -> None:
+        """Fail every request still sitting in ``_admission_queue``.
+
+        Called from the scheduler thread's ``finally`` block so no caller
+        blocked on ``submit_stream`` can be left waiting for a sentinel that
+        will never arrive. Uses ``get_nowait`` in a loop to tolerate
+        additional requests being put on the queue by a concurrent
+        ``submit_stream`` that raced past the ``is_running`` check.
+        """
+        while True:
+            try:
+                request = self._admission_queue.get_nowait()
+            except queue.Empty:
+                return
+            self._fail_request(request, exc)
 
     def _fail_request(self, request: _PendingRequest, exc: BaseException) -> None:
         self._send(request.loop, request.out_queue, exc)

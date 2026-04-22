@@ -90,6 +90,13 @@ class MLX_LM:
             initial_cache = make_prompt_cache(self.model)
             self._cache_is_trimmable = can_trim_prompt_cache(initial_cache)
             self._num_model_cache_layers = len(initial_cache)
+            # ``BatchGenerator`` requires every cache layer to expose a
+            # ``merge`` method so sequences can share the batch. Models
+            # whose caches don't (e.g. some third-party hybrid / SSM
+            # variants that ship their own cache type) must fall back to
+            # the single-request path. Mirrors ``mlx_lm.server``'s own
+            # ``is_batchable`` gate.
+            self._cache_is_batchable = all(hasattr(c, "merge") for c in initial_cache)
             if chat_template_file:
                 if not os.path.exists(chat_template_file):
                     raise ValueError(f"Chat template file {chat_template_file} does not exist")
@@ -169,6 +176,17 @@ class MLX_LM:
         ``ArraysCache`` (SSM/recurrent layers) return ``False``.
         """
         return self._cache_is_trimmable
+
+    @property
+    def cache_is_batchable(self) -> bool:
+        """Whether the model's prompt cache supports cross-sequence merge.
+
+        The continuous batcher merges KV caches from multiple concurrent
+        sequences into a single batched tensor; models whose caches don't
+        expose a ``merge`` method can't be batched and must use the
+        single-request path.
+        """
+        return self._cache_is_batchable
 
     @property
     def has_draft_model(self) -> bool:

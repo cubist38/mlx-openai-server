@@ -1109,6 +1109,13 @@ class MLXLMHandler:
             return False
         if self.model.has_draft_model:
             return False
+        # BatchGenerator requires cache layers to support ``merge`` so it
+        # can stack multiple sequences into one batched tensor. Models
+        # whose caches don't satisfy that invariant (mirroring
+        # ``mlx_lm.server``'s own ``is_batchable`` check) can only run on
+        # the single-request path.
+        if not self.model.cache_is_batchable:
+            return False
         if request.seed is not None and request.seed > 0:
             return False
         return True
