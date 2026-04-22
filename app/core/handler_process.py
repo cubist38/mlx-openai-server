@@ -106,6 +106,99 @@ async def _stream_until_cancelled(
             await stream.aclose()
 
 
+def _ensure_model_downloaded(
+    model_path: str,
+    response_queue: mp.Queue,  # type: ignore[type-arg]
+) -> None:
+    """Pre-fetch a HuggingFace model snapshot with progress heartbeats.
+
+    No-op when ``model_path`` resolves to an existing local directory.
+    Otherwise runs ``huggingface_hub.snapshot_download`` on a background
+    thread and emits periodic ``{"type": "progress"}`` messages through
+    ``response_queue``. The parent's ``_wait_for_ready`` resets its
+    deadline on each progress message so large first-time downloads
+    don't trip the startup timeout, while a genuine hang (no progress,
+    no crash) still fails after the normal window.
+
+    Errors are swallowed — the subsequent ``MLX_LM(...)`` load will
+    surface the real problem with full context (model id typos,
+    missing files, auth issues, etc.).
+    """
+    if not model_path or os.path.isdir(model_path):
+        return
+
+    try:
+        from huggingface_hub import snapshot_download
+    except ImportError:
+        return
+
+    done = threading.Event()
+    result: dict[str, Any] = {}
+
+    def _download() -> None:
+        try:
+            result["local"] = snapshot_download(
+                repo_id=model_path,
+                allow_patterns=[
+                    "*.json",
+                    "*.safetensors",
+                    "*.py",
+                    "tokenizer.model",
+                    "*.tiktoken",
+                    "*.txt",
+                ],
+            )
+        except Exception as exc:  # noqa: BLE001 — best-effort pre-fetch
+            result["error"] = exc
+        finally:
+            done.set()
+
+    def _heartbeat() -> None:
+        start = time.monotonic()
+        with suppress(Exception):
+            response_queue.put(
+                {
+                    "type": "progress",
+                    "stage": "download",
+                    "message": f"Fetching '{model_path}' from HuggingFace...",
+                }
+            )
+        while not done.wait(timeout=5.0):
+            elapsed = time.monotonic() - start
+            with suppress(Exception):
+                response_queue.put(
+                    {
+                        "type": "progress",
+                        "stage": "download",
+                        "message": f"Fetching '{model_path}' ({elapsed:.0f}s elapsed)",
+                    }
+                )
+
+    dl_thread = threading.Thread(target=_download, daemon=True, name="model-download")
+    hb_thread = threading.Thread(
+        target=_heartbeat, daemon=True, name="model-download-heartbeat"
+    )
+    dl_thread.start()
+    hb_thread.start()
+    dl_thread.join()
+    hb_thread.join(timeout=1.0)
+
+    if "error" in result:
+        logger.debug(
+            f"snapshot_download for '{model_path}' raised: {result['error']!s}"
+        )
+        return
+
+    with suppress(Exception):
+        response_queue.put(
+            {
+                "type": "progress",
+                "stage": "download",
+                "message": f"Fetched '{model_path}'",
+            }
+        )
+
+
 # ---------------------------------------------------------------------------
 # Child process entry point
 # ---------------------------------------------------------------------------
@@ -203,6 +296,9 @@ def _handler_worker(
         # Handler creation & initialization
         # ------------------------------------------------------------------
         try:
+            await asyncio.to_thread(
+                _ensure_model_downloaded, model_cfg.model_path, response_queue
+            )
             handler = create_handler_from_config(model_cfg)
             await handler.initialize(queue_config)
             response_queue.put({"type": "ready", "success": True})
@@ -553,7 +649,7 @@ class HandlerProcessProxy:
                 )
 
             try:
-                return await asyncio.wait_for(
+                msg = await asyncio.wait_for(
                     ready_queue.get(),
                     timeout=min(poll_interval, remaining),
                 )
@@ -566,6 +662,20 @@ class HandlerProcessProxy:
                         f"died during initialization (exit code {exit_code})"
                     )
                 # Still alive — keep waiting.
+                continue
+
+            if msg.get("type") == "progress":
+                logger.info(
+                    f"'{self.served_model_name}': {msg.get('message', 'progress...')}"
+                )
+                # Reset the deadline on every progress message so a
+                # slow-but-steady download doesn't trip the timeout. A
+                # genuine hang (no progress, no crash) still fails after
+                # the normal window elapses.
+                deadline = time.monotonic() + timeout
+                continue
+
+            return msg
 
     async def _ensure_alive(self) -> None:
         """Check if the child process is alive; restart it if it crashed.
@@ -722,8 +832,8 @@ class HandlerProcessProxy:
                     )
                 break
 
-            # Special case: ready signal during start().
-            if response.get("type") == "ready":
+            # Special case: ready / progress signals during start().
+            if response.get("type") in ("ready", "progress"):
                 pending = self._pending.get("__ready__")
                 if pending and self._loop:
                     self._loop.call_soon_threadsafe(pending.put_nowait, response)
