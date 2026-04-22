@@ -175,18 +175,14 @@ def _ensure_model_downloaded(
                 )
 
     dl_thread = threading.Thread(target=_download, daemon=True, name="model-download")
-    hb_thread = threading.Thread(
-        target=_heartbeat, daemon=True, name="model-download-heartbeat"
-    )
+    hb_thread = threading.Thread(target=_heartbeat, daemon=True, name="model-download-heartbeat")
     dl_thread.start()
     hb_thread.start()
     dl_thread.join()
     hb_thread.join(timeout=1.0)
 
     if "error" in result:
-        logger.debug(
-            f"snapshot_download for '{model_path}' raised: {result['error']!s}"
-        )
+        logger.debug(f"snapshot_download for '{model_path}' raised: {result['error']!s}")
         return
 
     with suppress(Exception):
@@ -296,9 +292,7 @@ def _handler_worker(
         # Handler creation & initialization
         # ------------------------------------------------------------------
         try:
-            await asyncio.to_thread(
-                _ensure_model_downloaded, model_cfg.model_path, response_queue
-            )
+            await asyncio.to_thread(_ensure_model_downloaded, model_cfg.model_path, response_queue)
             handler = create_handler_from_config(model_cfg)
             await handler.initialize(queue_config)
             response_queue.put({"type": "ready", "success": True})
@@ -665,9 +659,7 @@ class HandlerProcessProxy:
                 continue
 
             if msg.get("type") == "progress":
-                logger.info(
-                    f"'{self.served_model_name}': {msg.get('message', 'progress...')}"
-                )
+                logger.info(f"'{self.served_model_name}': {msg.get('message', 'progress...')}")
                 # Reset the deadline on every progress message so a
                 # slow-but-steady download doesn't trip the timeout. A
                 # genuine hang (no progress, no crash) still fails after
