@@ -222,6 +222,8 @@ class MLXLMHandler:
         # Dedicated inference thread — keeps the event loop free during
         # blocking MLX model computation.
         self.inference_worker = InferenceWorker()
+        self._queue_size = 100
+        self._queue_timeout = 300.0
 
         self._batch_completion_size = batch_completion_size
         self._batch_prefill_size = batch_prefill_size
@@ -263,9 +265,11 @@ class MLXLMHandler:
                 "timeout": 300,
                 "queue_size": 100,
             }
+        self._queue_size = int(queue_config.get("queue_size", 100))
+        self._queue_timeout = float(queue_config.get("timeout", 300))
         self.inference_worker = InferenceWorker(
-            queue_size=queue_config.get("queue_size", 100),
-            timeout=queue_config.get("timeout", 300),
+            queue_size=self._queue_size,
+            timeout=self._queue_timeout,
         )
         self.inference_worker.start()
         logger.info("Initialized MLXHandler and started inference worker")
@@ -1132,6 +1136,7 @@ class MLXLMHandler:
                     prefill_batch_size=self._batch_prefill_size,
                     prefill_step_size=self._batch_prefill_step_size,
                     max_kv_size=self._batch_max_kv_size,
+                    queue_size=self._queue_size,
                 )
                 scheduler.start()
                 self._batch_scheduler = scheduler
@@ -1279,7 +1284,16 @@ class MLXLMHandler:
         return {
             "queue_stats": self.inference_worker.get_stats(),
             "batch_stats": {
-                "running": batch_running,
+                **(
+                    self._batch_scheduler.get_stats()
+                    if batch_running and self._batch_scheduler is not None
+                    else {
+                        "running": False,
+                        "queue_size": 0,
+                        "max_queue_size": self._queue_size,
+                        "active_requests": 0,
+                    }
+                ),
                 "completion_batch_size": self._batch_completion_size,
                 "prefill_batch_size": self._batch_prefill_size,
             },

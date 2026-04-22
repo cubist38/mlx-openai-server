@@ -228,6 +228,7 @@ def patched_scheduler(monkeypatch):
     # Reset shared state each test.
     FakeBatchGenerator.script_queue = []
     FakeBatchGenerator.step_delay = 0.0
+    bsm.pytest_monkeypatch = monkeypatch
     return bsm
 
 
@@ -498,3 +499,131 @@ async def test_stop_drains_pending_admission_queue(patched_scheduler):
     )
     # Every stream terminated one way or another (clean end or explicit error).
     assert all(r in {"errored", "ended"} for r in results)
+
+
+@pytest.mark.asyncio
+async def test_exact_cache_hit_is_backed_off_before_kickoff_token(patched_scheduler):
+    """Exact cache hits must not reuse a full-prompt cache with a shorter prefix."""
+    FakeBatchGenerator.script_queue = [_FakeScript(tokens=[99], finish_reason="length")]
+
+    class _FakeLayer:
+        def __init__(self, nbytes: int = 0) -> None:
+            self.nbytes = nbytes
+
+    class _FakeLRU:
+        def fetch_nearest_cache(self, tokens):
+            if tokens == [1, 2, 3]:
+                return [_FakeLayer()], []
+            raise AssertionError(f"unexpected fetch for tokens={tokens}")
+
+        def insert_cache(self, *_args, **_kwargs):
+            pass
+
+        def trim_to(self, **_kwargs):
+            pass
+
+    trimmed: list[int] = []
+    monkeypatch = patched_scheduler.pytest_monkeypatch if hasattr(
+        patched_scheduler, "pytest_monkeypatch"
+    ) else None
+    if monkeypatch is None:
+        pytest.skip("patched scheduler fixture does not expose monkeypatch")
+
+    monkeypatch.setattr(patched_scheduler, "can_trim_prompt_cache", lambda _cache: True)
+    monkeypatch.setattr(
+        patched_scheduler,
+        "trim_prompt_cache",
+        lambda _cache, n: trimmed.append(n),
+    )
+
+    scheduler = patched_scheduler.BatchScheduler(
+        model=object(),
+        tokenizer=FakeTokenizer(),
+        prompt_cache=_FakeLRU(),
+        idle_poll_timeout=0.01,
+    )
+    scheduler.start()
+    try:
+        stream = scheduler.submit_stream(input_ids=[1, 2, 3], max_tokens=4)
+        chunks = [chunk async for chunk in stream]
+    finally:
+        fake = scheduler._batch_generator
+        scheduler.stop()
+
+    assert trimmed == [1]
+    assert isinstance(fake, FakeBatchGenerator)
+    assert chunks[-1].cached_prompt_tokens == 2
+
+
+@pytest.mark.asyncio
+async def test_exact_non_trimmable_cache_hit_falls_back_to_reprefill(patched_scheduler):
+    """Non-trimmable exact hits without a shorter prefix must be discarded safely."""
+    FakeBatchGenerator.script_queue = [_FakeScript(tokens=[77], finish_reason="length")]
+
+    class _FakeLayer:
+        nbytes = 0
+
+    class _FakeLRU:
+        def fetch_nearest_cache(self, tokens):
+            if tokens == [1, 2, 3]:
+                return [_FakeLayer()], []
+            if tokens == [1, 2]:
+                return None, [1, 2]
+            raise AssertionError(f"unexpected fetch for tokens={tokens}")
+
+        def insert_cache(self, *_args, **_kwargs):
+            pass
+
+        def trim_to(self, **_kwargs):
+            pass
+
+    monkeypatch = patched_scheduler.pytest_monkeypatch if hasattr(
+        patched_scheduler, "pytest_monkeypatch"
+    ) else None
+    if monkeypatch is None:
+        pytest.skip("patched scheduler fixture does not expose monkeypatch")
+
+    monkeypatch.setattr(patched_scheduler, "can_trim_prompt_cache", lambda _cache: False)
+
+    scheduler = patched_scheduler.BatchScheduler(
+        model=object(),
+        tokenizer=FakeTokenizer(),
+        prompt_cache=_FakeLRU(),
+        idle_poll_timeout=0.01,
+    )
+    scheduler.start()
+    try:
+        stream = scheduler.submit_stream(input_ids=[1, 2, 3], max_tokens=4)
+        chunks = [chunk async for chunk in stream]
+    finally:
+        scheduler.stop()
+
+    assert chunks[-1].cached_prompt_tokens == 0
+
+
+@pytest.mark.asyncio
+async def test_submit_stream_raises_queue_full_when_admission_queue_is_saturated(patched_scheduler):
+    """The scheduler must preserve bounded admission and propagate QueueFull."""
+    scheduler = patched_scheduler.BatchScheduler(
+        model=object(),
+        tokenizer=FakeTokenizer(),
+        queue_size=1,
+    )
+    scheduler._running = True
+    scheduler._admission_queue.put_nowait(
+        patched_scheduler._PendingRequest(
+            input_ids=[1],
+            prompt_cache=None,
+            cached_prefix_len=0,
+            max_tokens=4,
+            sampler=None,
+            logits_processors=None,
+            state_machine=object(),
+            loop=asyncio.get_running_loop(),
+            out_queue=asyncio.Queue(),
+            cancel_event=threading.Event(),
+        )
+    )
+
+    with pytest.raises(asyncio.QueueFull):
+        scheduler.submit_stream(input_ids=[2], max_tokens=4)

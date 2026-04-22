@@ -36,6 +36,7 @@ if TYPE_CHECKING:
 
 try:
     from mlx_lm.generate import BatchGenerator, SequenceStateMachine
+    from mlx_lm.models.cache import can_trim_prompt_cache, trim_prompt_cache
 
     BATCHING_AVAILABLE = True
     # ``BatchGenerator`` gained a ``stream=`` kwarg in mlx-lm PR #1090.
@@ -48,6 +49,8 @@ try:
 except ImportError:  # pragma: no cover — only exercised on older mlx-lm pins
     BatchGenerator = None  # type: ignore[assignment,misc]
     SequenceStateMachine = None  # type: ignore[assignment,misc]
+    can_trim_prompt_cache = None  # type: ignore[assignment]
+    trim_prompt_cache = None  # type: ignore[assignment]
     BATCHING_AVAILABLE = False
     _BATCH_GENERATOR_ACCEPTS_STREAM = False
     logger.warning(
@@ -177,6 +180,7 @@ class BatchScheduler:
         prefill_batch_size: int = 8,
         prefill_step_size: int = 2048,
         max_kv_size: int | None = None,
+        queue_size: int = 100,
         idle_poll_timeout: float = 0.1,
     ) -> None:
         self._model = model
@@ -190,9 +194,10 @@ class BatchScheduler:
         self._prefill_batch_size = prefill_batch_size
         self._prefill_step_size = prefill_step_size
         self._max_kv_size = max_kv_size
+        self._queue_size = queue_size
         self._idle_poll_timeout = idle_poll_timeout
 
-        self._admission_queue: queue.Queue[_PendingRequest] = queue.Queue()
+        self._admission_queue: queue.Queue[_PendingRequest] = queue.Queue(maxsize=queue_size)
         self._batch_generator: BatchGenerator | None = None
         self._active: dict[int, _ActiveRequest] = {}
         self._default_state_machine = self._build_default_state_machine(tokenizer)
@@ -385,7 +390,10 @@ class BatchScheduler:
             segments=[list(s) for s in segments] if segments is not None else None,
             segment_types=list(segment_types) if segment_types is not None else None,
         )
-        self._admission_queue.put(request)
+        try:
+            self._admission_queue.put_nowait(request)
+        except queue.Full as exc:
+            raise asyncio.QueueFull("BatchScheduler admission queue is full") from exc
 
         async def _stream() -> AsyncGenerator[BatchChunk, None]:
             try:
@@ -530,6 +538,17 @@ class BatchScheduler:
                 cache_from_lru = None
                 cached_prefix_len = 0
 
+            # Exact prompt-cache hits need special handling: BatchGenerator
+            # still needs at least one token of prompt work to attach the
+            # sequence, so we can only "kick off" with the final prompt token
+            # if the cache can be backed off to exclude that token. Otherwise
+            # we conservatively fall back to a cache miss for correctness.
+            if cache_from_lru is not None and cached_prefix_len == len(request.input_ids):
+                cache_from_lru, cached_prefix_len = self._normalize_exact_cache_hit(
+                    request.input_ids,
+                    cache_from_lru,
+                )
+
             # Resolve segments + trim against cached prefix. If the caller
             # didn't supply segments, treat the whole prompt as one
             # "assistant" segment (matches ``mlx_lm.server``'s default for
@@ -604,6 +623,55 @@ class BatchScheduler:
             )
 
             self._reclaim_prompt_cache()
+
+    def _normalize_exact_cache_hit(
+        self,
+        input_ids: list[int],
+        prompt_cache: list[Any],
+    ) -> tuple[list[Any] | None, int]:
+        """Convert an exact-hit cache into a safe prefix cache when possible.
+
+        ``BatchGenerator`` needs at least one prompt token to process for each
+        inserted sequence. For exact LRU hits that means backing the cache off
+        by one token so the last prompt token can serve as the kickoff token.
+        When that is not safe (for example non-trimmable caches with no stored
+        shorter prefix), we intentionally discard the hit and re-prefill the
+        prompt rather than mixing a full-prompt cache with a non-matching
+        ``all_tokens`` prefix.
+        """
+        if len(input_ids) <= 1:
+            return None, 0
+
+        if (
+            can_trim_prompt_cache is not None
+            and trim_prompt_cache is not None
+            and can_trim_prompt_cache(prompt_cache)
+        ):
+            trim_prompt_cache(prompt_cache, 1)
+            return prompt_cache, len(input_ids) - 1
+
+        if self._prompt_cache is not None:
+            try:
+                prefix_cache, prefix_rest = self._prompt_cache.fetch_nearest_cache(input_ids[:-1])
+            except Exception as exc:  # noqa: BLE001 — exact-hit fallback is best-effort
+                logger.warning(f"Failed to back off exact prompt-cache hit: {exc!s}")
+            else:
+                if prefix_cache is not None:
+                    return prefix_cache, len(input_ids[:-1]) - len(prefix_rest)
+
+        logger.debug(
+            "Discarding exact prompt-cache hit because it cannot be safely backed off by one token"
+        )
+        return None, 0
+
+    def get_stats(self) -> dict[str, Any]:
+        """Current scheduler queue and active-request stats."""
+        return {
+            "running": self._running,
+            "queue_size": self._admission_queue.qsize(),
+            "max_queue_size": self._queue_size,
+            "active_requests": len(self._active),
+        }
 
     def _reclaim_prompt_cache(self) -> None:
         """Shrink the LRU so the live batch's caches stay within budget.
