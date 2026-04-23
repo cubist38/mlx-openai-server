@@ -55,6 +55,7 @@ dev = [
   "mypy",
   "pre-commit",
   "pytest",
+  "pytest-asyncio",
   "ruff",
   "types-aiofiles",
   "types-cffi",
