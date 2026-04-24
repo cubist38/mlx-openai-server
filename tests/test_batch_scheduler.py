@@ -21,6 +21,16 @@ def _fake_stream_cm(_stream: Any):
     yield
 
 
+def _fake_device(_device: Any = None) -> object:
+    """Return a placeholder MLX device object for sandboxed tests."""
+    return object()
+
+
+def _zero() -> int:
+    """Return zero for fake memory counters."""
+    return 0
+
+
 class _FakeGenerationResponse:
     """Shape of ``mlx_lm.generate.GenerationBatch.Response`` used by the scheduler."""
 
@@ -221,10 +231,10 @@ def patched_scheduler(monkeypatch):
     monkeypatch.setattr(bsm, "BatchGenerator", FakeBatchGenerator)
     monkeypatch.setattr(bsm, "SequenceStateMachine", _FakeSequenceStateMachine)
     monkeypatch.setattr(bsm.mx, "stream", _fake_stream_cm)
-    monkeypatch.setattr(bsm.mx, "new_stream", lambda _device: object())
-    monkeypatch.setattr(bsm.mx, "new_thread_local_stream", lambda _device: object(), raising=False)
-    monkeypatch.setattr(bsm.mx, "default_device", lambda: object())
-    monkeypatch.setattr(bsm.mx, "get_peak_memory", lambda: 0)
+    monkeypatch.setattr(bsm.mx, "new_stream", _fake_device)
+    monkeypatch.setattr(bsm.mx, "new_thread_local_stream", _fake_device, raising=False)
+    monkeypatch.setattr(bsm.mx, "default_device", _fake_device)
+    monkeypatch.setattr(bsm.mx, "get_peak_memory", _zero)
     # Reset shared state each test.
     FakeBatchGenerator.script_queue = []
     FakeBatchGenerator.step_delay = 0.0
@@ -603,6 +613,61 @@ async def test_exact_non_trimmable_cache_hit_falls_back_to_reprefill(patched_sch
         scheduler.stop()
 
     assert chunks[-1].cached_prompt_tokens == 0
+
+
+@pytest.mark.asyncio
+async def test_exact_non_trimmable_cache_hit_logs_info(patched_scheduler):
+    """Discarded exact hits should be logged so latency regressions are visible."""
+    FakeBatchGenerator.script_queue = [_FakeScript(tokens=[77], finish_reason="length")]
+    info_messages: list[str] = []
+
+    class _FakeLayer:
+        nbytes = 0
+
+    class _FakeLRU:
+        def fetch_nearest_cache(self, tokens):
+            if tokens == [1, 2, 3]:
+                return [_FakeLayer()], []
+            if tokens == [1, 2]:
+                return None, [1, 2]
+            raise AssertionError(f"unexpected fetch for tokens={tokens}")
+
+        def insert_cache(self, *_args, **_kwargs):
+            pass
+
+        def trim_to(self, **_kwargs):
+            pass
+
+    monkeypatch = (
+        patched_scheduler.pytest_monkeypatch
+        if hasattr(patched_scheduler, "pytest_monkeypatch")
+        else None
+    )
+    if monkeypatch is None:
+        pytest.skip("patched scheduler fixture does not expose monkeypatch")
+
+    monkeypatch.setattr(patched_scheduler, "can_trim_prompt_cache", lambda _cache: False)
+    monkeypatch.setattr(patched_scheduler.logger, "info", info_messages.append)
+
+    scheduler = patched_scheduler.BatchScheduler(
+        model=object(),
+        tokenizer=FakeTokenizer(),
+        prompt_cache=_FakeLRU(),
+        idle_poll_timeout=0.01,
+    )
+    scheduler.start()
+    try:
+        stream = scheduler.submit_stream(input_ids=[1, 2, 3], max_tokens=4)
+        _chunks = [chunk async for chunk in stream]
+    finally:
+        scheduler.stop()
+
+    assert any(
+        "Discarding exact prompt-cache hit because it cannot be safely backed off by one token"
+        in message
+        and "prompt_tokens=3" in message
+        for message in info_messages
+    )
 
 
 @pytest.mark.asyncio

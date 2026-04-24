@@ -23,6 +23,7 @@ Run multi-handler mode from YAML config:
 
 from __future__ import annotations
 
+from dataclasses import MISSING, fields
 import os
 import sys
 
@@ -32,6 +33,12 @@ import uvicorn
 from .config import MLXServerConfig, ModelEntryConfig, MultiModelServerConfig
 from .server import setup_server
 from .version import __version__
+
+_MODEL_ENTRY_DEFAULTS = {
+    field.name: (field.default_factory() if field.default_factory is not MISSING else field.default)
+    for field in fields(ModelEntryConfig)
+    if field.default is not MISSING or field.default_factory is not MISSING
+}
 
 
 def _format_bytes(n: int) -> str:
@@ -154,6 +161,16 @@ def _model_entry_extras(m: ModelEntryConfig) -> list[tuple[str, object]]:
         extras.append(
             ("kv_bits", f"{m.kv_bits} (group={m.kv_group_size}, start={m.quantized_kv_start})")
         )
+    if m.model_type == "lm":
+        batch_settings: list[str] = []
+        if m.batch_completion_size != _MODEL_ENTRY_DEFAULTS["batch_completion_size"]:
+            batch_settings.append(f"decode={m.batch_completion_size}")
+        if m.batch_prefill_size != _MODEL_ENTRY_DEFAULTS["batch_prefill_size"]:
+            batch_settings.append(f"prefill={m.batch_prefill_size}")
+        if m.batch_prefill_step_size != _MODEL_ENTRY_DEFAULTS["batch_prefill_step_size"]:
+            batch_settings.append(f"prefill_step={m.batch_prefill_step_size}")
+        if batch_settings:
+            extras.append(("batch_scheduler", ", ".join(batch_settings)))
     if m.quantize is not None:
         extras.append(("quantize", m.quantize))
     if m.config_name:

@@ -12,7 +12,7 @@ from typing import Any
 from click.testing import CliRunner
 import pytest
 
-from app.config import MLXServerConfig
+from app.config import MLXServerConfig, ModelEntryConfig
 
 
 def _load_cli_module(monkeypatch: pytest.MonkeyPatch) -> Any:
@@ -148,3 +148,23 @@ def test_launch_defaults_prompt_cache_size_to_ten(
     # Single-model ``launch`` is wrapped into a one-entry multi-model config
     # (subprocess isolation), so the cache size now lives on the wrapped entry.
     assert captured["config"].models[0].prompt_cache_size == 10
+
+
+def test_model_entry_extras_surfaces_non_default_batch_scheduler_settings(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Multi-model banners should show per-model batch scheduler overrides."""
+
+    main_module = _load_main_module(monkeypatch)
+    extras = dict(
+        main_module._model_entry_extras(
+            ModelEntryConfig(
+                model_path="dummy-model",
+                model_type="lm",
+                batch_completion_size=16,
+                batch_prefill_step_size=1024,
+            )
+        )
+    )
+
+    assert extras["batch_scheduler"] == "decode=16, prefill_step=1024"

@@ -659,8 +659,9 @@ class BatchScheduler:
                 if prefix_cache is not None:
                     return prefix_cache, len(input_ids[:-1]) - len(prefix_rest)
 
-        logger.debug(
-            "Discarding exact prompt-cache hit because it cannot be safely backed off by one token"
+        logger.info(
+            "Discarding exact prompt-cache hit because it cannot be safely backed off by one "
+            f"token (prompt_tokens={len(input_ids)}, cache_type={type(prompt_cache).__name__})"
         )
         return None, 0
 
