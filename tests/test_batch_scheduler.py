@@ -621,6 +621,15 @@ async def test_exact_non_trimmable_cache_hit_logs_info(patched_scheduler):
     FakeBatchGenerator.script_queue = [_FakeScript(tokens=[77], finish_reason="length")]
     info_messages: list[str] = []
 
+    def _capture_info(message: str, *args: object) -> None:
+        """Capture info logs while tolerating Loguru-style argument binding."""
+        if args:
+            try:
+                message = message.format(*args)
+            except (IndexError, KeyError, ValueError):
+                message = " ".join([message, *(str(arg) for arg in args)])
+        info_messages.append(message)
+
     class _FakeLayer:
         nbytes = 0
 
@@ -647,7 +656,7 @@ async def test_exact_non_trimmable_cache_hit_logs_info(patched_scheduler):
         pytest.skip("patched scheduler fixture does not expose monkeypatch")
 
     monkeypatch.setattr(patched_scheduler, "can_trim_prompt_cache", lambda _cache: False)
-    monkeypatch.setattr(patched_scheduler.logger, "info", info_messages.append)
+    monkeypatch.setattr(patched_scheduler.logger, "info", _capture_info)
 
     scheduler = patched_scheduler.BatchScheduler(
         model=object(),
