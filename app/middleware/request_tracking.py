@@ -1,12 +1,16 @@
 """Request tracking middleware for correlation IDs and request logging."""
 
 from collections.abc import Awaitable, Callable
+import re
 import time
 import uuid
 
 from fastapi import Request, Response
 from loguru import logger
 from starlette.middleware.base import BaseHTTPMiddleware
+
+
+REQUEST_ID_PATTERN = re.compile(r"^[A-Za-z0-9._-]{1,64}$")
 
 
 class RequestTrackingMiddleware(BaseHTTPMiddleware):
@@ -36,9 +40,13 @@ class RequestTrackingMiddleware(BaseHTTPMiddleware):
         -------
             Response with X-Request-ID header added
         """
-        # Get or generate request ID
-        request_id = request.headers.get("X-Request-ID")
-        if not request_id:
+        request_id = None
+        header_request_id = request.headers.get("X-Request-ID")
+        if header_request_id:
+            normalized_request_id = header_request_id.strip()
+            if REQUEST_ID_PATTERN.fullmatch(normalized_request_id):
+                request_id = normalized_request_id
+        if request_id is None:
             request_id = str(uuid.uuid4())
 
         # Store in request state for handler access
