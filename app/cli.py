@@ -15,7 +15,7 @@ import click
 from loguru import logger
 
 from .config import MLXServerConfig, load_config_from_yaml
-from .main import start, start_multi
+from .main import start_multi
 from .parsers import REASONING_PARSER_MAP, TOOL_PARSER_MAP, UNIFIED_PARSER_MAP
 from .version import __version__
 
@@ -290,6 +290,39 @@ def cli():
     type=int,
     help="Step to begin using a quantized KV cache when --kv-bits is set. Default is 0.",
 )
+# Continuous-batching concurrency (forwarded to mlx_lm.generate.BatchGenerator).
+# Names mirror the flags exposed by mlx-lm's own HTTP server so operators who
+# already know that tool can tune this one the same way.
+@click.option(
+    "--decode-concurrency",
+    "batch_completion_size",
+    default=32,
+    type=int,
+    help=(
+        "When a request is batchable, decode that many requests in parallel. "
+        "Only applies to 'lm' model types. Default is 32."
+    ),
+)
+@click.option(
+    "--prompt-concurrency",
+    "batch_prefill_size",
+    default=8,
+    type=int,
+    help=(
+        "When a request is batchable, prefill that many prompts in parallel. "
+        "Only applies to 'lm' model types. Default is 8."
+    ),
+)
+@click.option(
+    "--prefill-step-size",
+    "batch_prefill_step_size",
+    default=2048,
+    type=int,
+    help=(
+        "Maximum tokens processed per prefill step during batched generation. "
+        "Only applies to 'lm' model types. Default is 2048."
+    ),
+)
 # Sampling parameters (defaults used when API request omits them)
 @click.option(
     "--max-tokens",
@@ -365,6 +398,9 @@ def launch(
     kv_bits,
     kv_group_size,
     quantized_kv_start,
+    batch_completion_size,
+    batch_prefill_size,
+    batch_prefill_step_size,
     max_tokens,
     temperature,
     top_p,
@@ -436,6 +472,9 @@ def launch(
         kv_bits=kv_bits,
         kv_group_size=kv_group_size,
         quantized_kv_start=quantized_kv_start,
+        batch_completion_size=batch_completion_size,
+        batch_prefill_size=batch_prefill_size,
+        batch_prefill_step_size=batch_prefill_step_size,
         default_max_tokens=max_tokens,
         default_temperature=temperature,
         default_top_p=top_p,
@@ -449,4 +488,10 @@ def launch(
         default_repetition_context_size=repetition_context_size,
     )
 
-    asyncio.run(start(args))
+    # Single-model launches always run through the HandlerProcessProxy
+    # subprocess path — same isolation used by multi-model YAML mode — to
+    # avoid the MLX Metal command-buffer race (``Completed handler
+    # provided after commit call``) that crashes the in-process path when
+    # the continuous batcher runs on a thread other than the one that
+    # loaded the model. See https://github.com/ml-explore/mlx/issues/2457.
+    asyncio.run(start_multi(args.to_multi_model_server_config()))

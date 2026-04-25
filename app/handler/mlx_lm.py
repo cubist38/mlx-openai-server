@@ -4,15 +4,16 @@ import copy
 from dataclasses import dataclass
 import gc
 from http import HTTPStatus
+import threading
 import time
 from typing import Any
 
 from fastapi import HTTPException
 from loguru import logger
 
-from ..core import InferenceWorker
+from ..core import BatchScheduler, InferenceWorker
+from ..core.batch_scheduler import BATCHING_AVAILABLE
 from ..message_converters import MessageConverterManager
-from ..models.mlx_lm import MLX_LM
 from ..parsers import ParserManager, ReasoningParserState, ToolParserState
 from ..schemas.openai import ChatCompletionRequest, PromptTokenUsageInfo, UsageInfo
 from ..utils.debug_logging import (
@@ -27,7 +28,22 @@ from ..utils.debug_logging import (
     make_prompt_progress_callback,
 )
 from ..utils.errors import create_error_response
-from ..utils.prompt_cache import LRUPromptCache
+
+
+def _coerce_cached_tokens(ctx_cached: int, source: Any) -> int:
+    """Return ``cached_tokens`` for the OpenAI usage payload.
+
+    The batched path reports its LRU hit count via
+    ``source.cached_prompt_tokens`` (populated on the scheduler thread); the
+    non-batched path reports it via ``ctx.total_cached_tokens`` computed
+    during ``_build_inference_context``. We take whichever is larger so
+    either path's value flows through, and defensively coerce non-int values
+    (some unit tests pass ``Mock()``) back to ``0``.
+    """
+    batched = getattr(source, "cached_prompt_tokens", 0)
+    if not isinstance(batched, int):
+        batched = 0
+    return max(ctx_cached, batched)
 
 
 def _strip_complete_tool_blocks(text: str, tool_open: str, tool_close: str) -> str:
@@ -84,6 +100,11 @@ class _InferenceContext:
     prompt_progress_callback: Any = None
     checkpoint_position: int | None = None
     checkpoint_callback: Any = None
+    # Optional segmentation used by the batched path for non-trimmable cache
+    # models: splits ``rest_input_ids`` at a useful boundary so the scheduler
+    # can save a prefix checkpoint during prefill.
+    batched_segments: list[list[int]] | None = None
+    batched_segment_types: list[str] | None = None
 
 
 class MLXLMHandler:
@@ -112,6 +133,10 @@ class MLXLMHandler:
         kv_bits: int | None = None,
         kv_group_size: int = 64,
         quantized_kv_start: int = 0,
+        batch_completion_size: int = 32,
+        batch_prefill_size: int = 8,
+        batch_prefill_step_size: int = 2048,
+        batch_max_kv_size: int | None = None,
     ):
         """
         Initialize the handler with the specified model path.
@@ -150,8 +175,20 @@ class MLXLMHandler:
             Group size for KV cache quantization. Default is 64.
         quantized_kv_start : int
             Step to begin using a quantized KV cache. Default is 0.
+        batch_completion_size : int
+            Maximum number of concurrent sequences in the decode batch.
+        batch_prefill_size : int
+            Maximum number of sequences that can be prefilled simultaneously.
+        batch_prefill_step_size : int
+            Maximum tokens processed per prefill step.
+        batch_max_kv_size : int | None
+            Rotating-KV-cache size for the scheduler; ``None`` keeps full
+            history (same default used by ``mlx_lm``).
         """
         self.model_path = model_path
+        from ..models.mlx_lm import MLX_LM
+        from ..utils.prompt_cache import LRUPromptCache
+
         self.model = MLX_LM(
             model_path,
             draft_model_path=draft_model_path,
@@ -187,6 +224,16 @@ class MLXLMHandler:
         # Dedicated inference thread — keeps the event loop free during
         # blocking MLX model computation.
         self.inference_worker = InferenceWorker()
+        self._queue_size = 100
+        self._queue_timeout = 300.0
+
+        self._batch_completion_size = batch_completion_size
+        self._batch_prefill_size = batch_prefill_size
+        self._batch_prefill_step_size = batch_prefill_step_size
+        self._batch_max_kv_size = batch_max_kv_size
+        self._batch_scheduler: BatchScheduler | None = None
+        self._batch_scheduler_lock = asyncio.Lock()
+        self._generation_lock = threading.RLock()
 
         logger.info(f"Initialized MLXHandler with model path: {model_path}")
 
@@ -221,9 +268,11 @@ class MLXLMHandler:
                 "timeout": 300,
                 "queue_size": 100,
             }
+        self._queue_size = int(queue_config.get("queue_size", 100))
+        self._queue_timeout = float(queue_config.get("timeout", 300))
         self.inference_worker = InferenceWorker(
-            queue_size=queue_config.get("queue_size", 100),
-            timeout=queue_config.get("timeout", 300),
+            queue_size=self._queue_size,
+            timeout=self._queue_timeout,
         )
         self.inference_worker.start()
         logger.info("Initialized MLXHandler and started inference worker")
@@ -237,6 +286,27 @@ class MLXLMHandler:
             messages = self.message_converter.convert_messages(messages)
 
         return [{k: v for k, v in message.items() if v is not None} for message in messages]
+
+    def _generate_with_lock(self, *args: Any, **kwargs: Any) -> Any:
+        """Run non-stream generation while serialized with the batch scheduler."""
+        with self._generation_lock:
+            return self.model(*args, **kwargs)
+
+    def _stream_with_lock(self, *args: Any, **kwargs: Any) -> Any:
+        """Stream non-batched generation while serialized with the scheduler."""
+        with self._generation_lock:
+            yield from self.model(*args, **kwargs)
+
+    def _insert_prompt_cache(
+        self,
+        cache_key: list[int],
+        cache: list[Any],
+        *,
+        cache_type: str = "assistant",
+    ) -> None:
+        """Insert a prompt cache while serialized with all generation workers."""
+        with self._generation_lock:
+            self.prompt_cache.insert_cache(cache_key, cache, cache_type=cache_type)
 
     def _compute_checkpoint_boundary(
         self,
@@ -302,6 +372,16 @@ class MLXLMHandler:
 
         Handles: request parsing, message refinement, prompt encoding, KV cache
         lookup, parser creation, and model-param preparation.
+
+        For batchable requests the cache-related work (``fetch_nearest_cache``
+        + ``create_prompt_cache`` + checkpoint boundary computation) is
+        *skipped* on the event-loop thread: those operations touch
+        ``mx.array`` state, and doing them here would race with the scheduler
+        thread's ``BatchGenerator`` forward passes (producing
+        ``AGXG14XFamilyCommandBuffer.tryCoalescingPreviousComputeCommandEncoder``
+        assertion failures on Metal). Instead, the scheduler thread owns the
+        prompt cache end-to-end for the batched path — matching
+        ``mlx_lm.server``'s single-generation-thread architecture.
         """
         chat_messages, model_params = await self._prepare_text_request(request)
         refined_messages = self.refine_messages(chat_messages)
@@ -312,7 +392,60 @@ class MLXLMHandler:
             log_debug_prompt(input_prompt)
 
         input_ids = self.model.encode_prompt(input_prompt)
-        cache, rest_input_ids = self.prompt_cache.fetch_nearest_cache(input_ids)
+
+        if self._is_request_batchable(request):
+            parsers_result = ParserManager.create_parsers(
+                reasoning_parser_name=self.reasoning_parser_name,
+                tool_parser_name=self.tool_parser_name,
+            )
+            enable_thinking = chat_template_kwargs.get("enable_thinking", True)
+            if not enable_thinking and parsers_result.reasoning_parser:
+                if parsers_result.reasoning_parser.respects_enable_thinking():
+                    parsers_result.reasoning_parser = None
+            if model_params.get("schema"):
+                parsers_result.reasoning_parser = None
+                parsers_result.tool_parser = None
+                parsers_result.unified_parser = None
+
+            # For non-trimmable caches (hybrid / SSM / recurrent) the default
+            # "longer match trim" path in LRUPromptCache.fetch_nearest_cache
+            # is blocked. Split the prompt at the last-user-message boundary
+            # so the scheduler can save a ``system`` checkpoint there —
+            # subsequent requests with the same prefix will then find a
+            # shorter-prefix match without needing to trim. Mirrors the
+            # non-batched path's ``checkpoint_callback`` behaviour, and the
+            # segment-based cache saves in ``mlx_lm.server``.
+            segments: list[list[int]] | None = None
+            segment_types: list[str] | None = None
+            if not self.model.cache_is_trimmable:
+                boundary = self._compute_checkpoint_boundary(
+                    refined_messages, input_ids, chat_template_kwargs
+                )
+                if boundary is None and len(input_ids) > 1:
+                    boundary = len(input_ids) - 1
+                if boundary is not None and 0 < boundary < len(input_ids):
+                    segments = [input_ids[:boundary], input_ids[boundary:]]
+                    segment_types = ["system", "assistant"]
+
+            return _InferenceContext(
+                rest_input_ids=input_ids,
+                cache=None,
+                cache_key=input_ids[:],
+                total_input_tokens=len(input_ids),
+                total_cached_tokens=0,
+                model_params=model_params,
+                parsers_result=parsers_result,
+                prompt_progress_callback=(make_prompt_progress_callback() if self.debug else None),
+                checkpoint_position=None,
+                checkpoint_callback=None,
+                batched_segments=segments,
+                batched_segment_types=segment_types,
+            )
+
+        with self._generation_lock:
+            cache, rest_input_ids = self.prompt_cache.fetch_nearest_cache(input_ids)
+            if cache is None:
+                cache = self.model.create_prompt_cache()
 
         # Cache key must be the FULL input_ids, not rest_input_ids.
         # Using rest_input_ids causes memory leaks: on "longer" cache hits,
@@ -322,9 +455,6 @@ class MLXLMHandler:
 
         checkpoint_position: int | None = None
         checkpoint_callback = None
-
-        if cache is None:
-            cache = self.model.create_prompt_cache()
 
         # For hybrid models with non-trimmable caches (e.g. Qwen3.5,
         # Nemotron-H, Jamba), the "longer cache trim" path in
@@ -356,14 +486,12 @@ class MLXLMHandler:
                 # (which is what the model receives as input_ids).
                 checkpoint_position = boundary - cached_prefix_len
                 prefix_ids = input_ids[:boundary]
-                prompt_cache_ref = self.prompt_cache
 
                 def checkpoint_callback(
                     prompt_cache_state: list[Any],
                     _prefix_ids: list[int] = prefix_ids,
-                    _store: Any = prompt_cache_ref,
                 ) -> None:
-                    _store.insert_cache(
+                    self._insert_prompt_cache(
                         _prefix_ids,
                         copy.deepcopy(prompt_cache_state),
                         cache_type="system",
@@ -449,13 +577,18 @@ class MLXLMHandler:
                 log_debug_model_dispatch("mlx_lm.generate_text_stream.submit_stream", request_data)
                 request_data["verbose"] = True
 
-            response_generator = self.inference_worker.submit_stream(
-                self.model,
-                input_ids=ctx.rest_input_ids,
-                prompt_cache=cache,
-                stream=True,
-                **request_data,
-            )
+            use_batch = self._is_request_batchable(request) and ctx.checkpoint_position is None
+            if use_batch:
+                scheduler = await self._get_or_start_scheduler()
+                response_generator = self._submit_batched_stream(scheduler, ctx)
+            else:
+                response_generator = self.inference_worker.submit_stream(
+                    self._stream_with_lock,
+                    input_ids=ctx.rest_input_ids,
+                    prompt_cache=cache,
+                    stream=True,
+                    **request_data,
+                )
 
             after_reasoning_close_content = None
             final_chunk = None
@@ -742,7 +875,11 @@ class MLXLMHandler:
                         yield text
 
             total_tokens = total_input_tokens + final_chunk.generation_tokens
-            self.prompt_cache.insert_cache(cache_key, cache)
+            if cache is not None:
+                # Non-batch path owns the cache on the event-loop thread.
+                # The batched path stores its final cache from the scheduler
+                # thread instead (see BatchScheduler._handle_generation_response).
+                self._insert_prompt_cache(cache_key, cache)
             cache_inserted = True
 
             if self.debug:
@@ -761,7 +898,9 @@ class MLXLMHandler:
                     prompt_tokens=total_input_tokens,
                     completion_tokens=final_chunk.generation_tokens,
                     total_tokens=total_tokens,
-                    prompt_tokens_details=PromptTokenUsageInfo(cached_tokens=total_cached_tokens),
+                    prompt_tokens_details=PromptTokenUsageInfo(
+                        cached_tokens=_coerce_cached_tokens(total_cached_tokens, final_chunk)
+                    ),
                 )
             }
 
@@ -786,7 +925,7 @@ class MLXLMHandler:
         finally:
             if cache is not None and cache_key is not None and not cache_inserted:
                 try:
-                    self.prompt_cache.insert_cache(cache_key, cache)
+                    self._insert_prompt_cache(cache_key, cache)
                     if self.debug:
                         self.prompt_cache.log_cache_stats()
                 except Exception as cache_error:
@@ -823,19 +962,12 @@ class MLXLMHandler:
             if self.debug:
                 log_debug_model_dispatch("mlx_lm.generate_text_response.submit", request_data)
 
-            response = await self.inference_worker.submit(
-                self.model,
-                input_ids=ctx.rest_input_ids,
-                prompt_cache=ctx.cache,
-                stream=False,
-                **request_data,
-            )
+            response = await self._run_nonstream_generation(request, ctx, request_data)
 
             response_text = response.text
             cache_key = ctx.cache_key
             cache_key += response.tokens
-
-            self.prompt_cache.insert_cache(cache_key, ctx.cache)
+            self._persist_cache_if_owned(cache_key, ctx.cache)
 
             parsed_response = {"reasoning_content": None, "tool_calls": None, "content": None}
 
@@ -953,7 +1085,9 @@ class MLXLMHandler:
                 prompt_tokens=total_input_tokens,
                 completion_tokens=response.generation_tokens,
                 total_tokens=total_tokens,
-                prompt_tokens_details=PromptTokenUsageInfo(cached_tokens=total_cached_tokens),
+                prompt_tokens_details=PromptTokenUsageInfo(
+                    cached_tokens=_coerce_cached_tokens(total_cached_tokens, response)
+                ),
             )
 
             return {"response": parsed_response, "usage": usage}
@@ -975,16 +1109,222 @@ class MLXLMHandler:
             )
             raise HTTPException(status_code=500, detail=content)
 
+    def _is_request_batchable(self, request: ChatCompletionRequest) -> bool:
+        """Return True if the request can be served by the continuous batcher.
+
+        The scheduler is the default generation path (even for a batch of
+        one). This predicate only returns False for features that the batched
+        ``BatchGenerator`` does not support:
+
+        * A non-trivial per-request ``seed`` — the batch path shares a single
+          RNG, matching ``mlx_lm``'s own server. We mirror
+          :meth:`MLX_LM.__call__`'s seeding rule (``seed and seed >= 0``)
+          rather than ``seed is not None``, because the CLI default
+          ``--seed 0`` is backfilled into every request by the endpoint as
+          "no explicit seed"; treating that as non-batchable would pin every
+          request to the single-request path.
+        * Speculative decoding via ``draft_model``.
+
+        Requests that require a mid-prefill cache checkpoint are also routed
+        through the single-request path — that check is applied at the call
+        site where the checkpoint position is known.
+        """
+        if not BATCHING_AVAILABLE:
+            return False
+        if self.model.has_draft_model:
+            return False
+        # BatchGenerator requires cache layers to support ``merge`` so it
+        # can stack multiple sequences into one batched tensor. Models
+        # whose caches don't satisfy that invariant (mirroring
+        # ``mlx_lm.server``'s own ``is_batchable`` check) can only run on
+        # the single-request path.
+        if not self.model.cache_is_batchable:
+            return False
+        if request.seed is not None and request.seed > 0:
+            return False
+        return True
+
+    async def _get_or_start_scheduler(self) -> BatchScheduler:
+        """Lazily construct and start the batch scheduler on first use."""
+        if self._batch_scheduler is not None and self._batch_scheduler.is_running:
+            return self._batch_scheduler
+        async with self._batch_scheduler_lock:
+            if self._batch_scheduler is None or not self._batch_scheduler.is_running:
+                scheduler = BatchScheduler(
+                    self.model.model,
+                    self.model.tokenizer,
+                    prompt_cache=self.prompt_cache,
+                    completion_batch_size=self._batch_completion_size,
+                    prefill_batch_size=self._batch_prefill_size,
+                    prefill_step_size=self._batch_prefill_step_size,
+                    max_kv_size=self._batch_max_kv_size,
+                    generation_lock=self._generation_lock,
+                    queue_size=self._queue_size,
+                )
+                scheduler.start()
+                self._batch_scheduler = scheduler
+        return self._batch_scheduler
+
+    def _submit_batched_stream(
+        self,
+        scheduler: BatchScheduler,
+        ctx: "_InferenceContext",
+    ) -> AsyncGenerator[Any, None]:
+        """Submit a batched request and return an async chunk generator.
+
+        The returned generator yields objects that duck-type match the
+        :class:`mlx_lm.generate.GenerationResponse` instances produced by the
+        single-request path (``.text``, ``.token``, ``.finish_reason``,
+        ``.generation_tokens``, ``.generation_tps``, ``.peak_memory``,
+        ``.prompt_tokens``, ``.prompt_tps``), so the downstream streaming and
+        parser logic stays unchanged.
+
+        Notes
+        -----
+        The scheduler owns the prompt cache end-to-end for the batched path:
+        it calls :meth:`LRUPromptCache.fetch_nearest_cache` on admission and
+        :meth:`LRUPromptCache.insert_cache` on finish, both from its worker
+        thread. That keeps every ``mx.array`` mutation on a single OS thread,
+        matching ``mlx_lm.server``'s architecture and avoiding the
+        cross-thread Metal command-buffer race documented in
+        https://github.com/ml-explore/mlx/issues/2457.
+        """
+        params = ctx.model_params
+        sampler = self.model.build_sampler(params)
+        logits_processors = self.model.build_logits_processors(params)
+        state_machine = BatchScheduler.build_state_machine(
+            self.model.tokenizer,
+            params.get("stop") or None,
+        )
+
+        max_tokens = params.get("max_tokens")
+        if max_tokens is None:
+            max_tokens = params.get("max_completion_tokens")
+        if max_tokens is None:
+            max_tokens = 1 << 20  # matches the "effectively unlimited" default used by MLX_LM
+
+        # Hand the full prompt to the scheduler; it does its own LRU lookup
+        # and cache construction on its worker thread. For non-trimmable
+        # cache models the context also carries pre-computed segment
+        # boundaries so the scheduler can save a prefix checkpoint — see
+        # ``_build_inference_context``.
+        return scheduler.submit_stream(
+            input_ids=list(ctx.cache_key),
+            max_tokens=int(max_tokens),
+            sampler=sampler,
+            logits_processors=logits_processors or None,
+            state_machine=state_machine,
+            segments=ctx.batched_segments,
+            segment_types=ctx.batched_segment_types,
+        )
+
+    def _persist_cache_if_owned(
+        self,
+        cache_key: list[int],
+        cache: list[Any] | None,
+    ) -> None:
+        """Store ``cache`` into the LRU only when the event-loop thread owns it.
+
+        The batched path delegates cache persistence to the scheduler thread
+        (see :meth:`BatchScheduler._handle_generation_response`), so this
+        helper is a no-op when ``cache`` is ``None``.
+        """
+        if cache is None:
+            return
+        self._insert_prompt_cache(cache_key, cache)
+
+    async def _run_nonstream_generation(
+        self,
+        request: ChatCompletionRequest,
+        ctx: "_InferenceContext",
+        request_data: dict[str, Any],
+    ) -> Any:
+        """Dispatch a non-streaming request to the batcher or the worker.
+
+        Kept as a standalone method so :meth:`generate_text_response` stays
+        under the complexity budget enforced by ruff.
+        """
+        if self._is_request_batchable(request) and ctx.checkpoint_position is None:
+            scheduler = await self._get_or_start_scheduler()
+            return await self._collect_batched_response(scheduler, ctx)
+        return await self.inference_worker.submit(
+            self._generate_with_lock,
+            input_ids=ctx.rest_input_ids,
+            prompt_cache=ctx.cache,
+            stream=False,
+            **request_data,
+        )
+
+    async def _collect_batched_response(
+        self,
+        scheduler: BatchScheduler,
+        ctx: "_InferenceContext",
+    ) -> Any:
+        """Drain a batched stream into a ``CompletionResponse``-compatible object.
+
+        The MLX_LM non-streaming path returns a
+        :class:`~app.models.mlx_lm.CompletionResponse`. The batched scheduler
+        produces incremental chunks, so we accumulate them here to yield the
+        same surface area for :meth:`generate_text_response`.
+        """
+        # Lazy import — tests stub ``app.models.mlx_lm`` with a minimal fake
+        # that doesn't export CompletionResponse; a module-level import would
+        # break those test setups.
+        from ..models.mlx_lm import CompletionResponse
+
+        stream = self._submit_batched_stream(scheduler, ctx)
+        text_parts: list[str] = []
+        tokens: list[int] = []
+        final_chunk = None
+        async for chunk in stream:
+            if chunk.text:
+                text_parts.append(chunk.text)
+            tokens.append(chunk.token)
+            if chunk.finish_reason is not None:
+                final_chunk = chunk
+                break
+
+        generation_tokens = final_chunk.generation_tokens if final_chunk else len(tokens)
+        generation_tps = final_chunk.generation_tps if final_chunk else 0.0
+        peak_memory = final_chunk.peak_memory if final_chunk else 0.0
+        prompt_tokens = final_chunk.prompt_tokens if final_chunk else len(ctx.rest_input_ids)
+        cached_prompt_tokens = final_chunk.cached_prompt_tokens if final_chunk else 0
+        return CompletionResponse(
+            text="".join(text_parts),
+            tokens=tokens,
+            peak_memory=peak_memory,
+            generation_tps=generation_tps,
+            prompt_tps=0.0,
+            prompt_tokens=prompt_tokens,
+            generation_tokens=generation_tokens,
+            cached_prompt_tokens=cached_prompt_tokens,
+        )
+
     async def get_queue_stats(self) -> dict[str, Any]:
-        """Get statistics from the inference worker.
+        """Get statistics from the inference worker and batch scheduler.
 
         Returns
         -------
         dict[str, Any]
-            Dictionary with ``queue_stats`` sub-dictionary.
+            Dictionary with ``queue_stats`` and ``batch_stats`` sub-dictionaries.
         """
+        batch_running = self._batch_scheduler is not None and self._batch_scheduler.is_running
         return {
             "queue_stats": self.inference_worker.get_stats(),
+            "batch_stats": {
+                **(
+                    self._batch_scheduler.get_stats()
+                    if batch_running and self._batch_scheduler is not None
+                    else {
+                        "running": False,
+                        "queue_size": 0,
+                        "max_queue_size": self._queue_size,
+                        "active_requests": 0,
+                    }
+                ),
+                "completion_batch_size": self._batch_completion_size,
+                "prefill_batch_size": self._batch_prefill_size,
+            },
         }
 
     async def cleanup(self) -> None:
@@ -995,6 +1335,9 @@ class MLXLMHandler:
         """
         try:
             logger.info("Cleaning up MLXLMHandler resources")
+            if self._batch_scheduler is not None:
+                self._batch_scheduler.stop()
+                self._batch_scheduler = None
             if hasattr(self, "inference_worker"):
                 self.inference_worker.stop()
 
@@ -1047,6 +1390,7 @@ class MLXLMHandler:
                 "xtc_probability": request.xtc_probability,
                 "xtc_threshold": request.xtc_threshold,
                 "logit_bias": request.logit_bias,
+                "stop": request.stop,
                 "chat_template_kwargs": chat_template_kwargs,
                 "kv_bits": self.kv_bits,
                 "kv_group_size": self.kv_group_size,

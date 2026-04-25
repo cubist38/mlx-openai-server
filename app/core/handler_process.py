@@ -106,6 +106,102 @@ async def _stream_until_cancelled(
             await stream.aclose()
 
 
+def _ensure_model_downloaded(
+    model_path: str,
+    response_queue: mp.Queue,  # type: ignore[type-arg]
+) -> None:
+    """Pre-fetch a HuggingFace model snapshot with progress heartbeats.
+
+    No-op when ``model_path`` resolves to an existing local directory.
+    Otherwise runs ``huggingface_hub.snapshot_download`` on a background
+    thread and emits periodic ``{"type": "progress"}`` messages through
+    ``response_queue``. The parent's ``_wait_for_ready`` resets its
+    deadline on each progress message so large first-time downloads
+    don't trip the startup timeout, while a genuine hang (no progress,
+    no crash) still fails after the normal window.
+
+    Errors are swallowed — the subsequent ``MLX_LM(...)`` load will
+    surface the real problem with full context (model id typos,
+    missing files, auth issues, etc.).
+    """
+    if not model_path or os.path.isdir(model_path):
+        return
+
+    try:
+        from huggingface_hub import snapshot_download
+    except ImportError:
+        return
+
+    done = threading.Event()
+    result: dict[str, Any] = {}
+
+    def _download() -> None:
+        try:
+            result["local"] = snapshot_download(
+                repo_id=model_path,
+                allow_patterns=[
+                    "*.json",
+                    "*.safetensors",
+                    "*.py",
+                    "tokenizer.model",
+                    "*.tiktoken",
+                    "*.txt",
+                ],
+            )
+        except Exception as exc:  # noqa: BLE001 — best-effort pre-fetch
+            result["error"] = exc
+        finally:
+            done.set()
+
+    def _heartbeat() -> None:
+        start = time.monotonic()
+        with suppress(Exception):
+            response_queue.put(
+                {
+                    "type": "progress",
+                    "stage": "download",
+                    "kind": "start",
+                    "message": f"Fetching '{model_path}' from HuggingFace...",
+                }
+            )
+        # Silent heartbeats: exist only so the parent can reset its
+        # ready-wait deadline while a large download progresses. The
+        # user-facing progress comes from huggingface_hub's tqdm bar
+        # in the child's stderr.
+        while not done.wait(timeout=15.0):
+            elapsed = time.monotonic() - start
+            with suppress(Exception):
+                response_queue.put(
+                    {
+                        "type": "progress",
+                        "stage": "download",
+                        "kind": "heartbeat",
+                        "message": f"Fetching '{model_path}' ({elapsed:.0f}s elapsed)",
+                    }
+                )
+
+    dl_thread = threading.Thread(target=_download, daemon=True, name="model-download")
+    hb_thread = threading.Thread(target=_heartbeat, daemon=True, name="model-download-heartbeat")
+    dl_thread.start()
+    hb_thread.start()
+    dl_thread.join()
+    hb_thread.join(timeout=1.0)
+
+    if "error" in result:
+        logger.debug(f"snapshot_download for '{model_path}' raised: {result['error']!s}")
+        return
+
+    with suppress(Exception):
+        response_queue.put(
+            {
+                "type": "progress",
+                "stage": "download",
+                "kind": "end",
+                "message": f"Fetched '{model_path}'",
+            }
+        )
+
+
 # ---------------------------------------------------------------------------
 # Child process entry point
 # ---------------------------------------------------------------------------
@@ -203,6 +299,7 @@ def _handler_worker(
         # Handler creation & initialization
         # ------------------------------------------------------------------
         try:
+            await asyncio.to_thread(_ensure_model_downloaded, model_cfg.model_path, response_queue)
             handler = create_handler_from_config(model_cfg)
             await handler.initialize(queue_config)
             response_queue.put({"type": "ready", "success": True})
@@ -219,38 +316,20 @@ def _handler_worker(
             return
 
         # ------------------------------------------------------------------
-        # Request loop
+        # Per-request handler
+        #
+        # Each inbound request runs as its own asyncio task so multiple
+        # requests can be in flight inside the subprocess concurrently —
+        # that's what lets the continuous batcher (BatchScheduler) actually
+        # see more than one request at a time. Without this, the subprocess
+        # request loop would drain one stream to completion before polling
+        # for the next, serializing everything upstream of the batcher.
         # ------------------------------------------------------------------
-        while True:
-            try:
-                request = request_queue.get(timeout=1.0)
-            except queue.Empty:
-                # Detect orphaned child: if the parent died the queue will
-                # never receive a _SHUTDOWN, so we exit proactively.
-                try:
-                    os.kill(_parent_pid, 0)
-                except (ProcessLookupError, PermissionError):
-                    logger.warning(
-                        f"Parent process (pid={_parent_pid}) exited; "
-                        f"handler subprocess for '{model_id}' shutting down"
-                    )
-                    break
-                continue
-            except Exception:
-                break
+        _inflight: set[asyncio.Task[None]] = set()
 
+        async def _handle_request(request: dict[str, Any]) -> None:
             req_id: str = request.get("id", "")
             method_name: str = request.get("method", "")
-
-            # Shutdown signal
-            if method_name == _SHUTDOWN:
-                try:
-                    await handler.cleanup()
-                except Exception as exc:
-                    logger.error(f"Error during handler cleanup in subprocess: {exc}")
-                response_queue.put({"id": req_id, "type": "shutdown_complete"})
-                break
-
             args: tuple[Any, ...] = request.get("args", ())
             kwargs: dict[str, Any] = request.get("kwargs", {})
             is_stream: bool = request.get("stream", False)
@@ -289,6 +368,56 @@ def _handler_worker(
                         "detail": getattr(exc, "detail", None),
                     }
                 )
+
+        # ------------------------------------------------------------------
+        # Request loop — pulls messages from the (blocking) mp.Queue and
+        # fans them out to concurrent tasks. The ``request_queue.get`` call
+        # is blocking, so we run it on the default thread executor to keep
+        # the event loop free to make progress on in-flight tasks.
+        # ------------------------------------------------------------------
+        loop = asyncio.get_running_loop()
+
+        def _blocking_get() -> dict[str, Any] | None:
+            try:
+                return request_queue.get(timeout=1.0)
+            except queue.Empty:
+                return None
+
+        while True:
+            request = await loop.run_in_executor(None, _blocking_get)
+            if request is None:
+                # Detect orphaned child: if the parent died the queue will
+                # never receive a _SHUTDOWN, so we exit proactively.
+                try:
+                    os.kill(_parent_pid, 0)
+                except (ProcessLookupError, PermissionError):
+                    logger.warning(
+                        f"Parent process (pid={_parent_pid}) exited; "
+                        f"handler subprocess for '{model_id}' shutting down"
+                    )
+                    break
+                continue
+
+            req_id = request.get("id", "")
+            method_name = request.get("method", "")
+
+            # Shutdown signal
+            if method_name == _SHUTDOWN:
+                if _inflight:
+                    logger.info(
+                        f"Shutdown requested; waiting for {len(_inflight)} in-flight request(s) to finish"
+                    )
+                    await asyncio.gather(*_inflight, return_exceptions=True)
+                try:
+                    await handler.cleanup()
+                except Exception as exc:
+                    logger.error(f"Error during handler cleanup in subprocess: {exc}")
+                response_queue.put({"id": req_id, "type": "shutdown_complete"})
+                break
+
+            task = asyncio.create_task(_handle_request(request))
+            _inflight.add(task)
+            task.add_done_callback(_inflight.discard)
 
             now = time.monotonic()
             if now - _gc_state["last_time"] >= _GC_INTERVAL_SECONDS:
@@ -521,7 +650,7 @@ class HandlerProcessProxy:
                 )
 
             try:
-                return await asyncio.wait_for(
+                msg = await asyncio.wait_for(
                     ready_queue.get(),
                     timeout=min(poll_interval, remaining),
                 )
@@ -534,6 +663,26 @@ class HandlerProcessProxy:
                         f"died during initialization (exit code {exit_code})"
                     )
                 # Still alive — keep waiting.
+                continue
+
+            if msg.get("type") == "progress":
+                # Bookend messages (start / end of a stage) are worth
+                # surfacing at INFO; the intermediate heartbeats only
+                # exist to reset the deadline and stay at DEBUG so they
+                # don't drown out the child's own tqdm progress bar.
+                line = f"'{self.served_model_name}': {msg.get('message', 'progress...')}"
+                if msg.get("kind") in ("start", "end"):
+                    logger.info(line)
+                else:
+                    logger.debug(line)
+                # Reset the deadline on every progress message so a
+                # slow-but-steady download doesn't trip the timeout. A
+                # genuine hang (no progress, no crash) still fails after
+                # the normal window elapses.
+                deadline = time.monotonic() + timeout
+                continue
+
+            return msg
 
     async def _ensure_alive(self) -> None:
         """Check if the child process is alive; restart it if it crashed.
@@ -690,8 +839,8 @@ class HandlerProcessProxy:
                     )
                 break
 
-            # Special case: ready signal during start().
-            if response.get("type") == "ready":
+            # Special case: ready / progress signals during start().
+            if response.get("type") in ("ready", "progress"):
                 pending = self._pending.get("__ready__")
                 if pending and self._loop:
                     self._loop.call_soon_threadsafe(pending.put_nowait, response)

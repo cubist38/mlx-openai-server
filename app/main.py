@@ -23,15 +23,41 @@ Run multi-handler mode from YAML config:
 
 from __future__ import annotations
 
+from dataclasses import MISSING, fields
 import os
 import sys
 
 from loguru import logger
 import uvicorn
 
-from .config import MLXServerConfig, MultiModelServerConfig
+from .config import MLXServerConfig, ModelEntryConfig, MultiModelServerConfig
 from .server import setup_server
 from .version import __version__
+
+_MODEL_ENTRY_DEFAULTS = {
+    field.name: (field.default_factory() if field.default_factory is not MISSING else field.default)
+    for field in fields(ModelEntryConfig)
+    if field.default is not MISSING or field.default_factory is not MISSING
+}
+
+
+def _format_bytes(n: int) -> str:
+    """Render a byte count in a human-friendly unit.
+
+    The prompt-cache byte budget defaults to ``1 << 63`` as a sentinel for
+    "unbounded", which reads as a 19-digit integer in the startup banner.
+    This helper turns that (and more ordinary values) into something a human
+    can read at a glance.
+    """
+    if n >= (1 << 60):
+        return "unbounded"
+    gib = n / (1024**3)
+    if gib >= 1:
+        return f"{gib:.2f} GiB"
+    mib = n / (1024**2)
+    if mib >= 1:
+        return f"{mib:.2f} MiB"
+    return f"{n} B"
 
 
 def print_startup_banner(config_args: MLXServerConfig) -> None:
@@ -84,7 +110,14 @@ def print_startup_banner(config_args: MLXServerConfig) -> None:
             logger.info(f"🔧 Message Converter: {config_args.message_converter}")
     if config_args.model_type == "lm":
         logger.info(f"💾 Prompt Cache Size: {config_args.prompt_cache_size} entries")
-        logger.info(f"💾 Prompt Cache Max Bytes: {config_args.prompt_cache_max_bytes}")
+        logger.info(
+            f"💾 Prompt Cache Max Bytes: {_format_bytes(config_args.prompt_cache_max_bytes)}"
+        )
+        logger.info(
+            f"🧵 Batch Scheduler: decode={config_args.batch_completion_size}, "
+            f"prefill={config_args.batch_prefill_size}, "
+            f"prefill_step={config_args.batch_prefill_step_size}"
+        )
     logger.info(f"📝 Log Level: {config_args.log_level}")
     if config_args.no_log_file:
         logger.info("📝 File Logging: Disabled")
@@ -93,6 +126,66 @@ def print_startup_banner(config_args: MLXServerConfig) -> None:
     else:
         logger.info("📝 Log File: logs/app.log (default)")
     logger.info("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+
+
+def _model_entry_extras(m: ModelEntryConfig) -> list[tuple[str, object]]:
+    """Return non-default per-model settings worth surfacing in the banner.
+
+    Only fields that differ from their dataclass default are included —
+    this keeps the banner quiet for minimal configs and lights up every
+    knob that was actually touched (parsers, tool choice, LoRA, draft
+    model, KV quant, on-demand, etc.).
+    """
+    extras: list[tuple[str, object]] = []
+
+    if m.served_model_name and m.served_model_name != m.model_path:
+        extras.append(("served_model_name", m.served_model_name))
+    if m.context_length is not None:
+        extras.append(("context_length", m.context_length))
+    if m.enable_auto_tool_choice:
+        extras.append(("auto_tool_choice", True))
+    if m.tool_call_parser:
+        extras.append(("tool_call_parser", m.tool_call_parser))
+    if m.reasoning_parser:
+        extras.append(("reasoning_parser", m.reasoning_parser))
+    if m.message_converter:
+        extras.append(("message_converter", m.message_converter))
+    if m.chat_template_file:
+        extras.append(("chat_template_file", m.chat_template_file))
+    if m.trust_remote_code:
+        extras.append(("trust_remote_code", True))
+    if m.draft_model_path:
+        extras.append(("draft_model_path", m.draft_model_path))
+        extras.append(("num_draft_tokens", m.num_draft_tokens))
+    if m.kv_bits is not None:
+        extras.append(
+            ("kv_bits", f"{m.kv_bits} (group={m.kv_group_size}, start={m.quantized_kv_start})")
+        )
+    if m.model_type == "lm":
+        batch_settings: list[str] = []
+        if m.batch_completion_size != _MODEL_ENTRY_DEFAULTS["batch_completion_size"]:
+            batch_settings.append(f"decode={m.batch_completion_size}")
+        if m.batch_prefill_size != _MODEL_ENTRY_DEFAULTS["batch_prefill_size"]:
+            batch_settings.append(f"prefill={m.batch_prefill_size}")
+        if m.batch_prefill_step_size != _MODEL_ENTRY_DEFAULTS["batch_prefill_step_size"]:
+            batch_settings.append(f"prefill_step={m.batch_prefill_step_size}")
+        if batch_settings:
+            extras.append(("batch_scheduler", ", ".join(batch_settings)))
+    if m.quantize is not None:
+        extras.append(("quantize", m.quantize))
+    if m.config_name:
+        extras.append(("config_name", m.config_name))
+    if m.lora_paths:
+        extras.append(("lora_paths", m.lora_paths))
+    if m.lora_scales:
+        extras.append(("lora_scales", m.lora_scales))
+    if m.disable_auto_resize:
+        extras.append(("auto_resize", False))
+    if m.on_demand:
+        extras.append(("on_demand", f"idle_timeout={m.on_demand_idle_timeout}s"))
+    if m.debug:
+        extras.append(("debug", True))
+    return extras
 
 
 def print_multi_startup_banner(config: MultiModelServerConfig) -> None:
@@ -112,6 +205,8 @@ def print_multi_startup_banner(config: MultiModelServerConfig) -> None:
     logger.info(f"🔢 Models to load: {len(config.models)}")
     for idx, m in enumerate(config.models, start=1):
         logger.info(f"  [{idx}] {m.served_model_name} (type={m.model_type}, path={m.model_path})")
+        for key, value in _model_entry_extras(m):
+            logger.info(f"       • {key}: {value}")
     logger.info("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
 
 

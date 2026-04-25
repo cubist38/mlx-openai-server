@@ -38,6 +38,10 @@ class CompletionResponse:
         generation_tokens (int): The number of generated tokens.
         prompt_tps (float): The prompt processing tokens-per-second.
         prompt_tokens (int): The number of tokens in the prompt.
+        cached_prompt_tokens (int): The number of prompt tokens that were
+            served from a pre-computed cache. ``0`` when no cache hit — only
+            the batched path currently populates this; the non-batched path
+            reports its cache hits via ``ctx.total_cached_tokens``.
     """
 
     text: str = None
@@ -47,6 +51,7 @@ class CompletionResponse:
     prompt_tps: float = None
     prompt_tokens: int = None
     generation_tokens: int = None
+    cached_prompt_tokens: int = 0
 
 
 class MLX_LM:
@@ -85,6 +90,13 @@ class MLX_LM:
             initial_cache = make_prompt_cache(self.model)
             self._cache_is_trimmable = can_trim_prompt_cache(initial_cache)
             self._num_model_cache_layers = len(initial_cache)
+            # ``BatchGenerator`` requires every cache layer to expose a
+            # ``merge`` method so sequences can share the batch. Models
+            # whose caches don't (e.g. some third-party hybrid / SSM
+            # variants that ship their own cache type) must fall back to
+            # the single-request path. Mirrors ``mlx_lm.server``'s own
+            # ``is_batchable`` gate.
+            self._cache_is_batchable = all(hasattr(c, "merge") for c in initial_cache)
             if chat_template_file:
                 if not os.path.exists(chat_template_file):
                     raise ValueError(f"Chat template file {chat_template_file} does not exist")
@@ -164,6 +176,93 @@ class MLX_LM:
         ``ArraysCache`` (SSM/recurrent layers) return ``False``.
         """
         return self._cache_is_trimmable
+
+    @property
+    def cache_is_batchable(self) -> bool:
+        """Whether the model's prompt cache supports cross-sequence merge.
+
+        The continuous batcher merges KV caches from multiple concurrent
+        sequences into a single batched tensor; models whose caches don't
+        expose a ``merge`` method can't be batched and must use the
+        single-request path.
+        """
+        return self._cache_is_batchable
+
+    @property
+    def has_draft_model(self) -> bool:
+        """Whether a draft model is configured (speculative decoding is active)."""
+        return self.draft_model is not None
+
+    def build_sampler(self, params: dict[str, Any]):
+        """Build a sampler callable from a request's model parameters.
+
+        Parameters
+        ----------
+        params : dict
+            Parameter mapping with optional ``temperature``, ``top_p``,
+            ``top_k``, ``min_p``, ``xtc_probability``, ``xtc_threshold`` keys.
+            Missing or ``None`` values fall back to the same defaults used by
+            the non-batched generation path.
+
+        Returns
+        -------
+        Callable
+            Sampler function suitable for ``BatchGenerator.insert(samplers=...)``.
+        """
+
+        def _get(key: str, default: Any) -> Any:
+            v = params.get(key)
+            return default if v is None else v
+
+        sampler_kwargs: dict[str, Any] = {
+            "temp": _get("temperature", DEFAULT_TEMPERATURE),
+            "top_p": _get("top_p", DEFAULT_TOP_P),
+            "top_k": _get("top_k", DEFAULT_TOP_K),
+            "min_p": _get("min_p", DEFAULT_MIN_P),
+            "xtc_probability": _get("xtc_probability", DEFAULT_XTC_PROBABILITY),
+            "xtc_threshold": _get("xtc_threshold", DEFAULT_XTC_THRESHOLD),
+        }
+        if sampler_kwargs["xtc_probability"] > 0:
+            sampler_kwargs["xtc_special_tokens"] = [
+                self.tokenizer.eos_token_id,
+                *self.tokenizer.encode("\n"),
+            ]
+        return make_sampler(**sampler_kwargs)
+
+    def build_logits_processors(self, params: dict[str, Any]) -> list[Any]:
+        """Build a per-request logits-processor list from model parameters.
+
+        Handles ``logit_bias``, ``repetition_penalty`` /
+        ``repetition_context_size``, and optional outlines-based JSON-schema
+        constrained decoding (``schema`` key).
+        """
+        logit_bias = params.get("logit_bias")
+        if logit_bias:
+            logit_bias = {int(k): v for k, v in logit_bias.items()}
+
+        repetition_penalty = params.get("repetition_penalty")
+        repetition_context_size = params.get("repetition_context_size")
+        if repetition_context_size is None:
+            repetition_context_size = DEFAULT_REPETITION_CONTEXT_SIZE
+
+        processors: list[Any] = list(
+            make_logits_processors(
+                logit_bias=logit_bias,
+                repetition_penalty=repetition_penalty,
+                repetition_context_size=repetition_context_size,
+            )
+        )
+
+        schema = params.get("schema")
+        if schema:
+            processors.append(
+                JSONLogitsProcessor(
+                    schema=schema,
+                    tokenizer=self.outlines_tokenizer,
+                    tensor_library_name="mlx",
+                )
+            )
+        return processors
 
     def _prefill_cache(
         self,

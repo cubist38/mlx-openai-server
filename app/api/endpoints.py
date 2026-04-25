@@ -124,10 +124,17 @@ async def _resolve_handler(
         except KeyError:
             pass
 
-        # Check if this is an on-demand model that needs loading
-        if registry.is_on_demand(model_id):
+        # Check if this is an on-demand model that needs loading.
+        #
+        # Some tests (and lightweight embedding scenarios) attach a minimal
+        # registry-like object that only exposes ``get_handler`` and
+        # ``list_model_ids``. Guard ``is_on_demand`` / ``ensure_on_demand_loaded``
+        # so those call sites still receive the intended 404 path.
+        is_on_demand = getattr(registry, "is_on_demand", None)
+        ensure_on_demand_loaded = getattr(registry, "ensure_on_demand_loaded", None)
+        if callable(is_on_demand) and is_on_demand(model_id) and callable(ensure_on_demand_loaded):
             try:
-                handler = await registry.ensure_on_demand_loaded(model_id)
+                handler = await ensure_on_demand_loaded(model_id)
                 # Tag the request so the on-demand scope can release it
                 raw_request.state.on_demand_model_id = model_id
                 return handler
@@ -144,7 +151,11 @@ async def _resolve_handler(
                 ) from exc
 
         # Model not found at all
-        available = ", ".join(registry.list_model_ids()) or "(none)"
+        list_model_ids = getattr(registry, "list_model_ids", None)
+        if callable(list_model_ids):
+            available = ", ".join(list_model_ids()) or "(none)"
+        else:
+            available = "(none)"
         raise HTTPException(
             status_code=HTTPStatus.NOT_FOUND,
             detail={
@@ -250,9 +261,11 @@ def _normalize_request_model(raw_request: Request, request: Any, handler: Any) -
     if request.model == Config.TEXT_MODEL and "model" not in getattr(
         request, "model_fields_set", set()
     ):
-        registry = getattr(raw_request.app.state, "registry", None)
-        if registry is None:
-            request.model = getattr(handler, "model_path", request.model)
+        # Preserve the historical OpenAI-compatible alias for omitted-model
+        # requests. Single-model mode has long returned ``local-text-model``
+        # in payloads, and multi-model compatibility fallbacks normalize via
+        # dedicated helpers.
+        return
 
 
 def _should_use_legacy_chat_fallback(

@@ -12,7 +12,7 @@ from typing import Any
 from click.testing import CliRunner
 import pytest
 
-from app.config import MLXServerConfig
+from app.config import MLXServerConfig, ModelEntryConfig
 
 
 def _load_cli_module(monkeypatch: pytest.MonkeyPatch) -> Any:
@@ -60,10 +60,10 @@ def test_launch_accepts_repetition_penalty_and_passes_it_to_config(
     cli_module = _load_cli_module(monkeypatch)
     captured: dict[str, Any] = {}
 
-    async def _fake_start(config: Any) -> None:
+    async def _fake_start_multi(config: Any) -> None:
         captured["config"] = config
 
-    monkeypatch.setattr(cli_module, "start", _fake_start)
+    monkeypatch.setattr(cli_module, "start_multi", _fake_start_multi)
 
     runner = CliRunner()
     result = runner.invoke(
@@ -78,7 +78,10 @@ def test_launch_accepts_repetition_penalty_and_passes_it_to_config(
     )
 
     assert result.exit_code == 0, result.output
-    assert captured["config"].default_repetition_penalty == 1.25
+    # Single-model ``launch`` is wrapped in a one-entry MultiModelServerConfig
+    # so it runs through the subprocess-isolation path; the sampling default
+    # now lives on the sole ModelEntryConfig.
+    assert captured["config"].models[0].default_repetition_penalty == 1.25
 
 
 def test_start_exports_repetition_penalty_before_server_setup(
@@ -126,10 +129,10 @@ def test_launch_defaults_prompt_cache_size_to_ten(
     cli_module = _load_cli_module(monkeypatch)
     captured: dict[str, Any] = {}
 
-    async def _fake_start(config: Any) -> None:
+    async def _fake_start_multi(config: Any) -> None:
         captured["config"] = config
 
-    monkeypatch.setattr(cli_module, "start", _fake_start)
+    monkeypatch.setattr(cli_module, "start_multi", _fake_start_multi)
 
     runner = CliRunner()
     result = runner.invoke(
@@ -142,4 +145,26 @@ def test_launch_defaults_prompt_cache_size_to_ten(
     )
 
     assert result.exit_code == 0, result.output
-    assert captured["config"].prompt_cache_size == 10
+    # Single-model ``launch`` is wrapped into a one-entry multi-model config
+    # (subprocess isolation), so the cache size now lives on the wrapped entry.
+    assert captured["config"].models[0].prompt_cache_size == 10
+
+
+def test_model_entry_extras_surfaces_non_default_batch_scheduler_settings(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Multi-model banners should show per-model batch scheduler overrides."""
+
+    main_module = _load_main_module(monkeypatch)
+    extras = dict(
+        main_module._model_entry_extras(
+            ModelEntryConfig(
+                model_path="dummy-model",
+                model_type="lm",
+                batch_completion_size=16,
+                batch_prefill_step_size=1024,
+            )
+        )
+    )
+
+    assert extras["batch_scheduler"] == "decode=16, prefill_step=1024"
