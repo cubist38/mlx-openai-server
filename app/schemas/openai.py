@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from enum import Enum
+from enum import StrEnum
 import time
 from typing import Any, ClassVar, Literal, TypeAlias
 import uuid
@@ -58,7 +58,7 @@ class Config:
     TRANSCRIPTION_MODEL = "local-transcription-model"
 
 
-class HealthCheckStatus(str, Enum):
+class HealthCheckStatus(StrEnum):
     """Health check status."""
 
     OK = "ok"
@@ -450,7 +450,7 @@ class ModelsResponse(OpenAIBaseModel):
     data: list[Model] = Field(..., description="List of models.")
 
 
-class ImageSize(str, Enum):
+class ImageSize(StrEnum):
     """Available image sizes."""
 
     SMALL = "256x256"
@@ -458,7 +458,7 @@ class ImageSize(str, Enum):
     LARGE = "1024x1024"
 
 
-class Priority(str, Enum):
+class Priority(StrEnum):
     """Task priority levels."""
 
     LOW = "low"
@@ -466,7 +466,7 @@ class Priority(str, Enum):
     HIGH = "high"
 
 
-class ImageEditQuality(str, Enum):
+class ImageEditQuality(StrEnum):
     """Image edit quality levels."""
 
     LOW = "low"
@@ -474,14 +474,14 @@ class ImageEditQuality(str, Enum):
     HIGH = "high"
 
 
-class ImageResponseFormat(str, Enum):
+class ImageResponseFormat(StrEnum):
     """Image edit response format."""
 
     # Only support b64_json for now
     B64_JSON = "b64_json"
 
 
-class TranscriptionResponseFormat(str, Enum):
+class TranscriptionResponseFormat(StrEnum):
     """Audio response format."""
 
     JSON = "json"
