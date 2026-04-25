@@ -47,7 +47,9 @@ Text model:
 ```bash
 mlx-openai-server launch \
   --model-type lm \
-  --model-path mlx-community/Qwen3-Coder-Next-4bit
+  --model-path mlx-community/Qwen3-Coder-Next-4bit \
+  --reasoning-parser qwen3_moe \
+  --tool-call-parser qwen3_coder
 ```
 
 Point OpenAI-compatible clients to:
