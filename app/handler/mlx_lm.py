@@ -4,6 +4,7 @@ import copy
 from dataclasses import dataclass
 import gc
 from http import HTTPStatus
+import threading
 import time
 from typing import Any
 
@@ -13,7 +14,6 @@ from loguru import logger
 from ..core import BatchScheduler, InferenceWorker
 from ..core.batch_scheduler import BATCHING_AVAILABLE
 from ..message_converters import MessageConverterManager
-from ..models.mlx_lm import MLX_LM
 from ..parsers import ParserManager, ReasoningParserState, ToolParserState
 from ..schemas.openai import ChatCompletionRequest, PromptTokenUsageInfo, UsageInfo
 from ..utils.debug_logging import (
@@ -28,7 +28,6 @@ from ..utils.debug_logging import (
     make_prompt_progress_callback,
 )
 from ..utils.errors import create_error_response
-from ..utils.prompt_cache import LRUPromptCache
 
 
 def _coerce_cached_tokens(ctx_cached: int, source: Any) -> int:
@@ -187,6 +186,9 @@ class MLXLMHandler:
             history (same default used by ``mlx_lm``).
         """
         self.model_path = model_path
+        from ..models.mlx_lm import MLX_LM
+        from ..utils.prompt_cache import LRUPromptCache
+
         self.model = MLX_LM(
             model_path,
             draft_model_path=draft_model_path,
@@ -231,6 +233,7 @@ class MLXLMHandler:
         self._batch_max_kv_size = batch_max_kv_size
         self._batch_scheduler: BatchScheduler | None = None
         self._batch_scheduler_lock = asyncio.Lock()
+        self._generation_lock = threading.RLock()
 
         logger.info(f"Initialized MLXHandler with model path: {model_path}")
 
@@ -283,6 +286,27 @@ class MLXLMHandler:
             messages = self.message_converter.convert_messages(messages)
 
         return [{k: v for k, v in message.items() if v is not None} for message in messages]
+
+    def _generate_with_lock(self, *args: Any, **kwargs: Any) -> Any:
+        """Run non-stream generation while serialized with the batch scheduler."""
+        with self._generation_lock:
+            return self.model(*args, **kwargs)
+
+    def _stream_with_lock(self, *args: Any, **kwargs: Any) -> Any:
+        """Stream non-batched generation while serialized with the scheduler."""
+        with self._generation_lock:
+            yield from self.model(*args, **kwargs)
+
+    def _insert_prompt_cache(
+        self,
+        cache_key: list[int],
+        cache: list[Any],
+        *,
+        cache_type: str = "assistant",
+    ) -> None:
+        """Insert a prompt cache while serialized with all generation workers."""
+        with self._generation_lock:
+            self.prompt_cache.insert_cache(cache_key, cache, cache_type=cache_type)
 
     def _compute_checkpoint_boundary(
         self,
@@ -418,7 +442,10 @@ class MLXLMHandler:
                 batched_segment_types=segment_types,
             )
 
-        cache, rest_input_ids = self.prompt_cache.fetch_nearest_cache(input_ids)
+        with self._generation_lock:
+            cache, rest_input_ids = self.prompt_cache.fetch_nearest_cache(input_ids)
+            if cache is None:
+                cache = self.model.create_prompt_cache()
 
         # Cache key must be the FULL input_ids, not rest_input_ids.
         # Using rest_input_ids causes memory leaks: on "longer" cache hits,
@@ -428,9 +455,6 @@ class MLXLMHandler:
 
         checkpoint_position: int | None = None
         checkpoint_callback = None
-
-        if cache is None:
-            cache = self.model.create_prompt_cache()
 
         # For hybrid models with non-trimmable caches (e.g. Qwen3.5,
         # Nemotron-H, Jamba), the "longer cache trim" path in
@@ -462,14 +486,12 @@ class MLXLMHandler:
                 # (which is what the model receives as input_ids).
                 checkpoint_position = boundary - cached_prefix_len
                 prefix_ids = input_ids[:boundary]
-                prompt_cache_ref = self.prompt_cache
 
                 def checkpoint_callback(
                     prompt_cache_state: list[Any],
                     _prefix_ids: list[int] = prefix_ids,
-                    _store: Any = prompt_cache_ref,
                 ) -> None:
-                    _store.insert_cache(
+                    self._insert_prompt_cache(
                         _prefix_ids,
                         copy.deepcopy(prompt_cache_state),
                         cache_type="system",
@@ -561,7 +583,7 @@ class MLXLMHandler:
                 response_generator = self._submit_batched_stream(scheduler, ctx)
             else:
                 response_generator = self.inference_worker.submit_stream(
-                    self.model,
+                    self._stream_with_lock,
                     input_ids=ctx.rest_input_ids,
                     prompt_cache=cache,
                     stream=True,
@@ -857,7 +879,7 @@ class MLXLMHandler:
                 # Non-batch path owns the cache on the event-loop thread.
                 # The batched path stores its final cache from the scheduler
                 # thread instead (see BatchScheduler._handle_generation_response).
-                self.prompt_cache.insert_cache(cache_key, cache)
+                self._insert_prompt_cache(cache_key, cache)
             cache_inserted = True
 
             if self.debug:
@@ -903,7 +925,7 @@ class MLXLMHandler:
         finally:
             if cache is not None and cache_key is not None and not cache_inserted:
                 try:
-                    self.prompt_cache.insert_cache(cache_key, cache)
+                    self._insert_prompt_cache(cache_key, cache)
                     if self.debug:
                         self.prompt_cache.log_cache_stats()
                 except Exception as cache_error:
@@ -1136,6 +1158,7 @@ class MLXLMHandler:
                     prefill_batch_size=self._batch_prefill_size,
                     prefill_step_size=self._batch_prefill_step_size,
                     max_kv_size=self._batch_max_kv_size,
+                    generation_lock=self._generation_lock,
                     queue_size=self._queue_size,
                 )
                 scheduler.start()
@@ -1169,6 +1192,10 @@ class MLXLMHandler:
         params = ctx.model_params
         sampler = self.model.build_sampler(params)
         logits_processors = self.model.build_logits_processors(params)
+        state_machine = BatchScheduler.build_state_machine(
+            self.model.tokenizer,
+            params.get("stop") or None,
+        )
 
         max_tokens = params.get("max_tokens")
         if max_tokens is None:
@@ -1186,6 +1213,7 @@ class MLXLMHandler:
             max_tokens=int(max_tokens),
             sampler=sampler,
             logits_processors=logits_processors or None,
+            state_machine=state_machine,
             segments=ctx.batched_segments,
             segment_types=ctx.batched_segment_types,
         )
@@ -1203,7 +1231,7 @@ class MLXLMHandler:
         """
         if cache is None:
             return
-        self.prompt_cache.insert_cache(cache_key, cache)
+        self._insert_prompt_cache(cache_key, cache)
 
     async def _run_nonstream_generation(
         self,
@@ -1220,7 +1248,7 @@ class MLXLMHandler:
             scheduler = await self._get_or_start_scheduler()
             return await self._collect_batched_response(scheduler, ctx)
         return await self.inference_worker.submit(
-            self.model,
+            self._generate_with_lock,
             input_ids=ctx.rest_input_ids,
             prompt_cache=ctx.cache,
             stream=False,
@@ -1362,6 +1390,7 @@ class MLXLMHandler:
                 "xtc_probability": request.xtc_probability,
                 "xtc_threshold": request.xtc_threshold,
                 "logit_bias": request.logit_bias,
+                "stop": request.stop,
                 "chat_template_kwargs": chat_template_kwargs,
                 "kv_bits": self.kv_bits,
                 "kv_group_size": self.kv_group_size,

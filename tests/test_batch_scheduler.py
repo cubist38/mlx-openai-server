@@ -189,6 +189,10 @@ class FakeTokenizer:
     def detokenizer(self) -> _FakeDetokenizer:
         return _FakeDetokenizer()
 
+    def encode(self, text: str, add_special_tokens: bool = False) -> list[int]:
+        """Encode fake stop words into deterministic token ids."""
+        return [ord(ch) for ch in text]
+
 
 class _FakeDetokenizer:
     def __init__(self) -> None:
@@ -218,8 +222,16 @@ class _FakeDetokenizer:
 class _FakeSequenceStateMachine:
     """Stub for the scheduler's ``SequenceStateMachine`` import."""
 
+    last_transitions: dict[str, Any] | None = None
+    last_initial: str | None = None
+
     def __init__(self, *_args: Any, **_kwargs: Any) -> None:
-        pass
+        self.args = _args
+        self.kwargs = _kwargs
+        self.__class__.last_transitions = _kwargs.get("transitions")
+        if self.__class__.last_transitions is None and _args:
+            self.__class__.last_transitions = _args[0]
+        self.__class__.last_initial = _kwargs.get("initial")
 
 
 @pytest.fixture
@@ -369,6 +381,19 @@ def test_default_state_machine_builds_with_eos(patched_scheduler):
     # Should not raise and should construct an instance of the (stubbed) state machine.
     sm = patched_scheduler.BatchScheduler._build_default_state_machine(tok)
     assert isinstance(sm, _FakeSequenceStateMachine)
+
+
+def test_state_machine_includes_request_stop_words(patched_scheduler):
+    """Per-request stop strings should be encoded into the batched state machine."""
+    tok = FakeTokenizer(eos_token_ids=[2])
+
+    sm = patched_scheduler.BatchScheduler.build_state_machine(tok, stop_words=["END"])
+
+    assert isinstance(sm, _FakeSequenceStateMachine)
+    transitions = _FakeSequenceStateMachine.last_transitions
+    assert transitions is not None
+    assert transitions["normal"] == [([2], None), ([69, 78, 68], None)]
+    assert _FakeSequenceStateMachine.last_initial == "normal"
 
 
 def test_admission_queue_accepts_before_start(patched_scheduler):

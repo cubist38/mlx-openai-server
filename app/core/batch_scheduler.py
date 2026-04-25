@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import AsyncGenerator, Callable
+from contextlib import nullcontext
 from dataclasses import dataclass
 import inspect
 import queue
@@ -165,6 +166,11 @@ class BatchScheduler:
         Maximum tokens processed per prefill step.
     max_kv_size : int | None, optional
         Optional rotating-KV-cache size; ``None`` keeps full history.
+    generation_lock : threading.RLock | None, optional
+        Shared lock used to serialize this scheduler with the fallback
+        single-request inference worker. Upstream ``mlx_lm.server`` keeps both
+        paths on one generation thread; this lock preserves the same model and
+        prompt-cache ownership invariant in this app's two-worker architecture.
     idle_poll_timeout : float, optional
         Seconds to wait for a new request when the batch is empty before
         looping again; defaults to 0.1.
@@ -180,6 +186,7 @@ class BatchScheduler:
         prefill_batch_size: int = 8,
         prefill_step_size: int = 2048,
         max_kv_size: int | None = None,
+        generation_lock: threading.RLock | None = None,
         queue_size: int = 100,
         idle_poll_timeout: float = 0.1,
     ) -> None:
@@ -194,6 +201,7 @@ class BatchScheduler:
         self._prefill_batch_size = prefill_batch_size
         self._prefill_step_size = prefill_step_size
         self._max_kv_size = max_kv_size
+        self._generation_lock = generation_lock
         self._queue_size = queue_size
         self._idle_poll_timeout = idle_poll_timeout
 
@@ -215,23 +223,38 @@ class BatchScheduler:
         self._stream: Any | None = None
 
     @staticmethod
-    def _build_default_state_machine(tokenizer: TokenizerWrapper) -> Any:
-        """Build a state machine that stops on any EOS token.
+    def build_state_machine(
+        tokenizer: TokenizerWrapper,
+        stop_words: list[str] | None = None,
+    ) -> Any:
+        """Build a state machine that stops on EOS and request stop words.
 
         The mlx-lm ``BatchGenerator`` uses a state machine per-sequence to
-        detect stop sequences; we pass EOS tokens so finished sequences are
-        removed from the batch as soon as they complete.
+        detect stop sequences; mirror ``mlx_lm.server`` by combining tokenizer
+        EOS ids with per-request OpenAI ``stop`` strings.
         """
         eos_token_ids = getattr(tokenizer, "eos_token_ids", None) or []
         if not eos_token_ids:
             eos_id = getattr(tokenizer, "eos_token_id", None)
             if eos_id is not None:
                 eos_token_ids = [eos_id]
-        stop_sequences = [[int(t)] for t in eos_token_ids]
+        stop_sequences: list[list[int]] = [[int(t)] for t in eos_token_ids]
+        for stop_word in stop_words or []:
+            try:
+                encoded = tokenizer.encode(stop_word, add_special_tokens=False)
+            except TypeError:
+                encoded = tokenizer.encode(stop_word)
+            if encoded:
+                stop_sequences.append([int(t) for t in encoded])
         return SequenceStateMachine(
             {"normal": [(seq, None) for seq in stop_sequences]} if stop_sequences else {},
             initial="normal",
         )
+
+    @staticmethod
+    def _build_default_state_machine(tokenizer: TokenizerWrapper) -> Any:
+        """Build a state machine that stops on any EOS token."""
+        return BatchScheduler.build_state_machine(tokenizer)
 
     @property
     def is_running(self) -> bool:
@@ -455,29 +478,37 @@ class BatchScheduler:
 
         try:
             while self._running:
-                self._admit_pending(block_if_empty=len(self._active) == 0)
+                lock_context = (
+                    self._generation_lock if self._generation_lock is not None else nullcontext()
+                )
+                with lock_context:
+                    self._admit_pending(block_if_empty=len(self._active) == 0)
 
-                if not self._active:
-                    continue
+                    while self._running and self._active:
+                        try:
+                            # ``BatchGenerator.next()`` already wraps itself in its
+                            # own ``mx.stream(...)`` context, so we don't double-wrap
+                            # here. (On mlx-lm ≤ 0.31.3 that stream is the module-
+                            # level ``generation_stream``; after PR #1090 it becomes
+                            # whatever was passed via ``BatchGenerator(stream=...)``.)
+                            prompt_responses, gen_responses = self._batch_generator.next()
+                        except Exception as exc:  # noqa: BLE001 — propagate per-request
+                            logger.exception(f"BatchGenerator.next() raised: {exc!s}")
+                            self._fail_all_active(exc)
+                            continue
 
-                try:
-                    # ``BatchGenerator.next()`` already wraps itself in its
-                    # own ``mx.stream(...)`` context, so we don't double-wrap
-                    # here. (On mlx-lm ≤ 0.31.3 that stream is the module-
-                    # level ``generation_stream``; after PR #1090 it becomes
-                    # whatever was passed via ``BatchGenerator(stream=...)``.)
-                    prompt_responses, gen_responses = self._batch_generator.next()
-                except Exception as exc:  # noqa: BLE001 — propagate per-request
-                    logger.exception(f"BatchGenerator.next() raised: {exc!s}")
-                    self._fail_all_active(exc)
-                    continue
+                        self._handle_prompt_responses(prompt_responses)
 
-                self._handle_prompt_responses(prompt_responses)
+                        for resp in gen_responses:
+                            self._handle_generation_response(resp)
 
-                for resp in gen_responses:
-                    self._handle_generation_response(resp)
+                        self._process_cancellations()
 
-                self._process_cancellations()
+                        # Keep continuous batching active while this scheduler
+                        # owns the model: batchable requests may join between
+                        # decode steps, while fallback requests wait for the
+                        # current batch to drain, matching mlx_lm.server.
+                        self._admit_pending(block_if_empty=False)
         finally:
             try:
                 if self._batch_generator is not None:
