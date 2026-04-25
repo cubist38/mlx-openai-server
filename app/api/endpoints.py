@@ -85,6 +85,12 @@ def _get_handler_type(handler: Any) -> str:
     return getattr(handler, "handler_type", "")
 
 
+def _is_text_compatible_handler(handler: Any | None) -> bool:
+    """Return whether a handler can serve chat/Responses text requests."""
+
+    return _get_handler_type(handler) in ("lm", "multimodal")
+
+
 async def _resolve_handler(
     raw_request: Request,
     model_id: str | None = None,
@@ -293,7 +299,7 @@ def _should_use_legacy_chat_fallback(
         fallback_handler = getattr(raw_request.app.state, "handler", None)
         if fallback_handler is None:
             return False
-        return _get_handler_type(fallback_handler) in ("lm", "multimodal")
+        return _is_text_compatible_handler(fallback_handler)
 
     return False
 
@@ -2073,6 +2079,15 @@ async def responses_endpoint(
             ),
             status_code=HTTPStatus.SERVICE_UNAVAILABLE,
         )
+
+    if request.model is None and not _is_text_compatible_handler(handler):
+        # Resolve the legacy text alias instead of binding a non-text
+        # fallback handler to Responses.  In multi-model mode this
+        # triggers registry/on-demand lookup; in single-model mode the
+        # second resolve is a no-op and the downstream type check
+        # still rejects the non-text handler.
+        handler = await _resolve_handler(raw_request, model_id=Config.TEXT_MODEL)
+        request.model = Config.TEXT_MODEL
 
     try:
         _normalize_request_model(raw_request, request, handler)
