@@ -261,6 +261,15 @@ def cli():
     help="Maximum total bytes retained by prompt KV caches before eviction. Only works with language models (lm).",
 )
 @click.option(
+    "--prompt-cache-dir",
+    default=None,
+    type=click.Path(file_okay=False, dir_okay=True, path_type=str),
+    help=(
+        "Directory for disk-backed prompt KV cache payloads. "
+        "Defaults to a process-local temporary directory."
+    ),
+)
+@click.option(
     "--draft-model-path",
     default=None,
     type=str,
@@ -393,6 +402,7 @@ def launch(
     debug,
     prompt_cache_size,
     prompt_cache_max_bytes,
+    prompt_cache_dir,
     draft_model_path,
     num_draft_tokens,
     kv_bits,
@@ -467,6 +477,7 @@ def launch(
         debug=debug,
         prompt_cache_size=prompt_cache_size,
         prompt_cache_max_bytes=prompt_cache_max_bytes,
+        prompt_cache_dir=prompt_cache_dir,
         draft_model_path=draft_model_path,
         num_draft_tokens=num_draft_tokens,
         kv_bits=kv_bits,

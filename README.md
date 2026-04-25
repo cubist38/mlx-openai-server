@@ -248,6 +248,7 @@ LM-specific memory and batching options:
 | `--prefill-step-size` | `2048` | Tokens per prefill step |
 | `--prompt-cache-size` | `10` | Retained prompt KV cache entries |
 | `--max-bytes` | unbounded | Prompt KV cache byte budget |
+| `--prompt-cache-dir` | temp dir | Directory for disk-backed prompt KV cache payloads |
 | `--kv-bits` | unset | KV cache quantization bits, usually `4` or `8` |
 | `--kv-group-size` | `64` | KV quantization group size |
 | `--quantized-kv-start` | `0` | Token step where KV quantization starts |
@@ -292,7 +293,7 @@ Important YAML keys:
 |-----|-------|
 | `model_path`, `model_type`, `served_model_name` | Model identity and routing |
 | `context_length` | LM/multimodal context length |
-| `prompt_cache_size`, `prompt_cache_max_bytes` | Prompt KV cache limits |
+| `prompt_cache_size`, `prompt_cache_max_bytes`, `prompt_cache_dir` | Prompt KV cache limits and disk location |
 | `batch_completion_size`, `batch_prefill_size`, `batch_prefill_step_size` | Continuous batching limits |
 | `kv_bits`, `kv_group_size`, `quantized_kv_start` | KV cache quantization |
 | `default_max_tokens` | Default generated tokens |

@@ -25,6 +25,7 @@ dependencies = [
   "aiofiles>=25,<26",
   "av>=16.0.1,<17",
   "click>=8.2.1,<8.4",
+  "dill>=0.4,<0.5",
   "fastapi>=0.115.14,<0.130",
   "httpx>=0.28,<1",
   "json_repair>=0.52.1,<0.60",
@@ -47,6 +48,7 @@ dependencies = [
   "torchvision>=0.23.0,<0.30",
   "mflux>=0.17.4,<0.18",
   "uvicorn>=0.35.0,<0.40",
+  "xxhash>=3.6,<4",
 ]
 
 [dependency-groups]

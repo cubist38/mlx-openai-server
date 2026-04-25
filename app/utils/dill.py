@@ -145,6 +145,11 @@ def dump(obj: Any, file: BinaryIO) -> None:
     Pickler(file, recurse=True).dump(obj)
 
 
+def load(file: BinaryIO) -> Any:
+    """Load a pickled object from a file."""
+    return dill.load(file)
+
+
 def dumps(obj: Any) -> bytes:
     """Pickle an object to a string."""
     file = BytesIO()
