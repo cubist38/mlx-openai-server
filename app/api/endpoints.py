@@ -542,6 +542,10 @@ def refine_chat_completion_request(
         request.presence_penalty = _get_sampling_default(
             handler, "default_presence_penalty", "DEFAULT_PRESENCE_PENALTY", _parse_env_float
         )
+    if request.frequency_penalty is None:
+        request.frequency_penalty = _get_sampling_default(
+            handler, "default_frequency_penalty", "DEFAULT_FREQUENCY_PENALTY", _parse_env_float
+        )
     if request.repetition_context_size is None:
         request.repetition_context_size = _get_sampling_default(
             handler,
