@@ -578,8 +578,12 @@ class MLXLMHandler:
                 request_data["checkpoint_callback"] = ctx.checkpoint_callback
 
             if self.debug:
-                log_debug_request(request_data)
-                log_debug_model_dispatch("mlx_lm.generate_text_stream.submit_stream", request_data)
+                debug_request_data = self._with_effective_sampling_params(request_data)
+                log_debug_request(debug_request_data)
+                log_debug_model_dispatch(
+                    "mlx_lm.generate_text_stream.submit_stream",
+                    debug_request_data,
+                )
                 request_data["verbose"] = True
 
             use_batch = self._is_request_batchable(request) and ctx.checkpoint_position is None
@@ -965,7 +969,10 @@ class MLXLMHandler:
                 request_data["checkpoint_callback"] = ctx.checkpoint_callback
 
             if self.debug:
-                log_debug_model_dispatch("mlx_lm.generate_text_response.submit", request_data)
+                log_debug_model_dispatch(
+                    "mlx_lm.generate_text_response.submit",
+                    self._with_effective_sampling_params(request_data),
+                )
 
             response = await self._run_nonstream_generation(request, ctx, request_data)
 
@@ -1222,6 +1229,32 @@ class MLXLMHandler:
             segments=ctx.batched_segments,
             segment_types=ctx.batched_segment_types,
         )
+
+    def _with_effective_sampling_params(self, request_data: dict[str, Any]) -> dict[str, Any]:
+        """Return a debug payload annotated with resolved sampling values.
+
+        Parameters
+        ----------
+        request_data : dict[str, Any]
+            Raw generation request data.
+
+        Returns
+        -------
+        dict[str, Any]
+            Copy of ``request_data`` with ``effective_sampling_params`` and
+            resolved top-level sampling fields for readable debug logs.
+        """
+        effective_sampling = self.model.resolve_sampling_params(request_data)
+        debug_payload = dict(request_data)
+        debug_payload.update(
+            {
+                key: value
+                for key, value in effective_sampling.items()
+                if key != "eos_token_ids" and key in debug_payload
+            }
+        )
+        debug_payload["effective_sampling_params"] = effective_sampling
+        return debug_payload
 
     def _persist_cache_if_owned(
         self,

@@ -328,6 +328,43 @@ class MLX_LM:
             max_tokens = self._sampling_default("max_completion_tokens", DEFAULT_MAX_TOKENS)
         return int(max_tokens)
 
+    def resolve_sampling_params(self, params: dict[str, Any]) -> dict[str, Any]:
+        """Resolve the effective sampling parameters used for generation.
+
+        Parameters
+        ----------
+        params : dict[str, Any]
+            Request model parameters.
+
+        Returns
+        -------
+        dict[str, Any]
+            Sampling parameters after applying request, server, model
+            ``generation_config.json``, and built-in fallback precedence.
+        """
+
+        def _get(key: str, default: Any) -> Any:
+            value = params.get(key)
+            return self._sampling_default(key, default) if value is None else value
+
+        return {
+            "temperature": _get("temperature", DEFAULT_TEMPERATURE),
+            "top_p": _get("top_p", DEFAULT_TOP_P),
+            "top_k": _get("top_k", DEFAULT_TOP_K),
+            "min_p": _get("min_p", DEFAULT_MIN_P),
+            "max_tokens": self.resolve_max_tokens(params),
+            "seed": _get("seed", DEFAULT_SEED),
+            "repetition_penalty": _get("repetition_penalty", DEFAULT_REPETITION_PENALTY),
+            "repetition_context_size": _get(
+                "repetition_context_size", DEFAULT_REPETITION_CONTEXT_SIZE
+            ),
+            "presence_penalty": _get("presence_penalty", DEFAULT_PRESENCE_PENALTY),
+            "frequency_penalty": _get("frequency_penalty", DEFAULT_FREQUENCY_PENALTY),
+            "xtc_probability": _get("xtc_probability", DEFAULT_XTC_PROBABILITY),
+            "xtc_threshold": _get("xtc_threshold", DEFAULT_XTC_THRESHOLD),
+            "eos_token_ids": sorted(_as_int_set(getattr(self.tokenizer, "eos_token_ids", None))),
+        }
+
     def build_sampler(self, params: dict[str, Any]):
         """Build a sampler callable from a request's model parameters.
 
