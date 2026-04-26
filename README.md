@@ -454,6 +454,7 @@ Example notebooks live in `examples/`:
 
 Demos:
 
+- [Darwin 36B Opus on MLX OpenAI Server](https://www.youtube.com/watch?v=iFngahmaJ3Y)
 - [MLX OpenAI Server + Codex](https://youtu.be/CY5yVS8P5Vg)
 - [OpenClaw AI Agent powered by Gemma 4](https://www.youtube.com/watch?v=5MSlDCH37Kc)
 - [Serving Multiple Models at Once](https://www.youtube.com/watch?v=f7WXSOPZ5H4)
