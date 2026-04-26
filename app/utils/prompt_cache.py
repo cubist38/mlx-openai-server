@@ -3,12 +3,19 @@
 from __future__ import annotations
 
 from collections import deque
-import copy
 from dataclasses import dataclass
+import gc
+from pathlib import Path
+import pickle
+import shutil
+import tempfile
 from typing import Any
+import uuid
 
 from loguru import logger
 from mlx_lm.models.cache import can_trim_prompt_cache, trim_prompt_cache
+
+from . import dill
 
 
 @dataclass
@@ -130,12 +137,13 @@ class PromptTrie:
 
 
 class LRUPromptCache:
-    """LRU cache for MLX prompt KV caches.
+    """Disk-backed LRU cache for MLX prompt KV caches.
 
     The cache stores token sequences in a trie so it can efficiently find exact
     matches, shorter prefixes, and longer cached sequences that can be trimmed
     down to a requested prefix. Entries are evicted using an LRU policy with
-    optional byte-based trimming.
+    optional byte-based trimming. Only metadata is kept in memory; prompt-cache
+    matrices are serialized to disk on insert and loaded only on cache hits.
 
     Parameters
     ----------
@@ -144,15 +152,19 @@ class LRUPromptCache:
     max_bytes : int, optional
         Maximum total bytes to retain across cached prompt caches, by default a
         practically unbounded value.
+    cache_dir : str | Path | None, optional
+        Directory used to store serialized prompt caches. A process-local
+        temporary directory is created when omitted.
     """
 
     @dataclass
     class CacheEntry:
-        """Stored prompt cache entry."""
+        """Stored prompt cache metadata."""
 
-        prompt_cache: list[Any]
+        file_path: Path
         nbytes: int
         cache_type: str
+        trimmable: bool
 
     class CacheOrder:
         """Track cache recency with priority-based eviction."""
@@ -198,9 +210,25 @@ class LRUPromptCache:
             """Return the number of entries of the given type."""
             return len(self._lrus[cache_type])
 
-    def __init__(self, max_size: int = 10, max_bytes: int = 1 << 63) -> None:
+        def pop_from_type(self, cache_type: str) -> tuple[int, ...]:
+            """Pop the oldest entry for the given cache type."""
+            return self._lrus[cache_type].popleft()
+
+    def __init__(
+        self,
+        max_size: int = 10,
+        max_bytes: int = 1 << 63,
+        cache_dir: str | Path | None = None,
+    ) -> None:
         self.max_size = max_size
         self.max_bytes = max_bytes
+        if cache_dir is None:
+            self.cache_dir = Path(tempfile.mkdtemp(prefix="mlx-openai-prompt-cache-"))
+            self._owns_cache_dir = True
+        else:
+            self.cache_dir = Path(cache_dir).expanduser()
+            self.cache_dir.mkdir(parents=True, exist_ok=True)
+            self._owns_cache_dir = False
         self._trie = PromptTrie()
         self._lru = self.CacheOrder()
         self._n_bytes = 0
@@ -212,6 +240,101 @@ class LRUPromptCache:
     @property
     def nbytes(self) -> int:
         return self._n_bytes
+
+    def _cache_file_path(self) -> Path:
+        """Return a unique path for a serialized cache entry."""
+        return self.cache_dir / f"{uuid.uuid4().hex}.pkl"
+
+    def _write_cache_to_disk(self, prompt_cache: list[Any]) -> Path:
+        """Serialize a prompt cache to disk and return its final path.
+
+        Parameters
+        ----------
+        prompt_cache : list[Any]
+            MLX prompt-cache object list to serialize.
+
+        Returns
+        -------
+        Path
+            Path to the completed cache payload.
+
+        Raises
+        ------
+        OSError
+            If the cache directory or file cannot be written.
+        pickle.PickleError
+            If the prompt cache cannot be serialized.
+        """
+        file_path = self._cache_file_path()
+        temp_path = file_path.with_suffix(".tmp")
+        with temp_path.open("wb") as f:
+            dill.dump(prompt_cache, f)
+        temp_path.replace(file_path)
+        return file_path
+
+    def _load_cache_from_disk(self, entry: CacheEntry) -> list[Any]:
+        """Deserialize a prompt cache entry from disk."""
+        with entry.file_path.open("rb") as f:
+            cache = dill.load(f)
+        if not isinstance(cache, list):
+            msg = f"Prompt cache payload at {entry.file_path} is not a list"
+            raise TypeError(msg)
+        return cache
+
+    def _delete_entry_file(self, entry: CacheEntry) -> None:
+        """Delete a serialized cache file, logging best-effort failures."""
+        try:
+            entry.file_path.unlink(missing_ok=True)
+        except OSError as exc:
+            logger.warning(f"Failed to delete prompt cache file {entry.file_path}: {exc!s}")
+
+    def _remove_entry_accounting(self, entry: CacheEntry) -> None:
+        """Subtract an entry from in-memory byte accounting."""
+        self._n_bytes -= entry.nbytes
+        self._n_bytes_by_type[entry.cache_type] -= entry.nbytes
+
+    def _evict_tokens(self, tokens: tuple[int, ...]) -> None:
+        """Evict one token sequence and its on-disk payload."""
+        evicted_entry = self._trie.pop(list(tokens))
+        self._remove_entry_accounting(evicted_entry)
+        self._delete_entry_file(evicted_entry)
+
+    def _invalidate_tokens(self, tokens: list[int], entry: CacheEntry) -> None:
+        """Remove a corrupt or missing cache entry from all indexes."""
+        try:
+            self._trie.pop(tokens)
+        except (KeyError, IndexError):
+            pass
+        self._lru.remove(tuple(tokens))
+        self._remove_entry_accounting(entry)
+        self._delete_entry_file(entry)
+
+    def _try_load_cache(self, tokens: list[int], entry: CacheEntry) -> list[Any] | None:
+        """Load an entry and invalidate it if the on-disk payload is unusable."""
+        try:
+            return self._load_cache_from_disk(entry)
+        except (
+            OSError,
+            EOFError,
+            TypeError,
+            ValueError,
+            AttributeError,
+            pickle.PickleError,
+        ) as exc:
+            logger.warning(f"Failed to load prompt cache from {entry.file_path}: {exc!s}")
+            self._invalidate_tokens(tokens, entry)
+            self._release_evicted_memory()
+            return None
+
+    def _release_evicted_memory(self) -> None:
+        """Ask Python and MLX to release memory after cache entries are evicted."""
+        gc.collect()
+        try:
+            import mlx.core as mx  # noqa: PLC0415
+
+            mx.clear_cache()
+        except (ImportError, RuntimeError) as exc:
+            logger.debug(f"Could not clear MLX cache after prompt-cache eviction: {exc!s}")
 
     def fetch_nearest_cache(
         self,
@@ -228,21 +351,27 @@ class LRUPromptCache:
         result = self._trie.search(tokens_ids)
         if result.exact is not None:
             cache_entry = self._trie.get(result.exact)
-            return copy.deepcopy(cache_entry.prompt_cache), []
+            cache = self._try_load_cache(result.exact, cache_entry)
+            if cache is not None:
+                return cache, []
+            return None, tokens_ids
 
         short_length = len(result.shorter) if result.shorter is not None else 0
         if result.longer is not None and result.common_prefix > short_length:
             cache_entry = self._trie.get(result.longer)
-            if can_trim_prompt_cache(cache_entry.prompt_cache):
-                cache = copy.deepcopy(cache_entry.prompt_cache)
-                prefix = min(len(tokens_ids) - 1, result.common_prefix)
-                num_to_trim = len(result.longer) - prefix
-                trim_prompt_cache(cache, num_to_trim)
-                return cache, tokens_ids[prefix:]
+            if cache_entry.trimmable:
+                cache = self._try_load_cache(result.longer, cache_entry)
+                if cache is not None:
+                    prefix = min(len(tokens_ids) - 1, result.common_prefix)
+                    num_to_trim = len(result.longer) - prefix
+                    trim_prompt_cache(cache, num_to_trim)
+                    return cache, tokens_ids[prefix:]
 
         if short_length > 0:
             cache_entry = self._trie.get(result.shorter)
-            return copy.deepcopy(cache_entry.prompt_cache), tokens_ids[short_length:]
+            cache = self._try_load_cache(result.shorter, cache_entry)
+            if cache is not None:
+                return cache, tokens_ids[short_length:]
 
         return None, tokens_ids
 
@@ -268,7 +397,10 @@ class LRUPromptCache:
 
         # Make the cache entry
         entry = self.CacheEntry(
-            prompt_cache, sum(getattr(c, "nbytes", 0) for c in prompt_cache), cache_type
+            self._write_cache_to_disk(prompt_cache),
+            sum(getattr(c, "nbytes", 0) for c in prompt_cache),
+            cache_type,
+            can_trim_prompt_cache(prompt_cache),
         )
 
         # Insert into the trie and update the byte counter and lru position
@@ -276,31 +408,29 @@ class LRUPromptCache:
         self._n_bytes_by_type[cache_type] += entry.nbytes
         prev = self._trie.add(tokens_ids, entry)
         if prev is not None:
-            self._n_bytes -= prev.nbytes
-            self._n_bytes_by_type[prev.cache_type] -= prev.nbytes
+            self._remove_entry_accounting(prev)
+            self._delete_entry_file(prev)
             self._lru.remove(tokens_tuple)
         self._lru.push(tokens_tuple, cache_type)
 
         # If it is a trimmable cache remove all prefixes cause they just take
         # space
-        if can_trim_prompt_cache(prompt_cache):
+        if entry.trimmable:
             for prefix_len, removed_entry in self._trie.pop_prefixes(tokens_ids):
-                self._n_bytes -= removed_entry.nbytes
-                self._n_bytes_by_type[removed_entry.cache_type] -= removed_entry.nbytes
+                self._remove_entry_accounting(removed_entry)
+                self._delete_entry_file(removed_entry)
                 self._lru.remove(tuple(tokens_ids[:prefix_len]))
 
         # Ensure we match the constraints
         if len(self._lru) > self.max_size:
             evicted = self._lru.pop()
-            evicted_entry = self._trie.pop(list(evicted))
-            self._n_bytes -= evicted_entry.nbytes
-            self._n_bytes_by_type[evicted_entry.cache_type] -= evicted_entry.nbytes
+            self._evict_tokens(evicted)
 
         while self._n_bytes > self.max_bytes:
             evicted = self._lru.pop()
-            evicted_entry = self._trie.pop(list(evicted))
-            self._n_bytes -= evicted_entry.nbytes
-            self._n_bytes_by_type[evicted_entry.cache_type] -= evicted_entry.nbytes
+            self._evict_tokens(evicted)
+
+        self._release_evicted_memory()
 
     def trim_to(self, *, n_sequences: int | None = None, n_bytes: int | None = None) -> None:
         """Trim the cache down to sequence and/or byte limits."""
@@ -309,15 +439,26 @@ class LRUPromptCache:
 
         while len(self._lru) > max_sequences:
             evicted = self._lru.pop()
-            evicted_entry = self._trie.pop(list(evicted))
-            self._n_bytes -= evicted_entry.nbytes
-            self._n_bytes_by_type[evicted_entry.cache_type] -= evicted_entry.nbytes
+            self._evict_tokens(evicted)
 
         while self._n_bytes > max_bytes:
             evicted = self._lru.pop()
-            evicted_entry = self._trie.pop(list(evicted))
-            self._n_bytes -= evicted_entry.nbytes
-            self._n_bytes_by_type[evicted_entry.cache_type] -= evicted_entry.nbytes
+            self._evict_tokens(evicted)
+
+        self._release_evicted_memory()
+
+    def clear(self) -> None:
+        """Remove all tracked cache entries and serialized payloads."""
+        for cache_type in self._lru.ordering:
+            while self._lru.count_by_type(cache_type):
+                self._evict_tokens(self._lru.pop_from_type(cache_type))
+        self._release_evicted_memory()
+
+    def close(self) -> None:
+        """Clear entries and remove the owned temporary cache directory."""
+        self.clear()
+        if self._owns_cache_dir:
+            shutil.rmtree(self.cache_dir, ignore_errors=True)
 
     def stats_by_type(self) -> dict[str, dict[str, int]]:
         """Return per-type sequence count and byte usage."""

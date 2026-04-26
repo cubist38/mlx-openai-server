@@ -130,6 +130,7 @@ class MLXLMHandler:
         debug: bool = False,
         prompt_cache_size: int = 10,
         prompt_cache_max_bytes: int = 1 << 63,
+        prompt_cache_dir: str | None = None,
         kv_bits: int | None = None,
         kv_group_size: int = 64,
         quantized_kv_start: int = 0,
@@ -169,6 +170,9 @@ class MLXLMHandler:
             Maximum number of prompt KV cache entries to store. Default is 10.
         prompt_cache_max_bytes : int
             Maximum total bytes retained by prompt KV caches before eviction.
+        prompt_cache_dir : str | None
+            Directory used for disk-backed prompt KV cache payloads. If None,
+            a process-local temporary directory is used.
         kv_bits : int | None
             Number of bits for KV cache quantization. None disables quantization.
         kv_group_size : int
@@ -215,6 +219,7 @@ class MLXLMHandler:
         self.prompt_cache = LRUPromptCache(
             max_size=prompt_cache_size,
             max_bytes=prompt_cache_max_bytes,
+            cache_dir=prompt_cache_dir,
         )
         self.message_converter = MessageConverterManager.create_converter(
             converter_name=message_converter,
@@ -1340,6 +1345,8 @@ class MLXLMHandler:
                 self._batch_scheduler = None
             if hasattr(self, "inference_worker"):
                 self.inference_worker.stop()
+            if hasattr(self, "prompt_cache"):
+                self.prompt_cache.close()
 
             # Force garbage collection
             gc.collect()

@@ -319,6 +319,7 @@ def create_handler_from_config(model_cfg: ModelEntryConfig) -> Any:
             debug=model_cfg.debug,
             prompt_cache_size=model_cfg.prompt_cache_size,
             prompt_cache_max_bytes=model_cfg.prompt_cache_max_bytes,
+            prompt_cache_dir=model_cfg.prompt_cache_dir,
             draft_model_path=model_cfg.draft_model_path,
             num_draft_tokens=model_cfg.num_draft_tokens,
             kv_bits=model_cfg.kv_bits,

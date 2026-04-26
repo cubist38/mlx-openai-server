@@ -56,6 +56,7 @@ class MLXServerConfig:
     debug: bool = False
     prompt_cache_size: int = 10
     prompt_cache_max_bytes: int = 1 << 63
+    prompt_cache_dir: str | None = None
     draft_model_path: str | None = None
     num_draft_tokens: int = 2
 
@@ -194,6 +195,7 @@ class MLXServerConfig:
             debug=self.debug,
             prompt_cache_size=self.prompt_cache_size,
             prompt_cache_max_bytes=self.prompt_cache_max_bytes,
+            prompt_cache_dir=self.prompt_cache_dir,
             draft_model_path=self.draft_model_path,
             num_draft_tokens=self.num_draft_tokens,
             kv_bits=self.kv_bits,
@@ -289,6 +291,7 @@ class ModelEntryConfig:
     debug: bool = False
     prompt_cache_size: int = 10
     prompt_cache_max_bytes: int = 1 << 63
+    prompt_cache_dir: str | None = None
     draft_model_path: str | None = None
     num_draft_tokens: int = 2
     kv_bits: int | None = None

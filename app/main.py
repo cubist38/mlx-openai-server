@@ -113,6 +113,8 @@ def print_startup_banner(config_args: MLXServerConfig) -> None:
         logger.info(
             f"💾 Prompt Cache Max Bytes: {_format_bytes(config_args.prompt_cache_max_bytes)}"
         )
+        if getattr(config_args, "prompt_cache_dir", None):
+            logger.info(f"💾 Prompt Cache Dir: {config_args.prompt_cache_dir}")
         logger.info(
             f"🧵 Batch Scheduler: decode={config_args.batch_completion_size}, "
             f"prefill={config_args.batch_prefill_size}, "
