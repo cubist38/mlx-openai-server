@@ -9,6 +9,7 @@ OpenAI-compatible API server for local MLX models on Apple Silicon. It serves te
 
 ## Contents
 
+- [Feature Launch](#feature-launch)
 - [Install](#install)
 - [Start a Server](#start-a-server)
 - [API Usage](#api-usage)
@@ -18,6 +19,21 @@ OpenAI-compatible API server for local MLX models on Apple Silicon. It serves te
 - [Advanced LM Options](#advanced-lm-options)
 - [Troubleshooting](#troubleshooting)
 - [Examples and Demos](#examples-and-demos)
+
+## Feature Launch
+
+Darwin 36B Opus is now available in MLX format for local text inference:
+
+- Original model: [FINAL-Bench/Darwin-36B-Opus](https://huggingface.co/FINAL-Bench/Darwin-36B-Opus)
+- MLX text-only 8-bit conversion: [GiaHuy/Darwin-36B-Opus-mlx-text-only-8bit](https://huggingface.co/GiaHuy/Darwin-36B-Opus-mlx-text-only-8bit)
+
+Launch it with the required reasoning and tool-call parsers:
+
+```bash
+mlx-openai-server launch --model-path Darwin-36B-Opus-mlx-text-only-8bit --reasoning-parser qwen3_moe --tool-call-parser qwen3_coder --debug --served-model-name Darwin-36B-Opus
+```
+
+Darwin 36B Opus should be served with both `--reasoning-parser qwen3_moe` and `--tool-call-parser qwen3_coder`; without them, reasoning and tool-call output will not be parsed correctly.
 
 ## Install
 
