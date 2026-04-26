@@ -1206,7 +1206,7 @@ class MLXLMHandler:
         if max_tokens is None:
             max_tokens = params.get("max_completion_tokens")
         if max_tokens is None:
-            max_tokens = 1 << 20  # matches the "effectively unlimited" default used by MLX_LM
+            max_tokens = self.model.resolve_max_tokens(params)
 
         # Hand the full prompt to the scheduler; it does its own LRU lookup
         # and cache construction on its worker thread. For non-trimmable
@@ -1394,6 +1394,8 @@ class MLXLMHandler:
                 "seed": request.seed,
                 "repetition_penalty": request.repetition_penalty,
                 "repetition_context_size": request.repetition_context_size,
+                "presence_penalty": request.presence_penalty,
+                "frequency_penalty": request.frequency_penalty,
                 "xtc_probability": request.xtc_probability,
                 "xtc_threshold": request.xtc_threshold,
                 "logit_bias": request.logit_bias,

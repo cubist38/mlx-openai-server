@@ -1,6 +1,10 @@
-from collections.abc import Generator
+from __future__ import annotations
+
+from collections.abc import Generator, Iterable
 from dataclasses import dataclass
+import json
 import os
+from pathlib import Path
 from typing import Any
 
 from loguru import logger
@@ -8,7 +12,7 @@ import mlx.core as mx
 from mlx_lm.generate import GenerationResponse, stream_generate
 from mlx_lm.models.cache import can_trim_prompt_cache, make_prompt_cache
 from mlx_lm.sample_utils import make_logits_processors, make_sampler
-from mlx_lm.utils import load
+from mlx_lm.utils import _download, load
 from outlines.processors import JSONLogitsProcessor
 
 from ..utils.debug_logging import log_debug_chat_template
@@ -22,7 +26,72 @@ DEFAULT_XTC_PROBABILITY = float(os.getenv("DEFAULT_XTC_PROBABILITY", "0.0"))
 DEFAULT_XTC_THRESHOLD = float(os.getenv("DEFAULT_XTC_THRESHOLD", "0.0"))
 DEFAULT_SEED = int(os.getenv("DEFAULT_SEED", "0"))
 DEFAULT_MAX_TOKENS = int(os.getenv("DEFAULT_MAX_TOKENS", "1000000"))
+DEFAULT_REPETITION_PENALTY = float(os.getenv("DEFAULT_REPETITION_PENALTY", "0.0"))
 DEFAULT_REPETITION_CONTEXT_SIZE = int(os.getenv("DEFAULT_REPETITION_CONTEXT_SIZE", "20"))
+DEFAULT_PRESENCE_PENALTY = float(os.getenv("DEFAULT_PRESENCE_PENALTY", "0.0"))
+DEFAULT_FREQUENCY_PENALTY = float(os.getenv("DEFAULT_FREQUENCY_PENALTY", "0.0"))
+
+
+def _as_int_set(values: Any) -> set[int]:
+    """Coerce a tokenizer EOS field into a clean set of token IDs.
+
+    Parameters
+    ----------
+    values : Any
+        A token ID, sequence of token IDs, or ``None``.
+
+    Returns
+    -------
+    set[int]
+        Integer token IDs with ``None`` values removed.
+    """
+    if values is None:
+        return set()
+    if isinstance(values, int):
+        return {values}
+    if isinstance(values, Iterable) and not isinstance(values, str):
+        ids: set[int] = set()
+        for value in values:
+            if value is not None:
+                ids.add(int(value))
+        return ids
+    return {int(values)}
+
+
+def _load_generation_config(model_path: str) -> dict[str, Any]:
+    """Load model-authored generation defaults from ``generation_config.json``.
+
+    Parameters
+    ----------
+    model_path : str
+        Local model directory or Hugging Face repository name.
+
+    Returns
+    -------
+    dict[str, Any]
+        Parsed generation configuration, or an empty dictionary when the file
+        is absent or unreadable.
+    """
+    try:
+        resolved_model_path = Path(_download(model_path))
+    except (FileNotFoundError, ValueError, OSError) as exc:
+        logger.debug(f"Could not resolve model path for generation_config.json: {exc!s}")
+        resolved_model_path = Path(model_path)
+
+    generation_config_path = resolved_model_path / "generation_config.json"
+    if not generation_config_path.exists():
+        return {}
+
+    try:
+        with generation_config_path.open(encoding="utf-8") as file:
+            config = json.load(file)
+    except (OSError, json.JSONDecodeError) as exc:
+        logger.warning(f"Failed to read {generation_config_path}: {exc!s}")
+        return {}
+
+    if not isinstance(config, dict):
+        return {}
+    return config
 
 
 @dataclass
@@ -73,8 +142,12 @@ class MLX_LM:
         debug: bool = False,
     ):
         try:
-            self.model, self.tokenizer = load(
-                model_path, lazy=False, tokenizer_config={"trust_remote_code": trust_remote_code}
+            self.generation_config = _load_generation_config(model_path)
+            self.model, self.tokenizer, model_config = load(
+                model_path,
+                lazy=False,
+                tokenizer_config={"trust_remote_code": trust_remote_code},
+                return_config=True,
             )
             self.context_length = context_length
             self.draft_model = None
@@ -84,6 +157,7 @@ class MLX_LM:
                 self._load_draft_model(draft_model_path, trust_remote_code)
             self.pad_token_id = self.tokenizer.pad_token_id
             self.bos_token = self.tokenizer.bos_token
+            self._normalize_eos_token_ids(model_config)
             self.model_type = self.model.model_type
             self.debug = debug
             self.outlines_tokenizer = OutlinesTransformerTokenizer(self.tokenizer)
@@ -109,6 +183,26 @@ class MLX_LM:
                     )
         except Exception as e:
             raise ValueError(f"Error loading model: {e!s}")
+
+    def _normalize_eos_token_ids(self, model_config: dict[str, Any]) -> None:
+        """Populate tokenizer EOS IDs strictly from model metadata.
+
+        Parameters
+        ----------
+        model_config : dict[str, Any]
+            The model configuration returned by ``mlx_lm.utils.load``. mlx-lm
+            already folds ``generation_config.json``'s ``eos_token_id`` into
+            this mapping, so this preserves the model author's stop-token list
+            without guessing extra chat terminators.
+        """
+        eos_ids = _as_int_set(getattr(self.tokenizer, "eos_token_ids", None))
+        eos_ids.update(_as_int_set(getattr(self.tokenizer, "eos_token_id", None)))
+        eos_ids.update(_as_int_set(model_config.get("eos_token_id")))
+        eos_ids.update(_as_int_set(self.generation_config.get("eos_token_id")))
+
+        if eos_ids:
+            self.tokenizer.eos_token_ids = eos_ids
+            logger.debug(f"Using EOS token IDs: {sorted(eos_ids)}")
 
     def _load_draft_model(self, draft_model_path: str, trust_remote_code: bool) -> None:
         try:
@@ -193,6 +287,47 @@ class MLX_LM:
         """Whether a draft model is configured (speculative decoding is active)."""
         return self.draft_model is not None
 
+    def _sampling_default(self, key: str, fallback: Any) -> Any:
+        """Return a generation default from model metadata or a fallback.
+
+        Parameters
+        ----------
+        key : str
+            Sampling parameter name from ``generation_config.json``.
+        fallback : Any
+            Built-in value used when the model file does not define ``key``.
+
+        Returns
+        -------
+        Any
+            The model-authored generation default when present, otherwise
+            ``fallback``.
+        """
+        value = self.generation_config.get(key)
+        return fallback if value is None else value
+
+    def resolve_max_tokens(self, params: dict[str, Any]) -> int:
+        """Resolve max generation tokens using request, model, then server defaults.
+
+        Parameters
+        ----------
+        params : dict[str, Any]
+            Request model parameters.
+
+        Returns
+        -------
+        int
+            Maximum number of tokens to generate.
+        """
+        max_tokens = params.get("max_tokens")
+        if max_tokens is None:
+            max_tokens = params.get("max_completion_tokens")
+        if max_tokens is None:
+            max_tokens = self._sampling_default("max_tokens", None)
+        if max_tokens is None:
+            max_tokens = self._sampling_default("max_completion_tokens", DEFAULT_MAX_TOKENS)
+        return int(max_tokens)
+
     def build_sampler(self, params: dict[str, Any]):
         """Build a sampler callable from a request's model parameters.
 
@@ -212,7 +347,7 @@ class MLX_LM:
 
         def _get(key: str, default: Any) -> Any:
             v = params.get(key)
-            return default if v is None else v
+            return self._sampling_default(key, default) if v is None else v
 
         sampler_kwargs: dict[str, Any] = {
             "temp": _get("temperature", DEFAULT_TEMPERATURE),
@@ -233,14 +368,24 @@ class MLX_LM:
         """Build a per-request logits-processor list from model parameters.
 
         Handles ``logit_bias``, ``repetition_penalty`` /
-        ``repetition_context_size``, and optional outlines-based JSON-schema
-        constrained decoding (``schema`` key).
+        ``repetition_context_size``, OpenAI-compatible presence/frequency
+        penalties, and optional outlines-based JSON-schema constrained
+        decoding (``schema`` key).
         """
+
+        def _penalty_value(key: str, default: float) -> float | None:
+            value = params.get(key)
+            if value is None:
+                value = self._sampling_default(key, default)
+            return None if value == 0 else value
+
         logit_bias = params.get("logit_bias")
         if logit_bias:
             logit_bias = {int(k): v for k, v in logit_bias.items()}
 
-        repetition_penalty = params.get("repetition_penalty")
+        repetition_penalty = _penalty_value("repetition_penalty", DEFAULT_REPETITION_PENALTY)
+        presence_penalty = _penalty_value("presence_penalty", DEFAULT_PRESENCE_PENALTY)
+        frequency_penalty = _penalty_value("frequency_penalty", DEFAULT_FREQUENCY_PENALTY)
         repetition_context_size = params.get("repetition_context_size")
         if repetition_context_size is None:
             repetition_context_size = DEFAULT_REPETITION_CONTEXT_SIZE
@@ -250,6 +395,8 @@ class MLX_LM:
                 logit_bias=logit_bias,
                 repetition_penalty=repetition_penalty,
                 repetition_context_size=repetition_context_size,
+                presence_penalty=presence_penalty,
+                frequency_penalty=frequency_penalty,
             )
         )
 
@@ -348,12 +495,10 @@ class MLX_LM:
 
         def _get(key, default):
             v = kwargs.get(key)
-            return default if v is None else v
+            return self._sampling_default(key, default) if v is None else v
 
         seed = _get("seed", DEFAULT_SEED)
-        max_tokens = _get("max_tokens", None)
-        if max_tokens is None:
-            max_tokens = _get("max_completion_tokens", DEFAULT_MAX_TOKENS)
+        max_tokens = self.resolve_max_tokens(kwargs)
         sampler_kwargs = {
             "temp": _get("temperature", DEFAULT_TEMPERATURE),
             "top_p": _get("top_p", DEFAULT_TOP_P),
@@ -370,7 +515,15 @@ class MLX_LM:
                 *self.tokenizer.encode("\n"),
             ]
 
-        repetition_penalty = kwargs.get("repetition_penalty")
+        repetition_penalty = _get("repetition_penalty", DEFAULT_REPETITION_PENALTY)
+        if repetition_penalty == 0:
+            repetition_penalty = None
+        presence_penalty = _get("presence_penalty", DEFAULT_PRESENCE_PENALTY)
+        if presence_penalty == 0:
+            presence_penalty = None
+        frequency_penalty = _get("frequency_penalty", DEFAULT_FREQUENCY_PENALTY)
+        if frequency_penalty == 0:
+            frequency_penalty = None
         repetition_context_size = _get("repetition_context_size", DEFAULT_REPETITION_CONTEXT_SIZE)
         logit_bias = kwargs.get("logit_bias")
 
@@ -382,6 +535,8 @@ class MLX_LM:
             logit_bias=logit_bias,
             repetition_penalty=repetition_penalty,
             repetition_context_size=repetition_context_size,
+            presence_penalty=presence_penalty,
+            frequency_penalty=frequency_penalty,
         )
 
         json_schema = kwargs.get("schema")

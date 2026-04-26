@@ -84,6 +84,38 @@ def test_launch_accepts_repetition_penalty_and_passes_it_to_config(
     assert captured["config"].models[0].default_repetition_penalty == 1.25
 
 
+def test_launch_leaves_sampling_defaults_unset_when_flags_are_omitted(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Omitted CLI sampling flags should not shadow model generation_config.json."""
+
+    cli_module = _load_cli_module(monkeypatch)
+    captured: dict[str, Any] = {}
+
+    async def _fake_start_multi(config: Any) -> None:
+        captured["config"] = config
+
+    monkeypatch.setattr(cli_module, "start_multi", _fake_start_multi)
+
+    runner = CliRunner()
+    result = runner.invoke(
+        cli_module.cli,
+        [
+            "launch",
+            "--model-path",
+            "dummy-model",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    model_config = captured["config"].models[0]
+    assert model_config.default_temperature is None
+    assert model_config.default_top_p is None
+    assert model_config.default_top_k is None
+    assert model_config.default_repetition_penalty is None
+    assert model_config.default_max_tokens is None
+
+
 def test_start_exports_repetition_penalty_before_server_setup(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

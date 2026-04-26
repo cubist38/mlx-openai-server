@@ -335,44 +335,44 @@ def cli():
 # Sampling parameters (defaults used when API request omits them)
 @click.option(
     "--max-tokens",
-    default=100000,
+    default=None,
     type=int,
-    help="Default maximum number of tokens to generate.",
+    help="Default maximum number of tokens to generate. If omitted, uses model generation_config.json when available.",
 )
-@click.option("--temperature", default=1.0, type=float, help="Default sampling temperature.")
+@click.option("--temperature", default=None, type=float, help="Default sampling temperature.")
 @click.option(
-    "--top-p", default=1.0, type=float, help="Default nucleus sampling (top-p) probability."
+    "--top-p", default=None, type=float, help="Default nucleus sampling (top-p) probability."
 )
-@click.option("--top-k", default=20, type=int, help="Default top-k sampling parameter.")
-@click.option("--min-p", default=0.0, type=float, help="Default min-p sampling parameter.")
+@click.option("--top-k", default=None, type=int, help="Default top-k sampling parameter.")
+@click.option("--min-p", default=None, type=float, help="Default min-p sampling parameter.")
 @click.option(
     "--repetition-penalty",
-    default=1.0,
+    default=None,
     type=float,
     help="Default repetition penalty for token generation.",
 )
 @click.option(
     "--presence-penalty",
-    default=0.0,
+    default=None,
     type=float,
     help="Default presence penalty for token generation.",
 )
 @click.option(
     "--xtc-probability",
-    default=0.0,
+    default=None,
     type=float,
     help="Default XTC probability sampling parameter.",
 )
 @click.option(
     "--xtc-threshold",
-    default=0.0,
+    default=None,
     type=float,
     help="Default XTC threshold sampling parameter.",
 )
-@click.option("--seed", default=0, type=int, help="Default random seed for generation.")
+@click.option("--seed", default=None, type=int, help="Default random seed for generation.")
 @click.option(
     "--repetition-context-size",
-    default=20,
+    default=None,
     type=int,
     help="Default repetition context size parameter.",
 )
