@@ -105,7 +105,9 @@ class VLMBatchScheduler:
         self._queue_size = queue_size
         self._idle_poll_timeout = idle_poll_timeout
 
-        self._admission_queue: queue.Queue[_PendingVLMRequest] = queue.Queue(maxsize=queue_size)
+        self._admission_queue: queue.Queue[_PendingVLMRequest | None] = queue.Queue(
+            maxsize=queue_size
+        )
         self._batch_generator: BatchGenerator | None = None
         self._active: dict[int, _ActiveVLMRequest] = {}
         self._thread: threading.Thread | None = None
@@ -150,7 +152,7 @@ class VLMBatchScheduler:
             self._prefill_step_size,
         )
 
-    def stop(self) -> None:
+    def stop(self, timeout: float = 2.0) -> None:
         """Stop the scheduler thread and close the VLM batcher."""
         with self._state_lock:
             if not self._running:
@@ -158,8 +160,17 @@ class VLMBatchScheduler:
             self._running = False
             thread = self._thread
             self._thread = None
+        try:
+            self._admission_queue.put_nowait(None)
+        except queue.Full:
+            pass
         if thread is not None:
-            thread.join(timeout=10.0)
+            thread.join(timeout=timeout)
+            if thread.is_alive():
+                logger.warning(
+                    f"VLMBatchScheduler did not stop within {timeout:.1f} s; "
+                    "continuing shutdown with daemon thread still exiting"
+                )
         logger.info("VLMBatchScheduler stopped")
 
     def submit_stream(
@@ -277,7 +288,10 @@ class VLMBatchScheduler:
                 return
 
             if not self._running:
-                self._fail_request(request, RuntimeError("VLMBatchScheduler stopped"))
+                if request is not None:
+                    self._fail_request(request, RuntimeError("VLMBatchScheduler stopped"))
+                return
+            if request is None:
                 return
             if request.cancel_event.is_set():
                 self._send(request.loop, request.out_queue, _STREAM_SENTINEL)
@@ -469,6 +483,8 @@ class VLMBatchScheduler:
                 request = self._admission_queue.get_nowait()
             except queue.Empty:
                 return
+            if request is None:
+                continue
             self._fail_request(request, exc)
 
     def _fail_request(self, request: _PendingVLMRequest, exc: BaseException) -> None:

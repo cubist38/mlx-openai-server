@@ -768,7 +768,7 @@ class MLXVLMHandler:
     async def close(self):
         """Explicitly cleanup resources asynchronously."""
         if self._batch_scheduler is not None:
-            self._batch_scheduler.stop()
+            self._batch_scheduler.stop(timeout=2.0)
             self._batch_scheduler = None
         if hasattr(self, "image_processor"):
             await self.image_processor.cleanup()
@@ -786,7 +786,7 @@ class MLXVLMHandler:
         try:
             logger.info("Cleaning up MLXVLMHandler resources")
             if self._batch_scheduler is not None:
-                self._batch_scheduler.stop()
+                self._batch_scheduler.stop(timeout=2.0)
                 self._batch_scheduler = None
             if hasattr(self, "inference_worker"):
                 self.inference_worker.stop()

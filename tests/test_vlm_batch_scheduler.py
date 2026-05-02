@@ -303,3 +303,29 @@ def test_vlm_handler_does_not_batch_audio_inputs(monkeypatch: pytest.MonkeyPatch
     }
 
     assert handler._is_request_batchable(request, model_params) is False
+
+
+def test_vlm_batch_scheduler_stop_is_bounded(vlm_scheduler_module: Any) -> None:
+    """Scheduler stop should not wait for the parent process shutdown timeout."""
+
+    class _StuckThread:
+        def __init__(self) -> None:
+            self.join_timeout: float | None = None
+
+        def join(self, timeout: float | None = None) -> None:
+            """Record the requested join timeout without exiting."""
+            self.join_timeout = timeout
+
+        def is_alive(self) -> bool:
+            """Pretend the thread is still exiting."""
+            return True
+
+    scheduler = vlm_scheduler_module.VLMBatchScheduler(types.SimpleNamespace())
+    stuck_thread = _StuckThread()
+    scheduler._running = True
+    scheduler._thread = stuck_thread
+
+    scheduler.stop()
+
+    assert scheduler._running is False
+    assert stuck_thread.join_timeout == 2.0
