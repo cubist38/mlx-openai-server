@@ -37,7 +37,24 @@ def _load_mlx_vlm_model_module(monkeypatch: pytest.MonkeyPatch) -> Any:
     fake_utils_module.process_inputs_with_fallback = fake_process_inputs_with_fallback
 
     fake_video_module = types.ModuleType("mlx_vlm.video_generate")
-    fake_video_module.process_vision_info = lambda messages: (None, None)
+
+    def fake_process_vision_info(messages: list[dict[str, Any]]) -> tuple[list[str], list[str]]:
+        return (
+            [
+                item["image"]
+                for message in messages
+                for item in message["content"]
+                if "image" in item
+            ],
+            [
+                item["video"]
+                for message in messages
+                for item in message["content"]
+                if "video" in item
+            ],
+        )
+
+    fake_video_module.process_vision_info = fake_process_vision_info
 
     fake_outlines_module = types.ModuleType("outlines.processors")
     fake_outlines_module.JSONLogitsProcessor = object
@@ -113,6 +130,33 @@ def test_vlm_create_inputs_forwards_audio_and_normalizes_mask(
     assert inputs["videos_seen"] == ["video.mp4"]
     assert inputs["mask"] == [1, 1, 1]
     assert "attention_mask" not in inputs
+
+
+def test_vlm_create_model_inputs_owns_media_extraction(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The VLM wrapper should own mlx-vlm media extraction from formatted messages."""
+    module = _load_mlx_vlm_model_module(monkeypatch)
+    model = object.__new__(module.MLX_VLM)
+    model.processor = object()
+
+    inputs = model.create_model_inputs(
+        "prompt",
+        [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "image", "image": "image.png"},
+                    {"type": "video", "video": "video.mp4"},
+                    {"type": "text", "text": "describe this"},
+                ],
+            }
+        ],
+        audios=["audio.wav"],
+    )
+
+    assert inputs["audio_seen"] == ["audio.wav"]
+    assert inputs["videos_seen"] == ["video.mp4"]
 
 
 def test_vlm_create_input_prompt_uses_tokenizer_chat_template(
