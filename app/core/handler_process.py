@@ -550,6 +550,14 @@ class HandlerProcessProxy:
     # Lifecycle
     # ------------------------------------------------------------------
 
+    def _close_ipc_queues(self) -> None:
+        """Close multiprocessing queues so their semaphore handles are released."""
+        for ipc_queue in (self._request_queue, self._response_queue, self._control_queue):
+            with suppress(Exception):
+                ipc_queue.close()
+            with suppress(Exception):
+                ipc_queue.join_thread()
+
     async def start(self, queue_config: dict[str, Any]) -> None:
         """Spawn the handler subprocess and wait for it to become ready.
 
@@ -785,6 +793,7 @@ class HandlerProcessProxy:
         self._pending.clear()
 
         # Create fresh queues (old ones may have broken pipes).
+        self._close_ipc_queues()
         self._request_queue = self._ctx.Queue()
         self._response_queue = self._ctx.Queue()
         self._control_queue = self._ctx.Queue()
@@ -1331,6 +1340,9 @@ class HandlerProcessProxy:
         """
         if not self._process or not self._process.is_alive():
             self._running = False
+            if self._reader_thread and self._reader_thread.is_alive():
+                self._reader_thread.join(timeout=2)
+            self._close_ipc_queues()
             return
 
         # -- Phase 1: Request a graceful shutdown via the IPC queue. --
@@ -1388,5 +1400,6 @@ class HandlerProcessProxy:
         # -- Phase 3: Stop the response reader thread. --
         if self._reader_thread and self._reader_thread.is_alive():
             self._reader_thread.join(timeout=2)
+        self._close_ipc_queues()
 
         logger.info(f"Handler process for '{self.served_model_name}' shut down successfully")
