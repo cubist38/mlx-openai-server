@@ -83,11 +83,16 @@ class _FakeVLMBatchGenerator:
     """In-memory stand-in for ``mlx_vlm.generate.BatchGenerator``."""
 
     last_kwargs: dict[str, Any] = {}
+    script_tokens: list[int] = [10, 11]
+    script_finish_reason: str = "length"
+    last_instance: _FakeVLMBatchGenerator | None = None
 
     def __init__(self, *_args: Any, **_kwargs: Any) -> None:
         type(self).last_kwargs = dict(_kwargs)
+        type(self).last_instance = self
         self.uid_count = 0
         self.pending: list[tuple[int, int]] = []
+        self.removed: list[int] = []
         self.closed = False
 
     def insert(
@@ -118,8 +123,9 @@ class _FakeVLMBatchGenerator:
         responses: list[_FakeResponse] = []
         updated: list[tuple[int, int]] = []
         for uid, index in self.pending:
-            token = 10 + index
-            finish = "length" if index == 1 else None
+            token = type(self).script_tokens[index]
+            is_last = index == len(type(self).script_tokens) - 1
+            finish = type(self).script_finish_reason if is_last else None
             responses.append(_FakeResponse(uid=uid, token=token, finish_reason=finish))
             if finish is None:
                 updated.append((uid, index + 1))
@@ -128,6 +134,7 @@ class _FakeVLMBatchGenerator:
 
     def remove(self, uid: int) -> bool:
         """Remove a pending sequence."""
+        self.removed.append(uid)
         self.pending = [entry for entry in self.pending if entry[0] != uid]
         return True
 
@@ -140,6 +147,9 @@ class _FakeVLMBatchGenerator:
 def vlm_scheduler_module(monkeypatch: pytest.MonkeyPatch) -> Any:
     """Import the VLM scheduler with MLX and mlx-vlm faked out."""
     _FakeVLMBatchGenerator.last_kwargs = {}
+    _FakeVLMBatchGenerator.script_tokens = [10, 11]
+    _FakeVLMBatchGenerator.script_finish_reason = "length"
+    _FakeVLMBatchGenerator.last_instance = None
     fake_mx = types.ModuleType("mlx.core")
     fake_mx.stream = _fake_stream_cm
     fake_mx.new_stream = _fake_device
@@ -179,6 +189,11 @@ async def test_vlm_batch_scheduler_streams_tokens(vlm_scheduler_module: Any) -> 
             return _FakeEmbedding()
 
     class _FakeProcessor:
+        tokenizer = types.SimpleNamespace(
+            eos_token_id=2,
+            decode=lambda tokens: "".join(f"<{token}>" for token in tokens),
+        )
+
         @property
         def detokenizer(self) -> _FakeDetokenizer:
             return _FakeDetokenizer()
@@ -268,6 +283,52 @@ async def test_vlm_generation_lock_is_released_between_decode_steps(
 
     assert [chunk.token for chunk in chunks] == [10, 11]
     assert lock.enters >= 2
+
+
+@pytest.mark.asyncio
+async def test_vlm_batch_scheduler_forces_stop_on_eos_token(
+    vlm_scheduler_module: Any,
+) -> None:
+    """Scheduler should stop even if upstream VLM batcher misses EOS."""
+
+    class _FakeWrapper:
+        model = types.SimpleNamespace(language_model=object())
+        processor = types.SimpleNamespace(
+            tokenizer=types.SimpleNamespace(
+                eos_token_id=2,
+                decode=lambda tokens: "".join(f"<{token}>" for token in tokens),
+            )
+        )
+        config = types.SimpleNamespace(eos_token_id=2)
+        kv_bits = None
+        kv_group_size = 64
+        quantized_kv_start = 0
+
+        def create_batch_prompt_kwargs(
+            self, _model_inputs: dict[str, Any]
+        ) -> tuple[list[int], dict[str, Any]]:
+            return [1, 2, 3], {"inputs_embeds": "embeds"}
+
+    _FakeVLMBatchGenerator.script_tokens = [2, 99]
+    scheduler = vlm_scheduler_module.VLMBatchScheduler(_FakeWrapper(), idle_poll_timeout=0.01)
+    scheduler.start()
+    try:
+        stream = scheduler.submit_stream(
+            model_inputs={"input_ids": _FakeArray([[1, 2, 3]])},
+            max_tokens=8,
+            logits_processors=[],
+        )
+        chunks = [chunk async for chunk in stream]
+        fake = _FakeVLMBatchGenerator.last_instance
+    finally:
+        scheduler.stop()
+
+    assert len(chunks) == 1
+    assert chunks[0].token == 2
+    assert chunks[0].text == ""
+    assert chunks[0].finish_reason == "stop"
+    assert fake is not None
+    assert fake.removed == [0]
 
 
 @pytest.mark.asyncio
@@ -435,6 +496,29 @@ def test_vlm_batch_scheduler_accepts_scalar_eos_token_ids(vlm_scheduler_module: 
     assert scheduler._resolve_stop_tokens() == {2, 7, 8}
 
 
+def test_vlm_batch_scheduler_resets_orphaned_upstream_work(
+    vlm_scheduler_module: Any,
+) -> None:
+    """Stale upstream batch work should not keep taking the model lock."""
+
+    scheduler = vlm_scheduler_module.VLMBatchScheduler(
+        types.SimpleNamespace(
+            model=types.SimpleNamespace(language_model=object()),
+            processor=types.SimpleNamespace(),
+        )
+    )
+    old_batch = _FakeVLMBatchGenerator()
+    old_batch.pending.append((0, 0))
+    scheduler._batch_generator = old_batch
+    scheduler._batch_generator_kwargs = {}
+
+    scheduler._reset_orphaned_batch_generator()
+
+    assert old_batch.closed is True
+    assert scheduler._batch_generator is not old_batch
+    assert scheduler._batch_generator.has_work is False
+
+
 def test_vlm_batch_scheduler_encodes_textual_eos_token(vlm_scheduler_module: Any) -> None:
     """Textual EOS markers should be encoded into stop token ids."""
 
@@ -443,7 +527,7 @@ def test_vlm_batch_scheduler_encodes_textual_eos_token(vlm_scheduler_module: Any
 
         def encode(self, text: str, add_special_tokens: bool = False) -> list[int]:
             """Encode fake EOS text into a deterministic token id."""
-            if text == "[EOS]" and add_special_tokens is False:
+            if "[EOS]" in text and add_special_tokens is False:
                 return [32008]
             return [1]
 

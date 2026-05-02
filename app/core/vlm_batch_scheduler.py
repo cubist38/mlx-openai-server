@@ -116,6 +116,8 @@ class VLMBatchScheduler:
         self._ready_event = threading.Event()
         self._start_error: BaseException | None = None
         self._stream: Any | None = None
+        self._stop_tokens: set[int] = set()
+        self._batch_generator_kwargs: dict[str, Any] = {}
 
     @property
     def is_running(self) -> bool:
@@ -222,23 +224,20 @@ class VLMBatchScheduler:
             else:
                 self._stream = mx.new_stream(mx.default_device())
 
-            kwargs: dict[str, Any] = {
+            self._stop_tokens = self._resolve_stop_tokens()
+            self._batch_generator_kwargs = {
                 "completion_batch_size": self._completion_batch_size,
                 "prefill_batch_size": self._prefill_batch_size,
                 "prefill_step_size": self._prefill_step_size,
-                "stop_tokens": self._resolve_stop_tokens(),
+                "stop_tokens": self._stop_tokens,
                 "kv_bits": self._model_wrapper.kv_bits,
                 "kv_group_size": self._model_wrapper.kv_group_size,
                 "quantized_kv_start": self._model_wrapper.quantized_kv_start,
                 "compute_logprobs": False,
             }
             if _VLM_BATCH_GENERATOR_ACCEPTS_STREAM:
-                kwargs["stream"] = self._stream
-            self._batch_generator = BatchGenerator(
-                self._model_wrapper.model.language_model,
-                self._model_wrapper.processor,
-                **kwargs,
-            )
+                self._batch_generator_kwargs["stream"] = self._stream
+            self._batch_generator = self._new_batch_generator()
         except BaseException as exc:  # noqa: BLE001 - surface to start()
             self._start_error = exc
             self._ready_event.set()
@@ -254,7 +253,14 @@ class VLMBatchScheduler:
                 did_work = False
                 with lock_context:
                     self._admit_pending(block_if_empty=len(self._active) == 0)
-                    if self._running and self._batch_generator.has_work:
+                    if (
+                        self._running
+                        and not self._active
+                        and self._batch_generator is not None
+                        and self._batch_generator.has_work
+                    ):
+                        self._reset_orphaned_batch_generator()
+                    if self._running and self._active and self._batch_generator.has_work:
                         try:
                             # Run one decode step per lock hold. Seeded or sampled
                             # requests use the fallback worker and need a chance to
@@ -279,8 +285,29 @@ class VLMBatchScheduler:
                 logger.warning(f"Error closing VLM BatchGenerator: {exc!s}")
             self._batch_generator = None
             self._stream = None
+            self._batch_generator_kwargs = {}
             self._fail_all_active(RuntimeError("VLMBatchScheduler stopped"))
             self._drain_admission_queue(RuntimeError("VLMBatchScheduler stopped"))
+
+    def _new_batch_generator(self) -> Any:
+        """Create a fresh upstream VLM batch generator."""
+        return BatchGenerator(
+            self._model_wrapper.model.language_model,
+            self._model_wrapper.processor,
+            **self._batch_generator_kwargs,
+        )
+
+    def _reset_orphaned_batch_generator(self) -> None:
+        """Reset upstream work that no longer maps to an active server request."""
+        logger.warning(
+            "VLMBatchScheduler detected upstream BatchGenerator work with no active "
+            "server requests; resetting stale VLM batch state"
+        )
+        try:
+            self._batch_generator.close()
+        except Exception as exc:  # noqa: BLE001 - stale cleanup is best-effort
+            logger.warning(f"Error closing stale VLM BatchGenerator: {exc!s}")
+        self._batch_generator = self._new_batch_generator()
 
     def _admit_pending(self, *, block_if_empty: bool) -> None:
         first_wait = block_if_empty
@@ -319,17 +346,14 @@ class VLMBatchScheduler:
                 continue
 
             (uid,) = uids
-            detokenizer = self._make_detokenizer()
-            if detokenizer is not None:
-                detokenizer.reset()
             self._active[uid] = _ActiveVLMRequest(
                 loop=request.loop,
                 out_queue=request.out_queue,
-                detokenizer=detokenizer,
+                detokenizer=None,
                 cancel_event=request.cancel_event,
                 prompt_tokens=len(input_ids),
                 prompt_start_time=time.perf_counter(),
-                tokens=[] if detokenizer is None else None,
+                tokens=[],
             )
             logger.info(
                 f"VLMBatchScheduler admitted uid={uid} "
@@ -349,20 +373,25 @@ class VLMBatchScheduler:
         if state.first_token_time is None:
             state.first_token_time = time.perf_counter()
 
+        token = int(resp.token)
         finish_reason = resp.finish_reason
+        if finish_reason is None and token in self._stop_tokens:
+            finish_reason = "stop"
+            self._remove_uid(resp.uid)
+            logger.debug(f"VLMBatchScheduler forced stop for uid={resp.uid} on EOS token={token}")
         is_final = finish_reason is not None
         state.generation_tokens += 1
 
         if finish_reason == "stop":
             segment = self._finalize_detokenizer(state)
         else:
-            segment = self._decode_token(state, int(resp.token))
+            segment = self._decode_token(state, token)
             if is_final:
                 segment += self._finalize_detokenizer(state)
 
         chunk = VLMBatchChunk(
             text=segment,
-            token=int(resp.token),
+            token=token,
             finish_reason=finish_reason,
             generation_tokens=state.generation_tokens,
             generation_tps=self._compute_generation_tps(state) if is_final else 0.0,
@@ -379,6 +408,13 @@ class VLMBatchScheduler:
             )
             self._send(state.loop, state.out_queue, _STREAM_SENTINEL)
             self._active.pop(resp.uid, None)
+
+    def _remove_uid(self, uid: int) -> None:
+        """Remove a uid from the underlying batch generator."""
+        try:
+            self._batch_generator.remove(uid)
+        except Exception as exc:  # noqa: BLE001 - best-effort forced stop
+            logger.warning(f"VLM BatchGenerator.remove failed for uid={uid}: {exc!s}")
 
     def _resolve_stop_tokens(self) -> set[int]:
         """Resolve EOS token ids that should stop VLM batched generation."""
@@ -404,7 +440,7 @@ class VLMBatchScheduler:
         return {int(token) for token in value if token is not None}
 
     def _encode_stop_text(self, text: Any) -> set[int]:
-        """Encode textual EOS markers into token ids when available."""
+        """Encode textual EOS markers like upstream ``mlx-vlm``."""
         if not isinstance(text, str) or not text:
             return set()
         for encoder in (self._model_wrapper.processor, self._get_tokenizer()):
@@ -412,10 +448,11 @@ class VLMBatchScheduler:
             if encode is None:
                 continue
             try:
-                token_ids = encode(text, add_special_tokens=False)
+                token_ids = encode(f" {text}", add_special_tokens=False)
             except TypeError:
-                token_ids = encode(text)
-            return self._coerce_token_ids(token_ids)
+                token_ids = encode(f" {text}")
+            if token_ids:
+                return {int(token_ids[-1])}
         return set()
 
     def _get_tokenizer(self) -> Any:
@@ -435,15 +472,26 @@ class VLMBatchScheduler:
         return None
 
     def _decode_token(self, state: _ActiveVLMRequest, token: int) -> str:
-        """Decode one generated token without sharing mutable decoder state."""
-        if state.detokenizer is not None:
-            state.detokenizer.add_token(token)
-            return state.detokenizer.last_segment
-
+        """Decode one token using upstream ``mlx-vlm`` server's token-list method."""
         if state.tokens is None:
             state.tokens = []
         state.tokens.append(token)
-        current_text = self._get_tokenizer().decode(state.tokens)
+        tokenizer = self._get_tokenizer()
+        decode = getattr(tokenizer, "decode", None)
+        if decode is not None:
+            current_text = decode(state.tokens)
+            segment = current_text[len(state.previous_text) :]
+            state.previous_text = current_text
+            return segment
+
+        if state.detokenizer is None:
+            state.detokenizer = self._make_detokenizer()
+            if state.detokenizer is not None:
+                state.detokenizer.reset()
+        if state.detokenizer is None:
+            return ""
+        state.detokenizer.add_token(token)
+        current_text = state.detokenizer.text
         segment = current_text[len(state.previous_text) :]
         state.previous_text = current_text
         return segment
