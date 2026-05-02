@@ -11,7 +11,7 @@ import asyncio
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 import threading
-from typing import Any
+from typing import Any, Self
 
 import pytest
 
@@ -277,6 +277,40 @@ async def test_single_request_streams_all_tokens_and_final_chunk(patched_schedul
     assert len(finals) == 1
     assert finals[0].finish_reason == "length"
     assert finals[0].generation_tokens == 3
+
+
+@pytest.mark.asyncio
+async def test_generation_lock_is_released_between_decode_steps(patched_scheduler):
+    """Fallback requests must get lock opportunities while a batch is active."""
+    FakeBatchGenerator.script_queue = [_FakeScript(tokens=[10, 11, 12], finish_reason="length")]
+
+    class _CountingLock:
+        def __init__(self) -> None:
+            self.enters = 0
+
+        def __enter__(self) -> Self:
+            self.enters += 1
+            return self
+
+        def __exit__(self, *_args: object) -> None:
+            return None
+
+    lock = _CountingLock()
+    scheduler = patched_scheduler.BatchScheduler(
+        model=object(),
+        tokenizer=FakeTokenizer(),
+        generation_lock=lock,
+        idle_poll_timeout=0.01,
+    )
+    scheduler.start()
+    try:
+        stream = scheduler.submit_stream(input_ids=[7, 8], max_tokens=16)
+        chunks = [chunk async for chunk in stream]
+    finally:
+        scheduler.stop()
+
+    assert [chunk.token for chunk in chunks] == [10, 11, 12]
+    assert lock.enters >= 3
 
 
 @pytest.mark.asyncio

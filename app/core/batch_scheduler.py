@@ -481,16 +481,23 @@ class BatchScheduler:
                 lock_context = (
                     self._generation_lock if self._generation_lock is not None else nullcontext()
                 )
+                did_work = False
                 with lock_context:
                     self._admit_pending(block_if_empty=len(self._active) == 0)
 
-                    while self._running and self._active:
+                    if self._running and self._active:
                         try:
                             # ``BatchGenerator.next()`` already wraps itself in its
                             # own ``mx.stream(...)`` context, so we don't double-wrap
                             # here. (On mlx-lm ≤ 0.31.3 that stream is the module-
                             # level ``generation_stream``; after PR #1090 it becomes
                             # whatever was passed via ``BatchGenerator(stream=...)``.)
+                            #
+                            # Run one decode step per lock hold. Requests that
+                            # cannot use the batcher (explicit seeds, draft
+                            # model, mid-prefill checkpoints) use the fallback
+                            # worker and need a chance to acquire the shared
+                            # generation lock between batch steps.
                             prompt_responses, gen_responses = self._batch_generator.next()
                         except Exception as exc:  # noqa: BLE001 — propagate per-request
                             logger.exception(f"BatchGenerator.next() raised: {exc!s}")
@@ -504,11 +511,14 @@ class BatchScheduler:
 
                         self._process_cancellations()
 
-                        # Keep continuous batching active while this scheduler
-                        # owns the model: batchable requests may join between
-                        # decode steps, while fallback requests wait for the
-                        # current batch to drain, matching mlx_lm.server.
+                        # Keep continuous batching active: batchable requests
+                        # may join between decode steps, and fallback requests
+                        # can acquire the shared model lock before the whole
+                        # batch drains.
                         self._admit_pending(block_if_empty=False)
+                        did_work = True
+                if did_work:
+                    time.sleep(0)
         finally:
             try:
                 if self._batch_generator is not None:

@@ -587,6 +587,18 @@ class MLXLMHandler:
                 request_data["verbose"] = True
 
             use_batch = self._is_request_batchable(request) and ctx.checkpoint_position is None
+            if self.debug:
+                logger.debug(
+                    "LM generation route={} fallback_reasons={} queue_stats={} batch_stats={}",
+                    "batch" if use_batch else "fallback",
+                    self._batching_fallback_reasons(request, ctx.checkpoint_position),
+                    self.inference_worker.get_stats(),
+                    (
+                        self._batch_scheduler.get_stats()
+                        if self._batch_scheduler is not None
+                        else {"running": False}
+                    ),
+                )
             if use_batch:
                 scheduler = await self._get_or_start_scheduler()
                 response_generator = self._submit_batched_stream(scheduler, ctx)
@@ -1156,6 +1168,25 @@ class MLXLMHandler:
             return False
         return True
 
+    def _batching_fallback_reasons(
+        self,
+        request: ChatCompletionRequest,
+        checkpoint_position: int | None = None,
+    ) -> list[str]:
+        """Return human-readable reasons an LM request cannot use batching."""
+        reasons: list[str] = []
+        if not BATCHING_AVAILABLE:
+            reasons.append("batch_generator_unavailable")
+        if self.model.has_draft_model:
+            reasons.append("draft_model")
+        if not self.model.cache_is_batchable:
+            reasons.append("non_mergeable_cache")
+        if request.seed is not None and request.seed > 0:
+            reasons.append(f"positive_seed={request.seed}")
+        if checkpoint_position is not None:
+            reasons.append(f"checkpoint_position={checkpoint_position}")
+        return reasons
+
     async def _get_or_start_scheduler(self) -> BatchScheduler:
         """Lazily construct and start the batch scheduler on first use."""
         if self._batch_scheduler is not None and self._batch_scheduler.is_running:
@@ -1282,7 +1313,20 @@ class MLXLMHandler:
         Kept as a standalone method so :meth:`generate_text_response` stays
         under the complexity budget enforced by ruff.
         """
-        if self._is_request_batchable(request) and ctx.checkpoint_position is None:
+        use_batch = self._is_request_batchable(request) and ctx.checkpoint_position is None
+        if self.debug:
+            logger.debug(
+                "LM generation route={} fallback_reasons={} queue_stats={} batch_stats={}",
+                "batch" if use_batch else "fallback",
+                self._batching_fallback_reasons(request, ctx.checkpoint_position),
+                self.inference_worker.get_stats(),
+                (
+                    self._batch_scheduler.get_stats()
+                    if self._batch_scheduler is not None
+                    else {"running": False}
+                ),
+            )
+        if use_batch:
             scheduler = await self._get_or_start_scheduler()
             return await self._collect_batched_response(scheduler, ctx)
         return await self.inference_worker.submit(
