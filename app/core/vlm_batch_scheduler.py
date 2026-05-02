@@ -472,29 +472,27 @@ class VLMBatchScheduler:
         return None
 
     def _decode_token(self, state: _ActiveVLMRequest, token: int) -> str:
-        """Decode one token using upstream ``mlx-vlm`` server's token-list method."""
-        if state.tokens is None:
-            state.tokens = []
-        state.tokens.append(token)
-        tokenizer = self._get_tokenizer()
-        decode = getattr(tokenizer, "decode", None)
-        if decode is not None:
+        """Decode one token with request-local state when available."""
+        if state.detokenizer is None:
+            state.detokenizer = self._make_detokenizer()
+            if state.detokenizer is not None:
+                state.detokenizer.reset()
+
+        if state.detokenizer is None:
+            if state.tokens is None:
+                state.tokens = []
+            state.tokens.append(token)
+            tokenizer = self._get_tokenizer()
+            decode = getattr(tokenizer, "decode", None)
+            if decode is None:
+                return ""
             current_text = decode(state.tokens)
             segment = current_text[len(state.previous_text) :]
             state.previous_text = current_text
             return segment
 
-        if state.detokenizer is None:
-            state.detokenizer = self._make_detokenizer()
-            if state.detokenizer is not None:
-                state.detokenizer.reset()
-        if state.detokenizer is None:
-            return ""
         state.detokenizer.add_token(token)
-        current_text = state.detokenizer.text
-        segment = current_text[len(state.previous_text) :]
-        state.previous_text = current_text
-        return segment
+        return state.detokenizer.last_segment
 
     @staticmethod
     def _finalize_detokenizer(state: _ActiveVLMRequest) -> str:

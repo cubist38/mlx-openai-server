@@ -177,6 +177,7 @@ def vlm_scheduler_module(monkeypatch: pytest.MonkeyPatch) -> Any:
 @pytest.mark.asyncio
 async def test_vlm_batch_scheduler_streams_tokens(vlm_scheduler_module: Any) -> None:
     """A VLM batch request should stream decoded chunks and a final chunk."""
+    decode_calls = 0
 
     class _FakeEmbedding:
         def to_dict(self) -> dict[str, str]:
@@ -188,11 +189,17 @@ async def test_vlm_batch_scheduler_streams_tokens(vlm_scheduler_module: Any) -> 
         def get_input_embeddings(self, *_args: Any, **_kwargs: Any) -> _FakeEmbedding:
             return _FakeEmbedding()
 
+    class _FakeTokenizer:
+        eos_token_id = 2
+
+        def decode(self, tokens: list[int]) -> str:
+            """Decode tokens only when the scheduler cannot make a detokenizer."""
+            nonlocal decode_calls
+            decode_calls += 1
+            return "".join(f"<{token}>" for token in tokens)
+
     class _FakeProcessor:
-        tokenizer = types.SimpleNamespace(
-            eos_token_id=2,
-            decode=lambda tokens: "".join(f"<{token}>" for token in tokens),
-        )
+        tokenizer = _FakeTokenizer()
 
         @property
         def detokenizer(self) -> _FakeDetokenizer:
@@ -227,6 +234,7 @@ async def test_vlm_batch_scheduler_streams_tokens(vlm_scheduler_module: Any) -> 
     assert chunks[-1].finish_reason == "length"
     assert chunks[-1].prompt_tokens == 3
     assert _FakeVLMBatchGenerator.last_kwargs["stop_tokens"] == {2}
+    assert decode_calls == 0
 
 
 @pytest.mark.asyncio
