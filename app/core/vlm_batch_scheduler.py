@@ -379,19 +379,37 @@ class VLMBatchScheduler:
         config = getattr(self._model_wrapper, "config", None) or getattr(
             getattr(self._model_wrapper, "model", None), "config", None
         )
-        eos_token_id = getattr(config, "eos_token_id", None)
-        if isinstance(eos_token_id, list):
-            stop_tokens.update(int(token) for token in eos_token_id if token is not None)
-        elif eos_token_id is not None:
-            stop_tokens.add(int(eos_token_id))
+        stop_tokens.update(self._coerce_token_ids(getattr(config, "eos_token_id", None)))
 
         tokenizer = self._get_tokenizer()
-        eos_token_ids = getattr(tokenizer, "eos_token_ids", None) or []
-        stop_tokens.update(int(token) for token in eos_token_ids if token is not None)
-        tokenizer_eos = getattr(tokenizer, "eos_token_id", None)
-        if tokenizer_eos is not None:
-            stop_tokens.add(int(tokenizer_eos))
+        stop_tokens.update(self._coerce_token_ids(getattr(tokenizer, "eos_token_ids", None)))
+        stop_tokens.update(self._coerce_token_ids(getattr(tokenizer, "eos_token_id", None)))
+        stop_tokens.update(self._encode_stop_text(getattr(tokenizer, "eos_token", None)))
         return stop_tokens
+
+    @staticmethod
+    def _coerce_token_ids(value: Any) -> set[int]:
+        """Normalize scalar or iterable token ids into a set of ints."""
+        if value is None:
+            return set()
+        if isinstance(value, int):
+            return {value}
+        return {int(token) for token in value if token is not None}
+
+    def _encode_stop_text(self, text: Any) -> set[int]:
+        """Encode textual EOS markers into token ids when available."""
+        if not isinstance(text, str) or not text:
+            return set()
+        for encoder in (self._model_wrapper.processor, self._get_tokenizer()):
+            encode = getattr(encoder, "encode", None)
+            if encode is None:
+                continue
+            try:
+                token_ids = encode(text, add_special_tokens=False)
+            except TypeError:
+                token_ids = encode(text)
+            return self._coerce_token_ids(token_ids)
+        return set()
 
     def _get_tokenizer(self) -> Any:
         """Return the tokenizer-like object used for VLM text decoding."""

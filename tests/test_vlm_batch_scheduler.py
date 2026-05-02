@@ -329,3 +329,38 @@ def test_vlm_batch_scheduler_stop_is_bounded(vlm_scheduler_module: Any) -> None:
 
     assert scheduler._running is False
     assert stuck_thread.join_timeout == 2.0
+
+
+def test_vlm_batch_scheduler_accepts_scalar_eos_token_ids(vlm_scheduler_module: Any) -> None:
+    """Tokenizers may expose ``eos_token_ids`` as a scalar int."""
+
+    wrapper = types.SimpleNamespace(
+        processor=types.SimpleNamespace(
+            tokenizer=types.SimpleNamespace(eos_token_ids=7, eos_token_id=8)
+        ),
+        config=types.SimpleNamespace(eos_token_id=[2, None]),
+    )
+    scheduler = vlm_scheduler_module.VLMBatchScheduler(wrapper)
+
+    assert scheduler._resolve_stop_tokens() == {2, 7, 8}
+
+
+def test_vlm_batch_scheduler_encodes_textual_eos_token(vlm_scheduler_module: Any) -> None:
+    """Textual EOS markers should be encoded into stop token ids."""
+
+    class _MockProcessor:
+        tokenizer = types.SimpleNamespace(eos_token="[EOS]")
+
+        def encode(self, text: str, add_special_tokens: bool = False) -> list[int]:
+            """Encode fake EOS text into a deterministic token id."""
+            if text == "[EOS]" and add_special_tokens is False:
+                return [32008]
+            return [1]
+
+    wrapper = types.SimpleNamespace(
+        processor=_MockProcessor(),
+        config=types.SimpleNamespace(eos_token_id=[2, 32000, 32007]),
+    )
+    scheduler = vlm_scheduler_module.VLMBatchScheduler(wrapper)
+
+    assert scheduler._resolve_stop_tokens() == {2, 32000, 32007, 32008}
