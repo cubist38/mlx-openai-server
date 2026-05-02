@@ -7,9 +7,6 @@ from typing import Any
 
 from fastapi import HTTPException
 from loguru import logger
-import mlx.core as mx
-from mlx_vlm.video_generate import process_vision_info
-import torch
 
 from ..core import AudioProcessor, ImageProcessor, InferenceWorker, VideoProcessor
 from ..message_converters import MessageConverterManager
@@ -170,15 +167,8 @@ class MLXVLMHandler:
         if self.debug:
             log_debug_prompt(input_prompt)
 
-        image_inputs, video_inputs = process_vision_info(messages)
         audio_inputs = request_dict["audios"] or None
-        vision_inputs = self.model.create_inputs(
-            input_prompt, image_inputs, video_inputs, audio_inputs
-        )
-
-        for key, value in vision_inputs.items():
-            if isinstance(value, torch.Tensor):
-                vision_inputs[key] = mx.array(value)
+        model_inputs = self.model.create_model_inputs(input_prompt, messages, audio_inputs)
 
         if self.debug:
             log_debug_request(request_dict)
@@ -192,7 +182,7 @@ class MLXVLMHandler:
             "repetition_context_size": request_dict.get("repetition_context_size"),
             "top_p": request_dict.get("top_p"),
             "schema": request_dict.get("schema"),
-            "vision_inputs": vision_inputs,
+            "model_inputs": model_inputs,
             "kv_bits": self.kv_bits,
             "kv_group_size": self.kv_group_size,
             "quantized_kv_start": self.quantized_kv_start,

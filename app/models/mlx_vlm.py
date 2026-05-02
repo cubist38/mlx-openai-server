@@ -105,8 +105,9 @@ class MLX_VLM:
             self.processor.chat_template = tokenizer_template
 
     def create_input_prompt(
-        self, messages: list[dict[str, str]], chat_template_kwargs: dict[str, Any]
+        self, messages: list[dict[str, Any]], chat_template_kwargs: dict[str, Any]
     ) -> str:
+        chat_template_kwargs = dict(chat_template_kwargs)
         chat_template_kwargs.pop("_partial_mode", None)
         self._ensure_processor_chat_template()
 
@@ -114,11 +115,11 @@ class MLX_VLM:
             messages, tokenize=False, add_generation_prompt=True, **chat_template_kwargs
         )
 
-    def create_inputs(
+    def _create_processor_inputs(
         self,
         text: str,
-        images: list[str] = None,
-        videos: list[str] = None,
+        images: list[Any] = None,
+        videos: list[Any] = None,
         audios: list[str] = None,
     ) -> dict[str, Any]:
         inputs = process_inputs_with_fallback(
@@ -133,6 +134,40 @@ class MLX_VLM:
         if "attention_mask" in inputs and "mask" not in inputs:
             inputs["mask"] = inputs.pop("attention_mask")
         return inputs
+
+    def _to_mlx_inputs(self, inputs: dict[str, Any]) -> dict[str, Any]:
+        """Convert tensor values produced by Transformers processors into MLX arrays."""
+        for key, value in list(inputs.items()):
+            if isinstance(value, torch.Tensor):
+                inputs[key] = mx.array(value)
+        return inputs
+
+    def create_model_inputs(
+        self,
+        text: str,
+        messages: list[dict[str, Any]],
+        audios: list[str] | None = None,
+    ) -> dict[str, Any]:
+        """Create MLX-ready multimodal inputs from formatted chat messages."""
+        image_inputs, video_inputs = process_vision_info(messages)
+        inputs = self._create_processor_inputs(
+            text,
+            images=image_inputs,
+            videos=video_inputs,
+            audios=audios or None,
+        )
+        return self._to_mlx_inputs(inputs)
+
+    def create_inputs(
+        self,
+        text: str,
+        images: list[Any] = None,
+        videos: list[Any] = None,
+        audios: list[str] = None,
+    ) -> dict[str, Any]:
+        """Create processor inputs from already extracted media values."""
+        inputs = self._create_processor_inputs(text, images, videos, audios)
+        return self._to_mlx_inputs(inputs)
 
     def __call__(
         self, prompt: str, stream: bool = False, **kwargs
@@ -171,7 +206,7 @@ class MLX_VLM:
                 )
             )
 
-        model_params = dict(kwargs.get("vision_inputs") or {})
+        model_params = dict(kwargs.get("model_inputs") or kwargs.get("vision_inputs") or {})
         max_tokens = _get("max_tokens", None)
         if max_tokens is None:
             max_tokens = _get("max_completion_tokens", DEFAULT_MAX_TOKENS)
