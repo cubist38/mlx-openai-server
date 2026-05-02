@@ -249,7 +249,21 @@ class MLXVLMHandler:
                     {"prompt": input_prompt, "stream": True, **model_params},
                 )
 
-            if self._is_request_batchable(request, model_params):
+            use_batch = self._is_request_batchable(request, model_params)
+            if self.debug:
+                logger.debug(
+                    "VLM generation route={} fallback_reasons={} queue_stats={} batch_stats={}",
+                    "batch" if use_batch else "fallback",
+                    self._batching_fallback_reasons(request, model_params),
+                    self.inference_worker.get_stats(),
+                    (
+                        self._batch_scheduler.get_stats()
+                        if self._batch_scheduler is not None
+                        else {"running": False}
+                    ),
+                )
+
+            if use_batch:
                 scheduler = await self._get_or_start_scheduler()
                 response_generator = self._submit_batched_stream(scheduler, model_params)
             else:
@@ -520,7 +534,21 @@ class MLXVLMHandler:
                     {"prompt": input_prompt, "stream": False, **model_params},
                 )
 
-            if self._is_request_batchable(request, model_params):
+            use_batch = self._is_request_batchable(request, model_params)
+            if self.debug:
+                logger.debug(
+                    "VLM generation route={} fallback_reasons={} queue_stats={} batch_stats={}",
+                    "batch" if use_batch else "fallback",
+                    self._batching_fallback_reasons(request, model_params),
+                    self.inference_worker.get_stats(),
+                    (
+                        self._batch_scheduler.get_stats()
+                        if self._batch_scheduler is not None
+                        else {"running": False}
+                    ),
+                )
+
+            if use_batch:
                 scheduler = await self._get_or_start_scheduler()
                 response = await self._collect_batched_response(scheduler, model_params)
             else:
@@ -682,6 +710,34 @@ class MLXVLMHandler:
         if top_p is not None and float(top_p) != DEFAULT_TOP_P:
             return False
         return True
+
+    def _batching_fallback_reasons(
+        self,
+        request: ChatCompletionRequest,
+        model_params: dict[str, Any],
+    ) -> list[str]:
+        """Return human-readable reasons a VLM request cannot use batching."""
+        reasons: list[str] = []
+        if not VLM_BATCHING_AVAILABLE:
+            reasons.append("batch_generator_unavailable")
+        if request.seed is not None and request.seed > 0:
+            reasons.append(f"positive_seed={request.seed}")
+        model_inputs = model_params.get("model_inputs") or {}
+        audio_keys = (
+            "input_features",
+            "feature_attention_mask",
+            "audio_feature_lengths",
+        )
+        if any(key in model_inputs for key in audio_keys):
+            reasons.append("audio_inputs")
+        temperature = model_params.get("temperature")
+        effective_temperature = DEFAULT_TEMPERATURE if temperature is None else float(temperature)
+        if effective_temperature != 0.0:
+            reasons.append(f"temperature={effective_temperature}")
+        top_p = model_params.get("top_p")
+        if top_p is not None and float(top_p) != DEFAULT_TOP_P:
+            reasons.append(f"top_p={float(top_p)}")
+        return reasons
 
     def _stream_model_with_lock(self, *args: Any, **kwargs: Any):
         """Run streaming VLM inference while holding the shared generation lock."""

@@ -8,7 +8,7 @@ from dataclasses import dataclass
 import importlib
 import sys
 import types
-from typing import Any
+from typing import Any, Self
 from unittest.mock import Mock
 
 import pytest
@@ -215,6 +215,62 @@ async def test_vlm_batch_scheduler_streams_tokens(vlm_scheduler_module: Any) -> 
 
 
 @pytest.mark.asyncio
+async def test_vlm_generation_lock_is_released_between_decode_steps(
+    vlm_scheduler_module: Any,
+) -> None:
+    """Seeded fallback requests need lock opportunities while a VLM batch is active."""
+
+    class _FakeWrapper:
+        model = types.SimpleNamespace(language_model=object())
+        processor = types.SimpleNamespace(
+            tokenizer=types.SimpleNamespace(
+                eos_token_id=2,
+                decode=lambda tokens: "".join(f"<{token}>" for token in tokens),
+            )
+        )
+        config = types.SimpleNamespace(eos_token_id=2)
+        kv_bits = None
+        kv_group_size = 64
+        quantized_kv_start = 0
+
+        def create_batch_prompt_kwargs(
+            self, _model_inputs: dict[str, Any]
+        ) -> tuple[list[int], dict[str, Any]]:
+            return [1, 2, 3], {"inputs_embeds": "embeds"}
+
+    class _CountingLock:
+        def __init__(self) -> None:
+            self.enters = 0
+
+        def __enter__(self) -> Self:
+            self.enters += 1
+            return self
+
+        def __exit__(self, *_args: object) -> None:
+            return None
+
+    lock = _CountingLock()
+    scheduler = vlm_scheduler_module.VLMBatchScheduler(
+        _FakeWrapper(),
+        generation_lock=lock,
+        idle_poll_timeout=0.01,
+    )
+    scheduler.start()
+    try:
+        stream = scheduler.submit_stream(
+            model_inputs={"input_ids": _FakeArray([[1, 2, 3]])},
+            max_tokens=2,
+            logits_processors=[],
+        )
+        chunks = [chunk async for chunk in stream]
+    finally:
+        scheduler.stop()
+
+    assert [chunk.token for chunk in chunks] == [10, 11]
+    assert lock.enters >= 2
+
+
+@pytest.mark.asyncio
 async def test_vlm_batch_scheduler_uses_decode_when_detokenizer_is_shared(
     vlm_scheduler_module: Any,
 ) -> None:
@@ -303,6 +359,40 @@ def test_vlm_handler_does_not_batch_audio_inputs(monkeypatch: pytest.MonkeyPatch
     }
 
     assert handler._is_request_batchable(request, model_params) is False
+
+
+def test_vlm_handler_positive_seed_disables_batching(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Positive seeded requests should use the single-request VLM path."""
+    fake_scheduler = types.ModuleType("app.core.vlm_batch_scheduler")
+    fake_scheduler.VLM_BATCHING_AVAILABLE = True
+    fake_scheduler.VLMBatchScheduler = object
+    monkeypatch.setitem(sys.modules, "app.core.vlm_batch_scheduler", fake_scheduler)
+
+    fake_core = types.ModuleType("app.core")
+    fake_core.AudioProcessor = object
+    fake_core.ImageProcessor = object
+    fake_core.InferenceWorker = object
+    fake_core.VideoProcessor = object
+    monkeypatch.setitem(sys.modules, "app.core", fake_core)
+
+    fake_model_module = types.ModuleType("app.models.mlx_vlm")
+    fake_model_module.DEFAULT_TEMPERATURE = 0.0
+    fake_model_module.DEFAULT_TOP_P = 1.0
+    fake_model_module.CompletionResponse = object
+    fake_model_module.MLX_VLM = object
+    monkeypatch.setitem(sys.modules, "app.models.mlx_vlm", fake_model_module)
+    monkeypatch.delitem(sys.modules, "app.handler.mlx_vlm", raising=False)
+
+    handler_module = importlib.import_module("app.handler.mlx_vlm")
+    handler = handler_module.MLXVLMHandler.__new__(handler_module.MLXVLMHandler)
+    model_params = {"temperature": 0.0, "top_p": 1.0, "model_inputs": {}}
+
+    assert handler._is_request_batchable(Mock(seed=None), model_params) is True
+    assert handler._is_request_batchable(Mock(seed=0), model_params) is True
+    assert handler._is_request_batchable(Mock(seed=-1), model_params) is True
+    assert handler._is_request_batchable(Mock(seed=42), model_params) is False
 
 
 def test_vlm_batch_scheduler_stop_is_bounded(vlm_scheduler_module: Any) -> None:

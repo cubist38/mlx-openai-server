@@ -251,10 +251,14 @@ class VLMBatchScheduler:
                 lock_context = (
                     self._generation_lock if self._generation_lock is not None else nullcontext()
                 )
+                did_work = False
                 with lock_context:
                     self._admit_pending(block_if_empty=len(self._active) == 0)
-                    while self._running and self._batch_generator.has_work:
+                    if self._running and self._batch_generator.has_work:
                         try:
+                            # Run one decode step per lock hold. Seeded or sampled
+                            # requests use the fallback worker and need a chance to
+                            # acquire the shared generation lock between batch steps.
                             _prompt_responses, gen_responses = self._batch_generator.next()
                         except Exception as exc:  # noqa: BLE001 - propagate per request
                             logger.exception(f"VLM BatchGenerator.next() raised: {exc!s}")
@@ -264,6 +268,9 @@ class VLMBatchScheduler:
                             self._handle_generation_response(response)
                         self._process_cancellations()
                         self._admit_pending(block_if_empty=False)
+                        did_work = True
+                if did_work:
+                    time.sleep(0)
         finally:
             try:
                 if self._batch_generator is not None:
