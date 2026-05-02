@@ -259,6 +259,9 @@ def create_handler_from_config(model_cfg: ModelEntryConfig) -> Any:
                 kv_bits=model_cfg.kv_bits,
                 kv_group_size=model_cfg.kv_group_size,
                 quantized_kv_start=model_cfg.quantized_kv_start,
+                batch_completion_size=model_cfg.batch_completion_size,
+                batch_prefill_size=model_cfg.batch_prefill_size,
+                batch_prefill_step_size=model_cfg.batch_prefill_step_size,
             ),
             model_cfg,
         )
