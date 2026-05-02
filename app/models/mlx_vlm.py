@@ -5,13 +5,12 @@ from typing import Any
 
 import mlx.core as mx
 from mlx_vlm import load, stream_generate
-from mlx_vlm.models.cache import make_prompt_cache
+from mlx_vlm.utils import process_inputs_with_fallback
 from mlx_vlm.video_generate import process_vision_info
 from outlines.processors import JSONLogitsProcessor
 import torch
 
 from ..utils.outlines_transformer_tokenizer import OutlinesTransformerTokenizer
-from ..utils.prompt_cache import LRUPromptCache
 
 # Default model parameters
 DEFAULT_MAX_TOKENS = int(os.getenv("DEFAULT_MAX_TOKENS", "100000"))
@@ -82,7 +81,11 @@ class MLX_VLM:
                 if not os.path.exists(chat_template_file):
                     raise ValueError(f"Chat template file {chat_template_file} does not exist")
                 with open(chat_template_file) as f:
-                    self.processor.chat_template = f.read()
+                    template_content = f.read()
+                    self.processor.chat_template = template_content
+                    if hasattr(self.processor, "tokenizer"):
+                        self.processor.tokenizer.chat_template = template_content
+            self._ensure_processor_chat_template()
         except Exception as e:
             raise ValueError(f"Error loading model: {e!s}")
 
@@ -92,34 +95,88 @@ class MLX_VLM:
     def get_model_type(self):
         return self.config.model_type
 
-    def create_prompt_cache(self) -> list[Any]:
-        return make_prompt_cache(self.model.language_model, max_kv_size=self.context_length)
+    def _ensure_processor_chat_template(self) -> None:
+        """Copy tokenizer chat template onto processors that do not expose one."""
+        if getattr(self.processor, "chat_template", None) is not None:
+            return
+        tokenizer = getattr(self.processor, "tokenizer", None)
+        tokenizer_template = getattr(tokenizer, "chat_template", None)
+        if tokenizer_template is not None:
+            self.processor.chat_template = tokenizer_template
 
     def create_input_prompt(
-        self, messages: list[dict[str, str]], chat_template_kwargs: dict[str, Any]
+        self, messages: list[dict[str, Any]], chat_template_kwargs: dict[str, Any]
     ) -> str:
+        chat_template_kwargs = dict(chat_template_kwargs)
         chat_template_kwargs.pop("_partial_mode", None)
+        self._ensure_processor_chat_template()
 
         return self.processor.apply_chat_template(
             messages, tokenize=False, add_generation_prompt=True, **chat_template_kwargs
         )
 
-    def create_inputs(
-        self, text: str, images: list[str] = None, videos: list[str] = None
+    def _create_processor_inputs(
+        self,
+        text: str,
+        images: list[Any] = None,
+        videos: list[Any] = None,
+        audios: list[str] = None,
     ) -> dict[str, Any]:
-        return self.processor(
-            text=[text], images=images, videos=videos, padding=True, return_tensors="pt"
+        inputs = process_inputs_with_fallback(
+            self.processor,
+            prompts=[text],
+            images=images,
+            audio=audios,
+            videos=videos,
+            padding=True,
+            return_tensors="pt",
         )
+        if "attention_mask" in inputs and "mask" not in inputs:
+            inputs["mask"] = inputs.pop("attention_mask")
+        return inputs
+
+    def _to_mlx_inputs(self, inputs: dict[str, Any]) -> dict[str, Any]:
+        """Convert tensor values produced by Transformers processors into MLX arrays."""
+        for key, value in list(inputs.items()):
+            if isinstance(value, torch.Tensor):
+                inputs[key] = mx.array(value)
+        return inputs
+
+    def create_model_inputs(
+        self,
+        text: str,
+        messages: list[dict[str, Any]],
+        audios: list[str] | None = None,
+    ) -> dict[str, Any]:
+        """Create MLX-ready multimodal inputs from formatted chat messages."""
+        image_inputs, video_inputs = process_vision_info(messages)
+        inputs = self._create_processor_inputs(
+            text,
+            images=image_inputs,
+            videos=video_inputs,
+            audios=audios or None,
+        )
+        return self._to_mlx_inputs(inputs)
+
+    def create_inputs(
+        self,
+        text: str,
+        images: list[Any] = None,
+        videos: list[Any] = None,
+        audios: list[str] = None,
+    ) -> dict[str, Any]:
+        """Create processor inputs from already extracted media values."""
+        inputs = self._create_processor_inputs(text, images, videos, audios)
+        return self._to_mlx_inputs(inputs)
 
     def __call__(
-        self, prompt: str, prompt_cache: list[Any] = None, stream: bool = False, **kwargs
+        self, prompt: str, stream: bool = False, **kwargs
     ) -> CompletionResponse | Generator[str, None, None]:
         """
         Generate text response from images and messages.
 
         Args:
             prompt (str): The input prompt text.
-            prompt_cache (List[Any], optional): Prompt cache for faster inference.
             stream (bool, optional): Whether to stream the response. Defaults to False.
             **kwargs: Additional model parameters (temperature, max_tokens, etc.)
                 - schema (dict, optional): JSON schema for structured output generation.
@@ -149,7 +206,7 @@ class MLX_VLM:
                 )
             )
 
-        model_params = kwargs.get("vision_inputs")
+        model_params = dict(kwargs.get("model_inputs") or kwargs.get("vision_inputs") or {})
         max_tokens = _get("max_tokens", None)
         if max_tokens is None:
             max_tokens = _get("max_completion_tokens", DEFAULT_MAX_TOKENS)
@@ -176,7 +233,6 @@ class MLX_VLM:
             self.model,
             self.processor,
             prompt=prompt,
-            prompt_cache=prompt_cache,
             logits_processors=logits_processors,
             **model_params,
         )
@@ -241,8 +297,6 @@ if __name__ == "__main__":
             ],
         }
     ]
-    prompt_cache = LRUPromptCache()
-
     input_prompt = model.create_input_prompt(messages, chat_template_kwargs)
 
     image_inputs, video_inputs = process_vision_info(messages)
