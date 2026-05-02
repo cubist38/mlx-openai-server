@@ -403,16 +403,27 @@ def _handler_worker(
 
             # Shutdown signal
             if method_name == _SHUTDOWN:
+                # Acknowledge shutdown before best-effort cleanup. Some MLX
+                # teardown paths can block inside synchronous native code; if
+                # the child waits to ack until after cleanup, the parent hits
+                # its 10 s IPC timeout and terminates an otherwise orderly
+                # shutdown.
+                response_queue.put({"id": req_id, "type": "shutdown_complete"})
                 if _inflight:
                     logger.info(
-                        f"Shutdown requested; waiting for {len(_inflight)} in-flight request(s) to finish"
+                        f"Shutdown requested; cancelling {len(_inflight)} in-flight request(s)"
                     )
-                    await asyncio.gather(*_inflight, return_exceptions=True)
+                    for task in list(_inflight):
+                        task.cancel()
+                    _done, pending = await asyncio.wait(_inflight, timeout=2.0)
+                    if pending:
+                        logger.warning(
+                            f"{len(pending)} in-flight request(s) did not cancel within 2 s"
+                        )
                 try:
                     await handler.cleanup()
                 except Exception as exc:
                     logger.error(f"Error during handler cleanup in subprocess: {exc}")
-                response_queue.put({"id": req_id, "type": "shutdown_complete"})
                 break
 
             task = asyncio.create_task(_handle_request(request))
