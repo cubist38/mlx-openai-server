@@ -64,12 +64,14 @@ class _ActiveVLMRequest:
 
     loop: asyncio.AbstractEventLoop
     out_queue: asyncio.Queue[Any]
-    detokenizer: Any
+    detokenizer: Any | None
     cancel_event: threading.Event
     prompt_tokens: int
     prompt_start_time: float
     first_token_time: float | None = None
     generation_tokens: int = 0
+    tokens: list[int] | None = None
+    previous_text: str = ""
 
 
 _STREAM_SENTINEL: Any = object()
@@ -213,6 +215,7 @@ class VLMBatchScheduler:
                 "completion_batch_size": self._completion_batch_size,
                 "prefill_batch_size": self._prefill_batch_size,
                 "prefill_step_size": self._prefill_step_size,
+                "stop_tokens": self._resolve_stop_tokens(),
                 "kv_bits": self._model_wrapper.kv_bits,
                 "kv_group_size": self._model_wrapper.kv_group_size,
                 "quantized_kv_start": self._model_wrapper.quantized_kv_start,
@@ -295,8 +298,9 @@ class VLMBatchScheduler:
                 continue
 
             (uid,) = uids
-            detokenizer = self._model_wrapper.processor.detokenizer
-            detokenizer.reset()
+            detokenizer = self._make_detokenizer()
+            if detokenizer is not None:
+                detokenizer.reset()
             self._active[uid] = _ActiveVLMRequest(
                 loop=request.loop,
                 out_queue=request.out_queue,
@@ -304,6 +308,7 @@ class VLMBatchScheduler:
                 cancel_event=request.cancel_event,
                 prompt_tokens=len(input_ids),
                 prompt_start_time=time.perf_counter(),
+                tokens=[] if detokenizer is None else None,
             )
             logger.info(
                 f"VLMBatchScheduler admitted uid={uid} "
@@ -328,21 +333,11 @@ class VLMBatchScheduler:
         state.generation_tokens += 1
 
         if finish_reason == "stop":
-            segment = ""
-            try:
-                state.detokenizer.finalize()
-                segment = state.detokenizer.last_segment
-            except Exception:  # noqa: BLE001 - finalize is best-effort
-                pass
+            segment = self._finalize_detokenizer(state)
         else:
-            state.detokenizer.add_token(resp.token)
-            segment = state.detokenizer.last_segment
+            segment = self._decode_token(state, int(resp.token))
             if is_final:
-                try:
-                    state.detokenizer.finalize()
-                    segment += state.detokenizer.last_segment
-                except Exception:  # noqa: BLE001 - finalize is best-effort
-                    pass
+                segment += self._finalize_detokenizer(state)
 
         chunk = VLMBatchChunk(
             text=segment,
@@ -363,6 +358,67 @@ class VLMBatchScheduler:
             )
             self._send(state.loop, state.out_queue, _STREAM_SENTINEL)
             self._active.pop(resp.uid, None)
+
+    def _resolve_stop_tokens(self) -> set[int]:
+        """Resolve EOS token ids that should stop VLM batched generation."""
+        stop_tokens: set[int] = set()
+        config = getattr(self._model_wrapper, "config", None) or getattr(
+            getattr(self._model_wrapper, "model", None), "config", None
+        )
+        eos_token_id = getattr(config, "eos_token_id", None)
+        if isinstance(eos_token_id, list):
+            stop_tokens.update(int(token) for token in eos_token_id if token is not None)
+        elif eos_token_id is not None:
+            stop_tokens.add(int(eos_token_id))
+
+        tokenizer = self._get_tokenizer()
+        eos_token_ids = getattr(tokenizer, "eos_token_ids", None) or []
+        stop_tokens.update(int(token) for token in eos_token_ids if token is not None)
+        tokenizer_eos = getattr(tokenizer, "eos_token_id", None)
+        if tokenizer_eos is not None:
+            stop_tokens.add(int(tokenizer_eos))
+        return stop_tokens
+
+    def _get_tokenizer(self) -> Any:
+        """Return the tokenizer-like object used for VLM text decoding."""
+        processor = self._model_wrapper.processor
+        return getattr(processor, "tokenizer", processor)
+
+    def _make_detokenizer(self) -> Any | None:
+        """Create an isolated incremental detokenizer when the tokenizer exposes one."""
+        for source in (self._get_tokenizer(), self._model_wrapper.processor):
+            if not hasattr(source, "detokenizer"):
+                continue
+            first = source.detokenizer
+            second = source.detokenizer
+            if first is not second:
+                return first
+        return None
+
+    def _decode_token(self, state: _ActiveVLMRequest, token: int) -> str:
+        """Decode one generated token without sharing mutable decoder state."""
+        if state.detokenizer is not None:
+            state.detokenizer.add_token(token)
+            return state.detokenizer.last_segment
+
+        if state.tokens is None:
+            state.tokens = []
+        state.tokens.append(token)
+        current_text = self._get_tokenizer().decode(state.tokens)
+        segment = current_text[len(state.previous_text) :]
+        state.previous_text = current_text
+        return segment
+
+    @staticmethod
+    def _finalize_detokenizer(state: _ActiveVLMRequest) -> str:
+        """Flush pending text from an incremental detokenizer."""
+        if state.detokenizer is None:
+            return ""
+        try:
+            state.detokenizer.finalize()
+            return state.detokenizer.last_segment
+        except Exception:  # noqa: BLE001 - finalize is best-effort
+            return ""
 
     @staticmethod
     def _compute_generation_tps(state: _ActiveVLMRequest) -> float:

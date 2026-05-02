@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from contextlib import contextmanager
 from dataclasses import dataclass
 import importlib
@@ -21,6 +22,11 @@ def _fake_stream_cm(_stream: Any):
 def _fake_device(_device: Any = None) -> object:
     """Return a placeholder MLX device object for scheduler tests."""
     return object()
+
+
+async def _collect_stream(stream: Any) -> list[Any]:
+    """Collect an async stream into a list."""
+    return [chunk async for chunk in stream]
 
 
 class _FakeArray:
@@ -76,7 +82,10 @@ class _FakeResponse:
 class _FakeVLMBatchGenerator:
     """In-memory stand-in for ``mlx_vlm.generate.BatchGenerator``."""
 
+    last_kwargs: dict[str, Any] = {}
+
     def __init__(self, *_args: Any, **_kwargs: Any) -> None:
+        type(self).last_kwargs = dict(_kwargs)
         self.uid_count = 0
         self.pending: list[tuple[int, int]] = []
         self.closed = False
@@ -130,6 +139,7 @@ class _FakeVLMBatchGenerator:
 @pytest.fixture
 def vlm_scheduler_module(monkeypatch: pytest.MonkeyPatch) -> Any:
     """Import the VLM scheduler with MLX and mlx-vlm faked out."""
+    _FakeVLMBatchGenerator.last_kwargs = {}
     fake_mx = types.ModuleType("mlx.core")
     fake_mx.stream = _fake_stream_cm
     fake_mx.new_stream = _fake_device
@@ -168,9 +178,15 @@ async def test_vlm_batch_scheduler_streams_tokens(vlm_scheduler_module: Any) -> 
         def get_input_embeddings(self, *_args: Any, **_kwargs: Any) -> _FakeEmbedding:
             return _FakeEmbedding()
 
+    class _FakeProcessor:
+        @property
+        def detokenizer(self) -> _FakeDetokenizer:
+            return _FakeDetokenizer()
+
     class _FakeWrapper:
         model = _FakeInnerModel()
-        processor = types.SimpleNamespace(detokenizer=_FakeDetokenizer())
+        processor = _FakeProcessor()
+        config = types.SimpleNamespace(eos_token_id=2)
         kv_bits = None
         kv_group_size = 64
         quantized_kv_start = 0
@@ -195,6 +211,60 @@ async def test_vlm_batch_scheduler_streams_tokens(vlm_scheduler_module: Any) -> 
     assert [chunk.text for chunk in chunks] == ["<10>", "<11>"]
     assert chunks[-1].finish_reason == "length"
     assert chunks[-1].prompt_tokens == 3
+    assert _FakeVLMBatchGenerator.last_kwargs["stop_tokens"] == {2}
+
+
+@pytest.mark.asyncio
+async def test_vlm_batch_scheduler_uses_decode_when_detokenizer_is_shared(
+    vlm_scheduler_module: Any,
+) -> None:
+    """A shared processor detokenizer should not be reused across active requests."""
+
+    class _FakeTokenizer:
+        eos_token_id = 2
+
+        def decode(self, tokens: list[int]) -> str:
+            """Decode tokens into visible fake text."""
+            return "".join(f"<{token}>" for token in tokens)
+
+    class _FakeWrapper:
+        model = types.SimpleNamespace(language_model=object())
+        processor = types.SimpleNamespace(
+            tokenizer=_FakeTokenizer(),
+            detokenizer=_FakeDetokenizer(),
+        )
+        config = types.SimpleNamespace(eos_token_id=2)
+        kv_bits = None
+        kv_group_size = 64
+        quantized_kv_start = 0
+
+        def create_batch_prompt_kwargs(
+            self, _model_inputs: dict[str, Any]
+        ) -> tuple[list[int], dict[str, Any]]:
+            return [1, 2, 3], {"inputs_embeds": "embeds"}
+
+    scheduler = vlm_scheduler_module.VLMBatchScheduler(_FakeWrapper())
+    scheduler.start()
+    try:
+        first = scheduler.submit_stream(
+            model_inputs={"input_ids": _FakeArray([[1, 2, 3]])},
+            max_tokens=2,
+            logits_processors=[],
+        )
+        second = scheduler.submit_stream(
+            model_inputs={"input_ids": _FakeArray([[1, 2, 3]])},
+            max_tokens=2,
+            logits_processors=[],
+        )
+        first_chunks, second_chunks = await asyncio.gather(
+            _collect_stream(first),
+            _collect_stream(second),
+        )
+    finally:
+        scheduler.stop()
+
+    assert [chunk.text for chunk in first_chunks] == ["<10>", "<11>"]
+    assert [chunk.text for chunk in second_chunks] == ["<10>", "<11>"]
 
 
 def test_vlm_handler_does_not_batch_audio_inputs(monkeypatch: pytest.MonkeyPatch) -> None:
