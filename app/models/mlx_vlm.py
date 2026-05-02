@@ -5,13 +5,12 @@ from typing import Any
 
 import mlx.core as mx
 from mlx_vlm import load, stream_generate
-from mlx_vlm.models.cache import make_prompt_cache
+from mlx_vlm.utils import process_inputs_with_fallback
 from mlx_vlm.video_generate import process_vision_info
 from outlines.processors import JSONLogitsProcessor
 import torch
 
 from ..utils.outlines_transformer_tokenizer import OutlinesTransformerTokenizer
-from ..utils.prompt_cache import LRUPromptCache
 
 # Default model parameters
 DEFAULT_MAX_TOKENS = int(os.getenv("DEFAULT_MAX_TOKENS", "100000"))
@@ -92,9 +91,6 @@ class MLX_VLM:
     def get_model_type(self):
         return self.config.model_type
 
-    def create_prompt_cache(self) -> list[Any]:
-        return make_prompt_cache(self.model.language_model, max_kv_size=self.context_length)
-
     def create_input_prompt(
         self, messages: list[dict[str, str]], chat_template_kwargs: dict[str, Any]
     ) -> str:
@@ -105,21 +101,33 @@ class MLX_VLM:
         )
 
     def create_inputs(
-        self, text: str, images: list[str] = None, videos: list[str] = None
+        self,
+        text: str,
+        images: list[str] = None,
+        videos: list[str] = None,
+        audios: list[str] = None,
     ) -> dict[str, Any]:
-        return self.processor(
-            text=[text], images=images, videos=videos, padding=True, return_tensors="pt"
+        inputs = process_inputs_with_fallback(
+            self.processor,
+            prompts=[text],
+            images=images,
+            audio=audios,
+            videos=videos,
+            padding=True,
+            return_tensors="pt",
         )
+        if "attention_mask" in inputs and "mask" not in inputs:
+            inputs["mask"] = inputs.pop("attention_mask")
+        return inputs
 
     def __call__(
-        self, prompt: str, prompt_cache: list[Any] = None, stream: bool = False, **kwargs
+        self, prompt: str, stream: bool = False, **kwargs
     ) -> CompletionResponse | Generator[str, None, None]:
         """
         Generate text response from images and messages.
 
         Args:
             prompt (str): The input prompt text.
-            prompt_cache (List[Any], optional): Prompt cache for faster inference.
             stream (bool, optional): Whether to stream the response. Defaults to False.
             **kwargs: Additional model parameters (temperature, max_tokens, etc.)
                 - schema (dict, optional): JSON schema for structured output generation.
@@ -149,7 +157,7 @@ class MLX_VLM:
                 )
             )
 
-        model_params = kwargs.get("vision_inputs")
+        model_params = dict(kwargs.get("vision_inputs") or {})
         max_tokens = _get("max_tokens", None)
         if max_tokens is None:
             max_tokens = _get("max_completion_tokens", DEFAULT_MAX_TOKENS)
@@ -176,7 +184,6 @@ class MLX_VLM:
             self.model,
             self.processor,
             prompt=prompt,
-            prompt_cache=prompt_cache,
             logits_processors=logits_processors,
             **model_params,
         )
@@ -241,8 +248,6 @@ if __name__ == "__main__":
             ],
         }
     ]
-    prompt_cache = LRUPromptCache()
-
     input_prompt = model.create_input_prompt(messages, chat_template_kwargs)
 
     image_inputs, video_inputs = process_vision_info(messages)

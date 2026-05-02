@@ -1,4 +1,6 @@
 import asyncio
+import base64
+import binascii
 import gc
 import os
 
@@ -11,7 +13,7 @@ class AudioProcessor(BaseProcessor):
     def __init__(self, max_workers: int = 4, cache_size: int = 1000):
         super().__init__(max_workers, cache_size)
         # Supported audio formats
-        self._supported_formats = {".mp3", ".wav"}
+        self._supported_formats = {".mp3", ".wav", ".m4a", ".ogg", ".flac", ".aac"}
 
     def _get_media_format(self, media_url: str, data: bytes = None) -> str:
         """Determine audio format from URL or data."""
@@ -85,9 +87,24 @@ class AudioProcessor(BaseProcessor):
         """Get media type name for logging."""
         return "audio"
 
-    async def process_audio_url(self, audio_url: str) -> str:
+    def _format_raw_base64_audio(self, audio_data: str, audio_format: str | None) -> str:
+        """Return a data URL for OpenAI raw base64 audio payloads."""
+        if audio_data.startswith(("data:", "http://", "https://")) or os.path.exists(audio_data):
+            return audio_data
+
+        try:
+            base64.b64decode(audio_data, validate=True)
+        except (binascii.Error, ValueError):
+            return audio_data
+
+        media_format = audio_format or "mp3"
+        return f"data:audio/{media_format};base64,{audio_data}"
+
+    async def process_audio_url(self, audio_url: str, audio_format: str | None = None) -> str:
         """Process a single audio URL and return path to cached file."""
-        return await self._process_single_media(audio_url)
+        return await self._process_single_media(
+            self._format_raw_base64_audio(audio_url, audio_format)
+        )
 
     async def process_audio_urls(self, audio_urls: list[str]) -> list[str]:
         """Process multiple audio URLs and return paths to cached files."""

@@ -171,7 +171,10 @@ class MLXVLMHandler:
             log_debug_prompt(input_prompt)
 
         image_inputs, video_inputs = process_vision_info(messages)
-        vision_inputs = self.model.create_inputs(input_prompt, image_inputs, video_inputs)
+        audio_inputs = request_dict["audios"] or None
+        vision_inputs = self.model.create_inputs(
+            input_prompt, image_inputs, video_inputs, audio_inputs
+        )
 
         for key, value in vision_inputs.items():
             if isinstance(value, torch.Tensor):
@@ -683,7 +686,9 @@ class MLXVLMHandler:
 
         if isinstance(content_part, ChatCompletionContentPartInputAudio):
             audio_url = content_part.input_audio.data
-            audio_path = await self.audio_processor.process_audio_url(audio_url)
+            audio_path = await self.audio_processor.process_audio_url(
+                audio_url, audio_format=content_part.input_audio.format
+            )
             return {"content_part": {"type": "audio", "audio": audio_path}, "path": audio_path}
 
         if isinstance(content_part, ChatCompletionContentPartVideo):
