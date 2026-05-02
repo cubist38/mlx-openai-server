@@ -113,3 +113,29 @@ def test_vlm_create_inputs_forwards_audio_and_normalizes_mask(
     assert inputs["videos_seen"] == ["video.mp4"]
     assert inputs["mask"] == [1, 1, 1]
     assert "attention_mask" not in inputs
+
+
+def test_vlm_create_input_prompt_uses_tokenizer_chat_template(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Processors without chat_template should fall back to tokenizer.chat_template."""
+    module = _load_mlx_vlm_model_module(monkeypatch)
+
+    class FakeProcessor:
+        def __init__(self) -> None:
+            self.tokenizer = types.SimpleNamespace(chat_template="tokenizer-template")
+
+        def apply_chat_template(self, messages: list[dict[str, Any]], **kwargs: Any) -> str:
+            if getattr(self, "chat_template", None) is None:
+                raise ValueError("processor missing chat template")
+            return f"{self.chat_template}:{messages[0]['content']}"
+
+    model = object.__new__(module.MLX_VLM)
+    model.processor = FakeProcessor()
+
+    prompt = model.create_input_prompt(
+        [{"role": "user", "content": "hello"}],
+        {},
+    )
+
+    assert prompt == "tokenizer-template:hello"

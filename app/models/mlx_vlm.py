@@ -81,7 +81,11 @@ class MLX_VLM:
                 if not os.path.exists(chat_template_file):
                     raise ValueError(f"Chat template file {chat_template_file} does not exist")
                 with open(chat_template_file) as f:
-                    self.processor.chat_template = f.read()
+                    template_content = f.read()
+                    self.processor.chat_template = template_content
+                    if hasattr(self.processor, "tokenizer"):
+                        self.processor.tokenizer.chat_template = template_content
+            self._ensure_processor_chat_template()
         except Exception as e:
             raise ValueError(f"Error loading model: {e!s}")
 
@@ -91,10 +95,20 @@ class MLX_VLM:
     def get_model_type(self):
         return self.config.model_type
 
+    def _ensure_processor_chat_template(self) -> None:
+        """Copy tokenizer chat template onto processors that do not expose one."""
+        if getattr(self.processor, "chat_template", None) is not None:
+            return
+        tokenizer = getattr(self.processor, "tokenizer", None)
+        tokenizer_template = getattr(tokenizer, "chat_template", None)
+        if tokenizer_template is not None:
+            self.processor.chat_template = tokenizer_template
+
     def create_input_prompt(
         self, messages: list[dict[str, str]], chat_template_kwargs: dict[str, Any]
     ) -> str:
         chat_template_kwargs.pop("_partial_mode", None)
+        self._ensure_processor_chat_template()
 
         return self.processor.apply_chat_template(
             messages, tokenize=False, add_generation_prompt=True, **chat_template_kwargs
