@@ -271,6 +271,13 @@ LM-specific memory and batching options:
 | `--draft-model-path` | unset | Smaller draft model for speculative decoding |
 | `--num-draft-tokens` | `2` | Draft tokens proposed per step |
 
+Continuous batching currently supports deterministic greedy/no-explicit-seed
+requests. Requests with an explicit positive `seed` (`seed > 0`) are routed to
+the single-request generation path because per-request seeded RNG semantics are
+not supported by the batch generator yet. These fallback requests share the
+same model lock with active batches, so they may briefly wait for a batch decode
+step, but they do not join the active batch.
+
 ## Multi-Model Config
 
 Use YAML when you want several models behind one server:
