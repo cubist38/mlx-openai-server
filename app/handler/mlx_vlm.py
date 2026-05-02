@@ -659,6 +659,20 @@ class MLXVLMHandler:
             return False
         if request.seed is not None and request.seed > 0:
             return False
+        model_inputs = model_params.get("model_inputs") or {}
+        # Upstream mlx-vlm's batch helper explicitly does not support audio
+        # batching yet. Audio models can produce valid-looking but incoherent
+        # decode output when routed through BatchGenerator, so keep them on
+        # the proven single-request path.
+        if any(
+            key in model_inputs
+            for key in (
+                "input_features",
+                "feature_attention_mask",
+                "audio_feature_lengths",
+            )
+        ):
+            return False
 
         temperature = model_params.get("temperature")
         effective_temperature = DEFAULT_TEMPERATURE if temperature is None else float(temperature)

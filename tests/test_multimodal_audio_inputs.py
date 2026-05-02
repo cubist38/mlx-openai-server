@@ -26,7 +26,7 @@ def _load_mlx_vlm_model_module(monkeypatch: pytest.MonkeyPatch) -> Any:
 
     fake_utils_module = types.ModuleType("mlx_vlm.utils")
 
-    def fake_process_inputs_with_fallback(*args: Any, **kwargs: Any) -> dict[str, Any]:
+    def fake_prepare_inputs(*args: Any, **kwargs: Any) -> dict[str, Any]:
         return {
             "input_ids": [1, 2, 3],
             "attention_mask": [1, 1, 1],
@@ -34,7 +34,7 @@ def _load_mlx_vlm_model_module(monkeypatch: pytest.MonkeyPatch) -> Any:
             "videos_seen": kwargs["videos"],
         }
 
-    fake_utils_module.process_inputs_with_fallback = fake_process_inputs_with_fallback
+    fake_utils_module.prepare_inputs = fake_prepare_inputs
 
     fake_video_module = types.ModuleType("mlx_vlm.video_generate")
 

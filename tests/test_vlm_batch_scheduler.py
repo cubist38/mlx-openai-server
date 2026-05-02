@@ -8,6 +8,7 @@ import importlib
 import sys
 import types
 from typing import Any
+from unittest.mock import Mock
 
 import pytest
 
@@ -194,3 +195,41 @@ async def test_vlm_batch_scheduler_streams_tokens(vlm_scheduler_module: Any) -> 
     assert [chunk.text for chunk in chunks] == ["<10>", "<11>"]
     assert chunks[-1].finish_reason == "length"
     assert chunks[-1].prompt_tokens == 3
+
+
+def test_vlm_handler_does_not_batch_audio_inputs(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Audio-derived model inputs should stay on the single-request VLM path."""
+    fake_scheduler = types.ModuleType("app.core.vlm_batch_scheduler")
+    fake_scheduler.VLM_BATCHING_AVAILABLE = True
+    fake_scheduler.VLMBatchScheduler = object
+    monkeypatch.setitem(sys.modules, "app.core.vlm_batch_scheduler", fake_scheduler)
+
+    fake_core = types.ModuleType("app.core")
+    fake_core.AudioProcessor = object
+    fake_core.ImageProcessor = object
+    fake_core.InferenceWorker = object
+    fake_core.VideoProcessor = object
+    monkeypatch.setitem(sys.modules, "app.core", fake_core)
+
+    fake_model_module = types.ModuleType("app.models.mlx_vlm")
+    fake_model_module.DEFAULT_TEMPERATURE = 0.0
+    fake_model_module.DEFAULT_TOP_P = 1.0
+    fake_model_module.CompletionResponse = object
+    fake_model_module.MLX_VLM = object
+    monkeypatch.setitem(sys.modules, "app.models.mlx_vlm", fake_model_module)
+    monkeypatch.delitem(sys.modules, "app.handler.mlx_vlm", raising=False)
+
+    handler_module = importlib.import_module("app.handler.mlx_vlm")
+    handler = handler_module.MLXVLMHandler.__new__(handler_module.MLXVLMHandler)
+
+    request = Mock(seed=0)
+    model_params = {
+        "temperature": 0.0,
+        "top_p": 1.0,
+        "model_inputs": {
+            "input_features": object(),
+            "feature_attention_mask": object(),
+        },
+    }
+
+    assert handler._is_request_batchable(request, model_params) is False

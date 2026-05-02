@@ -5,7 +5,7 @@ from typing import Any
 
 import mlx.core as mx
 from mlx_vlm import load, stream_generate
-from mlx_vlm.utils import process_inputs_with_fallback
+from mlx_vlm.utils import prepare_inputs
 from outlines.processors import JSONLogitsProcessor
 import torch
 
@@ -163,14 +163,24 @@ class MLX_VLM:
         videos: list[Any] = None,
         audios: list[str] = None,
     ) -> dict[str, Any]:
-        inputs = process_inputs_with_fallback(
+        model = getattr(self, "model", None)
+        config = getattr(self, "config", getattr(model, "config", None))
+        model_type = getattr(config, "model_type", None)
+        add_special_tokens = (
+            getattr(self.processor, "chat_template", None) is None
+            if model_type in ["gemma3", "gemma3n", "gemma4"]
+            else True
+        )
+        image_token_index = getattr(config, "image_token_index", None)
+        inputs = prepare_inputs(
             self.processor,
-            prompts=[text],
             images=images,
             audio=audios,
             videos=videos,
+            prompts=[text],
+            image_token_index=image_token_index,
+            add_special_tokens=add_special_tokens,
             padding=True,
-            return_tensors="pt",
         )
         if "attention_mask" in inputs and "mask" not in inputs:
             inputs["mask"] = inputs.pop("attention_mask")
