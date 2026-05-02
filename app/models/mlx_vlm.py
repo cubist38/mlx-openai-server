@@ -6,7 +6,6 @@ from typing import Any
 import mlx.core as mx
 from mlx_vlm import load, stream_generate
 from mlx_vlm.utils import process_inputs_with_fallback
-from mlx_vlm.video_generate import process_vision_info
 from outlines.processors import JSONLogitsProcessor
 import torch
 
@@ -18,6 +17,40 @@ DEFAULT_TEMPERATURE = float(os.getenv("DEFAULT_TEMPERATURE", "0.0"))
 DEFAULT_TOP_P = float(os.getenv("DEFAULT_TOP_P", "1.0"))
 DEFAULT_SEED = int(os.getenv("DEFAULT_SEED", "0"))
 DEFAULT_REPETITION_CONTEXT_SIZE = int(os.getenv("DEFAULT_REPETITION_CONTEXT_SIZE", "20"))
+
+
+def _extract_vision_inputs(
+    messages: list[dict[str, Any]],
+) -> tuple[list[Any] | None, list[Any] | None]:
+    """Extract image and video values from formatted chat messages.
+
+    Parameters
+    ----------
+    messages : list[dict[str, Any]]
+        Chat messages after handler-level multimodal content reformatting.
+
+    Returns
+    -------
+    tuple[list[Any] | None, list[Any] | None]
+        Image and video inputs for ``mlx-vlm`` processors. ``None`` is used
+        when a media type is absent.
+    """
+    image_inputs: list[Any] = []
+    video_inputs: list[Any] = []
+    for message in messages:
+        content = message.get("content")
+        if not isinstance(content, list):
+            continue
+        for item in content:
+            if not isinstance(item, dict):
+                continue
+            if "image" in item:
+                image_inputs.append(item["image"])
+            elif "image_url" in item:
+                image_inputs.append(item["image_url"])
+            elif "video" in item:
+                video_inputs.append(item["video"])
+    return image_inputs or None, video_inputs or None
 
 
 @dataclass
@@ -157,7 +190,7 @@ class MLX_VLM:
         audios: list[str] | None = None,
     ) -> dict[str, Any]:
         """Create MLX-ready multimodal inputs from formatted chat messages."""
-        image_inputs, video_inputs = process_vision_info(messages)
+        image_inputs, video_inputs = _extract_vision_inputs(messages)
         inputs = self._create_processor_inputs(
             text,
             images=image_inputs,
@@ -192,7 +225,9 @@ class MLX_VLM:
         """
         max_tokens = params.get("max_tokens")
         if max_tokens is None:
-            max_tokens = params.get("max_completion_tokens", DEFAULT_MAX_TOKENS)
+            max_tokens = params.get("max_completion_tokens")
+        if max_tokens is None:
+            max_tokens = DEFAULT_MAX_TOKENS
         return int(max_tokens)
 
     def build_logits_processors(self, params: dict[str, Any]) -> list[Any]:
@@ -394,7 +429,7 @@ if __name__ == "__main__":
     ]
     input_prompt = model.create_input_prompt(messages, chat_template_kwargs)
 
-    image_inputs, video_inputs = process_vision_info(messages)
+    image_inputs, video_inputs = _extract_vision_inputs(messages)
 
     inputs = model.create_inputs(input_prompt, image_inputs, video_inputs)
 

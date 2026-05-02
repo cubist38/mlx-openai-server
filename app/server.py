@@ -19,6 +19,7 @@ from __future__ import annotations
 
 from contextlib import asynccontextmanager
 import gc
+import sys
 import time
 from typing import Any
 
@@ -107,7 +108,7 @@ def configure_logging(
 
     # Add console handler
     logger.add(
-        lambda msg: print(msg),
+        sys.stderr.write,
         level=log_level,
         format="<green>{time:YYYY-MM-DD HH:mm:ss}</green> | "
         "<level>{level: <8}</level> | "

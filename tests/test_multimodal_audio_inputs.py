@@ -159,6 +159,26 @@ def test_vlm_create_model_inputs_owns_media_extraction(
     assert inputs["videos_seen"] == ["video.mp4"]
 
 
+def test_vlm_resolve_max_tokens_falls_back_when_values_are_none(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Explicit null max token fields should use the VLM default."""
+    module = _load_mlx_vlm_model_module(monkeypatch)
+    model = object.__new__(module.MLX_VLM)
+
+    assert (
+        model.resolve_max_tokens(
+            {
+                "max_tokens": None,
+                "max_completion_tokens": None,
+            }
+        )
+        == module.DEFAULT_MAX_TOKENS
+    )
+    assert model.resolve_max_tokens({"max_tokens": None, "max_completion_tokens": 7}) == 7
+    assert model.resolve_max_tokens({"max_tokens": 5, "max_completion_tokens": 7}) == 5
+
+
 def test_vlm_create_input_prompt_uses_tokenizer_chat_template(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
