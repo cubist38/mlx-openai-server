@@ -76,6 +76,9 @@ class MLX_VLM:
             )
             self.config = self.model.config
             self.context_length = context_length
+            self.kv_bits: int | None = None
+            self.kv_group_size: int = 64
+            self.quantized_kv_start: int = 0
             self.outlines_tokenizer = OutlinesTransformerTokenizer(self.processor.tokenizer)
             if chat_template_file:
                 if not os.path.exists(chat_template_file):
@@ -94,6 +97,11 @@ class MLX_VLM:
 
     def get_model_type(self):
         return self.config.model_type
+
+    @property
+    def language_model(self) -> Any:
+        """Return the text decoder module used by ``mlx-vlm`` batch generation."""
+        return self.model.language_model
 
     def _ensure_processor_chat_template(self) -> None:
         """Copy tokenizer chat template onto processors that do not expose one."""
@@ -168,6 +176,93 @@ class MLX_VLM:
         """Create processor inputs from already extracted media values."""
         inputs = self._create_processor_inputs(text, images, videos, audios)
         return self._to_mlx_inputs(inputs)
+
+    def resolve_max_tokens(self, params: dict[str, Any]) -> int:
+        """Resolve maximum generation tokens for VLM generation.
+
+        Parameters
+        ----------
+        params : dict[str, Any]
+            Request parameters supplied by the OpenAI handler.
+
+        Returns
+        -------
+        int
+            Maximum number of tokens to generate.
+        """
+        max_tokens = params.get("max_tokens")
+        if max_tokens is None:
+            max_tokens = params.get("max_completion_tokens", DEFAULT_MAX_TOKENS)
+        return int(max_tokens)
+
+    def build_logits_processors(self, params: dict[str, Any]) -> list[Any]:
+        """Build request-specific logits processors for VLM generation.
+
+        Parameters
+        ----------
+        params : dict[str, Any]
+            Request model parameters, including optional repetition settings
+            and JSON schema.
+
+        Returns
+        -------
+        list[Any]
+            Logits processors accepted by ``mlx-vlm`` batch generation.
+        """
+        from mlx_lm.sample_utils import make_logits_processors
+
+        processors: list[Any] = list(
+            make_logits_processors(
+                logit_bias=params.get("logit_bias"),
+                repetition_penalty=params.get("repetition_penalty"),
+                repetition_context_size=params.get(
+                    "repetition_context_size", DEFAULT_REPETITION_CONTEXT_SIZE
+                ),
+            )
+        )
+        json_schema = params.get("schema")
+        if json_schema:
+            processors.append(
+                JSONLogitsProcessor(
+                    schema=json_schema,
+                    tokenizer=self.outlines_tokenizer,
+                    tensor_library_name="mlx",
+                )
+            )
+        return processors
+
+    def create_batch_prompt_kwargs(
+        self, model_inputs: dict[str, Any]
+    ) -> tuple[list[int], dict[str, Any]]:
+        """Create ``mlx-vlm`` batcher prompt kwargs from prepared model inputs.
+
+        Parameters
+        ----------
+        model_inputs : dict[str, Any]
+            MLX-ready inputs produced by :meth:`create_model_inputs`.
+
+        Returns
+        -------
+        tuple[list[int], dict[str, Any]]
+            Token IDs for one request and embedding kwargs for
+            ``mlx_vlm.generate.BatchGenerator.insert``.
+        """
+        inputs = dict(model_inputs)
+        input_ids = inputs.pop("input_ids")
+        pixel_values = inputs.pop("pixel_values", None)
+        mask = inputs.pop("mask", inputs.pop("attention_mask", None))
+
+        embedding_output = self.model.get_input_embeddings(
+            input_ids,
+            pixel_values,
+            mask=mask,
+            **inputs,
+        )
+        prompt_kwargs = {**inputs, **embedding_output.to_dict()}
+        token_ids = (
+            input_ids.tolist()[0] if getattr(input_ids, "ndim", 0) == 2 else input_ids.tolist()
+        )
+        return [int(token) for token in token_ids], prompt_kwargs
 
     def __call__(
         self, prompt: str, stream: bool = False, **kwargs
