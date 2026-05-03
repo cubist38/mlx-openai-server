@@ -449,6 +449,11 @@ class MLXLMHandler:
 
         with self._generation_lock:
             cache, rest_input_ids = self.prompt_cache.fetch_nearest_cache(input_ids)
+            cache, rest_input_ids = self._normalize_nonbatch_cache_hit(
+                input_ids,
+                cache,
+                rest_input_ids,
+            )
             if cache is None:
                 cache = self.model.create_prompt_cache()
 
@@ -542,6 +547,70 @@ class MLXLMHandler:
             checkpoint_position=checkpoint_position,
             checkpoint_callback=checkpoint_callback,
         )
+
+    def _normalize_nonbatch_cache_hit(
+        self,
+        input_ids: list[int],
+        cache: list[Any] | None,
+        rest_input_ids: list[int],
+    ) -> tuple[list[Any] | None, list[int]]:
+        """Ensure fallback generation always receives at least one prompt token.
+
+        Parameters
+        ----------
+        input_ids : list[int]
+            Full encoded prompt tokens.
+        cache : list[Any] | None
+            Prompt cache returned by the LRU lookup.
+        rest_input_ids : list[int]
+            Prompt suffix not covered by ``cache``.
+
+        Returns
+        -------
+        tuple[list[Any] | None, list[int]]
+            A cache and prompt suffix suitable for the single-request
+            generator. Exact cache hits are backed off by one token when
+            possible; otherwise the cache hit is discarded.
+        """
+        if cache is None or rest_input_ids:
+            return cache, rest_input_ids
+        if len(input_ids) <= 1:
+            return None, input_ids
+
+        try:
+            from mlx_lm.models.cache import can_trim_prompt_cache, trim_prompt_cache
+        except ImportError as exc:
+            logger.debug(f"Could not import prompt-cache trim helpers: {exc!s}")
+        else:
+            try:
+                if can_trim_prompt_cache(cache):
+                    trim_prompt_cache(cache, 1)
+                    return cache, input_ids[-1:]
+            except (AttributeError, RuntimeError, TypeError, ValueError) as exc:
+                logger.warning(f"Failed to back off exact prompt-cache hit: {exc!s}")
+
+        try:
+            prefix_cache, prefix_rest = self.prompt_cache.fetch_nearest_cache(input_ids[:-1])
+        except (
+            AttributeError,
+            KeyError,
+            IndexError,
+            OSError,
+            RuntimeError,
+            TypeError,
+            ValueError,
+        ) as exc:
+            logger.warning(f"Failed to find shorter prompt-cache hit: {exc!s}")
+        else:
+            cached_prefix_len = len(input_ids[:-1]) - len(prefix_rest)
+            if prefix_cache is not None and cached_prefix_len < len(input_ids):
+                return prefix_cache, input_ids[cached_prefix_len:]
+
+        logger.info(
+            "Discarding exact prompt-cache hit because fallback generation needs at least "
+            f"one prompt token (prompt_tokens={len(input_ids)})"
+        )
+        return None, input_ids
 
     async def generate_text_stream(  # noqa: C901
         self, request: ChatCompletionRequest

@@ -335,6 +335,7 @@ class TestModelCheckpointPrefill:
         monkeypatch.setitem(sys.modules, "mlx_lm.sample_utils", fake_sample)
 
         fake_utils = types.ModuleType("mlx_lm.utils")
+        fake_utils._download = Mock()
         fake_utils.load = Mock()
         monkeypatch.setitem(sys.modules, "mlx_lm.utils", fake_utils)
 
@@ -371,6 +372,7 @@ class TestModelCheckpointPrefill:
         model.bos_token = "<s>"
         model.model_type = "test"
         model.debug = False
+        model.generation_config = {}
         model.outlines_tokenizer = Mock()
         model._cache_is_trimmable = False
         model._num_model_cache_layers = 2
@@ -559,3 +561,65 @@ class TestCheckpointOnShorterCacheHit:
         # If cached_prefix_len >= boundary, no checkpoint should be set
         cached_prefix_len = boundary + 5
         assert cached_prefix_len >= boundary, "Cached prefix covers the boundary"
+
+
+class TestNonBatchExactCacheHit:
+    """Verify fallback generation never receives an empty prompt suffix."""
+
+    def _make_handler(self, monkeypatch: pytest.MonkeyPatch) -> Any:
+        """Create a handler with a fake prompt cache for exact-hit tests."""
+        MLXLMHandler = _load_handler_class(monkeypatch)
+        handler = MLXLMHandler.__new__(MLXLMHandler)
+        handler.prompt_cache = Mock()
+        return handler
+
+    def test_discards_unbackable_exact_hit(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Non-trimmable exact hits without a shorter checkpoint fall back to full prefill."""
+        handler = self._make_handler(monkeypatch)
+        input_ids = [1, 2, 3, 4]
+        exact_cache = [Mock(state=[])]
+        handler.prompt_cache.fetch_nearest_cache.return_value = (None, input_ids[:-1])
+
+        cache, rest = handler._normalize_nonbatch_cache_hit(input_ids, exact_cache, [])
+
+        assert cache is None
+        assert rest == input_ids
+
+    def test_uses_shorter_checkpoint_for_exact_hit(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A shorter checkpoint can back off a non-trimmable exact cache hit."""
+        handler = self._make_handler(monkeypatch)
+        input_ids = [1, 2, 3, 4]
+        exact_cache = [Mock(state=[])]
+        prefix_cache = [Mock(state=[])]
+        handler.prompt_cache.fetch_nearest_cache.return_value = (prefix_cache, [])
+
+        cache, rest = handler._normalize_nonbatch_cache_hit(input_ids, exact_cache, [])
+
+        assert cache is prefix_cache
+        assert rest == [4]
+
+    def test_trims_trimmable_exact_hit(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Trimmable exact hits are backed off by one token in-place."""
+        handler = self._make_handler(monkeypatch)
+        cache_module = sys.modules["mlx_lm.models.cache"]
+        trim_calls: list[tuple[Any, int]] = []
+        cache_module.can_trim_prompt_cache = lambda _cache: True
+        cache_module.trim_prompt_cache = lambda cache, n: trim_calls.append((cache, n))
+
+        input_ids = [1, 2, 3, 4]
+        exact_cache = [Mock(state=[])]
+
+        cache, rest = handler._normalize_nonbatch_cache_hit(input_ids, exact_cache, [])
+
+        assert cache is exact_cache
+        assert rest == [4]
+        assert trim_calls == [(exact_cache, 1)]
