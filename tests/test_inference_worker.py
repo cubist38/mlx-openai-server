@@ -41,9 +41,11 @@ async def test_submit_runs_inside_worker_thread_local_stream(
     worker = InferenceWorker()
     worker.start()
     try:
-        result = await worker.submit(lambda: local.active_stream is stream_obj)
+        result = await worker.submit(
+            lambda: local.active_stream is stream_obj and worker._stream is stream_obj
+        )
     finally:
         worker.stop()
 
     assert result is True
-    assert worker._stream is stream_obj
+    assert worker._stream is None

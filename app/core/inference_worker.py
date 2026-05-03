@@ -66,21 +66,24 @@ class InferenceWorker:
 
     def _run(self) -> None:
         stream_context = self._create_stream_context()
-        while self._running:
-            try:
-                work = self._work_queue.get(timeout=0.1)
-            except queue.Empty:
-                continue
-            with self._lock:
-                self._active = True
-            try:
-                with stream_context():
-                    work()
-            except Exception:
-                logger.exception("Inference worker: exception escaped work closure")
-            finally:
+        try:
+            while self._running:
+                try:
+                    work = self._work_queue.get(timeout=0.1)
+                except queue.Empty:
+                    continue
                 with self._lock:
-                    self._active = False
+                    self._active = True
+                try:
+                    with stream_context():
+                        work()
+                except Exception:
+                    logger.exception("Inference worker: exception escaped work closure")
+                finally:
+                    with self._lock:
+                        self._active = False
+        finally:
+            self._stream = None
 
     def _create_stream_context(self) -> Callable[[], Any]:
         """Create a worker-thread-local MLX stream context when MLX is available.
@@ -96,11 +99,15 @@ class InferenceWorker:
             logger.debug(f"Inference worker could not initialize MLX stream: {exc!s}")
             return nullcontext
 
-        new_thread_local_stream = getattr(mx, "new_thread_local_stream", None)
-        if new_thread_local_stream is not None:
-            self._stream = new_thread_local_stream(mx.default_device())
-        else:
-            self._stream = mx.new_stream(mx.default_device())
+        try:
+            new_thread_local_stream = getattr(mx, "new_thread_local_stream", None)
+            if new_thread_local_stream is not None:
+                self._stream = new_thread_local_stream(mx.default_device())
+            else:
+                self._stream = mx.new_stream(mx.default_device())
+        except RuntimeError as exc:
+            logger.debug(f"Inference worker could not create MLX stream: {exc!s}")
+            return nullcontext
         return lambda: mx.stream(self._stream)
 
     def _record(self, success: bool) -> None:
