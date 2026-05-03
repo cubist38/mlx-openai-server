@@ -19,6 +19,7 @@ from __future__ import annotations
 
 from contextlib import asynccontextmanager
 import gc
+import importlib.util
 import time
 from typing import Any
 
@@ -26,18 +27,12 @@ from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from loguru import logger
-import mlx.core as mx
 import uvicorn
 
 from .api.endpoints import router
 from .config import MLXServerConfig, ModelEntryConfig, MultiModelServerConfig
 from .core.handler_process import HandlerProcessProxy
 from .core.model_registry import ModelRegistry
-from .handler import MLXFluxHandler
-from .handler.mlx_embeddings import MLXEmbeddingsHandler
-from .handler.mlx_lm import MLXLMHandler
-from .handler.mlx_vlm import MLXVLMHandler
-from .handler.mlx_whisper import MLXWhisperHandler
 from .version import __version__
 
 MFLUX_INSTALL_HINT = (
@@ -51,7 +46,7 @@ def ensure_image_handler_available(model_type: str) -> None:
     if model_type not in {"image-generation", "image-edit"}:
         return
 
-    if MLXFluxHandler is not None:
+    if importlib.util.find_spec("mflux") is not None:
         return
 
     raise RuntimeError(MFLUX_INSTALL_HINT)
@@ -70,6 +65,13 @@ _SAMPLING_DEFAULT_FIELDS: tuple[str, ...] = (
     "default_seed",
     "default_repetition_context_size",
 )
+
+
+def _clear_mlx_cache() -> None:
+    """Clear MLX cache only after a handler path actually needs MLX."""
+    import mlx.core as mx
+
+    mx.clear_cache()
 
 
 def _attach_sampling_defaults(handler: Any, config: Any) -> Any:
@@ -195,7 +197,7 @@ def create_lifespan(config_args: MLXServerConfig):
             raise
 
         # Initial memory cleanup
-        mx.clear_cache()
+        _clear_mlx_cache()
         gc.collect()
 
         yield
@@ -212,7 +214,7 @@ def create_lifespan(config_args: MLXServerConfig):
                 logger.error(f"Error during shutdown: {e!s}")
 
         # Final memory cleanup
-        mx.clear_cache()
+        _clear_mlx_cache()
         gc.collect()
 
     return lifespan
@@ -244,6 +246,8 @@ def create_handler_from_config(model_cfg: ModelEntryConfig) -> Any:
     model_path = model_cfg.model_path
 
     if model_cfg.model_type == "multimodal":
+        from .handler.mlx_vlm import MLXVLMHandler
+
         return _attach_sampling_defaults(
             MLXVLMHandler(
                 model_path=model_path,
@@ -265,6 +269,8 @@ def create_handler_from_config(model_cfg: ModelEntryConfig) -> Any:
 
     if model_cfg.model_type == "image-generation":
         ensure_image_handler_available(model_cfg.model_type)
+        from .handler.mflux import MLXFluxHandler
+
         return _attach_sampling_defaults(
             MLXFluxHandler(
                 model_path=model_path,
@@ -278,6 +284,8 @@ def create_handler_from_config(model_cfg: ModelEntryConfig) -> Any:
 
     if model_cfg.model_type == "image-edit":
         ensure_image_handler_available(model_cfg.model_type)
+        from .handler.mflux import MLXFluxHandler
+
         return _attach_sampling_defaults(
             MLXFluxHandler(
                 model_path=model_path,
@@ -290,6 +298,8 @@ def create_handler_from_config(model_cfg: ModelEntryConfig) -> Any:
         )
 
     if model_cfg.model_type == "embeddings":
+        from .handler.mlx_embeddings import MLXEmbeddingsHandler
+
         return _attach_sampling_defaults(
             MLXEmbeddingsHandler(
                 model_path=model_path,
@@ -298,6 +308,8 @@ def create_handler_from_config(model_cfg: ModelEntryConfig) -> Any:
         )
 
     if model_cfg.model_type == "whisper":
+        from .handler.mlx_whisper import MLXWhisperHandler
+
         return _attach_sampling_defaults(
             MLXWhisperHandler(
                 model_path=model_path,
@@ -306,6 +318,8 @@ def create_handler_from_config(model_cfg: ModelEntryConfig) -> Any:
         )
 
     # Default: language model ("lm")
+    from .handler.mlx_lm import MLXLMHandler
+
     return _attach_sampling_defaults(
         MLXLMHandler(
             model_path=model_path,
@@ -453,7 +467,7 @@ def create_multi_lifespan(config: MultiModelServerConfig):
             raise
 
         # Initial memory cleanup (main process only)
-        mx.clear_cache()
+        _clear_mlx_cache()
         gc.collect()
 
         yield
@@ -463,7 +477,7 @@ def create_multi_lifespan(config: MultiModelServerConfig):
         await registry.cleanup_all()
 
         # Final memory cleanup
-        mx.clear_cache()
+        _clear_mlx_cache()
         gc.collect()
 
     return lifespan
@@ -556,7 +570,7 @@ def setup_server(config_args: MLXServerConfig | MultiModelServerConfig) -> uvico
 
         # Clean up memory every 50 requests
         if request.app.state.request_count % 50 == 0:
-            mx.clear_cache()
+            _clear_mlx_cache()
             gc.collect()
             logger.debug(
                 f"Performed memory cleanup after {request.app.state.request_count} requests"

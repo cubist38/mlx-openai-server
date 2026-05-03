@@ -307,6 +307,44 @@ class MLXLMHandler:
         with self._generation_lock:
             yield from self.model(*args, **kwargs)
 
+    def _generate_with_lock_and_cache_persist(
+        self,
+        cache_key: list[int],
+        cache: list[Any] | None,
+        *args: Any,
+        **kwargs: Any,
+    ) -> Any:
+        """Run non-stream generation and persist its prompt cache on the worker thread."""
+        with self._generation_lock:
+            response = self.model(*args, **kwargs)
+            if cache is not None:
+                try:
+                    self.prompt_cache.insert_cache(cache_key + response.tokens, cache)
+                except Exception as cache_error:  # noqa: BLE001 - cache persistence is best-effort
+                    logger.warning(f"Failed to persist prompt cache: {cache_error}")
+            return response
+
+    def _stream_with_lock_and_cache_persist(
+        self,
+        cache_key: list[int],
+        cache: list[Any] | None,
+        *args: Any,
+        **kwargs: Any,
+    ) -> Any:
+        """Stream non-batched generation and persist its cache on the worker thread."""
+        with self._generation_lock:
+            try:
+                for chunk in self.model(*args, **kwargs):
+                    if chunk is not None:
+                        cache_key.append(chunk.token)
+                    yield chunk
+            finally:
+                if cache is not None:
+                    try:
+                        self.prompt_cache.insert_cache(cache_key, cache)
+                    except Exception as cache_error:  # noqa: BLE001 - cache persistence is best-effort
+                        logger.warning(f"Failed to persist prompt cache: {cache_error}")
+
     def _insert_prompt_cache(
         self,
         cache_key: list[int],
@@ -636,14 +674,8 @@ class MLXLMHandler:
         Yields:
             str or dict: Response chunks (str) followed by usage info (dict) at the end.
         """
-        cache: list[Any] | None = None
-        cache_key: list[int] | None = None
-        cache_inserted = False
-
         try:
             ctx = await self._build_inference_context(request)
-            cache = ctx.cache
-            cache_key = ctx.cache_key
             total_input_tokens = ctx.total_input_tokens
             total_cached_tokens = ctx.total_cached_tokens
             model_params = ctx.model_params
@@ -672,9 +704,11 @@ class MLXLMHandler:
                 response_generator = self._submit_batched_stream(scheduler, ctx)
             else:
                 response_generator = self.inference_worker.submit_stream(
-                    self._stream_with_lock,
+                    self._stream_with_lock_and_cache_persist,
+                    list(ctx.cache_key),
+                    ctx.cache,
                     input_ids=ctx.rest_input_ids,
-                    prompt_cache=cache,
+                    prompt_cache=ctx.cache,
                     stream=True,
                     **request_data,
                 )
@@ -695,7 +729,6 @@ class MLXLMHandler:
                     final_chunk = chunk
                     text = chunk.text
                     raw_text += text
-                    cache_key.append(chunk.token)
 
                     if unified_parser:
                         if self.debug:
@@ -757,7 +790,6 @@ class MLXLMHandler:
                     final_chunk = chunk
                     text = chunk.text
                     raw_text += text
-                    cache_key.append(chunk.token)
                     if is_first_chunk:
                         if reasoning_parser and hasattr(
                             reasoning_parser, "needs_redacted_reasoning_prefix"
@@ -964,13 +996,6 @@ class MLXLMHandler:
                         yield text
 
             total_tokens = total_input_tokens + final_chunk.generation_tokens
-            if cache is not None:
-                # Non-batch path owns the cache on the event-loop thread.
-                # The batched path stores its final cache from the scheduler
-                # thread instead (see BatchScheduler._handle_generation_response).
-                self._insert_prompt_cache(cache_key, cache)
-            cache_inserted = True
-
             if self.debug:
                 self.prompt_cache.log_cache_stats()
                 log_debug_raw_text_response(raw_text)
@@ -1011,16 +1036,6 @@ class MLXLMHandler:
                 HTTPStatus.INTERNAL_SERVER_ERROR,
             )
             raise HTTPException(status_code=500, detail=content)
-        finally:
-            if cache is not None and cache_key is not None and not cache_inserted:
-                try:
-                    self._insert_prompt_cache(cache_key, cache)
-                    if self.debug:
-                        self.prompt_cache.log_cache_stats()
-                except Exception as cache_error:
-                    logger.warning(
-                        f"Failed to persist prompt cache during stream finalization: {cache_error}"
-                    )
 
     async def generate_text_response(self, request: ChatCompletionRequest) -> dict[str, Any]:
         """
@@ -1057,9 +1072,6 @@ class MLXLMHandler:
             response = await self._run_nonstream_generation(request, ctx, request_data)
 
             response_text = response.text
-            cache_key = ctx.cache_key
-            cache_key += response.tokens
-            self._persist_cache_if_owned(cache_key, ctx.cache)
 
             parsed_response = {"reasoning_content": None, "tool_calls": None, "content": None}
 
@@ -1333,21 +1345,6 @@ class MLXLMHandler:
         debug_payload["effective_sampling_params"] = effective_sampling
         return debug_payload
 
-    def _persist_cache_if_owned(
-        self,
-        cache_key: list[int],
-        cache: list[Any] | None,
-    ) -> None:
-        """Store ``cache`` into the LRU only when the event-loop thread owns it.
-
-        The batched path delegates cache persistence to the scheduler thread
-        (see :meth:`BatchScheduler._handle_generation_response`), so this
-        helper is a no-op when ``cache`` is ``None``.
-        """
-        if cache is None:
-            return
-        self._insert_prompt_cache(cache_key, cache)
-
     async def _run_nonstream_generation(
         self,
         request: ChatCompletionRequest,
@@ -1363,7 +1360,9 @@ class MLXLMHandler:
             scheduler = await self._get_or_start_scheduler()
             return await self._collect_batched_response(scheduler, ctx)
         return await self.inference_worker.submit(
-            self._generate_with_lock,
+            self._generate_with_lock_and_cache_persist,
+            list(ctx.cache_key),
+            ctx.cache,
             input_ids=ctx.rest_input_ids,
             prompt_cache=ctx.cache,
             stream=False,

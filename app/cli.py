@@ -19,15 +19,7 @@ from .main import start_multi
 from .parsers import REASONING_PARSER_MAP, TOOL_PARSER_MAP, UNIFIED_PARSER_MAP
 from .version import __version__
 
-try:
-    from .models.mflux import IMAGE_CONFIG_NAMES
-except ImportError as exc:
-    IMAGE_CONFIG_NAMES: tuple[str, ...] = ()
-    MFLUX_AVAILABLE = False
-    MFLUX_IMPORT_ERROR: ImportError | None = exc
-else:
-    MFLUX_AVAILABLE = True
-    MFLUX_IMPORT_ERROR = None
+IMAGE_CONFIG_NAMES: tuple[str, ...] = ()
 
 MFLUX_INSTALL_HINT = (
     "Image generation and editing require the `mflux` package. "
@@ -90,11 +82,16 @@ def ensure_image_support_available(model_types: set[str]) -> None:
     if not any(model_type in {"image-generation", "image-edit"} for model_type in model_types):
         return
 
-    if MFLUX_AVAILABLE:
+    try:
+        import mflux  # noqa: F401
+    except ImportError as exc:
+        detail = f" Optional import failed: {exc!s}"
+        raise click.UsageError(f"{MFLUX_INSTALL_HINT}{detail}") from exc
+    except RuntimeError as exc:
+        detail = f" Optional import failed: {exc!s}"
+        raise click.UsageError(f"{MFLUX_INSTALL_HINT}{detail}") from exc
+    else:
         return
-
-    detail = f" Optional import failed: {MFLUX_IMPORT_ERROR!s}" if MFLUX_IMPORT_ERROR else ""
-    raise click.UsageError(f"{MFLUX_INSTALL_HINT}{detail}")
 
 
 # Configure basic logging for CLI (will be overridden by main.py)
