@@ -116,6 +116,35 @@ def test_launch_leaves_sampling_defaults_unset_when_flags_are_omitted(
     assert model_config.default_max_tokens is None
 
 
+def test_launch_accepts_startup_timeout_and_passes_it_to_wrapped_config(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """CLI should expose ``--startup-timeout`` for subprocess model loading."""
+
+    cli_module = _load_cli_module(monkeypatch)
+    captured: dict[str, Any] = {}
+
+    async def _fake_start_multi(config: Any) -> None:
+        captured["config"] = config
+
+    monkeypatch.setattr(cli_module, "start_multi", _fake_start_multi)
+
+    runner = CliRunner()
+    result = runner.invoke(
+        cli_module.cli,
+        [
+            "launch",
+            "--model-path",
+            "dummy-model",
+            "--startup-timeout",
+            "3600",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert captured["config"].models[0].startup_timeout == 3600
+
+
 def test_start_exports_repetition_penalty_before_server_setup(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
