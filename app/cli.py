@@ -19,7 +19,20 @@ from .main import start_multi
 from .parsers import REASONING_PARSER_MAP, TOOL_PARSER_MAP, UNIFIED_PARSER_MAP
 from .version import __version__
 
-IMAGE_CONFIG_NAMES: tuple[str, ...] = ()
+IMAGE_CONFIG_NAMES: tuple[str, ...] = (
+    "flux-schnell",
+    "flux-dev",
+    "flux-krea-dev",
+    "flux-kontext-dev",
+    "qwen-image",
+    "qwen-image-edit",
+    "fibo",
+    "z-image-turbo",
+    "flux2-klein-4b",
+    "flux2-klein-9b",
+    "flux2-klein-edit-4b",
+    "flux2-klein-edit-9b",
+)
 
 MFLUX_INSTALL_HINT = (
     "Image generation and editing require the `mflux` package. "

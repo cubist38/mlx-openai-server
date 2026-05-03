@@ -20,6 +20,7 @@ from __future__ import annotations
 from contextlib import asynccontextmanager
 import gc
 import importlib.util
+import sys
 import time
 from typing import Any
 
@@ -68,8 +69,10 @@ _SAMPLING_DEFAULT_FIELDS: tuple[str, ...] = (
 
 
 def _clear_mlx_cache() -> None:
-    """Clear MLX cache only after a handler path actually needs MLX."""
-    import mlx.core as mx
+    """Clear MLX cache without importing MLX into processes that do not use it."""
+    mx = sys.modules.get("mlx.core")
+    if mx is None:
+        return
 
     mx.clear_cache()
 
