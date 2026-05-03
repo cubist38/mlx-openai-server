@@ -272,6 +272,10 @@ LM-specific memory and batching options:
 | `--draft-model-path` | unset | Smaller draft model for speculative decoding |
 | `--num-draft-tokens` | `2` | Draft tokens proposed per step |
 
+When continuous batching is enabled, LM requests stay on the batched generation path whenever the model supports batched KV-cache merging. Per-request positive `seed` values are ignored in this mode because the batch scheduler shares one RNG lane; launch with `--disable-batching` if request-level seed reproducibility is required.
+
+Prompt KV caches are reused only by the generation path that created them. Batched and non-batched requests use separate cache entries because MLX cache and stream objects are thread-affine.
+
 ## Multi-Model Config
 
 Use YAML when you want several models behind one server:
@@ -427,6 +431,7 @@ Chat completions accept OpenAI-style `response_format` JSON schema. The Response
 |-------|-----|
 | Model does not fit in memory | Use a smaller or pre-quantized model, lower `--context-length`, and see [Long Context and Metal OOM](#long-context-and-metal-oom). |
 | Metal OOM during batching | Lower `--prompt-concurrency`, `--prefill-step-size`, `--decode-concurrency`, and `--max-tokens`. |
+| `There is no Stream(gpu, N) in current thread` | Keep prompt-cache persistence on the worker thread and avoid sharing cache payloads across batch/non-batch paths; use `--disable-batching` when request seeds or single-request behavior are required. |
 | Port already in use | Pass `--port 8001` or another free port. |
 | Image model memory is too high | Use `--quantize 4` or `--quantize 8`. |
 | Model loading says parameters are missing or unexpected | Upgrade the backend package from source. |
