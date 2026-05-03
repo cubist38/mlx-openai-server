@@ -272,9 +272,11 @@ LM-specific memory and batching options:
 | `--draft-model-path` | unset | Smaller draft model for speculative decoding |
 | `--num-draft-tokens` | `2` | Draft tokens proposed per step |
 
-When continuous batching is enabled, LM requests stay on the batched generation path whenever the model supports batched KV-cache merging. Per-request positive `seed` values are ignored in this mode because the batch scheduler shares one RNG lane; launch with `--disable-batching` if request-level seed reproducibility is required.
+When continuous batching is enabled, LM and multimodal requests stay on the batched generation path whenever the backend supports it. Per-request positive `seed` values are ignored in this mode because the batch scheduler shares one RNG lane; launch with `--disable-batching` if request-level seed reproducibility is required.
 
 Prompt KV caches are reused only by the generation path that created them. Batched and non-batched requests use separate cache entries because MLX cache and stream objects are thread-affine.
+
+Multimodal (`mlx-vlm`) batching intentionally does not use prompt-prefix caching; current mlx-vlm prompt-cache support is limited, so VLM batching focuses on admitting parallel requests into the shared decode/prefill batch.
 
 ## Multi-Model Config
 
