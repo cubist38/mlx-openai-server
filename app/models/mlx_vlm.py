@@ -5,8 +5,7 @@ from typing import Any
 
 import mlx.core as mx
 from mlx_vlm import load, stream_generate
-from mlx_vlm.utils import process_inputs_with_fallback
-from mlx_vlm.video_generate import process_vision_info
+from mlx_vlm.utils import load_image, process_inputs_with_fallback
 from outlines.processors import JSONLogitsProcessor
 import torch
 
@@ -251,7 +250,7 @@ class MLX_VLM:
         audios: list[str] | None = None,
     ) -> dict[str, Any]:
         """Create MLX-ready multimodal inputs from formatted chat messages."""
-        image_inputs, video_inputs = process_vision_info(messages)
+        image_inputs, video_inputs = self._extract_vision_inputs(messages)
         inputs = self._create_processor_inputs(
             text,
             images=image_inputs,
@@ -259,6 +258,48 @@ class MLX_VLM:
             audios=audios or None,
         )
         return self._to_mlx_inputs(inputs)
+
+    def _extract_vision_inputs(
+        self, messages: list[dict[str, Any]]
+    ) -> tuple[list[Any] | None, Any]:
+        """Extract image/video inputs without loading video dependencies eagerly.
+
+        Parameters
+        ----------
+        messages : list[dict[str, Any]]
+            Chat-template messages containing already processed media paths.
+
+        Returns
+        -------
+        tuple[list[Any] | None, Any]
+            Image inputs and video inputs suitable for ``process_inputs_with_fallback``.
+        """
+        has_video = any(
+            isinstance(message.get("content"), list)
+            and any(
+                isinstance(part, dict) and (part.get("type") == "video" or "video" in part)
+                for part in message["content"]
+            )
+            for message in messages
+        )
+        if has_video:
+            from mlx_vlm.video_generate import process_vision_info
+
+            return process_vision_info(messages)
+
+        image_inputs: list[Any] = []
+        for message in messages:
+            content = message.get("content")
+            if not isinstance(content, list):
+                continue
+            for part in content:
+                if not isinstance(part, dict):
+                    continue
+                image_source = part.get("image") or part.get("image_url")
+                if image_source is None:
+                    continue
+                image_inputs.append(load_image(image_source))
+        return (image_inputs or None), None
 
     def create_inputs(
         self,
@@ -364,6 +405,8 @@ class MLX_VLM:
 
 
 if __name__ == "__main__":
+    from mlx_vlm.video_generate import process_vision_info
+
     image_path = "examples/images/attention.png"
     video_path = "examples/videos/demo.mp4"
     model_path = "mlx-community/Qwen3-VL-2B-Thinking-8bit"

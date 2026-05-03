@@ -35,6 +35,7 @@ def _load_mlx_vlm_model_module(monkeypatch: pytest.MonkeyPatch) -> Any:
         }
 
     fake_utils_module.process_inputs_with_fallback = fake_process_inputs_with_fallback
+    fake_utils_module.load_image = lambda source: source
 
     fake_video_module = types.ModuleType("mlx_vlm.video_generate")
 

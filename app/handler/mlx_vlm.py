@@ -933,6 +933,14 @@ class MLXVLMHandler:
                     tool_choice = tool_choice.model_dump()
                 chat_template_kwargs["tool_choice"] = tool_choice
 
+        seed = request.seed
+        if self._is_request_batchable(request) and seed is not None and seed > 0:
+            logger.warning(
+                "Ignoring per-request seed because continuous batching is enabled; "
+                "start the server with --disable-batching to use request seeds."
+            )
+            seed = 0
+
         request_dict: dict[str, Any] = {
             "messages": chat_messages,
             "images": images,
@@ -944,7 +952,7 @@ class MLXVLMHandler:
             "top_p": request.top_p,
             "max_tokens": request.max_tokens,
             "max_completion_tokens": request.max_completion_tokens,
-            "seed": request.seed,
+            "seed": seed,
             "repetition_penalty": request.repetition_penalty,
             "repetition_context_size": request.repetition_context_size,
         }

@@ -213,6 +213,7 @@ def test_vlm_handler_batchability_flag(monkeypatch):
     fake_sample_utils.top_p_sampling = lambda logprobs, *_args: logprobs
     fake_utils = types.ModuleType("mlx_vlm.utils")
     fake_utils.process_inputs_with_fallback = lambda *args, **kwargs: {}
+    fake_utils.load_image = lambda source: source
     fake_video = types.ModuleType("mlx_vlm.video_generate")
     fake_video.process_vision_info = lambda _messages: ([], [])
     fake_outlines = types.ModuleType("outlines")
