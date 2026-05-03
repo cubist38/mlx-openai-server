@@ -180,6 +180,7 @@ def create_lifespan(config_args: MLXServerConfig):
             handler = create_handler_from_config(model_cfg)
             await handler.initialize(
                 {
+                    "startup_timeout": config_args.startup_timeout,
                     "timeout": config_args.queue_timeout,
                     "queue_size": config_args.queue_size,
                 }
@@ -407,6 +408,7 @@ def create_multi_lifespan(config: MultiModelServerConfig):
                 model_cfg_dict = asdict(model_cfg)
 
                 queue_config = {
+                    "startup_timeout": model_cfg.startup_timeout,
                     "timeout": model_cfg.queue_timeout,
                     "queue_size": model_cfg.queue_size,
                 }

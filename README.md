@@ -244,6 +244,7 @@ The request `model` should be the model path, `--served-model-name`, or YAML `se
 | `--served-model-name` | model path | Alias accepted in API requests |
 | `--host` | `0.0.0.0` | Bind host |
 | `--port` | `8000` | Bind port |
+| `--startup-timeout` | `1800` | Seconds without startup progress before model loading fails; active downloads/progress reset this timer |
 | `--context-length` | model default | LM and multimodal context/cache length |
 | `--max-tokens` | `100000` | Default generated tokens when request omits `max_tokens` |
 | `--temperature` | `1.0` | Default sampling temperature |
@@ -316,6 +317,8 @@ Important YAML keys:
 |-----|-------|
 | `model_path`, `model_type`, `served_model_name` | Model identity and routing |
 | `context_length` | LM/multimodal context length |
+| `startup_timeout` | Seconds without startup progress before model loading fails; active downloads/progress reset this timer |
+| `queue_timeout`, `queue_size` | Per-model request queue timeout and pending request capacity |
 | `prompt_cache_size`, `prompt_cache_max_bytes`, `prompt_cache_dir` | Prompt KV cache limits and disk location |
 | `batch_completion_size`, `batch_prefill_size`, `batch_prefill_step_size`, `disable_batching` | Continuous batching controls |
 | `kv_bits`, `kv_group_size`, `quantized_kv_start` | KV cache quantization |
