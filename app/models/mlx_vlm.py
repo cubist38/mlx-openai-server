@@ -5,8 +5,7 @@ from typing import Any
 
 import mlx.core as mx
 from mlx_vlm import load, stream_generate
-from mlx_vlm.utils import process_inputs_with_fallback
-from mlx_vlm.video_generate import process_vision_info
+from mlx_vlm.utils import load_image, process_inputs_with_fallback
 from outlines.processors import JSONLogitsProcessor
 import torch
 
@@ -142,6 +141,108 @@ class MLX_VLM:
                 inputs[key] = mx.array(value)
         return inputs
 
+    def count_prompt_tokens(self, model_inputs: dict[str, Any]) -> int:
+        """Return the number of text prompt tokens in prepared model inputs.
+
+        Parameters
+        ----------
+        model_inputs : dict[str, Any]
+            Prepared multimodal model inputs containing ``input_ids``.
+
+        Returns
+        -------
+        int
+            Number of prompt tokens in the first request row.
+        """
+        input_ids = model_inputs.get("input_ids")
+        if input_ids is None:
+            return 0
+        shape = getattr(input_ids, "shape", None)
+        if shape is not None:
+            return int(shape[-1])
+        if hasattr(input_ids, "size"):
+            return int(input_ids.size)
+        if input_ids and isinstance(input_ids[0], list):
+            return len(input_ids[0])
+        return len(input_ids)
+
+    def resolve_max_tokens(self, params: dict[str, Any]) -> int:
+        """Resolve the effective max generation token count.
+
+        Parameters
+        ----------
+        params : dict[str, Any]
+            Request generation parameters.
+
+        Returns
+        -------
+        int
+            Effective max token budget for generation.
+        """
+        max_tokens = params.get("max_tokens")
+        if max_tokens is None:
+            max_tokens = params.get("max_completion_tokens")
+        if max_tokens is None:
+            max_tokens = DEFAULT_MAX_TOKENS
+        return int(max_tokens)
+
+    def build_sampler(self, params: dict[str, Any]):
+        """Build a sampler compatible with ``mlx_vlm.generate.BatchGenerator``.
+
+        Parameters
+        ----------
+        params : dict[str, Any]
+            Request generation parameters.
+
+        Returns
+        -------
+        Callable | None
+            ``None`` for greedy sampling, otherwise a callable that samples
+            from log probabilities.
+        """
+        temperature = params.get("temperature")
+        if temperature is None:
+            temperature = DEFAULT_TEMPERATURE
+        if temperature == 0:
+            return None
+
+        top_p = params.get("top_p")
+        if top_p is None:
+            top_p = DEFAULT_TOP_P
+
+        def sampler(logprobs: mx.array) -> mx.array:
+            if 0 < top_p < 1.0:
+                from mlx_vlm.sample_utils import top_p_sampling
+
+                return top_p_sampling(logprobs, top_p, temperature)
+            return mx.random.categorical(logprobs * (1 / temperature))
+
+        return sampler
+
+    def build_logits_processors(self, params: dict[str, Any]) -> list[Any]:
+        """Build logits processors for structured multimodal generation.
+
+        Parameters
+        ----------
+        params : dict[str, Any]
+            Request generation parameters.
+
+        Returns
+        -------
+        list[Any]
+            Logits processors to apply during generation.
+        """
+        json_schema = params.get("schema")
+        if not json_schema:
+            return []
+        return [
+            JSONLogitsProcessor(
+                schema=json_schema,
+                tokenizer=self.outlines_tokenizer,
+                tensor_library_name="mlx",
+            )
+        ]
+
     def create_model_inputs(
         self,
         text: str,
@@ -149,7 +250,7 @@ class MLX_VLM:
         audios: list[str] | None = None,
     ) -> dict[str, Any]:
         """Create MLX-ready multimodal inputs from formatted chat messages."""
-        image_inputs, video_inputs = process_vision_info(messages)
+        image_inputs, video_inputs = self._extract_vision_inputs(messages)
         inputs = self._create_processor_inputs(
             text,
             images=image_inputs,
@@ -157,6 +258,48 @@ class MLX_VLM:
             audios=audios or None,
         )
         return self._to_mlx_inputs(inputs)
+
+    def _extract_vision_inputs(
+        self, messages: list[dict[str, Any]]
+    ) -> tuple[list[Any] | None, Any]:
+        """Extract image/video inputs without loading video dependencies eagerly.
+
+        Parameters
+        ----------
+        messages : list[dict[str, Any]]
+            Chat-template messages containing already processed media paths.
+
+        Returns
+        -------
+        tuple[list[Any] | None, Any]
+            Image inputs and video inputs suitable for ``process_inputs_with_fallback``.
+        """
+        has_video = any(
+            isinstance(message.get("content"), list)
+            and any(
+                isinstance(part, dict) and (part.get("type") == "video" or "video" in part)
+                for part in message["content"]
+            )
+            for message in messages
+        )
+        if has_video:
+            from mlx_vlm.video_generate import process_vision_info
+
+            return process_vision_info(messages)
+
+        image_inputs: list[Any] = []
+        for message in messages:
+            content = message.get("content")
+            if not isinstance(content, list):
+                continue
+            for part in content:
+                if not isinstance(part, dict):
+                    continue
+                image_source = part.get("image") or part.get("image_url")
+                if image_source is None:
+                    continue
+                image_inputs.append(load_image(image_source))
+        return (image_inputs or None), None
 
     def create_inputs(
         self,
@@ -262,6 +405,8 @@ class MLX_VLM:
 
 
 if __name__ == "__main__":
+    from mlx_vlm.video_generate import process_vision_info
+
     image_path = "examples/images/attention.png"
     video_path = "examples/videos/demo.mp4"
     model_path = "mlx-community/Qwen3-VL-2B-Thinking-8bit"

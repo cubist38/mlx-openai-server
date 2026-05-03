@@ -319,7 +319,7 @@ def cli():
     type=int,
     help=(
         "When a request is batchable, decode that many requests in parallel. "
-        "Only applies to 'lm' model types. Default is 32."
+        "Applies to 'lm' and 'multimodal' model types. Default is 32."
     ),
 )
 @click.option(
@@ -329,7 +329,7 @@ def cli():
     type=int,
     help=(
         "When a request is batchable, prefill that many prompts in parallel. "
-        "Only applies to 'lm' model types. Default is 8."
+        "Applies to 'lm' and 'multimodal' model types. Default is 8."
     ),
 )
 @click.option(
@@ -339,7 +339,7 @@ def cli():
     type=int,
     help=(
         "Maximum tokens processed per prefill step during batched generation. "
-        "Only applies to 'lm' model types. Default is 2048."
+        "Applies to 'lm' and 'multimodal' model types. Default is 2048."
     ),
 )
 @click.option(
@@ -347,7 +347,7 @@ def cli():
     is_flag=True,
     default=False,
     help=(
-        "Disable continuous batching for LM models. Use this when per-request "
+        "Disable continuous batching for LM/VLM models. Use this when per-request "
         "positive seeds must be honored."
     ),
 )

@@ -9,6 +9,7 @@ from fastapi import HTTPException
 from loguru import logger
 
 from ..core import AudioProcessor, ImageProcessor, InferenceWorker, VideoProcessor
+from ..core.vlm_batch_scheduler import VLM_BATCHING_AVAILABLE, VLMBatchScheduler
 from ..message_converters import MessageConverterManager
 from ..models.mlx_vlm import MLX_VLM
 from ..parsers import ParserManager, ReasoningParserState, ToolParserState
@@ -56,6 +57,10 @@ class MLXVLMHandler:
         kv_bits: int | None = None,
         kv_group_size: int = 64,
         quantized_kv_start: int = 0,
+        batch_completion_size: int = 32,
+        batch_prefill_size: int = 8,
+        batch_prefill_step_size: int = 2048,
+        disable_batching: bool = False,
     ):
         """
         Initialize the handler with the specified model path.
@@ -73,6 +78,10 @@ class MLXVLMHandler:
             kv_bits (int | None): Number of bits for KV cache quantization. None disables quantization.
             kv_group_size (int): Group size for KV cache quantization. Default is 64.
             quantized_kv_start (int): Step to begin using a quantized KV cache. Default is 0.
+            batch_completion_size (int): Maximum concurrent VLM decode sequences.
+            batch_prefill_size (int): Maximum VLM prompts to prefill together.
+            batch_prefill_step_size (int): Maximum tokens per VLM prefill step.
+            disable_batching (bool): Disable VLM continuous batching.
         """
         self.model_path = model_path
         self.model = MLX_VLM(
@@ -108,6 +117,14 @@ class MLXVLMHandler:
         # Dedicated inference thread — keeps the event loop free during
         # blocking MLX model computation.
         self.inference_worker = InferenceWorker()
+        self._queue_size = 100
+        self._queue_timeout = 300.0
+        self._batch_completion_size = batch_completion_size
+        self._batch_prefill_size = batch_prefill_size
+        self._batch_prefill_step_size = batch_prefill_step_size
+        self._disable_batching = disable_batching
+        self._batch_scheduler: VLMBatchScheduler | None = None
+        self._batch_scheduler_lock = asyncio.Lock()
 
         logger.info(f"Initialized MLXHandler with model path: {model_path}")
         if disable_auto_resize:
@@ -144,12 +161,92 @@ class MLXVLMHandler:
                 "timeout": 300,
                 "queue_size": 100,
             }
+        self._queue_size = int(queue_config.get("queue_size", 100))
+        self._queue_timeout = float(queue_config.get("timeout", 300))
         self.inference_worker = InferenceWorker(
-            queue_size=queue_config.get("queue_size", 100),
-            timeout=queue_config.get("timeout", 300),
+            queue_size=self._queue_size,
+            timeout=self._queue_timeout,
         )
         self.inference_worker.start()
         logger.info("Initialized MLXVLMHandler and started inference worker")
+
+    def _is_request_batchable(self, request: ChatCompletionRequest) -> bool:
+        """Return whether a request should use VLM continuous batching."""
+        if self._disable_batching:
+            return False
+        if not VLM_BATCHING_AVAILABLE:
+            return False
+        return True
+
+    async def _get_or_start_scheduler(self) -> VLMBatchScheduler:
+        """Lazily construct and start the VLM batch scheduler."""
+        if self._batch_scheduler is not None and self._batch_scheduler.is_running:
+            return self._batch_scheduler
+        async with self._batch_scheduler_lock:
+            if self._batch_scheduler is None or not self._batch_scheduler.is_running:
+                scheduler = VLMBatchScheduler(
+                    self.model.model,
+                    self.model.processor,
+                    completion_batch_size=self._batch_completion_size,
+                    prefill_batch_size=self._batch_prefill_size,
+                    prefill_step_size=self._batch_prefill_step_size,
+                    kv_bits=self.kv_bits,
+                    kv_group_size=self.kv_group_size,
+                    quantized_kv_start=self.quantized_kv_start,
+                    queue_size=self._queue_size,
+                )
+                scheduler.start()
+                self._batch_scheduler = scheduler
+        return self._batch_scheduler
+
+    def _submit_batched_stream(
+        self,
+        scheduler: VLMBatchScheduler,
+        model_params: dict[str, Any],
+    ):
+        """Submit a multimodal request to the VLM scheduler."""
+        model_inputs = dict(model_params.get("model_inputs") or {})
+        return scheduler.submit_stream(
+            model_inputs,
+            prompt_tokens=self.model.count_prompt_tokens(model_inputs),
+            max_tokens=self.model.resolve_max_tokens(model_params),
+            sampler=self.model.build_sampler(model_params),
+            logits_processors=self.model.build_logits_processors(model_params) or None,
+        )
+
+    async def _collect_batched_response(
+        self,
+        scheduler: VLMBatchScheduler,
+        model_params: dict[str, Any],
+    ):
+        """Drain a VLM batched stream into a completion response object."""
+        from ..models.mlx_vlm import CompletionResponse
+
+        stream = self._submit_batched_stream(scheduler, model_params)
+        text_parts: list[str] = []
+        tokens: list[int] = []
+        final_chunk = None
+        async for chunk in stream:
+            if chunk.text:
+                text_parts.append(chunk.text)
+            tokens.append(chunk.token)
+            if chunk.finish_reason is not None:
+                final_chunk = chunk
+                break
+
+        return CompletionResponse(
+            text="".join(text_parts),
+            tokens=tokens,
+            peak_memory=final_chunk.peak_memory if final_chunk else 0.0,
+            generation_tps=final_chunk.generation_tps if final_chunk else 0.0,
+            prompt_tps=final_chunk.prompt_tps if final_chunk else 0.0,
+            prompt_tokens=(
+                final_chunk.prompt_tokens
+                if final_chunk
+                else self.model.count_prompt_tokens(model_params.get("model_inputs") or {})
+            ),
+            generation_tokens=final_chunk.generation_tokens if final_chunk else len(tokens),
+        )
 
     async def _build_inference_context(
         self, request: ChatCompletionRequest
@@ -228,13 +325,17 @@ class MLXVLMHandler:
                     {"prompt": input_prompt, "stream": True, **model_params},
                 )
 
-            response_generator = self.inference_worker.submit_stream(
-                self.model,
-                prompt=input_prompt,
-                stream=True,
-                verbose=self.debug,
-                **model_params,
-            )
+            if self._is_request_batchable(request):
+                scheduler = await self._get_or_start_scheduler()
+                response_generator = self._submit_batched_stream(scheduler, model_params)
+            else:
+                response_generator = self.inference_worker.submit_stream(
+                    self.model,
+                    prompt=input_prompt,
+                    stream=True,
+                    verbose=self.debug,
+                    **model_params,
+                )
 
             after_reasoning_close_content = None
             final_chunk = None
@@ -495,13 +596,17 @@ class MLXVLMHandler:
                     {"prompt": input_prompt, "stream": False, **model_params},
                 )
 
-            response = await self.inference_worker.submit(
-                self.model,
-                prompt=input_prompt,
-                stream=False,
-                verbose=self.debug,
-                **model_params,
-            )
+            if self._is_request_batchable(request):
+                scheduler = await self._get_or_start_scheduler()
+                response = await self._collect_batched_response(scheduler, model_params)
+            else:
+                response = await self.inference_worker.submit(
+                    self.model,
+                    prompt=input_prompt,
+                    stream=False,
+                    verbose=self.debug,
+                    **model_params,
+                )
 
             parsed_response = {"reasoning_content": None, "tool_calls": None, "content": None}
             response_text = response.text
@@ -618,6 +723,9 @@ class MLXVLMHandler:
 
     async def close(self):
         """Explicitly cleanup resources asynchronously."""
+        if self._batch_scheduler is not None:
+            self._batch_scheduler.stop()
+            self._batch_scheduler = None
         if hasattr(self, "image_processor"):
             await self.image_processor.cleanup()
         if hasattr(self, "audio_processor"):
@@ -633,6 +741,9 @@ class MLXVLMHandler:
         """
         try:
             logger.info("Cleaning up MLXVLMHandler resources")
+            if self._batch_scheduler is not None:
+                self._batch_scheduler.stop()
+                self._batch_scheduler = None
             if hasattr(self, "inference_worker"):
                 self.inference_worker.stop()
             if hasattr(self, "image_processor"):
@@ -659,6 +770,21 @@ class MLXVLMHandler:
         """
         return {
             "queue_stats": self.inference_worker.get_stats(),
+            "batch_stats": {
+                **(
+                    self._batch_scheduler.get_stats()
+                    if self._batch_scheduler is not None and self._batch_scheduler.is_running
+                    else {
+                        "running": False,
+                        "queue_size": 0,
+                        "max_queue_size": self._queue_size,
+                        "active_requests": 0,
+                    }
+                ),
+                "completion_batch_size": self._batch_completion_size,
+                "prefill_batch_size": self._batch_prefill_size,
+                "disabled": self._disable_batching,
+            },
         }
 
     async def _reformat_multimodal_content_part(
@@ -807,6 +933,14 @@ class MLXVLMHandler:
                     tool_choice = tool_choice.model_dump()
                 chat_template_kwargs["tool_choice"] = tool_choice
 
+        seed = request.seed
+        if self._is_request_batchable(request) and seed is not None and seed > 0:
+            logger.warning(
+                "Ignoring per-request seed because continuous batching is enabled; "
+                "start the server with --disable-batching to use request seeds."
+            )
+            seed = 0
+
         request_dict: dict[str, Any] = {
             "messages": chat_messages,
             "images": images,
@@ -818,7 +952,7 @@ class MLXVLMHandler:
             "top_p": request.top_p,
             "max_tokens": request.max_tokens,
             "max_completion_tokens": request.max_completion_tokens,
-            "seed": request.seed,
+            "seed": seed,
             "repetition_penalty": request.repetition_penalty,
             "repetition_context_size": request.repetition_context_size,
         }
