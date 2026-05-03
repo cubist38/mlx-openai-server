@@ -84,6 +84,7 @@ def print_startup_banner(config_args: MLXServerConfig) -> None:
         logger.info(f"🔮 Context Length: {config_args.context_length}")
     logger.info(f"🌐 Host: {config_args.host}")
     logger.info(f"🔌 Port: {config_args.port}")
+    logger.info(f"⏱️ Startup Timeout: {config_args.startup_timeout} seconds without progress")
     logger.info(f"⏱️ Queue Timeout: {config_args.queue_timeout} seconds")
     logger.info(f"📊 Queue Size: {config_args.queue_size}")
     if config_args.model_type in ["image-generation", "image-edit"]:
@@ -147,6 +148,8 @@ def _model_entry_extras(m: ModelEntryConfig) -> list[tuple[str, object]]:
         extras.append(("served_model_name", m.served_model_name))
     if m.context_length is not None:
         extras.append(("context_length", m.context_length))
+    if m.startup_timeout != _MODEL_ENTRY_DEFAULTS["startup_timeout"]:
+        extras.append(("startup_timeout", f"{m.startup_timeout}s without progress"))
     if m.enable_auto_tool_choice:
         extras.append(("auto_tool_choice", True))
     if m.tool_call_parser:

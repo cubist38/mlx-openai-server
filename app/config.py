@@ -37,6 +37,7 @@ class MLXServerConfig:
     served_model_name: str | None = None
     port: int = 8000
     host: str = "0.0.0.0"
+    startup_timeout: int = 1800
     queue_timeout: int = 300
     queue_size: int = 100
     disable_auto_resize: bool = False
@@ -180,6 +181,7 @@ class MLXServerConfig:
             model_type=self.model_type,
             served_model_name=self.served_model_name or self.model_path,
             context_length=self.context_length,
+            startup_timeout=self.startup_timeout,
             queue_timeout=self.queue_timeout,
             queue_size=self.queue_size,
             quantize=self.quantize,
@@ -267,6 +269,7 @@ class ModelEntryConfig:
 
     # Common options
     context_length: int | None = None
+    startup_timeout: int = 1800
     queue_timeout: int = 300
     queue_size: int = 100
 
