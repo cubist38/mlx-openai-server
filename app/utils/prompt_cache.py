@@ -135,6 +135,25 @@ class PromptTrie:
 
         return PromptTrieResult(None, shorter, longer, common_prefix)
 
+    def find_shorter(
+        self,
+        tokens: list[int],
+        predicate: Any,
+    ) -> list[int] | None:
+        """Find the longest strict-prefix value accepted by ``predicate``."""
+        current = self._trie
+        best: list[int] | None = None
+        prefix: list[int] = []
+        for tok in tokens[:-1]:
+            if tok not in current:
+                break
+            current = current[tok]
+            prefix.append(tok)
+            entry = current.get("__value__")
+            if entry is not None and predicate(entry):
+                best = prefix[:]
+        return best
+
 
 class LRUPromptCache:
     """Disk-backed LRU cache for MLX prompt KV caches.
@@ -165,6 +184,7 @@ class LRUPromptCache:
         nbytes: int
         cache_type: str
         trimmable: bool
+        source: str = "nonbatch"
 
     class CacheOrder:
         """Track cache recency with priority-based eviction."""
@@ -339,8 +359,19 @@ class LRUPromptCache:
     def fetch_nearest_cache(
         self,
         tokens_ids: list[int],
+        *,
+        allowed_sources: set[str] | None = None,
     ) -> tuple[list[Any] | None, list[int]]:
         """Fetch the nearest matching cache for the given token sequence.
+
+        Parameters
+        ----------
+        tokens_ids : list[int]
+            Token sequence to look up.
+        allowed_sources : set[str] | None, optional
+            Restrict hits to caches produced by these generation paths. This
+            prevents MLX cache objects created on one worker thread from being
+            reused on another worker thread.
 
         Returns
         -------
@@ -351,15 +382,22 @@ class LRUPromptCache:
         result = self._trie.search(tokens_ids)
         if result.exact is not None:
             cache_entry = self._trie.get(result.exact)
-            cache = self._try_load_cache(result.exact, cache_entry)
-            if cache is not None:
-                return cache, []
+            if self._source_allowed(cache_entry, allowed_sources):
+                cache = self._try_load_cache(result.exact, cache_entry)
+                if cache is not None:
+                    return cache, []
+            shorter = self._find_allowed_shorter(tokens_ids, allowed_sources)
+            if shorter is not None:
+                cache_entry = self._trie.get(shorter)
+                cache = self._try_load_cache(shorter, cache_entry)
+                if cache is not None:
+                    return cache, tokens_ids[len(shorter) :]
             return None, tokens_ids
 
         short_length = len(result.shorter) if result.shorter is not None else 0
         if result.longer is not None and result.common_prefix > short_length:
             cache_entry = self._trie.get(result.longer)
-            if cache_entry.trimmable:
+            if cache_entry.trimmable and self._source_allowed(cache_entry, allowed_sources):
                 cache = self._try_load_cache(result.longer, cache_entry)
                 if cache is not None:
                     prefix = min(len(tokens_ids) - 1, result.common_prefix)
@@ -368,12 +406,38 @@ class LRUPromptCache:
                     return cache, tokens_ids[prefix:]
 
         if short_length > 0:
+            shorter_tokens = result.shorter
             cache_entry = self._trie.get(result.shorter)
-            cache = self._try_load_cache(result.shorter, cache_entry)
+            if not self._source_allowed(cache_entry, allowed_sources):
+                shorter_tokens = self._find_allowed_shorter(tokens_ids, allowed_sources)
+                if shorter_tokens is None:
+                    return None, tokens_ids
+                cache_entry = self._trie.get(shorter_tokens)
+                short_length = len(shorter_tokens)
+            cache = self._try_load_cache(shorter_tokens, cache_entry)
             if cache is not None:
                 return cache, tokens_ids[short_length:]
 
         return None, tokens_ids
+
+    def _source_allowed(
+        self,
+        entry: CacheEntry,
+        allowed_sources: set[str] | None,
+    ) -> bool:
+        """Return whether an entry may be used by the current generation path."""
+        return allowed_sources is None or entry.source in allowed_sources
+
+    def _find_allowed_shorter(
+        self,
+        tokens_ids: list[int],
+        allowed_sources: set[str] | None,
+    ) -> list[int] | None:
+        """Find the longest allowed strict-prefix cache entry."""
+        return self._trie.find_shorter(
+            tokens_ids,
+            lambda entry: self._source_allowed(entry, allowed_sources),
+        )
 
     def insert_cache(
         self,
@@ -381,6 +445,7 @@ class LRUPromptCache:
         prompt_cache: list[Any],
         *,
         cache_type: str = "assistant",
+        source: str = "nonbatch",
     ) -> None:
         """Insert or update a cache entry.
 
@@ -392,6 +457,8 @@ class LRUPromptCache:
             The prompt cache data to store.
         cache_type : str, optional
             Priority category for eviction ordering, by default ``"assistant"``.
+        source : str, optional
+            Generation path that produced the cache, by default ``"nonbatch"``.
         """
         tokens_tuple = tuple(tokens_ids)
 
@@ -401,6 +468,7 @@ class LRUPromptCache:
             sum(getattr(c, "nbytes", 0) for c in prompt_cache),
             cache_type,
             can_trim_prompt_cache(prompt_cache),
+            source,
         )
 
         # Insert into the trie and update the byte counter and lru position

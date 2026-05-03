@@ -448,7 +448,10 @@ class MLXLMHandler:
             )
 
         with self._generation_lock:
-            cache, rest_input_ids = self.prompt_cache.fetch_nearest_cache(input_ids)
+            cache, rest_input_ids = self.prompt_cache.fetch_nearest_cache(
+                input_ids,
+                allowed_sources={"nonbatch"},
+            )
             cache, rest_input_ids = self._normalize_nonbatch_cache_hit(
                 input_ids,
                 cache,
@@ -590,7 +593,10 @@ class MLXLMHandler:
                 logger.warning(f"Failed to back off exact prompt-cache hit: {exc!s}")
 
         try:
-            prefix_cache, prefix_rest = self.prompt_cache.fetch_nearest_cache(input_ids[:-1])
+            prefix_cache, prefix_rest = self.prompt_cache.fetch_nearest_cache(
+                input_ids[:-1],
+                allowed_sources={"nonbatch"},
+            )
         except (
             AttributeError,
             KeyError,
