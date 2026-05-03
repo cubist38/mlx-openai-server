@@ -107,7 +107,7 @@ def configure_logging(
 
     # Add console handler
     logger.add(
-        lambda msg: print(msg),
+        print,
         level=log_level,
         format="<green>{time:YYYY-MM-DD HH:mm:ss}</green> | "
         "<level>{level: <8}</level> | "
@@ -328,6 +328,7 @@ def create_handler_from_config(model_cfg: ModelEntryConfig) -> Any:
             batch_completion_size=model_cfg.batch_completion_size,
             batch_prefill_size=model_cfg.batch_prefill_size,
             batch_prefill_step_size=model_cfg.batch_prefill_step_size,
+            disable_batching=model_cfg.disable_batching,
         ),
         model_cfg,
     )

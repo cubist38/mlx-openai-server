@@ -138,6 +138,7 @@ class MLXLMHandler:
         batch_prefill_size: int = 8,
         batch_prefill_step_size: int = 2048,
         batch_max_kv_size: int | None = None,
+        disable_batching: bool = False,
     ):
         """
         Initialize the handler with the specified model path.
@@ -188,6 +189,9 @@ class MLXLMHandler:
         batch_max_kv_size : int | None
             Rotating-KV-cache size for the scheduler; ``None`` keeps full
             history (same default used by ``mlx_lm``).
+        disable_batching : bool
+            Disable the continuous batch scheduler and use the single-request
+            path for LM generation.
         """
         self.model_path = model_path
         from ..models.mlx_lm import MLX_LM
@@ -236,6 +240,7 @@ class MLXLMHandler:
         self._batch_prefill_size = batch_prefill_size
         self._batch_prefill_step_size = batch_prefill_step_size
         self._batch_max_kv_size = batch_max_kv_size
+        self._disable_batching = disable_batching
         self._batch_scheduler: BatchScheduler | None = None
         self._batch_scheduler_lock = asyncio.Lock()
         self._generation_lock = threading.RLock()
@@ -1203,19 +1208,18 @@ class MLXLMHandler:
         one). This predicate only returns False for features that the batched
         ``BatchGenerator`` does not support:
 
-        * A non-trivial per-request ``seed`` — the batch path shares a single
-          RNG, matching ``mlx_lm``'s own server. We mirror
-          :meth:`MLX_LM.__call__`'s seeding rule (``seed and seed >= 0``)
-          rather than ``seed is not None``, because the CLI default
-          ``--seed 0`` is backfilled into every request by the endpoint as
-          "no explicit seed"; treating that as non-batchable would pin every
-          request to the single-request path.
         * Speculative decoding via ``draft_model``.
+
+        Per-request positive seeds are ignored while batching is enabled. To
+        use request seeds, start the server with ``--disable-batching`` so all
+        LM requests use the single-request generation path.
 
         Requests that require a mid-prefill cache checkpoint are also routed
         through the single-request path — that check is applied at the call
         site where the checkpoint position is known.
         """
+        if getattr(self, "_disable_batching", False):
+            return False
         if not BATCHING_AVAILABLE:
             return False
         if self.model.has_draft_model:
@@ -1226,8 +1230,6 @@ class MLXLMHandler:
         # ``mlx_lm.server``'s own ``is_batchable`` check) can only run on
         # the single-request path.
         if not self.model.cache_is_batchable:
-            return False
-        if request.seed is not None and request.seed > 0:
             return False
         return True
 
@@ -1437,6 +1439,7 @@ class MLXLMHandler:
                 ),
                 "completion_batch_size": self._batch_completion_size,
                 "prefill_batch_size": self._batch_prefill_size,
+                "disabled": self._disable_batching,
             },
         }
 
@@ -1581,6 +1584,14 @@ class MLXLMHandler:
             # Communicate partial mode to create_input_prompt via chat_template_kwargs
             if is_partial:
                 chat_template_kwargs["_partial_mode"] = True
+
+            seed = model_params.get("seed")
+            if self._is_request_batchable(request) and seed is not None and seed > 0:
+                logger.warning(
+                    "Ignoring per-request seed because continuous batching is enabled; "
+                    "start the server with --disable-batching to use request seeds."
+                )
+                model_params["seed"] = 0
 
             return chat_messages, model_params
 

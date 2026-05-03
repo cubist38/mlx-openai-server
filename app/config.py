@@ -70,6 +70,7 @@ class MLXServerConfig:
     batch_completion_size: int = 32
     batch_prefill_size: int = 8
     batch_prefill_step_size: int = 2048
+    disable_batching: bool = False
 
     # Default sampling parameters (override DEFAULT_* env when set via CLI)
     default_max_tokens: int | None = None
@@ -204,6 +205,7 @@ class MLXServerConfig:
             batch_completion_size=self.batch_completion_size,
             batch_prefill_size=self.batch_prefill_size,
             batch_prefill_step_size=self.batch_prefill_step_size,
+            disable_batching=self.disable_batching,
             # Sampling defaults: the subprocess path reads them off the
             # handler proxy rather than the ``DEFAULT_*`` env vars (which
             # would not be set inside the child process).
@@ -300,6 +302,7 @@ class ModelEntryConfig:
     batch_completion_size: int = 32
     batch_prefill_size: int = 8
     batch_prefill_step_size: int = 2048
+    disable_batching: bool = False
     default_max_tokens: int | None = None
     default_temperature: float | None = None
     default_top_p: float | None = None

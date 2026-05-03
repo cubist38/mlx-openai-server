@@ -115,11 +115,14 @@ def print_startup_banner(config_args: MLXServerConfig) -> None:
         )
         if getattr(config_args, "prompt_cache_dir", None):
             logger.info(f"💾 Prompt Cache Dir: {config_args.prompt_cache_dir}")
-        logger.info(
-            f"🧵 Batch Scheduler: decode={config_args.batch_completion_size}, "
-            f"prefill={config_args.batch_prefill_size}, "
-            f"prefill_step={config_args.batch_prefill_step_size}"
-        )
+        if config_args.disable_batching:
+            logger.info("🧵 Batch Scheduler: Disabled")
+        else:
+            logger.info(
+                f"🧵 Batch Scheduler: decode={config_args.batch_completion_size}, "
+                f"prefill={config_args.batch_prefill_size}, "
+                f"prefill_step={config_args.batch_prefill_step_size}"
+            )
     logger.info(f"📝 Log Level: {config_args.log_level}")
     if config_args.no_log_file:
         logger.info("📝 File Logging: Disabled")
@@ -165,11 +168,22 @@ def _model_entry_extras(m: ModelEntryConfig) -> list[tuple[str, object]]:
         )
     if m.model_type == "lm":
         batch_settings: list[str] = []
-        if m.batch_completion_size != _MODEL_ENTRY_DEFAULTS["batch_completion_size"]:
+        if m.disable_batching:
+            batch_settings.append("disabled")
+        if (
+            not m.disable_batching
+            and m.batch_completion_size != _MODEL_ENTRY_DEFAULTS["batch_completion_size"]
+        ):
             batch_settings.append(f"decode={m.batch_completion_size}")
-        if m.batch_prefill_size != _MODEL_ENTRY_DEFAULTS["batch_prefill_size"]:
+        if (
+            not m.disable_batching
+            and m.batch_prefill_size != _MODEL_ENTRY_DEFAULTS["batch_prefill_size"]
+        ):
             batch_settings.append(f"prefill={m.batch_prefill_size}")
-        if m.batch_prefill_step_size != _MODEL_ENTRY_DEFAULTS["batch_prefill_step_size"]:
+        if (
+            not m.disable_batching
+            and m.batch_prefill_step_size != _MODEL_ENTRY_DEFAULTS["batch_prefill_step_size"]
+        ):
             batch_settings.append(f"prefill_step={m.batch_prefill_step_size}")
         if batch_settings:
             extras.append(("batch_scheduler", ", ".join(batch_settings)))

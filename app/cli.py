@@ -332,6 +332,15 @@ def cli():
         "Only applies to 'lm' model types. Default is 2048."
     ),
 )
+@click.option(
+    "--disable-batching",
+    is_flag=True,
+    default=False,
+    help=(
+        "Disable continuous batching for LM models. Use this when per-request "
+        "positive seeds must be honored."
+    ),
+)
 # Sampling parameters (defaults used when API request omits them)
 @click.option(
     "--max-tokens",
@@ -411,6 +420,7 @@ def launch(
     batch_completion_size,
     batch_prefill_size,
     batch_prefill_step_size,
+    disable_batching,
     max_tokens,
     temperature,
     top_p,
@@ -486,6 +496,7 @@ def launch(
         batch_completion_size=batch_completion_size,
         batch_prefill_size=batch_prefill_size,
         batch_prefill_step_size=batch_prefill_step_size,
+        disable_batching=disable_batching,
         default_max_tokens=max_tokens,
         default_temperature=temperature,
         default_top_p=top_p,
