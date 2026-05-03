@@ -262,6 +262,7 @@ LM-specific memory and batching options:
 | `--decode-concurrency` | `32` | Max concurrent batch decode sequences |
 | `--prompt-concurrency` | `8` | Max prompts prefilled together |
 | `--prefill-step-size` | `2048` | Tokens per prefill step |
+| `--disable-batching` | `false` | Disable continuous batching; required if per-request positive `seed` values must be honored |
 | `--prompt-cache-size` | `10` | Retained prompt KV cache entries |
 | `--max-bytes` | unbounded | Prompt KV cache byte budget |
 | `--prompt-cache-dir` | temp dir | Directory for disk-backed prompt KV cache payloads |
@@ -310,7 +311,7 @@ Important YAML keys:
 | `model_path`, `model_type`, `served_model_name` | Model identity and routing |
 | `context_length` | LM/multimodal context length |
 | `prompt_cache_size`, `prompt_cache_max_bytes`, `prompt_cache_dir` | Prompt KV cache limits and disk location |
-| `batch_completion_size`, `batch_prefill_size`, `batch_prefill_step_size` | Continuous batching limits |
+| `batch_completion_size`, `batch_prefill_size`, `batch_prefill_step_size`, `disable_batching` | Continuous batching controls |
 | `kv_bits`, `kv_group_size`, `quantized_kv_start` | KV cache quantization |
 | `default_max_tokens` | Default generated tokens |
 | `on_demand`, `on_demand_idle_timeout` | Load large models only when requested |
