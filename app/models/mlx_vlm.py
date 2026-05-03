@@ -142,6 +142,108 @@ class MLX_VLM:
                 inputs[key] = mx.array(value)
         return inputs
 
+    def count_prompt_tokens(self, model_inputs: dict[str, Any]) -> int:
+        """Return the number of text prompt tokens in prepared model inputs.
+
+        Parameters
+        ----------
+        model_inputs : dict[str, Any]
+            Prepared multimodal model inputs containing ``input_ids``.
+
+        Returns
+        -------
+        int
+            Number of prompt tokens in the first request row.
+        """
+        input_ids = model_inputs.get("input_ids")
+        if input_ids is None:
+            return 0
+        shape = getattr(input_ids, "shape", None)
+        if shape is not None:
+            return int(shape[-1])
+        if hasattr(input_ids, "size"):
+            return int(input_ids.size)
+        if input_ids and isinstance(input_ids[0], list):
+            return len(input_ids[0])
+        return len(input_ids)
+
+    def resolve_max_tokens(self, params: dict[str, Any]) -> int:
+        """Resolve the effective max generation token count.
+
+        Parameters
+        ----------
+        params : dict[str, Any]
+            Request generation parameters.
+
+        Returns
+        -------
+        int
+            Effective max token budget for generation.
+        """
+        max_tokens = params.get("max_tokens")
+        if max_tokens is None:
+            max_tokens = params.get("max_completion_tokens")
+        if max_tokens is None:
+            max_tokens = DEFAULT_MAX_TOKENS
+        return int(max_tokens)
+
+    def build_sampler(self, params: dict[str, Any]):
+        """Build a sampler compatible with ``mlx_vlm.generate.BatchGenerator``.
+
+        Parameters
+        ----------
+        params : dict[str, Any]
+            Request generation parameters.
+
+        Returns
+        -------
+        Callable | None
+            ``None`` for greedy sampling, otherwise a callable that samples
+            from log probabilities.
+        """
+        temperature = params.get("temperature")
+        if temperature is None:
+            temperature = DEFAULT_TEMPERATURE
+        if temperature == 0:
+            return None
+
+        top_p = params.get("top_p")
+        if top_p is None:
+            top_p = DEFAULT_TOP_P
+
+        def sampler(logprobs: mx.array) -> mx.array:
+            if 0 < top_p < 1.0:
+                from mlx_vlm.sample_utils import top_p_sampling
+
+                return top_p_sampling(logprobs, top_p, temperature)
+            return mx.random.categorical(logprobs * (1 / temperature))
+
+        return sampler
+
+    def build_logits_processors(self, params: dict[str, Any]) -> list[Any]:
+        """Build logits processors for structured multimodal generation.
+
+        Parameters
+        ----------
+        params : dict[str, Any]
+            Request generation parameters.
+
+        Returns
+        -------
+        list[Any]
+            Logits processors to apply during generation.
+        """
+        json_schema = params.get("schema")
+        if not json_schema:
+            return []
+        return [
+            JSONLogitsProcessor(
+                schema=json_schema,
+                tokenizer=self.outlines_tokenizer,
+                tensor_library_name="mlx",
+            )
+        ]
+
     def create_model_inputs(
         self,
         text: str,
