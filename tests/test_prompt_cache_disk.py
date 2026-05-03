@@ -106,3 +106,55 @@ def test_prompt_cache_longer_hit_loads_and_trims_from_disk(
     assert rest == [9]
     assert result is not None
     assert [layer.value for layer in result] == ["one", "two"]
+
+
+def test_prompt_cache_source_filter_skips_cross_thread_exact_hit(
+    monkeypatch: Any,
+    tmp_path: Path,
+) -> None:
+    """Source filtering should prevent batch caches from blocking nonbatch lookup."""
+    prompt_cache_module = _load_prompt_cache_module(monkeypatch, trimmable=False)
+    cache = prompt_cache_module.LRUPromptCache(max_size=10, cache_dir=tmp_path)
+
+    cache.insert_cache(
+        [1, 2],
+        [_FakeCacheLayer("nonbatch-prefix")],
+        source="nonbatch",
+    )
+    cache.insert_cache(
+        [1, 2, 3],
+        [_FakeCacheLayer("batch-exact")],
+        source="batch",
+    )
+
+    result, rest = cache.fetch_nearest_cache(
+        [1, 2, 3],
+        allowed_sources={"nonbatch"},
+    )
+
+    assert rest == [3]
+    assert result is not None
+    assert result[0].value == "nonbatch-prefix"
+
+
+def test_prompt_cache_source_filter_returns_miss_for_disallowed_only_hit(
+    monkeypatch: Any,
+    tmp_path: Path,
+) -> None:
+    """A cache entry from another generation path should be invisible."""
+    prompt_cache_module = _load_prompt_cache_module(monkeypatch, trimmable=False)
+    cache = prompt_cache_module.LRUPromptCache(max_size=10, cache_dir=tmp_path)
+
+    cache.insert_cache(
+        [1, 2, 3],
+        [_FakeCacheLayer("batch-exact")],
+        source="batch",
+    )
+
+    result, rest = cache.fetch_nearest_cache(
+        [1, 2, 3],
+        allowed_sources={"nonbatch"},
+    )
+
+    assert result is None
+    assert rest == [1, 2, 3]

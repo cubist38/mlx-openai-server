@@ -9,7 +9,7 @@ import json
 import os
 import random
 import time
-from typing import Annotated, Any, Literal
+from typing import TYPE_CHECKING, Annotated, Any, Literal
 
 from fastapi import APIRouter, Form, HTTPException, Request
 from fastapi.responses import JSONResponse, StreamingResponse
@@ -20,8 +20,6 @@ from openai.types.responses.response_function_tool_call import ResponseFunctionT
 from openai.types.responses.response_output_message import ResponseOutputMessage, ResponseOutputText
 from openai.types.responses.response_reasoning_item import Content, ResponseReasoningItem, Summary
 
-from ..handler.mlx_lm import MLXLMHandler
-from ..handler.mlx_vlm import MLXVLMHandler
 from ..schemas.openai import (
     ChatCompletionChunk,
     ChatCompletionContentPartImage,
@@ -59,6 +57,10 @@ from ..schemas.openai import (
     UsageInfo,
     random_uuid,
 )
+
+if TYPE_CHECKING:
+    from ..handler.mlx_lm import MLXLMHandler
+    from ..handler.mlx_vlm import MLXVLMHandler
 from ..utils.debug_logging import log_debug_server_request
 from ..utils.errors import create_error_response
 

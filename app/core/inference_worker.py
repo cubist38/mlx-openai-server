@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import AsyncGenerator, Callable, Generator
+from contextlib import nullcontext
 import queue
 import threading
 from threading import Thread
@@ -44,6 +45,7 @@ class InferenceWorker:
         self._active = False
         self._completed = 0
         self._failed = 0
+        self._stream: Any = None
 
     def start(self) -> None:
         if self._running:
@@ -63,20 +65,50 @@ class InferenceWorker:
         logger.info("Inference worker thread stopped")
 
     def _run(self) -> None:
-        while self._running:
-            try:
-                work = self._work_queue.get(timeout=0.1)
-            except queue.Empty:
-                continue
-            with self._lock:
-                self._active = True
-            try:
-                work()
-            except Exception:
-                logger.exception("Inference worker: exception escaped work closure")
-            finally:
+        stream_context = self._create_stream_context()
+        try:
+            while self._running:
+                try:
+                    work = self._work_queue.get(timeout=0.1)
+                except queue.Empty:
+                    continue
                 with self._lock:
-                    self._active = False
+                    self._active = True
+                try:
+                    with stream_context():
+                        work()
+                except Exception:
+                    logger.exception("Inference worker: exception escaped work closure")
+                finally:
+                    with self._lock:
+                        self._active = False
+        finally:
+            self._stream = None
+
+    def _create_stream_context(self) -> Callable[[], Any]:
+        """Create a worker-thread-local MLX stream context when MLX is available.
+
+        MLX streams are thread-affine. The inference worker owns all
+        single-request model execution, so its stream must be allocated on
+        this worker thread and every submitted work item must run under that
+        stream.
+        """
+        try:
+            import mlx.core as mx  # noqa: PLC0415
+        except (ImportError, RuntimeError) as exc:
+            logger.debug(f"Inference worker could not initialize MLX stream: {exc!s}")
+            return nullcontext
+
+        try:
+            new_thread_local_stream = getattr(mx, "new_thread_local_stream", None)
+            if new_thread_local_stream is not None:
+                self._stream = new_thread_local_stream(mx.default_device())
+            else:
+                self._stream = mx.new_stream(mx.default_device())
+        except RuntimeError as exc:
+            logger.debug(f"Inference worker could not create MLX stream: {exc!s}")
+            return nullcontext
+        return lambda: mx.stream(self._stream)
 
     def _record(self, success: bool) -> None:
         with self._lock:
@@ -120,6 +152,7 @@ class InferenceWorker:
         cancel_event = threading.Event()
 
         def _work() -> None:
+            gen: Generator[Any, None, None] | None = None
             try:
                 gen = func(*args, **kwargs)
                 for item in gen:
@@ -132,6 +165,12 @@ class InferenceWorker:
             except BaseException as e:
                 loop.call_soon_threadsafe(token_queue.put_nowait, e)
                 self._record(False)
+            finally:
+                if gen is not None:
+                    try:
+                        gen.close()
+                    except Exception as exc:  # noqa: BLE001 - close is best-effort cleanup
+                        logger.warning(f"Inference stream cleanup failed: {exc!s}")
 
         try:
             self._work_queue.put_nowait(_work)

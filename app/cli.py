@@ -19,15 +19,20 @@ from .main import start_multi
 from .parsers import REASONING_PARSER_MAP, TOOL_PARSER_MAP, UNIFIED_PARSER_MAP
 from .version import __version__
 
-try:
-    from .models.mflux import IMAGE_CONFIG_NAMES
-except ImportError as exc:
-    IMAGE_CONFIG_NAMES: tuple[str, ...] = ()
-    MFLUX_AVAILABLE = False
-    MFLUX_IMPORT_ERROR: ImportError | None = exc
-else:
-    MFLUX_AVAILABLE = True
-    MFLUX_IMPORT_ERROR = None
+IMAGE_CONFIG_NAMES: tuple[str, ...] = (
+    "flux-schnell",
+    "flux-dev",
+    "flux-krea-dev",
+    "flux-kontext-dev",
+    "qwen-image",
+    "qwen-image-edit",
+    "fibo",
+    "z-image-turbo",
+    "flux2-klein-4b",
+    "flux2-klein-9b",
+    "flux2-klein-edit-4b",
+    "flux2-klein-edit-9b",
+)
 
 MFLUX_INSTALL_HINT = (
     "Image generation and editing require the `mflux` package. "
@@ -90,11 +95,16 @@ def ensure_image_support_available(model_types: set[str]) -> None:
     if not any(model_type in {"image-generation", "image-edit"} for model_type in model_types):
         return
 
-    if MFLUX_AVAILABLE:
+    try:
+        import mflux  # noqa: F401
+    except ImportError as exc:
+        detail = f" Optional import failed: {exc!s}"
+        raise click.UsageError(f"{MFLUX_INSTALL_HINT}{detail}") from exc
+    except RuntimeError as exc:
+        detail = f" Optional import failed: {exc!s}"
+        raise click.UsageError(f"{MFLUX_INSTALL_HINT}{detail}") from exc
+    else:
         return
-
-    detail = f" Optional import failed: {MFLUX_IMPORT_ERROR!s}" if MFLUX_IMPORT_ERROR else ""
-    raise click.UsageError(f"{MFLUX_INSTALL_HINT}{detail}")
 
 
 # Configure basic logging for CLI (will be overridden by main.py)
@@ -332,6 +342,15 @@ def cli():
         "Only applies to 'lm' model types. Default is 2048."
     ),
 )
+@click.option(
+    "--disable-batching",
+    is_flag=True,
+    default=False,
+    help=(
+        "Disable continuous batching for LM models. Use this when per-request "
+        "positive seeds must be honored."
+    ),
+)
 # Sampling parameters (defaults used when API request omits them)
 @click.option(
     "--max-tokens",
@@ -411,6 +430,7 @@ def launch(
     batch_completion_size,
     batch_prefill_size,
     batch_prefill_step_size,
+    disable_batching,
     max_tokens,
     temperature,
     top_p,
@@ -486,6 +506,7 @@ def launch(
         batch_completion_size=batch_completion_size,
         batch_prefill_size=batch_prefill_size,
         batch_prefill_step_size=batch_prefill_step_size,
+        disable_batching=disable_batching,
         default_max_tokens=max_tokens,
         default_temperature=temperature,
         default_top_p=top_p,

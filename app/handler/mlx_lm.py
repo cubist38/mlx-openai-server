@@ -138,6 +138,7 @@ class MLXLMHandler:
         batch_prefill_size: int = 8,
         batch_prefill_step_size: int = 2048,
         batch_max_kv_size: int | None = None,
+        disable_batching: bool = False,
     ):
         """
         Initialize the handler with the specified model path.
@@ -188,6 +189,9 @@ class MLXLMHandler:
         batch_max_kv_size : int | None
             Rotating-KV-cache size for the scheduler; ``None`` keeps full
             history (same default used by ``mlx_lm``).
+        disable_batching : bool
+            Disable the continuous batch scheduler and use the single-request
+            path for LM generation.
         """
         self.model_path = model_path
         from ..models.mlx_lm import MLX_LM
@@ -236,6 +240,7 @@ class MLXLMHandler:
         self._batch_prefill_size = batch_prefill_size
         self._batch_prefill_step_size = batch_prefill_step_size
         self._batch_max_kv_size = batch_max_kv_size
+        self._disable_batching = disable_batching
         self._batch_scheduler: BatchScheduler | None = None
         self._batch_scheduler_lock = asyncio.Lock()
         self._generation_lock = threading.RLock()
@@ -301,6 +306,44 @@ class MLXLMHandler:
         """Stream non-batched generation while serialized with the scheduler."""
         with self._generation_lock:
             yield from self.model(*args, **kwargs)
+
+    def _generate_with_lock_and_cache_persist(
+        self,
+        cache_key: list[int],
+        cache: list[Any] | None,
+        *args: Any,
+        **kwargs: Any,
+    ) -> Any:
+        """Run non-stream generation and persist its prompt cache on the worker thread."""
+        with self._generation_lock:
+            response = self.model(*args, **kwargs)
+            if cache is not None:
+                try:
+                    self.prompt_cache.insert_cache(cache_key + response.tokens, cache)
+                except Exception as cache_error:  # noqa: BLE001 - cache persistence is best-effort
+                    logger.warning(f"Failed to persist prompt cache: {cache_error}")
+            return response
+
+    def _stream_with_lock_and_cache_persist(
+        self,
+        cache_key: list[int],
+        cache: list[Any] | None,
+        *args: Any,
+        **kwargs: Any,
+    ) -> Any:
+        """Stream non-batched generation and persist its cache on the worker thread."""
+        with self._generation_lock:
+            try:
+                for chunk in self.model(*args, **kwargs):
+                    if chunk is not None:
+                        cache_key.append(chunk.token)
+                    yield chunk
+            finally:
+                if cache is not None:
+                    try:
+                        self.prompt_cache.insert_cache(cache_key, cache)
+                    except Exception as cache_error:  # noqa: BLE001 - cache persistence is best-effort
+                        logger.warning(f"Failed to persist prompt cache: {cache_error}")
 
     def _insert_prompt_cache(
         self,
@@ -448,7 +491,15 @@ class MLXLMHandler:
             )
 
         with self._generation_lock:
-            cache, rest_input_ids = self.prompt_cache.fetch_nearest_cache(input_ids)
+            cache, rest_input_ids = self.prompt_cache.fetch_nearest_cache(
+                input_ids,
+                allowed_sources={"nonbatch"},
+            )
+            cache, rest_input_ids = self._normalize_nonbatch_cache_hit(
+                input_ids,
+                cache,
+                rest_input_ids,
+            )
             if cache is None:
                 cache = self.model.create_prompt_cache()
 
@@ -543,6 +594,73 @@ class MLXLMHandler:
             checkpoint_callback=checkpoint_callback,
         )
 
+    def _normalize_nonbatch_cache_hit(
+        self,
+        input_ids: list[int],
+        cache: list[Any] | None,
+        rest_input_ids: list[int],
+    ) -> tuple[list[Any] | None, list[int]]:
+        """Ensure fallback generation always receives at least one prompt token.
+
+        Parameters
+        ----------
+        input_ids : list[int]
+            Full encoded prompt tokens.
+        cache : list[Any] | None
+            Prompt cache returned by the LRU lookup.
+        rest_input_ids : list[int]
+            Prompt suffix not covered by ``cache``.
+
+        Returns
+        -------
+        tuple[list[Any] | None, list[int]]
+            A cache and prompt suffix suitable for the single-request
+            generator. Exact cache hits are backed off by one token when
+            possible; otherwise the cache hit is discarded.
+        """
+        if cache is None or rest_input_ids:
+            return cache, rest_input_ids
+        if len(input_ids) <= 1:
+            return None, input_ids
+
+        try:
+            from mlx_lm.models.cache import can_trim_prompt_cache, trim_prompt_cache
+        except ImportError as exc:
+            logger.debug(f"Could not import prompt-cache trim helpers: {exc!s}")
+        else:
+            try:
+                if can_trim_prompt_cache(cache):
+                    trim_prompt_cache(cache, 1)
+                    return cache, input_ids[-1:]
+            except (AttributeError, RuntimeError, TypeError, ValueError) as exc:
+                logger.warning(f"Failed to back off exact prompt-cache hit: {exc!s}")
+
+        try:
+            prefix_cache, prefix_rest = self.prompt_cache.fetch_nearest_cache(
+                input_ids[:-1],
+                allowed_sources={"nonbatch"},
+            )
+        except (
+            AttributeError,
+            KeyError,
+            IndexError,
+            OSError,
+            RuntimeError,
+            TypeError,
+            ValueError,
+        ) as exc:
+            logger.warning(f"Failed to find shorter prompt-cache hit: {exc!s}")
+        else:
+            cached_prefix_len = len(input_ids[:-1]) - len(prefix_rest)
+            if prefix_cache is not None and cached_prefix_len < len(input_ids):
+                return prefix_cache, input_ids[cached_prefix_len:]
+
+        logger.info(
+            "Discarding exact prompt-cache hit because fallback generation needs at least "
+            f"one prompt token (prompt_tokens={len(input_ids)})"
+        )
+        return None, input_ids
+
     async def generate_text_stream(  # noqa: C901
         self, request: ChatCompletionRequest
     ) -> AsyncGenerator[str, None]:
@@ -556,14 +674,8 @@ class MLXLMHandler:
         Yields:
             str or dict: Response chunks (str) followed by usage info (dict) at the end.
         """
-        cache: list[Any] | None = None
-        cache_key: list[int] | None = None
-        cache_inserted = False
-
         try:
             ctx = await self._build_inference_context(request)
-            cache = ctx.cache
-            cache_key = ctx.cache_key
             total_input_tokens = ctx.total_input_tokens
             total_cached_tokens = ctx.total_cached_tokens
             model_params = ctx.model_params
@@ -592,9 +704,11 @@ class MLXLMHandler:
                 response_generator = self._submit_batched_stream(scheduler, ctx)
             else:
                 response_generator = self.inference_worker.submit_stream(
-                    self._stream_with_lock,
+                    self._stream_with_lock_and_cache_persist,
+                    list(ctx.cache_key),
+                    ctx.cache,
                     input_ids=ctx.rest_input_ids,
-                    prompt_cache=cache,
+                    prompt_cache=ctx.cache,
                     stream=True,
                     **request_data,
                 )
@@ -615,7 +729,6 @@ class MLXLMHandler:
                     final_chunk = chunk
                     text = chunk.text
                     raw_text += text
-                    cache_key.append(chunk.token)
 
                     if unified_parser:
                         if self.debug:
@@ -677,7 +790,6 @@ class MLXLMHandler:
                     final_chunk = chunk
                     text = chunk.text
                     raw_text += text
-                    cache_key.append(chunk.token)
                     if is_first_chunk:
                         if reasoning_parser and hasattr(
                             reasoning_parser, "needs_redacted_reasoning_prefix"
@@ -884,13 +996,6 @@ class MLXLMHandler:
                         yield text
 
             total_tokens = total_input_tokens + final_chunk.generation_tokens
-            if cache is not None:
-                # Non-batch path owns the cache on the event-loop thread.
-                # The batched path stores its final cache from the scheduler
-                # thread instead (see BatchScheduler._handle_generation_response).
-                self._insert_prompt_cache(cache_key, cache)
-            cache_inserted = True
-
             if self.debug:
                 self.prompt_cache.log_cache_stats()
                 log_debug_raw_text_response(raw_text)
@@ -931,16 +1036,6 @@ class MLXLMHandler:
                 HTTPStatus.INTERNAL_SERVER_ERROR,
             )
             raise HTTPException(status_code=500, detail=content)
-        finally:
-            if cache is not None and cache_key is not None and not cache_inserted:
-                try:
-                    self._insert_prompt_cache(cache_key, cache)
-                    if self.debug:
-                        self.prompt_cache.log_cache_stats()
-                except Exception as cache_error:
-                    logger.warning(
-                        f"Failed to persist prompt cache during stream finalization: {cache_error}"
-                    )
 
     async def generate_text_response(self, request: ChatCompletionRequest) -> dict[str, Any]:
         """
@@ -977,9 +1072,6 @@ class MLXLMHandler:
             response = await self._run_nonstream_generation(request, ctx, request_data)
 
             response_text = response.text
-            cache_key = ctx.cache_key
-            cache_key += response.tokens
-            self._persist_cache_if_owned(cache_key, ctx.cache)
 
             parsed_response = {"reasoning_content": None, "tool_calls": None, "content": None}
 
@@ -1128,19 +1220,18 @@ class MLXLMHandler:
         one). This predicate only returns False for features that the batched
         ``BatchGenerator`` does not support:
 
-        * A non-trivial per-request ``seed`` — the batch path shares a single
-          RNG, matching ``mlx_lm``'s own server. We mirror
-          :meth:`MLX_LM.__call__`'s seeding rule (``seed and seed >= 0``)
-          rather than ``seed is not None``, because the CLI default
-          ``--seed 0`` is backfilled into every request by the endpoint as
-          "no explicit seed"; treating that as non-batchable would pin every
-          request to the single-request path.
         * Speculative decoding via ``draft_model``.
+
+        Per-request positive seeds are ignored while batching is enabled. To
+        use request seeds, start the server with ``--disable-batching`` so all
+        LM requests use the single-request generation path.
 
         Requests that require a mid-prefill cache checkpoint are also routed
         through the single-request path — that check is applied at the call
         site where the checkpoint position is known.
         """
+        if getattr(self, "_disable_batching", False):
+            return False
         if not BATCHING_AVAILABLE:
             return False
         if self.model.has_draft_model:
@@ -1151,8 +1242,6 @@ class MLXLMHandler:
         # ``mlx_lm.server``'s own ``is_batchable`` check) can only run on
         # the single-request path.
         if not self.model.cache_is_batchable:
-            return False
-        if request.seed is not None and request.seed > 0:
             return False
         return True
 
@@ -1256,21 +1345,6 @@ class MLXLMHandler:
         debug_payload["effective_sampling_params"] = effective_sampling
         return debug_payload
 
-    def _persist_cache_if_owned(
-        self,
-        cache_key: list[int],
-        cache: list[Any] | None,
-    ) -> None:
-        """Store ``cache`` into the LRU only when the event-loop thread owns it.
-
-        The batched path delegates cache persistence to the scheduler thread
-        (see :meth:`BatchScheduler._handle_generation_response`), so this
-        helper is a no-op when ``cache`` is ``None``.
-        """
-        if cache is None:
-            return
-        self._insert_prompt_cache(cache_key, cache)
-
     async def _run_nonstream_generation(
         self,
         request: ChatCompletionRequest,
@@ -1286,7 +1360,9 @@ class MLXLMHandler:
             scheduler = await self._get_or_start_scheduler()
             return await self._collect_batched_response(scheduler, ctx)
         return await self.inference_worker.submit(
-            self._generate_with_lock,
+            self._generate_with_lock_and_cache_persist,
+            list(ctx.cache_key),
+            ctx.cache,
             input_ids=ctx.rest_input_ids,
             prompt_cache=ctx.cache,
             stream=False,
@@ -1362,6 +1438,7 @@ class MLXLMHandler:
                 ),
                 "completion_batch_size": self._batch_completion_size,
                 "prefill_batch_size": self._batch_prefill_size,
+                "disabled": self._disable_batching,
             },
         }
 
@@ -1506,6 +1583,14 @@ class MLXLMHandler:
             # Communicate partial mode to create_input_prompt via chat_template_kwargs
             if is_partial:
                 chat_template_kwargs["_partial_mode"] = True
+
+            seed = model_params.get("seed")
+            if self._is_request_batchable(request) and seed is not None and seed > 0:
+                logger.warning(
+                    "Ignoring per-request seed because continuous batching is enabled; "
+                    "start the server with --disable-batching to use request seeds."
+                )
+                model_params["seed"] = 0
 
             return chat_messages, model_params
 

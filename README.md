@@ -262,6 +262,7 @@ LM-specific memory and batching options:
 | `--decode-concurrency` | `32` | Max concurrent batch decode sequences |
 | `--prompt-concurrency` | `8` | Max prompts prefilled together |
 | `--prefill-step-size` | `2048` | Tokens per prefill step |
+| `--disable-batching` | `false` | Disable continuous batching; required if per-request positive `seed` values must be honored |
 | `--prompt-cache-size` | `10` | Retained prompt KV cache entries |
 | `--max-bytes` | unbounded | Prompt KV cache byte budget |
 | `--prompt-cache-dir` | temp dir | Directory for disk-backed prompt KV cache payloads |
@@ -270,6 +271,10 @@ LM-specific memory and batching options:
 | `--quantized-kv-start` | `0` | Token step where KV quantization starts |
 | `--draft-model-path` | unset | Smaller draft model for speculative decoding |
 | `--num-draft-tokens` | `2` | Draft tokens proposed per step |
+
+When continuous batching is enabled, LM requests stay on the batched generation path whenever the model supports batched KV-cache merging. Per-request positive `seed` values are ignored in this mode because the batch scheduler shares one RNG lane; launch with `--disable-batching` if request-level seed reproducibility is required.
+
+Prompt KV caches are reused only by the generation path that created them. Batched and non-batched requests use separate cache entries because MLX cache and stream objects are thread-affine.
 
 ## Multi-Model Config
 
@@ -310,7 +315,7 @@ Important YAML keys:
 | `model_path`, `model_type`, `served_model_name` | Model identity and routing |
 | `context_length` | LM/multimodal context length |
 | `prompt_cache_size`, `prompt_cache_max_bytes`, `prompt_cache_dir` | Prompt KV cache limits and disk location |
-| `batch_completion_size`, `batch_prefill_size`, `batch_prefill_step_size` | Continuous batching limits |
+| `batch_completion_size`, `batch_prefill_size`, `batch_prefill_step_size`, `disable_batching` | Continuous batching controls |
 | `kv_bits`, `kv_group_size`, `quantized_kv_start` | KV cache quantization |
 | `default_max_tokens` | Default generated tokens |
 | `on_demand`, `on_demand_idle_timeout` | Load large models only when requested |
@@ -426,6 +431,7 @@ Chat completions accept OpenAI-style `response_format` JSON schema. The Response
 |-------|-----|
 | Model does not fit in memory | Use a smaller or pre-quantized model, lower `--context-length`, and see [Long Context and Metal OOM](#long-context-and-metal-oom). |
 | Metal OOM during batching | Lower `--prompt-concurrency`, `--prefill-step-size`, `--decode-concurrency`, and `--max-tokens`. |
+| `There is no Stream(gpu, N) in current thread` | Keep prompt-cache persistence on the worker thread and avoid sharing cache payloads across batch/non-batch paths; use `--disable-batching` when request seeds or single-request behavior are required. |
 | Port already in use | Pass `--port 8001` or another free port. |
 | Image model memory is too high | Use `--quantize 4` or `--quantize 8`. |
 | Model loading says parameters are missing or unexpected | Upgrade the backend package from source. |

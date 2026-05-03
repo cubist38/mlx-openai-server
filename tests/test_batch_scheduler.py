@@ -10,7 +10,10 @@ from __future__ import annotations
 import asyncio
 from contextlib import contextmanager
 from dataclasses import dataclass, field
+import importlib
+import sys
 import threading
+import types
 from typing import Any
 
 import pytest
@@ -406,15 +409,36 @@ def test_admission_queue_accepts_before_start(patched_scheduler):
 
 
 # ---------------------------------------------------------------------------
-# Regression: seed=0 (the CLI default that the endpoint backfills into every
-# request) must NOT disable batching. If it does, every request is routed
-# through the single-request path and the scheduler never sees concurrent
-# work.
+# Regression: per-request seeds must NOT disable batching. Operators who need
+# positive request seeds honored must opt into the single-request path with
+# --disable-batching.
 # ---------------------------------------------------------------------------
 
 
-def test_default_seed_zero_does_not_disable_batching():
-    from app.handler.mlx_lm import MLXLMHandler
+def _load_handler_module_for_batchability(monkeypatch: pytest.MonkeyPatch) -> Any:
+    """Import the LM handler with MLX-backed core modules stubbed."""
+    fake_core = types.ModuleType("app.core")
+    fake_batch_scheduler = types.ModuleType("app.core.batch_scheduler")
+
+    class _FakeBatchScheduler:
+        pass
+
+    class _FakeInferenceWorker:
+        pass
+
+    fake_core.BatchScheduler = _FakeBatchScheduler
+    fake_core.InferenceWorker = _FakeInferenceWorker
+    fake_batch_scheduler.BATCHING_AVAILABLE = True
+
+    monkeypatch.setitem(sys.modules, "app.core", fake_core)
+    monkeypatch.setitem(sys.modules, "app.core.batch_scheduler", fake_batch_scheduler)
+    sys.modules.pop("app.handler.mlx_lm", None)
+
+    return importlib.import_module("app.handler.mlx_lm")
+
+
+def test_request_seed_does_not_disable_batching(monkeypatch):
+    handler_module = _load_handler_module_for_batchability(monkeypatch)
 
     class _FakeModel:
         has_draft_model = False
@@ -424,18 +448,36 @@ def test_default_seed_zero_does_not_disable_batching():
         def __init__(self, seed):
             self.seed = seed
 
-    handler = MLXLMHandler.__new__(MLXLMHandler)
+    handler = handler_module.MLXLMHandler.__new__(handler_module.MLXLMHandler)
     handler.model = _FakeModel()
+    handler._disable_batching = False
 
     assert handler._is_request_batchable(_Req(seed=None)) is True
     assert handler._is_request_batchable(_Req(seed=0)) is True
     assert handler._is_request_batchable(_Req(seed=-1)) is True
-    assert handler._is_request_batchable(_Req(seed=42)) is False
+    assert handler._is_request_batchable(_Req(seed=42)) is True
 
 
-def test_non_mergeable_cache_disables_batching():
+def test_disable_batching_routes_to_single_request_path(monkeypatch):
+    handler_module = _load_handler_module_for_batchability(monkeypatch)
+
+    class _FakeModel:
+        has_draft_model = False
+        cache_is_batchable = True
+
+    class _Req:
+        seed = None
+
+    handler = handler_module.MLXLMHandler.__new__(handler_module.MLXLMHandler)
+    handler.model = _FakeModel()
+    handler._disable_batching = True
+
+    assert handler._is_request_batchable(_Req()) is False
+
+
+def test_non_mergeable_cache_disables_batching(monkeypatch):
     """Models whose prompt caches don't expose ``merge`` must fall back."""
-    from app.handler.mlx_lm import MLXLMHandler
+    handler_module = _load_handler_module_for_batchability(monkeypatch)
 
     class _FakeModel:
         has_draft_model = False
@@ -444,8 +486,9 @@ def test_non_mergeable_cache_disables_batching():
     class _Req:
         seed = None
 
-    handler = MLXLMHandler.__new__(MLXLMHandler)
+    handler = handler_module.MLXLMHandler.__new__(handler_module.MLXLMHandler)
     handler.model = _FakeModel()
+    handler._disable_batching = False
 
     assert handler._is_request_batchable(_Req()) is False
 

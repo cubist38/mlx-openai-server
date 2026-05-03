@@ -558,7 +558,8 @@ class BatchScheduler:
             elif self._prompt_cache is not None:
                 try:
                     fetched_cache, fetched_rest = self._prompt_cache.fetch_nearest_cache(
-                        request.input_ids
+                        request.input_ids,
+                        allowed_sources={"batch"},
                     )
                 except Exception as exc:  # noqa: BLE001 — fallback to fresh cache
                     logger.warning(f"prompt_cache.fetch_nearest_cache failed: {exc!s}")
@@ -683,7 +684,10 @@ class BatchScheduler:
 
         if self._prompt_cache is not None:
             try:
-                prefix_cache, prefix_rest = self._prompt_cache.fetch_nearest_cache(input_ids[:-1])
+                prefix_cache, prefix_rest = self._prompt_cache.fetch_nearest_cache(
+                    input_ids[:-1],
+                    allowed_sources={"batch"},
+                )
             except Exception as exc:  # noqa: BLE001 — exact-hit fallback is best-effort
                 logger.warning(f"Failed to back off exact prompt-cache hit: {exc!s}")
             else:
@@ -777,6 +781,7 @@ class BatchScheduler:
                     list(cache_key),
                     cache,
                     cache_type=cache_type,
+                    source="batch",
                 )
                 logger.debug(
                     f"BatchScheduler saved {cache_type} checkpoint for uid={uid}"
@@ -860,6 +865,7 @@ class BatchScheduler:
                             list(resp.all_tokens),
                             resp.prompt_cache,
                             cache_type="assistant",
+                            source="batch",
                         )
                         saved = True
                     except Exception as exc:  # noqa: BLE001 — cache save is best-effort
