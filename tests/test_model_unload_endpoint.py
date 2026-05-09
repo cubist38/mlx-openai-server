@@ -3,9 +3,9 @@
 from __future__ import annotations
 
 from http import HTTPStatus
+import types
 from typing import Any
 
-import types
 import pytest
 
 from app.api import endpoints
@@ -48,9 +48,7 @@ async def test_unload_endpoint_unloads_active_on_demand_model() -> None:
     registry._on_demand_loaded.add("phi-4-reasoning-plus")
     registry._on_demand_ref_count["phi-4-reasoning-plus"] = 0
 
-    response = await endpoints.unload_model(
-        "phi-4-reasoning-plus", _build_request(registry)
-    )
+    response = await endpoints.unload_model("phi-4-reasoning-plus", _build_request(registry))
 
     assert response.status_code == HTTPStatus.OK
     payload = response.json()
@@ -73,9 +71,7 @@ async def test_unload_endpoint_returns_false_when_not_loaded() -> None:
         idle_timeout=60,
     )
 
-    response = await endpoints.unload_model(
-        "phi-4-reasoning-plus", _build_request(registry)
-    )
+    response = await endpoints.unload_model("phi-4-reasoning-plus", _build_request(registry))
 
     assert response.status_code == HTTPStatus.OK
     payload = response.json()
@@ -118,9 +114,7 @@ async def test_unload_endpoint_does_not_unload_model_in_use() -> None:
     registry._on_demand_loaded.add("phi-4-reasoning-plus")
     registry._on_demand_ref_count["phi-4-reasoning-plus"] = 1
 
-    response = await endpoints.unload_model(
-        "phi-4-reasoning-plus", _build_request(registry)
-    )
+    response = await endpoints.unload_model("phi-4-reasoning-plus", _build_request(registry))
 
     assert response.status_code == HTTPStatus.OK
     payload = response.json()
