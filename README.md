@@ -226,6 +226,7 @@ Supported endpoints:
 | Endpoint | Model types |
 |----------|-------------|
 | `GET /v1/models` | all |
+| `POST /v1/models/{model_name}/unload` | on-demand only |
 | `POST /v1/chat/completions` | `lm`, `multimodal` |
 | `POST /v1/responses` | `lm`, `multimodal` |
 | `POST /v1/images/generations` | `image-generation` |
