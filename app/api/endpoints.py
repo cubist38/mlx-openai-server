@@ -1047,7 +1047,9 @@ async def handle_stream_response(
             created=created_time,
             model=model,
             choices=[StreamingChoice(index=0, delta=Delta(), finish_reason=finish_reason)],  # type: ignore[call-arg,arg-type]
-            usage=usage_info.model_dump() if usage_info and hasattr(usage_info, "model_dump") else None,
+            usage=usage_info.model_dump()
+            if usage_info and hasattr(usage_info, "model_dump")
+            else None,
             request_id=request_id,
         )
         yield _yield_sse_chunk(final_chunk)
