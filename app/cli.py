@@ -174,6 +174,12 @@ def cli():
 )
 @click.option("--port", default=8000, type=int, help="Port to run the server on")
 @click.option("--host", default="0.0.0.0", help="Host to run the server on")
+@click.option(
+    "--startup-timeout",
+    default=1800,
+    type=click.IntRange(min=1),
+    help="Seconds to wait for model loading before startup fails. Default is 1800.",
+)
 @click.option("--queue-timeout", default=300, type=int, help="Request timeout in seconds")
 @click.option("--queue-size", default=100, type=int, help="Maximum queue size for pending requests")
 @click.option(
@@ -403,6 +409,7 @@ def launch(
     served_model_name,
     port,
     host,
+    startup_timeout,
     queue_timeout,
     queue_size,
     quantize,
@@ -479,6 +486,7 @@ def launch(
         served_model_name=served_model_name,
         port=port,
         host=host,
+        startup_timeout=startup_timeout,
         queue_timeout=queue_timeout,
         queue_size=queue_size,
         quantize=quantize,

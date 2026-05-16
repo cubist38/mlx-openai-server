@@ -444,6 +444,57 @@ class ModelRegistry:
                 self._idle_unload(model_id, timeout)
             )
 
+    async def unload_on_demand_model(self, model_id: str) -> tuple[bool, str | None]:
+        """Unload a registered on-demand model immediately.
+
+        Parameters
+        ----------
+        model_id : str
+            Registered on-demand model identifier.
+
+        Returns
+        -------
+        tuple[bool, str | None]
+            ``(True, None)`` when unload succeeds.
+
+            ``(False, reason)`` when the model is already unloaded or
+            cannot be unloaded because it is in use.
+
+        Raises
+        ------
+        KeyError
+            If ``model_id`` is not registered as on-demand.
+        """
+        if model_id not in self._on_demand_configs:
+            raise KeyError(f"Model '{model_id}' is not registered as on-demand")
+
+        # Quick path: if not loaded, avoid locking and return the caller-defined
+        # reason used by the API endpoint response.
+        if model_id not in self._handlers:
+            self._on_demand_idle_tasks.pop(model_id, None)
+            return False, "not currently loaded"
+
+        async with self._on_demand_load_lock:
+            if model_id not in self._handlers:
+                self._on_demand_idle_tasks.pop(model_id, None)
+                return False, "not currently loaded"
+
+            if self._on_demand_ref_count.get(model_id, 0) > 0:
+                return False, "model currently in use"
+
+            handler = self._handlers.pop(model_id)
+            self._on_demand_ref_count.pop(model_id, None)
+            self._on_demand_loaded.discard(model_id)
+            old_task = self._on_demand_idle_tasks.pop(model_id, None)
+            if old_task is not None:
+                old_task.cancel()
+
+            if hasattr(handler, "cleanup"):
+                await handler.cleanup()
+
+            logger.info(f"Explicitly unloaded on-demand model '{model_id}'")
+            return True, None
+
     async def _idle_unload(self, model_id: str, timeout: int) -> None:
         """Unload an on-demand model after it has been idle.
 

@@ -421,6 +421,68 @@ async def models(raw_request: Request) -> ModelsResponse | JSONResponse:
         )
 
 
+@router.post("/v1/models/{model_name}/unload", response_model=None)
+async def unload_model(model_name: str, raw_request: Request) -> JSONResponse:
+    """Unload a registered on-demand model immediately from memory."""
+    registry = getattr(raw_request.app.state, "registry", None)
+    if registry is None:
+        return JSONResponse(
+            status_code=HTTPStatus.NOT_FOUND,
+            content={
+                "error": {
+                    "message": f"Model '{model_name}' not found",
+                    "type": "model_not_found",
+                    "code": HTTPStatus.NOT_FOUND.value,
+                }
+            },
+        )
+
+    is_on_demand = getattr(registry, "is_on_demand", None)
+    if not callable(is_on_demand) or not is_on_demand(model_name):
+        return JSONResponse(
+            status_code=HTTPStatus.NOT_FOUND,
+            content={
+                "error": {
+                    "message": f"Model '{model_name}' not found",
+                    "type": "model_not_found",
+                    "code": HTTPStatus.NOT_FOUND.value,
+                }
+            },
+        )
+
+    unload_on_demand_model = getattr(registry, "unload_on_demand_model", None)
+    if not callable(unload_on_demand_model):
+        return JSONResponse(
+            status_code=HTTPStatus.NOT_FOUND,
+            content={
+                "error": {
+                    "message": f"Model '{model_name}' not found",
+                    "type": "model_not_found",
+                    "code": HTTPStatus.NOT_FOUND.value,
+                }
+            },
+        )
+
+    try:
+        unloaded, reason = await unload_on_demand_model(model_name)
+    except KeyError:
+        return JSONResponse(
+            status_code=HTTPStatus.NOT_FOUND,
+            content={
+                "error": {
+                    "message": f"Model '{model_name}' not found",
+                    "type": "model_not_found",
+                    "code": HTTPStatus.NOT_FOUND.value,
+                }
+            },
+        )
+
+    response = {"unloaded": bool(unloaded), "model": model_name}
+    if reason is not None:
+        response["reason"] = reason
+    return JSONResponse(content=response, status_code=HTTPStatus.OK)
+
+
 @router.get("/v1/queue/stats", response_model=None)
 async def queue_stats(raw_request: Request) -> dict[str, Any] | JSONResponse:
     """

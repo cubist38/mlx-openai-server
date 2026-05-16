@@ -529,6 +529,7 @@ class HandlerProcessProxy:
 
         # RPC timeout for calls to the child process.
         self._rpc_timeout: float = 600.0
+        self._startup_timeout: float = 1800.0
 
         # Auto-restart state.
         self._queue_config: dict[str, Any] | None = None
@@ -551,10 +552,12 @@ class HandlerProcessProxy:
         Raises
         ------
         RuntimeError
-            If the child process fails to initialize within 300 s.
+            If the child process fails to initialize before the startup
+            idle timeout elapses.
         """
         self._loop = asyncio.get_running_loop()
         self._running = True
+        self._startup_timeout = float(queue_config.get("startup_timeout", 1800))
         self._rpc_timeout = float(queue_config.get("timeout", 300))
         self._queue_config = queue_config
 
@@ -589,7 +592,7 @@ class HandlerProcessProxy:
 
         try:
             try:
-                response = await self._wait_for_ready(ready_queue, timeout=300)
+                response = await self._wait_for_ready(ready_queue, timeout=self._startup_timeout)
             finally:
                 self._pending.pop("__ready__", None)
 
@@ -635,8 +638,8 @@ class HandlerProcessProxy:
         Raises
         ------
         RuntimeError
-            If the child dies or the timeout expires before a ready
-            signal is received.
+            If the child dies or no ready/progress signal is received
+            before the timeout expires.
         """
         deadline = time.monotonic() + timeout
         poll_interval = 2.0
@@ -646,7 +649,7 @@ class HandlerProcessProxy:
             if remaining <= 0:
                 raise RuntimeError(
                     f"Handler process for '{self.served_model_name}' "
-                    f"did not become ready within {timeout:.0f} s"
+                    f"did not become ready within {timeout:.0f} s without startup progress"
                 )
 
             try:
@@ -676,9 +679,9 @@ class HandlerProcessProxy:
                 else:
                     logger.debug(line)
                 # Reset the deadline on every progress message so a
-                # slow-but-steady download doesn't trip the timeout. A
-                # genuine hang (no progress, no crash) still fails after
-                # the normal window elapses.
+                # slow-but-steady download or load stage doesn't trip
+                # the timeout. A genuine hang (no progress, no crash)
+                # still fails after the normal window elapses.
                 deadline = time.monotonic() + timeout
                 continue
 
@@ -807,7 +810,7 @@ class HandlerProcessProxy:
         self._pending["__ready__"] = ready_queue
 
         try:
-            response = await self._wait_for_ready(ready_queue, timeout=300)
+            response = await self._wait_for_ready(ready_queue, timeout=self._startup_timeout)
         finally:
             self._pending.pop("__ready__", None)
 
