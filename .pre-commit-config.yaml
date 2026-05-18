@@ -15,7 +15,7 @@ repos:
       - id: check-merge-conflict
 
   - repo: https://github.com/rhysd/actionlint
-    rev: v1.7.9
+    rev: v1.7.12
     hooks:
       - id: actionlint
 
@@ -30,14 +30,14 @@ repos:
         args: ['-x']
 
   - repo: https://github.com/codespell-project/codespell
-    rev: v2.4.1
+    rev: v2.4.2
     hooks:
       - id: codespell
         additional_dependencies:
           - tomli
 
   - repo: https://github.com/astral-sh/ruff-pre-commit
-    rev: v0.14.6
+    rev: v0.15.13
     hooks:
       # Run the linter.
       - id: ruff-check
