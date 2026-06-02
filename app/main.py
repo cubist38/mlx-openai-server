@@ -267,11 +267,12 @@ async def start(config: MLXServerConfig) -> None:
     """
     try:
         _apply_sampling_env(config)
+        # setup_server() configures logging (console + file sinks); build it
+        # before the banner so the startup banner is captured in the log file.
+        uvconfig = setup_server(config)
         # Display startup information
         print_startup_banner(config)
 
-        # Set up and start the server
-        uvconfig = setup_server(config)
         logger.info("Server configuration complete.")
         logger.info("Starting Uvicorn server...")
         server = uvicorn.Server(uvconfig)
@@ -295,9 +296,10 @@ async def start_multi(config: MultiModelServerConfig) -> None:
         Multi-model YAML-based configuration.
     """
     try:
-        print_multi_startup_banner(config)
-
+        # setup_server() configures logging (console + file sinks); build it
+        # before the banner so the banner is captured in the log file too.
         uvconfig = setup_server(config)
+        print_multi_startup_banner(config)
         logger.info("Multi-handler server configuration complete.")
         logger.info("Starting Uvicorn server...")
         server = uvicorn.Server(uvconfig)

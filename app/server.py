@@ -86,15 +86,41 @@ def _attach_sampling_defaults(handler: Any, config: Any) -> Any:
     return handler
 
 
+# Shared log format for both the console and file sinks. Color/markup tags
+# are rendered on the (colorized) console sink and automatically stripped by
+# loguru on the (non-colorized) file sink, so both carry the same fields —
+# crucially including ``name:function:line`` so the file is a faithful
+# transcript of the console rather than a stripped-down subset.
+_LOG_FORMAT = (
+    "<green>{time:YYYY-MM-DD HH:mm:ss}</green> | "
+    "<level>{level: <8}</level> | "
+    "<cyan>{name}</cyan>:<cyan>{function}</cyan>:<cyan>{line}</cyan> | "
+    "✦ <level>{message}</level>"
+)
+
+
 def configure_logging(
-    log_file: str | None = None, no_log_file: bool = False, log_level: str = "INFO"
+    log_file: str | None = None,
+    no_log_file: bool = False,
+    log_level: str = "INFO",
+    *,
+    enable_rotation: bool = True,
 ) -> None:
     """Set up loguru handlers used by the server.
 
     This helper replaces the default loguru handler with a console
     handler using a compact, colored format. When ``no_log_file`` is
-    False a rotating file handler is also added using ``log_file`` or
-    a default path.
+    False a file handler is also added using ``log_file`` or a default
+    path, sharing the same format as the console (minus color) so the
+    file is a faithful transcript rather than a stripped-down subset.
+
+    Because each model handler runs in its own spawned subprocess and
+    loguru configuration does not survive ``spawn``, this function is
+    called both in the parent process and in every child process (see
+    ``app.core.handler_process._handler_worker``). All processes append
+    to the same ``log_file``, but only the parent owns rotation/retention
+    (``enable_rotation``) to avoid multiple processes racing to rotate
+    the same file.
 
     Parameters
     ----------
@@ -107,6 +133,10 @@ def configure_logging(
         emitted.
     log_level:
         Minimum log level to emit (e.g. "DEBUG", "INFO").
+    enable_rotation:
+        When True (the parent process) the file sink rotates at 500 MB
+        and retains 10 days of history. Child processes pass False so
+        they only ever append, leaving rotation to the parent.
     """
     logger.remove()  # Remove default handler
 
@@ -114,21 +144,22 @@ def configure_logging(
     logger.add(
         print,
         level=log_level,
-        format="<green>{time:YYYY-MM-DD HH:mm:ss}</green> | "
-        "<level>{level: <8}</level> | "
-        "<cyan>{name}</cyan>:<cyan>{function}</cyan>:<cyan>{line}</cyan> | "
-        "✦ <level>{message}</level>",
+        format=_LOG_FORMAT,
         colorize=True,
     )
     if not no_log_file:
         file_path = log_file or "logs/app.log"
-        logger.add(
-            file_path,
-            rotation="500 MB",
-            retention="10 days",
-            level=log_level,
-            format="{time:YYYY-MM-DD HH:mm:ss} | {level} | {message}",
-        )
+        file_kwargs: dict[str, object] = {
+            "level": log_level,
+            "format": _LOG_FORMAT,
+            # Serialize writes within a process; combined with append-mode
+            # this keeps records intact when parent + children share a file.
+            "enqueue": True,
+        }
+        if enable_rotation:
+            file_kwargs["rotation"] = "500 MB"
+            file_kwargs["retention"] = "10 days"
+        logger.add(file_path, **file_kwargs)
 
 
 def create_lifespan(config_args: MLXServerConfig):
@@ -409,6 +440,11 @@ def create_multi_lifespan(config: MultiModelServerConfig):
                 queue_config = {
                     "timeout": model_cfg.queue_timeout,
                     "queue_size": model_cfg.queue_size,
+                    # Logging config so the spawned child can reconstruct the
+                    # same sinks (loguru state does not survive ``spawn``).
+                    "log_file": config.log_file,
+                    "no_log_file": config.no_log_file,
+                    "log_level": config.log_level,
                 }
 
                 if model_cfg.on_demand:

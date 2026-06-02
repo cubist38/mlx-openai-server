@@ -256,7 +256,20 @@ def _handler_worker(
     import mlx.core as mx
 
     from app.config import ModelEntryConfig
-    from app.server import create_handler_from_config
+    from app.server import configure_logging, create_handler_from_config
+
+    # loguru configuration does not survive ``spawn`` — reconstruct the same
+    # sinks here so child logs (model load, inference, per-request errors)
+    # reach the configured log file and honour the requested log level
+    # instead of falling back to loguru's default stderr-only handler.
+    # Rotation is left to the parent to avoid multiple processes racing to
+    # rotate a shared file.
+    configure_logging(
+        log_file=queue_config.get("log_file"),
+        no_log_file=queue_config.get("no_log_file", False),
+        log_level=queue_config.get("log_level", "INFO"),
+        enable_rotation=False,
+    )
 
     # Remember the parent PID so the request loop can detect if the
     # parent dies unexpectedly (e.g. SIGKILL).  Because we use the
