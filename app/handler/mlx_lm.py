@@ -1064,9 +1064,11 @@ class MLXLMHandler:
                 request_data["checkpoint_callback"] = ctx.checkpoint_callback
 
             if self.debug:
+                debug_request_data = self._with_effective_sampling_params(request_data)
+                log_debug_request(debug_request_data)
                 log_debug_model_dispatch(
                     "mlx_lm.generate_text_response.submit",
-                    self._with_effective_sampling_params(request_data),
+                    debug_request_data,
                 )
 
             response = await self._run_nonstream_generation(request, ctx, request_data)

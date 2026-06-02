@@ -216,11 +216,12 @@ def _summarize_for_debug(value: Any, max_depth: int = 2) -> Any:
         return {"type": "tuple", "len": len(value), "preview": preview_items}
 
     if isinstance(value, dict):
+        max_keys = 50
         summary: dict[str, Any] = {}
-        for key, item in list(value.items())[:20]:
+        for key, item in list(value.items())[:max_keys]:
             summary[str(key)] = _summarize_for_debug(item, max_depth - 1)
-        if len(value) > 20:
-            summary["..."] = f"+{len(value) - 20} more keys"
+        if len(value) > max_keys:
+            summary["..."] = f"+{len(value) - max_keys} more keys"
         return summary
 
     return f"<{type(value).__name__}>"
