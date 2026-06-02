@@ -142,17 +142,13 @@ class MLXWhisperHandler:
                 **request_data,
             )
             duration_seconds = int(calculate_audio_duration(temp_file_path))
-            is_verbose = (
-                request.response_format == TranscriptionResponseFormat.VERBOSE_JSON
-            )
+            is_verbose = request.response_format == TranscriptionResponseFormat.VERBOSE_JSON
             # mlx_whisper.transcribe() always returns {text, segments, language}.
             # We surface them only when the caller asked for verbose_json so
             # existing plain-JSON clients don't see unexpected fields.
             response_data = TranscriptionResponse(
                 text=response["text"],
-                usage=TranscriptionUsageAudio(
-                    type="duration", seconds=duration_seconds
-                ),
+                usage=TranscriptionUsageAudio(type="duration", seconds=duration_seconds),
                 language=response.get("language") if is_verbose else None,
                 segments=_coerce_segments(response.get("segments")) if is_verbose else None,
                 duration=float(duration_seconds) if is_verbose else None,
@@ -221,7 +217,9 @@ class MLXWhisperHandler:
                             finish_reason=None,
                             segments=_coerce_segments(
                                 chunk.get("segments"), time_offset=chunk_offset
-                            ) if is_verbose else None,
+                            )
+                            if is_verbose
+                            else None,
                             language=chunk.get("language") if is_verbose else None,
                         )
                     ],
@@ -237,9 +235,7 @@ class MLXWhisperHandler:
                 created=created_time,
                 model=self.model_path,
                 choices=[
-                    TranscriptionResponseStreamChoice(
-                        delta=Delta(content=""), finish_reason="stop"
-                    )
+                    TranscriptionResponseStreamChoice(delta=Delta(content=""), finish_reason="stop")
                 ],
             )
             yield f"data: {final_response.model_dump_json()}\n\n"
@@ -307,9 +303,7 @@ class MLXWhisperHandler:
             # Request verbose output from mlx_whisper when the caller asked
             # for verbose_json — the model always computes segments/language
             # internally; verbose=True just surfaces them in the return value.
-            is_verbose = (
-                request.response_format == TranscriptionResponseFormat.VERBOSE_JSON
-            )
+            is_verbose = request.response_format == TranscriptionResponseFormat.VERBOSE_JSON
             request_data = {
                 "audio_path": file_path,
                 "verbose": is_verbose,
@@ -446,7 +440,9 @@ class MLXWhisperHandler:
                             finish_reason=None,
                             segments=_coerce_segments(
                                 chunk.get("segments"), time_offset=chunk_offset
-                            ) if is_verbose else None,
+                            )
+                            if is_verbose
+                            else None,
                             language=chunk.get("language") if is_verbose else None,
                         )
                     ],
