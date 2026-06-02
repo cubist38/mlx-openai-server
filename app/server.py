@@ -140,9 +140,13 @@ def configure_logging(
     """
     logger.remove()  # Remove default handler
 
-    # Add console handler
+    # Add console handler. Use ``sys.stderr`` rather than ``print`` as the
+    # sink: loguru's formatted message already ends with a newline, so passing
+    # ``print`` (which appends its own newline) produced a blank line between
+    # every console record. A file-like sink is written via ``.write()`` and
+    # adds no extra newline, matching the file sink output.
     logger.add(
-        print,
+        sys.stderr,
         level=log_level,
         format=_LOG_FORMAT,
         colorize=True,
