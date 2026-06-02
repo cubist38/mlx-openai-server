@@ -486,6 +486,7 @@ class TranscriptionResponseFormat(StrEnum):
 
     JSON = "json"
     TEXT = "text"
+    VERBOSE_JSON = "verbose_json"
 
 
 class ImageGenerationRequest(OpenAIBaseModel):
@@ -620,11 +621,38 @@ class TranscriptionUsageAudio(OpenAIBaseModel):
     seconds: int = Field(..., description="The duration of the audio in seconds")
 
 
+class TranscriptionSegment(OpenAIBaseModel):
+    """A single segment from Whisper output (``verbose_json`` only).
+
+    ``start`` and ``end`` are absolute timestamps in seconds.  The ``id``
+    matches the sequential segment index returned by ``mlx_whisper.transcribe``.
+    """
+
+    id: int = Field(..., description="Sequential segment id from the model.")
+    start: float = Field(..., description="Segment start time in seconds (absolute).")
+    end: float = Field(..., description="Segment end time in seconds (absolute).")
+    text: str = Field(..., description="Transcribed text for this segment.")
+
+
 class TranscriptionResponse(OpenAIBaseModel):
     """Represents a transcription response."""
 
     text: str = Field(..., description="The transcribed text.")
     usage: TranscriptionUsageAudio = Field(..., description="The usage of the transcription.")
+    # verbose_json extras — populated only when response_format=verbose_json.
+    # They remain None for plain JSON so existing clients don't see new fields.
+    language: str | None = Field(
+        None,
+        description="ISO 639-1 language code detected by Whisper (verbose_json only).",
+    )
+    segments: list[TranscriptionSegment] | None = Field(
+        None,
+        description="Per-segment timing and text from the model (verbose_json only).",
+    )
+    duration: float | None = Field(
+        None,
+        description="Total audio duration in seconds (verbose_json only).",
+    )
 
 
 class TranscriptionResponseStreamChoice(OpenAIBaseModel):
@@ -633,6 +661,12 @@ class TranscriptionResponseStreamChoice(OpenAIBaseModel):
     delta: Delta = Field(..., description="The delta for this streaming choice.")
     finish_reason: str | None = None
     stop_reason: int | str | None = None
+    # verbose_json extras per streamed chunk.  Segments carry absolute
+    # timestamps (chunk offset already applied).  Language is constant across
+    # the stream but echoed on every frame so clients can read it from the
+    # first chunk without buffering.
+    segments: list[TranscriptionSegment] | None = None
+    language: str | None = None
 
 
 class TranscriptionResponseStream(OpenAIBaseModel):
