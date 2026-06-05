@@ -773,3 +773,78 @@ async def test_submit_stream_raises_queue_full_when_admission_queue_is_saturated
 
     with pytest.raises(asyncio.QueueFull):
         scheduler.submit_stream(input_ids=[2], max_tokens=4)
+
+
+def test_start_warms_up_model_on_caller_thread(patched_scheduler, monkeypatch):
+    """``start()`` must invoke the model on the caller thread before the worker spawns.
+
+    #290 reported ``RuntimeError: There is no Stream(gpu, N) in current
+    thread`` and was closed by #295. #295 fixed the stream-allocation side
+    (BatchScheduler and InferenceWorker now create their own per-thread
+    streams), but the model itself carries deferred MLX state that binds
+    to whichever thread first triggers it. When the scheduler thread is
+    that first thread, later cross-thread evaluations still fail.
+
+    The fix is to materialise the model's lazy state on the caller thread
+    before any worker thread touches it — a one-token forward + ``mx.eval``
+    is enough. This is the workaround Apple documents at
+    ml-explore/mlx#3529 (``mx.eval(model.parameters())`` before crossing
+    thread boundaries).
+    """
+    main_tid = threading.get_ident()
+    call_threads: list[int] = []
+
+    class WarmupModel:
+        # Presence of ``.layers`` distinguishes a real MLX model from the
+        # bare ``object()`` mocks used by other tests in this module. The
+        # warm-up must silently skip when ``.layers`` is absent so existing
+        # unit tests keep passing.
+        layers = (object(),)
+
+        def __call__(self, _ids: Any, cache: Any = None) -> Any:
+            call_threads.append(threading.get_ident())
+            return object()  # opaque logits
+
+    # The warm-up uses ``make_prompt_cache(self._model)``, ``mx.array(...)``,
+    # and ``mx.eval(...)``; the fixture only stubs stream-related calls, so
+    # we stub the rest here.
+    import mlx_lm.models.cache as cache_mod
+
+    monkeypatch.setattr(cache_mod, "make_prompt_cache", lambda _model: [])
+    monkeypatch.setattr(patched_scheduler.mx, "array", lambda _data: object())
+    monkeypatch.setattr(patched_scheduler.mx, "eval", lambda *_args, **_kwargs: None)
+
+    FakeBatchGenerator.script_queue = [_FakeScript(tokens=[10], finish_reason="length")]
+    scheduler = patched_scheduler.BatchScheduler(
+        model=WarmupModel(),
+        tokenizer=FakeTokenizer(),
+        idle_poll_timeout=0.01,
+    )
+    try:
+        scheduler.start()
+    finally:
+        scheduler.stop()
+
+    assert main_tid in call_threads, (
+        "BatchScheduler.start() must run a warm-up forward pass on the caller "
+        f"thread (id={main_tid}); observed call threads={call_threads}"
+    )
+
+
+def test_start_skips_warm_up_for_bare_object_model(patched_scheduler):
+    """Warm-up must be skipped silently when the model lacks ``.layers``.
+
+    Existing unit tests in this module pass ``model=object()``; the warm-up
+    must not crash or interfere with them.
+    """
+    FakeBatchGenerator.script_queue = [_FakeScript(tokens=[10], finish_reason="length")]
+    scheduler = patched_scheduler.BatchScheduler(
+        model=object(),
+        tokenizer=FakeTokenizer(),
+        idle_poll_timeout=0.01,
+    )
+    try:
+        scheduler.start()
+    finally:
+        scheduler.stop()
+    # No assertion needed beyond "no crash"; the scheduler started cleanly.
