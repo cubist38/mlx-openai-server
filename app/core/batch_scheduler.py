@@ -279,6 +279,19 @@ class BatchScheduler:
                     "mlx_lm.generate.BatchGenerator is not available in the"
                     " installed mlx-lm; upgrade mlx-lm to enable batching."
                 )
+            # Materialize the model's lazy MLX state on the caller thread
+            # before spawning the scheduler thread. Per-thread streams
+            # from #295 keep stream allocation on the worker, but the
+            # model itself carries deferred MLX state that binds to
+            # whichever thread first triggers it. A one-token forward +
+            # ``mx.eval`` here forces resolution on the loader thread so
+            # the scheduler thread only reads fully-materialized tensors.
+            # Without this, the first forward pass on the scheduler
+            # thread raises ``RuntimeError: There is no Stream(gpu, N)
+            # in current thread`` — same root cause as #290; #295
+            # resolved the stream-allocation side but not the
+            # model-state side.
+            self._warm_up_model()
             self._ready_event.clear()
             self._start_error = None
             self._running = True
@@ -308,6 +321,33 @@ class BatchScheduler:
             self._prefill_step_size,
             self._max_kv_size,
         )
+
+    def _warm_up_model(self) -> None:
+        """Run a one-token forward pass on the caller thread to materialize lazy MLX state.
+
+        See :meth:`start` for the rationale. Skipped silently for unit-test
+        mocks that pass a bare ``object()`` as the model (no ``.layers``
+        attribute). Exceptions are swallowed so a model that fails warm-up
+        does not prevent the scheduler from starting — the real first
+        forward pass on the worker thread will surface any actual problem
+        with a cleaner traceback.
+        """
+        if not hasattr(self._model, "layers"):
+            return
+        try:
+            from mlx_lm.models.cache import make_prompt_cache  # noqa: PLC0415
+
+            cache = make_prompt_cache(self._model)
+            token_id = (
+                getattr(self._tokenizer, "bos_token_id", None)
+                or getattr(self._tokenizer, "pad_token_id", None)
+                or 0
+            )
+            ids = mx.array([[token_id]])
+            logits = self._model(ids, cache=cache)
+            mx.eval(logits, [c.state for c in cache])
+        except Exception:  # noqa: BLE001 — best-effort warm-up
+            pass
 
     def stop(self) -> None:
         """Signal the scheduler thread to stop and wait for it to join.

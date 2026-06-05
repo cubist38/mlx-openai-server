@@ -280,12 +280,52 @@ class MLXLMHandler:
             }
         self._queue_size = int(queue_config.get("queue_size", 100))
         self._queue_timeout = float(queue_config.get("timeout", 300))
+        # Materialize the model's lazy MLX state on the caller thread before
+        # the inference worker spawns. Requests that route through the
+        # inference worker (notably the ``--disable-batching`` path) run
+        # every forward pass on the worker thread, which owns its own
+        # per-thread stream (#295). Without this warm-up the model's
+        # deferred state binds to the worker thread on first use and later
+        # cross-thread evaluations raise ``RuntimeError: There is no
+        # Stream(gpu, N) in current thread`` — the May-14 follow-up
+        # comment on #290 shows this still hits Gemma 4 with
+        # ``--disable-batching`` even after #295.
+        self._warm_up_model()
         self.inference_worker = InferenceWorker(
             queue_size=self._queue_size,
             timeout=self._queue_timeout,
         )
         self.inference_worker.start()
         logger.info("Initialized MLXHandler and started inference worker")
+
+    def _warm_up_model(self) -> None:
+        """Run a one-token forward pass on the caller thread.
+
+        See :meth:`initialize` for the rationale. Skipped silently for
+        unit-test mocks (model without ``.layers``). Exceptions are
+        swallowed so warm-up failure does not block startup — the real
+        first inference will surface any actual model problem with a
+        cleaner traceback.
+        """
+        raw_model = getattr(self.model, "model", None)
+        tokenizer = getattr(self.model, "tokenizer", None)
+        if raw_model is None or not hasattr(raw_model, "layers"):
+            return
+        try:
+            import mlx.core as mx  # noqa: PLC0415
+            from mlx_lm.models.cache import make_prompt_cache  # noqa: PLC0415
+
+            cache = make_prompt_cache(raw_model)
+            token_id = (
+                getattr(tokenizer, "bos_token_id", None)
+                or getattr(tokenizer, "pad_token_id", None)
+                or 0
+            )
+            ids = mx.array([[token_id]])
+            logits = raw_model(ids, cache=cache)
+            mx.eval(logits, [c.state for c in cache])
+        except Exception:  # noqa: BLE001 — best-effort warm-up
+            pass
 
     def refine_messages(self, messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
         """

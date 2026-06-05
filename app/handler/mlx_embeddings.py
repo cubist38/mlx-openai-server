@@ -63,12 +63,36 @@ class MLXEmbeddingsHandler:
             Dictionary with ``queue_size`` and ``timeout`` keys used
             to configure the inference worker's internal queue.
         """
+        # Materialize the embedding model's lazy MLX state on the caller
+        # thread before the inference worker spawns. The worker owns its
+        # own per-thread MLX stream (#295); without this warm-up the
+        # model's deferred state binds to the worker thread on first use
+        # and later cross-thread evaluations raise ``RuntimeError: There
+        # is no Stream(gpu, N) in current thread``. Same root cause as
+        # ``MLXLMHandler._warm_up_model``.
+        self._warm_up_model()
         self.inference_worker = InferenceWorker(
             queue_size=config.get("queue_size", 100),
             timeout=config.get("timeout", 300),
         )
         self.inference_worker.start()
         logger.info("Initialized MLXEmbeddingsHandler and started inference worker")
+
+    def _warm_up_model(self) -> None:
+        """Run a one-input embed on the caller thread to materialize lazy MLX state.
+
+        See :meth:`initialize` for the rationale. Skipped silently for
+        unit-test mocks (model without ``.layers``). Exceptions are
+        swallowed so warm-up failure does not block startup — the real
+        first embed will surface any actual model problem with a cleaner
+        traceback.
+        """
+        if not hasattr(self.model, "layers"):
+            return
+        try:
+            self.model(texts=["a"])
+        except Exception:  # noqa: BLE001 — best-effort warm-up
+            pass
 
     async def generate_embeddings_response(self, request: EmbeddingRequest):
         """
