@@ -336,6 +336,7 @@ class BatchScheduler:
             return
         try:
             from mlx_lm.models.cache import make_prompt_cache  # noqa: PLC0415
+
             cache = make_prompt_cache(self._model)
             token_id = (
                 getattr(self._tokenizer, "bos_token_id", None)

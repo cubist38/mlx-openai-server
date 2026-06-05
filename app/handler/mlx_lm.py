@@ -314,6 +314,7 @@ class MLXLMHandler:
         try:
             import mlx.core as mx  # noqa: PLC0415
             from mlx_lm.models.cache import make_prompt_cache  # noqa: PLC0415
+
             cache = make_prompt_cache(raw_model)
             token_id = (
                 getattr(tokenizer, "bos_token_id", None)
