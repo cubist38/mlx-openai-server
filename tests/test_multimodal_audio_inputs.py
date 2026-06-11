@@ -15,6 +15,8 @@ def _load_mlx_vlm_model_module(monkeypatch: pytest.MonkeyPatch) -> Any:
     """Import the VLM model wrapper with lightweight MLX and mlx-vlm stubs."""
     fake_mx_module = types.ModuleType("mlx.core")
     fake_mx_module.array = lambda value: value
+    fake_mx_module.int64 = object()
+    fake_mx_module.int32 = object()
     fake_mx_module.random = types.SimpleNamespace(seed=lambda seed: None)
 
     fake_mlx_module = types.ModuleType("mlx")
