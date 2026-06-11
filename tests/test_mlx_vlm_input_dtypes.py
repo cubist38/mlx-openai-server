@@ -39,7 +39,8 @@ def test_to_mlx_inputs_output_is_usable_from_another_thread() -> None:
     inference-worker / batch-scheduler thread. MLX lazy arrays cannot be
     evaluated on a different thread than the one that recorded their ops
     ("There is no Stream(gpu, N) in current thread"), so the conversion
-    boundary must return materialized arrays."""
+    boundary must return materialized arrays.
+    """
     import threading
 
     from app.models.mlx_vlm import MLX_VLM
@@ -66,7 +67,8 @@ def test_to_mlx_inputs_output_is_usable_from_another_thread() -> None:
 def test_to_mlx_inputs_casts_int64_mlx_arrays_to_int32() -> None:
     """mlx-vlm 0.6.x processors return MLX arrays directly (ignoring
     ``return_tensors="pt"``), still with int64 ids — so the normalization
-    must apply to MLX arrays too, not only torch tensors."""
+    must apply to MLX arrays too, not only torch tensors.
+    """
     from app.models.mlx_vlm import MLX_VLM
 
     model = object.__new__(MLX_VLM)

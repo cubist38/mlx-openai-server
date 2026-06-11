@@ -50,9 +50,7 @@ def test_batch_generator_insert_accepts_scheduler_kwargs():
     passed_kwargs = {"max_tokens", "prompt_kwargs", "logits_processors"}
     params = set(sig.parameters)
     missing = passed_kwargs - params
-    assert not missing, (
-        f"Installed mlx_vlm BatchGenerator.insert does not accept {sorted(missing)}"
-    )
+    assert not missing, f"Installed mlx_vlm BatchGenerator.insert does not accept {sorted(missing)}"
 
 
 def test_batch_generator_has_methods_used_by_scheduler():
@@ -65,7 +63,8 @@ def test_batch_generator_has_methods_used_by_scheduler():
 
 def test_generate_module_exports_kv_defaults():
     """vlm_batch_scheduler imports these alongside BatchGenerator; if any is
-    missing the whole import fails and batching silently disables itself."""
+    missing the whole import fails and batching silently disables itself.
+    """
     for name in (
         "DEFAULT_KV_GROUP_SIZE",
         "DEFAULT_KV_QUANT_SCHEME",
@@ -103,6 +102,4 @@ def test_stream_generate_accepts_wrapper_kwargs():
         "logits_processors",
     }
     missing = passed_kwargs - params
-    assert not missing, (
-        f"Installed mlx_vlm stream_generate does not accept {sorted(missing)}"
-    )
+    assert not missing, f"Installed mlx_vlm stream_generate does not accept {sorted(missing)}"
