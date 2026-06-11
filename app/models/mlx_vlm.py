@@ -138,7 +138,17 @@ class MLX_VLM:
         """Convert tensor values produced by Transformers processors into MLX arrays."""
         for key, value in list(inputs.items()):
             if isinstance(value, torch.Tensor):
-                inputs[key] = mx.array(value)
+                value = mx.array(value)
+            # Processors emit int64 ids/masks (torch convention, kept by
+            # mlx-vlm's processor wrappers even for MLX outputs). mlx-vlm's
+            # Qwen3-VL decode path corrupts logits on int64 input_ids, so
+            # normalize to the int32 dtype mlx-native input prep produces.
+            if getattr(value, "dtype", None) == mx.int64:
+                value = value.astype(mx.int32)
+                # Materialize: lazy arrays cannot be evaluated on the
+                # inference-worker/scheduler thread that consumes them.
+                mx.eval(value)
+            inputs[key] = value
         return inputs
 
     def count_prompt_tokens(self, model_inputs: dict[str, Any]) -> int:
