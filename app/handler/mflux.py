@@ -59,13 +59,13 @@ class MLXFluxHandler:
         self.lora_paths = lora_paths
         self.lora_scales = lora_scales
 
-        self.model = ImageGenerationModel(
-            model_path=model_path,
-            quantize=quantize,
-            config_name=config_name,
-            lora_paths=lora_paths,
-            lora_scales=lora_scales,
-        )
+        # Constructed on the worker thread in initialize() (see _build_model),
+        # not here. mflux allocates the model's MLX arrays at build time, and
+        # since mlx 0.31.2 those arrays are bound to the creating thread's
+        # stream. Generation runs on the worker thread, so building on the main
+        # thread makes the first mx.eval() fail with
+        # "There is no Stream(gpu, 0) in current thread".
+        self.model: ImageGenerationModel | None = None
         self.model_created = int(time.time())  # Store creation time when model is loaded
 
         # Dedicated inference thread — keeps the event loop free during
@@ -95,6 +95,26 @@ class MLXFluxHandler:
             logger.error(f"Error getting models: {e!s}")
             return []
 
+    def _build_model(self) -> ImageGenerationModel:
+        """Construct the image generation model.
+
+        Submitted to the inference worker so the model's MLX arrays are
+        allocated on the same thread that runs ``mx.eval`` during generation;
+        see the note in ``__init__``.
+
+        Returns
+        -------
+        ImageGenerationModel
+            The loaded image generation model.
+        """
+        return ImageGenerationModel(
+            model_path=self.model_path,
+            quantize=self.quantize,
+            config_name=self.config_name,
+            lora_paths=self.lora_paths,
+            lora_scales=self.lora_scales,
+        )
+
     async def initialize(self, queue_config: dict[str, Any] | None = None) -> None:
         """Initialize the handler and start the inference worker.
 
@@ -114,6 +134,9 @@ class MLXFluxHandler:
             timeout=queue_config.get("timeout", 300),
         )
         self.inference_worker.start()
+        # Build the model on the worker thread so array allocation and the
+        # mx.eval() calls during generation share one thread (see __init__).
+        self.model = await self.inference_worker.submit(self._build_model)
         logger.info("Initialized MLXFluxHandler and started inference worker")
         logger.info(f"Queue configuration: {queue_config}")
 
@@ -570,6 +593,8 @@ class MLXFluxHandler:
             logger.info(f"  - Model params: {model_params}")
 
             # Generate image
+            if self.model is None:
+                raise RuntimeError("Image model is not initialized; call initialize() first.")
             return self.model(prompt=prompt, seed=seed, **model_params)
 
         except Exception as e:
