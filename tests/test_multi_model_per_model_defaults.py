@@ -226,6 +226,24 @@ def test_load_config_from_yaml_preserves_per_model_sampling_defaults(tmp_path: P
         assert getattr(config.models[1], key) == expected
 
 
+def test_load_config_from_yaml_preserves_startup_timeout(tmp_path: Path) -> None:
+    """Multi-model YAML should preserve per-model startup timeout overrides."""
+
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(
+        "models:\n"
+        "  - model_path: /models/model-a\n"
+        "    model_type: lm\n"
+        "    served_model_name: model-a\n"
+        "    startup_timeout: 3600\n",
+        encoding="utf-8",
+    )
+
+    config = load_config_from_yaml(str(config_path))
+
+    assert config.models[0].startup_timeout == 3600
+
+
 @pytest.mark.asyncio
 async def test_chat_completions_can_apply_different_defaults_per_model(
     monkeypatch: pytest.MonkeyPatch,
