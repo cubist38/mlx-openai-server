@@ -224,7 +224,9 @@ def test_prepare_text_request_strips_reasoning_content_from_tool_call_assistant_
     assert assistant_turn["tool_calls"][0]["function"]["arguments"] == '{"city":"Boston"}'
 
 
-def test_create_input_prompt_normalizes_tool_call_argument_strings_only_for_template_render() -> None:
+def test_create_input_prompt_normalizes_tool_call_argument_strings_only_for_template_render() -> (
+    None
+):
     """Template replay should see mapping args while the original messages stay OpenAI-compatible."""
     mlx_lm_cls = _load_mlx_lm_class()
     model = mlx_lm_cls.__new__(mlx_lm_cls)
