@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Generator, Iterable
+from copy import deepcopy
 from dataclasses import dataclass
 import json
 import os
@@ -238,9 +239,30 @@ class MLX_LM:
         self, messages: list[dict[str, str]], chat_template_kwargs: dict[str, Any]
     ) -> str:
         use_partial = chat_template_kwargs.pop("_partial_mode", False)
+        template_messages = deepcopy(messages)
+
+        for message in template_messages:
+            tool_calls = message.get("tool_calls")
+            if not isinstance(tool_calls, list):
+                continue
+            for tool_call in tool_calls:
+                if not isinstance(tool_call, dict):
+                    continue
+                function = tool_call.get("function")
+                if not isinstance(function, dict):
+                    continue
+                arguments = function.get("arguments")
+                if not isinstance(arguments, str):
+                    continue
+                try:
+                    parsed = json.loads(arguments)
+                except (TypeError, ValueError, json.JSONDecodeError):
+                    continue
+                if isinstance(parsed, dict):
+                    function["arguments"] = parsed
 
         return self.tokenizer.apply_chat_template(
-            messages,
+            template_messages,
             tokenize=False,
             add_generation_prompt=not use_partial,
             continue_final_message=use_partial,
