@@ -18,6 +18,13 @@ def _load_mlx_lm_handler_class() -> type:
     fake_handler_package = types.ModuleType("app.handler")
     fake_handler_package.__path__ = [str(repo_root / "app" / "handler")]
 
+    fake_core_module = types.ModuleType("app.core")
+    fake_core_module.BatchScheduler = object
+    fake_core_module.InferenceWorker = object
+
+    fake_batch_scheduler_module = types.ModuleType("app.core.batch_scheduler")
+    fake_batch_scheduler_module.BATCHING_AVAILABLE = False
+
     fake_model_module = types.ModuleType("app.models.mlx_lm")
     fake_model_module.MLX_LM = object
 
@@ -26,6 +33,8 @@ def _load_mlx_lm_handler_class() -> type:
 
     module_names = [
         "app.handler",
+        "app.core",
+        "app.core.batch_scheduler",
         "app.models.mlx_lm",
         "app.utils.prompt_cache",
         "app.handler.mlx_lm",
@@ -36,6 +45,8 @@ def _load_mlx_lm_handler_class() -> type:
 
     try:
         sys.modules["app.handler"] = fake_handler_package
+        sys.modules["app.core"] = fake_core_module
+        sys.modules["app.core.batch_scheduler"] = fake_batch_scheduler_module
         sys.modules["app.models.mlx_lm"] = fake_model_module
         sys.modules["app.utils.prompt_cache"] = fake_prompt_cache_module
         sys.modules.pop("app.handler.mlx_lm", None)
@@ -55,6 +66,9 @@ def test_prepare_text_request_strips_reasoning_content_from_prior_assistant_mess
     """Prepared prompt messages should not carry prior assistant reasoning text."""
     handler_cls = _load_mlx_lm_handler_class()
     handler = handler_cls.__new__(handler_cls)
+    handler.kv_bits = None
+    handler.kv_group_size = 64
+    handler.quantized_kv_start = 0
 
     request = ChatCompletionRequest(
         model="local-text-model",
@@ -72,7 +86,7 @@ def test_prepare_text_request_strips_reasoning_content_from_prior_assistant_mess
 
     chat_messages, _ = asyncio.run(handler._prepare_text_request(request))
 
-    assert all("reasoning_content" not in msg for msg in chat_messages)
+    assert all("reasoning_content" not in msg and "reasoning" not in msg for msg in chat_messages)
     assert [msg["role"] for msg in chat_messages] == [
         "system",
         "user",
@@ -86,6 +100,9 @@ def test_prepare_text_request_strips_reasoning_content_from_tool_call_assistant_
     """Tool-call assistant turns should preserve tool data while removing reasoning text."""
     handler_cls = _load_mlx_lm_handler_class()
     handler = handler_cls.__new__(handler_cls)
+    handler.kv_bits = None
+    handler.kv_group_size = 64
+    handler.quantized_kv_start = 0
 
     request = ChatCompletionRequest(
         model="local-text-model",
@@ -113,7 +130,7 @@ def test_prepare_text_request_strips_reasoning_content_from_tool_call_assistant_
 
     chat_messages, _ = asyncio.run(handler._prepare_text_request(request))
 
-    assert all("reasoning_content" not in msg for msg in chat_messages)
+    assert all("reasoning_content" not in msg and "reasoning" not in msg for msg in chat_messages)
     assert [msg["role"] for msg in chat_messages] == [
         "user",
         "assistant",

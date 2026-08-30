@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import base64
 from collections.abc import AsyncGenerator, Callable
 from http import HTTPStatus
@@ -20,6 +21,7 @@ from openai.types.responses.response_function_tool_call import ResponseFunctionT
 from openai.types.responses.response_output_message import ResponseOutputMessage, ResponseOutputText
 from openai.types.responses.response_reasoning_item import Content, ResponseReasoningItem, Summary
 
+from ..core.keep_alive import KeepAlive
 from ..schemas.openai import (
     ChatCompletionChunk,
     ChatCompletionContentPartImage,
@@ -46,7 +48,9 @@ from ..schemas.openai import (
     InputTokensDetails,
     Message,
     Model,
+    ModelLoadRequest,
     ModelsResponse,
+    ModelUnloadRequest,
     OutputTokensDetails,
     ResponsesRequest,
     ResponsesResponse,
@@ -65,6 +69,10 @@ from ..utils.debug_logging import log_debug_server_request
 from ..utils.errors import create_error_response
 
 router = APIRouter()
+
+# Strong references to in-flight lease releases. Without them the event loop
+# may garbage-collect a shielded release task before it finishes.
+_pending_releases: set[asyncio.Task[None]] = set()
 
 
 def _get_handler_type(handler: Any) -> str:
@@ -93,9 +101,41 @@ def _is_text_compatible_handler(handler: Any | None) -> bool:
     return _get_handler_type(handler) in ("lm", "multimodal")
 
 
+def _canonical_model_id(registry: Any, model_id: str) -> str:
+    """Resolve a model alias to the canonical id the registry reports.
+
+    Registries are duck-typed here, so a registry without alias support simply
+    leaves the name untouched.
+
+    Parameters
+    ----------
+    registry : Any
+        The model registry from ``app.state``.
+    model_id : str
+        Name taken from the request, possibly an alias.
+
+    Returns
+    -------
+    str
+        Canonical model id, or ``model_id`` unchanged.
+    """
+    resolve = getattr(registry, "resolve_model_id", None)
+    return resolve(model_id) if callable(resolve) else model_id
+
+
+def _key_error_message(exc: KeyError) -> str:
+    """Return a ``KeyError`` message without the quotes ``str()`` adds.
+
+    ``str(KeyError("Model 'x' is not registered"))`` renders the argument with
+    ``repr``, so the client would receive a doubly quoted message.
+    """
+    return str(exc.args[0]) if exc.args else str(exc)
+
+
 async def _resolve_handler(
     raw_request: Request,
     model_id: str | None = None,
+    keep_alive: KeepAlive = None,
 ) -> Any | None:
     """Resolve the correct handler for a request.
 
@@ -111,6 +151,8 @@ async def _resolve_handler(
     model_id : str | None, optional
         The model identifier from the request body.  Only used when a
         ``ModelRegistry`` is attached to the app state.
+    keep_alive : KeepAlive
+        Per-request retention override for an on-demand model.
 
     Returns
     -------
@@ -126,26 +168,34 @@ async def _resolve_handler(
     """
     registry = getattr(raw_request.app.state, "registry", None)
     if registry is not None and model_id is not None:
-        # Try the normal (already-loaded) path first
-        try:
-            return registry.get_handler(model_id)
-        except KeyError:
-            pass
-
-        # Check if this is an on-demand model that needs loading.
-        #
-        # Some tests (and lightweight embedding scenarios) attach a minimal
-        # registry-like object that only exposes ``get_handler`` and
-        # ``list_model_ids``. Guard ``is_on_demand`` / ``ensure_on_demand_loaded``
-        # so those call sites still receive the intended 404 path.
+        # On-demand models must be acquired for every request, including when
+        # their process is already resident. This keeps the active-request
+        # count accurate and prevents eviction during generation.
         is_on_demand = getattr(registry, "is_on_demand", None)
         ensure_on_demand_loaded = getattr(registry, "ensure_on_demand_loaded", None)
         if callable(is_on_demand) and is_on_demand(model_id) and callable(ensure_on_demand_loaded):
             try:
-                handler = await ensure_on_demand_loaded(model_id)
-                # Tag the request so the on-demand scope can release it
-                raw_request.state.on_demand_model_id = model_id
+                if keep_alive is None:
+                    handler = await ensure_on_demand_loaded(model_id)
+                else:
+                    handler = await ensure_on_demand_loaded(model_id, keep_alive=keep_alive)
+                leases = getattr(raw_request.state, "on_demand_leases", None)
+                if leases is None:
+                    leases = []
+                    raw_request.state.on_demand_leases = leases
+                leases.append((model_id, keep_alive, handler))
                 return handler
+            except ValueError as exc:
+                raise HTTPException(
+                    status_code=HTTPStatus.BAD_REQUEST,
+                    detail={
+                        "error": {
+                            "message": str(exc),
+                            "type": "invalid_request_error",
+                            "code": HTTPStatus.BAD_REQUEST,
+                        }
+                    },
+                ) from exc
             except Exception as exc:
                 raise HTTPException(
                     status_code=HTTPStatus.SERVICE_UNAVAILABLE,
@@ -157,6 +207,12 @@ async def _resolve_handler(
                         }
                     },
                 ) from exc
+
+        # Startup-loaded models do not need a lease.
+        try:
+            return registry.get_handler(model_id)
+        except KeyError:
+            pass
 
         # Model not found at all
         list_model_ids = getattr(registry, "list_model_ids", None)
@@ -179,13 +235,71 @@ async def _resolve_handler(
     return getattr(raw_request.app.state, "handler", None)
 
 
+async def _release_leases(
+    registry: Any,
+    leases: list[tuple[str, KeepAlive, Any]],
+) -> None:
+    """Return every acquired lease to the registry.
+
+    Parameters
+    ----------
+    registry : Any
+        Object exposing ``release_on_demand``.
+    leases : list[tuple[str, KeepAlive, Any]]
+        Model identifier, the retention override recorded at acquisition, and
+        the handler that was leased.
+    """
+    for model_id, keep_alive, handler in reversed(leases):
+        try:
+            await registry.release_on_demand(
+                model_id,
+                keep_alive=keep_alive,
+                handler=handler,
+            )
+        except Exception as exc:
+            logger.exception(f"Failed to release model lease for '{model_id}': {exc}")
+
+
 async def _release_on_demand(raw_request: Request) -> None:
-    """Release the on-demand model reference after a request completes."""
-    model_id = getattr(raw_request.state, "on_demand_model_id", None)
-    if model_id is not None:
-        registry = getattr(raw_request.app.state, "registry", None)
-        if registry is not None:
-            await registry.release_on_demand(model_id)
+    """Release all on-demand model references acquired by a request.
+
+    The release runs in a shielded task. A client that disconnects mid-stream
+    cancels the request's task group, and an unshielded ``await`` in that state
+    is abandoned at its first suspension point. That would leave the reference
+    count above zero forever, making the worker permanently ineligible for
+    idle expiry, eviction, and safe unload.
+    """
+    leases = getattr(raw_request.state, "on_demand_leases", None)
+    if not leases:
+        return
+
+    raw_request.state.on_demand_leases = []
+    registry = getattr(raw_request.app.state, "registry", None)
+    if registry is None:
+        return
+
+    release = asyncio.ensure_future(_release_leases(registry, list(leases)))
+    _pending_releases.add(release)
+    release.add_done_callback(_pending_releases.discard)
+    await asyncio.shield(release)
+
+
+def _defer_release_until_stream_end(
+    response: StreamingResponse,
+    raw_request: Request,
+) -> StreamingResponse:
+    """Keep model leases active until a streaming body closes."""
+    body_iterator = response.body_iterator
+
+    async def release_after_stream() -> AsyncGenerator[Any, None]:
+        try:
+            async for chunk in body_iterator:
+                yield chunk
+        finally:
+            await _release_on_demand(raw_request)
+
+    response.body_iterator = release_after_stream()
+    return response
 
 
 def _get_handler_registry_ownership(raw_request: Request, handler: Any) -> str:
@@ -345,10 +459,15 @@ async def health(raw_request: Request) -> HealthCheckResponse | JSONResponse:
                 content={"status": "unhealthy", "model_id": None, "model_status": "no_models"},
             )
         model_ids = [m["id"] for m in registry.list_models()]
+        loaded_count = registry.get_loaded_model_count()
+        # ``model_status`` stays a fixed machine-readable token; the counts carry
+        # the detail so monitoring does not have to parse prose.
         return HealthCheckResponse(
             status=HealthCheckStatus.OK,
             model_id=", ".join(model_ids),
-            model_status=f"initialized ({model_count} model(s))",
+            model_status="ready",
+            models_configured=model_count,
+            models_loaded=loaded_count,
         )
 
     handler = getattr(raw_request.app.state, "handler", None)
@@ -419,6 +538,158 @@ async def models(raw_request: Request) -> ModelsResponse | JSONResponse:
             ),
             status_code=HTTPStatus.INTERNAL_SERVER_ERROR,
         )
+
+
+@router.get("/v1/models/status", response_model=None)
+async def model_status(raw_request: Request) -> dict[str, Any] | JSONResponse:
+    """Return configured model lifecycle state and process information."""
+    registry = getattr(raw_request.app.state, "registry", None)
+    if registry is None:
+        return JSONResponse(
+            content=create_error_response(
+                "Model lifecycle management requires multi-model mode",
+                "unsupported_request",
+                HTTPStatus.BAD_REQUEST,
+            ),
+            status_code=HTTPStatus.BAD_REQUEST,
+        )
+    return {
+        "object": "list",
+        "configured": registry.get_model_count(),
+        "loaded": registry.get_loaded_model_count(),
+        "data": registry.get_model_status(),
+    }
+
+
+@router.post("/v1/models/load", response_model=None)
+async def load_model(
+    request: ModelLoadRequest,
+    raw_request: Request,
+) -> dict[str, Any] | JSONResponse:
+    """Load an on-demand model and apply its requested retention period."""
+    registry = getattr(raw_request.app.state, "registry", None)
+    if registry is None:
+        return JSONResponse(
+            content=create_error_response(
+                "Model lifecycle management requires multi-model mode",
+                "unsupported_request",
+                HTTPStatus.BAD_REQUEST,
+            ),
+            status_code=HTTPStatus.BAD_REQUEST,
+        )
+
+    handler: Any = None
+    try:
+        handler = await registry.ensure_on_demand_loaded(
+            request.model,
+            keep_alive=request.keep_alive,
+        )
+    except KeyError as exc:
+        return JSONResponse(
+            content=create_error_response(
+                _key_error_message(exc),
+                "model_not_found",
+                HTTPStatus.NOT_FOUND,
+            ),
+            status_code=HTTPStatus.NOT_FOUND,
+        )
+    except ValueError as exc:
+        return JSONResponse(
+            content=create_error_response(
+                str(exc),
+                "invalid_request_error",
+                HTTPStatus.BAD_REQUEST,
+            ),
+            status_code=HTTPStatus.BAD_REQUEST,
+        )
+    except Exception as exc:
+        logger.exception(f"Failed to load model '{request.model}': {exc}")
+        return JSONResponse(
+            content=create_error_response(
+                str(exc),
+                "model_load_error",
+                HTTPStatus.SERVICE_UNAVAILABLE,
+            ),
+            status_code=HTTPStatus.SERVICE_UNAVAILABLE,
+        )
+    finally:
+        if handler is not None:
+            await registry.release_on_demand(
+                request.model,
+                keep_alive=request.keep_alive,
+                handler=handler,
+            )
+
+    # The status list is keyed by canonical id, so an aliased request would not
+    # match itself and would be reported as unloaded.
+    canonical_id = _canonical_model_id(registry, request.model)
+    status = next(
+        (item for item in registry.get_model_status() if item["id"] == canonical_id),
+        None,
+    )
+    # ``keep_alive=0`` asks for release straight after loading, so report the
+    # state the worker actually settled in rather than assuming it is resident.
+    return {
+        "status": "loaded" if status is not None and status["loaded"] else "unloaded",
+        "model": status,
+    }
+
+
+@router.post("/v1/models/unload", response_model=None)
+async def unload_model(
+    request: ModelUnloadRequest,
+    raw_request: Request,
+) -> dict[str, Any] | JSONResponse:
+    """Unload an on-demand model process."""
+    registry = getattr(raw_request.app.state, "registry", None)
+    if registry is None:
+        return JSONResponse(
+            content=create_error_response(
+                "Model lifecycle management requires multi-model mode",
+                "unsupported_request",
+                HTTPStatus.BAD_REQUEST,
+            ),
+            status_code=HTTPStatus.BAD_REQUEST,
+        )
+
+    try:
+        unloaded = await registry.unload_on_demand(
+            request.model,
+            force=request.force,
+        )
+    except KeyError as exc:
+        return JSONResponse(
+            content=create_error_response(
+                _key_error_message(exc),
+                "model_not_found",
+                HTTPStatus.NOT_FOUND,
+            ),
+            status_code=HTTPStatus.NOT_FOUND,
+        )
+    except ValueError as exc:
+        return JSONResponse(
+            content=create_error_response(
+                str(exc),
+                "model_in_use",
+                HTTPStatus.CONFLICT,
+            ),
+            status_code=HTTPStatus.CONFLICT,
+        )
+    except Exception as exc:
+        logger.exception(f"Failed to unload model '{request.model}': {exc}")
+        return JSONResponse(
+            content=create_error_response(
+                str(exc),
+                "model_unload_error",
+                HTTPStatus.SERVICE_UNAVAILABLE,
+            ),
+            status_code=HTTPStatus.SERVICE_UNAVAILABLE,
+        )
+
+    return {
+        "status": "unloaded" if unloaded else "already_unloaded",
+        "model": request.model,
+    }
 
 
 @router.get("/v1/queue/stats", response_model=None)
@@ -571,6 +842,7 @@ async def chat_completions(
     handler = await _resolve_handler(
         raw_request,
         model_id=None if used_legacy_chat_fallback else request.model,
+        keep_alive=request.keep_alive,
     )
     if handler is None:
         return JSONResponse(
@@ -582,6 +854,7 @@ async def chat_completions(
             status_code=HTTPStatus.SERVICE_UNAVAILABLE,
         )
 
+    release_deferred = False
     try:
         _normalize_request_model(raw_request, request, handler)
         _normalize_chat_response_model(
@@ -616,8 +889,13 @@ async def chat_completions(
 
         try:
             if handler_type == "multimodal":
-                return await process_multimodal_request(handler, request, request_id)
-            return await process_text_request(handler, request, request_id)
+                response = await process_multimodal_request(handler, request, request_id)
+            else:
+                response = await process_text_request(handler, request, request_id)
+            if isinstance(response, StreamingResponse):
+                release_deferred = True
+                return _defer_release_until_stream_end(response, raw_request)
+            return response
         except HTTPException:
             raise
         except Exception as e:
@@ -626,7 +904,8 @@ async def chat_completions(
                 content=create_error_response(str(e)), status_code=HTTPStatus.INTERNAL_SERVER_ERROR
             )
     finally:
-        await _release_on_demand(raw_request)
+        if not release_deferred:
+            await _release_on_demand(raw_request)
 
 
 @router.post("/v1/embeddings", response_model=None)
@@ -634,7 +913,11 @@ async def embeddings(
     request: EmbeddingRequest, raw_request: Request
 ) -> EmbeddingResponse | JSONResponse:
     """Handle embedding requests."""
-    handler = await _resolve_handler(raw_request, model_id=request.model)
+    handler = await _resolve_handler(
+        raw_request,
+        model_id=request.model,
+        keep_alive=request.keep_alive,
+    )
     if handler is None:
         return JSONResponse(
             content=create_error_response(
@@ -677,7 +960,11 @@ async def image_generations(
     request: ImageGenerationRequest, raw_request: Request
 ) -> ImageGenerationResponse | JSONResponse:
     """Handle image generation requests."""
-    handler = await _resolve_handler(raw_request, model_id=request.model)
+    handler = await _resolve_handler(
+        raw_request,
+        model_id=request.model,
+        keep_alive=request.keep_alive,
+    )
     if handler is None:
         return JSONResponse(
             content=create_error_response(
@@ -722,7 +1009,11 @@ async def create_image_edit(
     request: Annotated[ImageEditRequest, Form()], raw_request: Request
 ) -> ImageEditResponse | JSONResponse:
     """Handle image editing requests with dynamic provider routing."""
-    handler = await _resolve_handler(raw_request, model_id=request.model)
+    handler = await _resolve_handler(
+        raw_request,
+        model_id=request.model,
+        keep_alive=request.keep_alive,
+    )
     if handler is None:
         return JSONResponse(
             content=create_error_response(
@@ -766,7 +1057,11 @@ async def create_audio_transcriptions(
     request: Annotated[TranscriptionRequest, Form()], raw_request: Request
 ) -> StreamingResponse | TranscriptionResponse | JSONResponse | str:
     """Handle audio transcription requests."""
-    handler = await _resolve_handler(raw_request, model_id=request.model)
+    handler = await _resolve_handler(
+        raw_request,
+        model_id=request.model,
+        keep_alive=request.keep_alive,
+    )
     if handler is None:
         return JSONResponse(
             content=create_error_response(
@@ -777,12 +1072,13 @@ async def create_audio_transcriptions(
             status_code=HTTPStatus.SERVICE_UNAVAILABLE,
         )
 
+    release_deferred = False
     try:
         _normalize_request_model(raw_request, request, handler)
         if request.stream:
             # procoess the request before sending to the handler
             request_data = await handler.prepare_transcription_request(request)
-            return StreamingResponse(
+            response = StreamingResponse(
                 handler.generate_transcription_stream_from_data(request_data),
                 media_type="text/event-stream",
                 headers={
@@ -791,6 +1087,8 @@ async def create_audio_transcriptions(
                     "X-Accel-Buffering": "no",
                 },
             )
+            release_deferred = True
+            return _defer_release_until_stream_end(response, raw_request)
         transcription_response: (
             TranscriptionResponse | str
         ) = await handler.generate_transcription_response(request)
@@ -804,7 +1102,8 @@ async def create_audio_transcriptions(
     else:
         return transcription_response
     finally:
-        await _release_on_demand(raw_request)
+        if not release_deferred:
+            await _release_on_demand(raw_request)
 
 
 def create_response_embeddings(
@@ -2077,7 +2376,11 @@ async def responses_endpoint(
     request: ResponsesRequest, raw_request: Request
 ) -> ResponsesResponse | StreamingResponse | JSONResponse:
     """Handle Responses API requests (OpenAI-compatible)."""
-    handler = await _resolve_handler(raw_request, model_id=request.model)
+    handler = await _resolve_handler(
+        raw_request,
+        model_id=request.model,
+        keep_alive=request.keep_alive,
+    )
     if handler is None:
         return JSONResponse(
             content=create_error_response(
@@ -2094,9 +2397,14 @@ async def responses_endpoint(
         # triggers registry/on-demand lookup; in single-model mode the
         # second resolve is a no-op and the downstream type check
         # still rejects the non-text handler.
-        handler = await _resolve_handler(raw_request, model_id=Config.TEXT_MODEL)
+        handler = await _resolve_handler(
+            raw_request,
+            model_id=Config.TEXT_MODEL,
+            keep_alive=request.keep_alive,
+        )
         request.model = Config.TEXT_MODEL
 
+    release_deferred = False
     try:
         _normalize_request_model(raw_request, request, handler)
         if _should_preserve_legacy_responses_model(raw_request, request, handler):
@@ -2128,8 +2436,13 @@ async def responses_endpoint(
 
         try:
             if handler_type == "multimodal":
-                return await process_multimodal_responses_request(handler, request)
-            return await process_text_responses_request(handler, request)
+                response = await process_multimodal_responses_request(handler, request)
+            else:
+                response = await process_text_responses_request(handler, request)
+            if isinstance(response, StreamingResponse):
+                release_deferred = True
+                return _defer_release_until_stream_end(response, raw_request)
+            return response
         except HTTPException:
             raise
         except Exception as e:
@@ -2138,4 +2451,5 @@ async def responses_endpoint(
                 content=create_error_response(str(e)), status_code=HTTPStatus.INTERNAL_SERVER_ERROR
             )
     finally:
-        await _release_on_demand(raw_request)
+        if not release_deferred:
+            await _release_on_demand(raw_request)

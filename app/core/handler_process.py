@@ -17,7 +17,7 @@ Architecture
     │  HandlerProcessProxy │           │  _handler_worker()   │
     │  ├─ request_queue ───┼──────────>│  ├─ handler          │
     │  ├─ response_queue <─┼──────────<│  ├─ model            │
-    │  ├─ Process          │           │  └─ inference_worker  │
+    │  ├─ Process          │           │  └─ inference_worker │
     │  │                   │           │                      │
     │  ├─ generate_*()     │           │                      │
     │  ├─ get_models()     │           │                      │
@@ -534,6 +534,16 @@ class HandlerProcessProxy:
         self._queue_config: dict[str, Any] | None = None
         self._restart_lock = asyncio.Lock()
         self._max_restart_attempts: int = 3
+
+    @property
+    def pid(self) -> int | None:
+        """Return the child process identifier when available."""
+        return self._process.pid if self._process is not None else None
+
+    @property
+    def is_alive(self) -> bool:
+        """Return whether the child model process is running."""
+        return self._process is not None and self._process.is_alive()
 
     # ------------------------------------------------------------------
     # Lifecycle

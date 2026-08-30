@@ -35,8 +35,8 @@ IMAGE_CONFIG_NAMES: tuple[str, ...] = (
 )
 
 MFLUX_INSTALL_HINT = (
-    "Image generation and editing require the `mflux` package. "
-    "Install it with `pip install mflux==0.17.0`."
+    "The required `mflux` image backend is unavailable. "
+    "Reinstall the project dependencies with `pip install -e .`."
 )
 
 
@@ -79,7 +79,7 @@ class UpperChoice(click.Choice):
 def validate_image_config_name(
     _ctx: click.Context, _param: click.Parameter, value: str | None
 ) -> str | None:
-    """Validate image config names when optional mflux support is installed."""
+    """Validate image backend configuration names."""
     if value is None or not IMAGE_CONFIG_NAMES:
         return value
 
@@ -91,17 +91,17 @@ def validate_image_config_name(
 
 
 def ensure_image_support_available(model_types: set[str]) -> None:
-    """Raise a usage error when image features are requested without mflux."""
+    """Raise a usage error when the required image backend cannot initialize."""
     if not any(model_type in {"image-generation", "image-edit"} for model_type in model_types):
         return
 
     try:
         import mflux  # noqa: F401
     except ImportError as exc:
-        detail = f" Optional import failed: {exc!s}"
+        detail = f" Backend import failed: {exc!s}"
         raise click.UsageError(f"{MFLUX_INSTALL_HINT}{detail}") from exc
     except RuntimeError as exc:
-        detail = f" Optional import failed: {exc!s}"
+        detail = f" Backend initialization failed: {exc!s}"
         raise click.UsageError(f"{MFLUX_INSTALL_HINT}{detail}") from exc
     else:
         return

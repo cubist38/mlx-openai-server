@@ -1531,6 +1531,7 @@ class MLXLMHandler:
                 # Reasoning content is output metadata and should not be replayed
                 # into subsequent prompt history turns.
                 message.pop("reasoning_content", None)
+                message.pop("reasoning", None)
 
                 # Handle content that might be a list of dictionaries (multimodal format)
                 content = message.get("content")

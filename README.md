@@ -111,14 +111,14 @@ mlx-openai-server launch \
 
 Supported model types:
 
-| Type | Backend | Endpoint family |
-|------|---------|-----------------|
-| `lm` | `mlx-lm` | chat, responses |
-| `multimodal` | `mlx-vlm` | chat, responses |
-| `image-generation` | `mflux` | image generation |
-| `image-edit` | `mflux` | image editing |
-| `embeddings` | `mlx-embeddings` | embeddings |
-| `whisper` | `mlx-whisper` | audio transcription |
+| Type               | Backend          | Endpoint family     |
+| ------------------ | ---------------- | ------------------- |
+| `lm`               | `mlx-lm`         | chat, responses     |
+| `multimodal`       | `mlx-vlm`        | chat, responses     |
+| `image-generation` | `mflux`          | image generation    |
+| `image-edit`       | `mflux`          | image editing       |
+| `embeddings`       | `mlx-embeddings` | embeddings          |
+| `whisper`          | `mlx-whisper`    | audio transcription |
 
 Image `--config-name` values:
 
@@ -223,54 +223,54 @@ for item in response.output:
 
 Supported endpoints:
 
-| Endpoint | Model types |
-|----------|-------------|
-| `GET /v1/models` | all |
-| `POST /v1/chat/completions` | `lm`, `multimodal` |
-| `POST /v1/responses` | `lm`, `multimodal` |
-| `POST /v1/images/generations` | `image-generation` |
-| `POST /v1/images/edits` | `image-edit` |
-| `POST /v1/embeddings` | `embeddings` |
-| `POST /v1/audio/transcriptions` | `whisper` |
+| Endpoint                        | Model types        |
+| ------------------------------- | ------------------ |
+| `GET /v1/models`                | all                |
+| `POST /v1/chat/completions`     | `lm`, `multimodal` |
+| `POST /v1/responses`            | `lm`, `multimodal` |
+| `POST /v1/images/generations`   | `image-generation` |
+| `POST /v1/images/edits`         | `image-edit`       |
+| `POST /v1/embeddings`           | `embeddings`       |
+| `POST /v1/audio/transcriptions` | `whisper`          |
 
 The request `model` should be the model path, `--served-model-name`, or YAML `served_model_name`.
 
 ## Server Options
 
-| Option | Default | Notes |
-|--------|---------|-------|
-| `--model-path` | required | Local path or Hugging Face repo |
-| `--model-type` | `lm` | `lm`, `multimodal`, `image-generation`, `image-edit`, `embeddings`, `whisper` |
-| `--served-model-name` | model path | Alias accepted in API requests |
-| `--host` | `0.0.0.0` | Bind host |
-| `--port` | `8000` | Bind port |
-| `--context-length` | model default | LM and multimodal context/cache length |
-| `--max-tokens` | `100000` | Default generated tokens when request omits `max_tokens` |
-| `--temperature` | `1.0` | Default sampling temperature |
-| `--top-p` | `1.0` | Default nucleus sampling |
-| `--top-k` | `20` | Default top-k sampling |
-| `--repetition-penalty` | `1.0` | Default repetition penalty |
-| `--config-name` | model-dependent | Image model preset |
-| `--quantize` | unset | Image model quantization: `4`, `8`, or `16` |
-| `--log-level` | `INFO` | `DEBUG`, `INFO`, `WARNING`, `ERROR`, `CRITICAL` |
-| `--no-log-file` | `false` | Disable file logging |
+| Option                 | Default         | Notes                                                                         |
+| ---------------------- | --------------- | ----------------------------------------------------------------------------- |
+| `--model-path`         | required        | Local path or Hugging Face repo                                               |
+| `--model-type`         | `lm`            | `lm`, `multimodal`, `image-generation`, `image-edit`, `embeddings`, `whisper` |
+| `--served-model-name`  | model path      | Alias accepted in API requests                                                |
+| `--host`               | `0.0.0.0`       | Bind host                                                                     |
+| `--port`               | `8000`          | Bind port                                                                     |
+| `--context-length`     | model default   | LM and multimodal context/cache length                                        |
+| `--max-tokens`         | `100000`        | Default generated tokens when request omits `max_tokens`                      |
+| `--temperature`        | `1.0`           | Default sampling temperature                                                  |
+| `--top-p`              | `1.0`           | Default nucleus sampling                                                      |
+| `--top-k`              | `20`            | Default top-k sampling                                                        |
+| `--repetition-penalty` | `1.0`           | Default repetition penalty                                                    |
+| `--config-name`        | model-dependent | Image model preset                                                            |
+| `--quantize`           | unset           | Image model quantization: `4`, `8`, or `16`                                   |
+| `--log-level`          | `INFO`          | `DEBUG`, `INFO`, `WARNING`, `ERROR`, `CRITICAL`                               |
+| `--no-log-file`        | `false`         | Disable file logging                                                          |
 
 LM-specific memory and batching options:
 
-| Option | Default | Notes |
-|--------|---------|-------|
-| `--decode-concurrency` | `32` | Max concurrent batch decode sequences |
-| `--prompt-concurrency` | `8` | Max prompts prefilled together |
-| `--prefill-step-size` | `2048` | Tokens per prefill step |
-| `--disable-batching` | `false` | Disable continuous batching; required if per-request positive `seed` values must be honored |
-| `--prompt-cache-size` | `10` | Retained prompt KV cache entries |
-| `--max-bytes` | unbounded | Prompt KV cache byte budget |
-| `--prompt-cache-dir` | temp dir | Directory for disk-backed prompt KV cache payloads |
-| `--kv-bits` | unset | KV cache quantization bits, usually `4` or `8` |
-| `--kv-group-size` | `64` | KV quantization group size |
-| `--quantized-kv-start` | `0` | Token step where KV quantization starts |
-| `--draft-model-path` | unset | Smaller draft model for speculative decoding |
-| `--num-draft-tokens` | `2` | Draft tokens proposed per step |
+| Option                 | Default   | Notes                                                                                       |
+| ---------------------- | --------- | ------------------------------------------------------------------------------------------- |
+| `--decode-concurrency` | `32`      | Max concurrent batch decode sequences                                                       |
+| `--prompt-concurrency` | `8`       | Max prompts prefilled together                                                              |
+| `--prefill-step-size`  | `2048`    | Tokens per prefill step                                                                     |
+| `--disable-batching`   | `false`   | Disable continuous batching; required if per-request positive `seed` values must be honored |
+| `--prompt-cache-size`  | `10`      | Retained prompt KV cache entries                                                            |
+| `--max-bytes`          | unbounded | Prompt KV cache byte budget                                                                 |
+| `--prompt-cache-dir`   | temp dir  | Directory for disk-backed prompt KV cache payloads                                          |
+| `--kv-bits`            | unset     | KV cache quantization bits, usually `4` or `8`                                              |
+| `--kv-group-size`      | `64`      | KV quantization group size                                                                  |
+| `--quantized-kv-start` | `0`       | Token step where KV quantization starts                                                     |
+| `--draft-model-path`   | unset     | Smaller draft model for speculative decoding                                                |
+| `--num-draft-tokens`   | `2`       | Draft tokens proposed per step                                                              |
 
 When continuous batching is enabled, LM and multimodal requests stay on the batched generation path whenever the backend supports it. Per-request positive `seed` values are ignored in this mode because the batch scheduler shares one RNG lane; launch with `--disable-batching` if request-level seed reproducibility is required.
 
@@ -293,11 +293,15 @@ server:
   host: "0.0.0.0"
   port: 8000
   log_level: INFO
+  max_loaded_models: 1
+  model_load_timeout: 300
 
 models:
   - model_path: mlx-community/MiniMax-M2.5-4bit
     model_type: lm
     served_model_name: minimax
+    version: "2.5"
+    aliases: [chat]
     tool_call_parser: minimax_m2
     reasoning_parser: minimax_m2
 
@@ -307,22 +311,57 @@ models:
     config_name: flux2-klein-4b
     quantize: 4
     on_demand: true
-    on_demand_idle_timeout: 120
+    on_demand_idle_timeout: 2m
 ```
 
-Important YAML keys:
+Every key is documented in [docs/CONFIGURATION.md](docs/CONFIGURATION.md). The
+ones that matter most:
 
-| Key | Notes |
-|-----|-------|
-| `model_path`, `model_type`, `served_model_name` | Model identity and routing |
-| `context_length` | LM/multimodal context length |
-| `prompt_cache_size`, `prompt_cache_max_bytes`, `prompt_cache_dir` | Prompt KV cache limits and disk location |
-| `batch_completion_size`, `batch_prefill_size`, `batch_prefill_step_size`, `disable_batching` | Continuous batching controls |
-| `kv_bits`, `kv_group_size`, `quantized_kv_start` | KV cache quantization |
-| `default_max_tokens` | Default generated tokens |
-| `on_demand`, `on_demand_idle_timeout` | Load large models only when requested |
+| Key                                                                                          | Notes                                                      |
+| -------------------------------------------------------------------------------------------- | ---------------------------------------------------------- |
+| `model_path`, `model_type`, `served_model_name`                                              | Model identity and routing                                 |
+| `version`, `aliases`                                                                         | Extra names for the same model, e.g. `minimax:2.5`, `chat` |
+| `context_length`                                                                             | LM/multimodal context length                               |
+| `prompt_cache_size`, `prompt_cache_max_bytes`, `prompt_cache_dir`                            | Prompt KV cache limits and disk location                   |
+| `batch_completion_size`, `batch_prefill_size`, `batch_prefill_step_size`, `disable_batching` | Continuous batching controls                               |
+| `kv_bits`, `kv_group_size`, `quantized_kv_start`                                             | KV cache quantization                                      |
+| `default_max_tokens`                                                                         | Default generated tokens                                   |
+| `on_demand`, `on_demand_idle_timeout`                                                        | Load large models only when requested                      |
+| `max_loaded_models`                                                                          | Maximum resident on-demand workers; `0` disables the limit |
+| `model_load_timeout`                                                                         | Maximum seconds to wait when all model slots are active    |
 
 In multi-model mode, each model runs in a spawned subprocess. This isolates MLX/Metal runtime state and avoids process-fork semaphore issues on macOS.
+
+On-demand models support per-request `keep_alive` on chat, Responses,
+embeddings, image, and transcription endpoints. Durations accept seconds or
+strings such as `30s`, `5m`, and `1h30m`. Zero unloads after the request;
+negative values retain the model indefinitely. Active streams cannot be
+evicted. When capacity is full, the least recently used idle worker is removed.
+
+Lifecycle endpoints:
+
+- `GET /v1/models/status` — every model, its state, worker pid, retention deadline, `version` and `aliases`
+- `POST /v1/models/load` — preload a model, optionally with `keep_alive`
+- `POST /v1/models/unload` — release a model; HTTP 409 while it has active requests unless `force` is set
+
+A model can also answer to more than one name. `version` publishes a
+`<name>:<version>` route and `aliases` adds arbitrary extra names, both accepted
+wherever a model name is:
+
+```bash
+curl http://127.0.0.1:8000/v1/chat/completions \
+  -H 'Content-Type: application/json' \
+  -d '{"model":"chat","messages":[{"role":"user","content":"Hi"}]}'
+```
+
+An alias shares one worker and one reference count with its canonical name, so
+requests made through either keep the model resident. Aliases are routes rather
+than models: `/v1/models` still lists one entry per model.
+
+See [docs/CONFIGURATION.md](docs/CONFIGURATION.md) for the full YAML reference
+and [docs/MODEL-LIFECYCLE.md](docs/MODEL-LIFECYCLE.md) for the persistent macOS
+service, versioning and aliases, streaming, reasoning, LangChain, and LangGraph
+examples.
 
 ## Long Context and Metal OOM
 
@@ -429,15 +468,15 @@ Chat completions accept OpenAI-style `response_format` JSON schema. The Response
 
 ## Troubleshooting
 
-| Issue | Fix |
-|-------|-----|
-| Model does not fit in memory | Use a smaller or pre-quantized model, lower `--context-length`, and see [Long Context and Metal OOM](#long-context-and-metal-oom). |
-| Metal OOM during batching | Lower `--prompt-concurrency`, `--prefill-step-size`, `--decode-concurrency`, and `--max-tokens`. |
-| `There is no Stream(gpu, N) in current thread` | Keep prompt-cache persistence on the worker thread and avoid sharing cache payloads across batch/non-batch paths; use `--disable-batching` when request seeds or single-request behavior are required. |
-| Port already in use | Pass `--port 8001` or another free port. |
-| Image model memory is too high | Use `--quantize 4` or `--quantize 8`. |
-| Model loading says parameters are missing or unexpected | Upgrade the backend package from source. |
-| Hugging Face download fails | Check network access and Hugging Face authentication for gated models. |
+| Issue                                                   | Fix                                                                                                                                                                                                    |
+| ------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Model does not fit in memory                            | Use a smaller or pre-quantized model, lower `--context-length`, and see [Long Context and Metal OOM](#long-context-and-metal-oom).                                                                     |
+| Metal OOM during batching                               | Lower `--prompt-concurrency`, `--prefill-step-size`, `--decode-concurrency`, and `--max-tokens`.                                                                                                       |
+| `There is no Stream(gpu, N) in current thread`          | Keep prompt-cache persistence on the worker thread and avoid sharing cache payloads across batch/non-batch paths; use `--disable-batching` when request seeds or single-request behavior are required. |
+| Port already in use                                     | Pass `--port 8001` or another free port.                                                                                                                                                               |
+| Image model memory is too high                          | Use `--quantize 4` or `--quantize 8`.                                                                                                                                                                  |
+| Model loading says parameters are missing or unexpected | Upgrade the backend package from source.                                                                                                                                                               |
+| Hugging Face download fails                             | Check network access and Hugging Face authentication for gated models.                                                                                                                                 |
 
 Upgrade backend packages for newly released model architectures:
 
@@ -451,14 +490,14 @@ uv pip install git+https://github.com/Blaizzy/mlx-embeddings.git
 
 Example notebooks live in `examples/`:
 
-| Area | Notebooks |
-|------|-----------|
-| Text and Responses API | `responses_api.ipynb`, `simple_rag_demo.ipynb` |
-| Vision | `vision_examples.ipynb` |
-| Audio | `audio_examples.ipynb`, `transcription_examples.ipynb` |
-| Embeddings | `embedding_examples.ipynb`, `lm_embeddings_examples.ipynb`, `vlm_embeddings_examples.ipynb` |
-| Images | `image_generations.ipynb`, `image_edit.ipynb` |
-| Structured outputs | `structured_outputs_examples.ipynb` |
+| Area                   | Notebooks                                                                                   |
+| ---------------------- | ------------------------------------------------------------------------------------------- |
+| Text and Responses API | `responses_api.ipynb`, `simple_rag_demo.ipynb`                                              |
+| Vision                 | `vision_examples.ipynb`                                                                     |
+| Audio                  | `audio_examples.ipynb`, `transcription_examples.ipynb`                                      |
+| Embeddings             | `embedding_examples.ipynb`, `lm_embeddings_examples.ipynb`, `vlm_embeddings_examples.ipynb` |
+| Images                 | `image_generations.ipynb`, `image_edit.ipynb`                                               |
+| Structured outputs     | `structured_outputs_examples.ipynb`                                                         |
 
 Demos:
 

@@ -198,7 +198,9 @@ def _model_entry_extras(m: ModelEntryConfig) -> list[tuple[str, object]]:
     if m.disable_auto_resize:
         extras.append(("auto_resize", False))
     if m.on_demand:
-        extras.append(("on_demand", f"idle_timeout={m.on_demand_idle_timeout}s"))
+        timeout = m.on_demand_idle_timeout
+        suffix = "" if isinstance(timeout, str) else "s"
+        extras.append(("on_demand", f"idle_timeout={timeout}{suffix}"))
     if m.debug:
         extras.append(("debug", True))
     return extras

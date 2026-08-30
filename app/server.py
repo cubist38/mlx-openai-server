@@ -37,13 +37,13 @@ from .core.model_registry import ModelRegistry
 from .version import __version__
 
 MFLUX_INSTALL_HINT = (
-    "Image generation and editing require the `mflux` package. "
-    "Install it with `pip install mflux==0.17.0`."
+    "The required `mflux` image backend is unavailable. "
+    "Reinstall the project dependencies with `pip install -e .`."
 )
 
 
 def ensure_image_handler_available(model_type: str) -> None:
-    """Validate that optional image generation support is installed."""
+    """Validate that the required image generation backend is installed."""
     if model_type not in {"image-generation", "image-edit"}:
         return
 
@@ -394,7 +394,10 @@ def create_multi_lifespan(config: MultiModelServerConfig):
         app : FastAPI
             FastAPI application instance being started.
         """
-        registry = ModelRegistry()
+        registry = ModelRegistry(
+            max_loaded_models=config.max_loaded_models,
+            model_load_timeout=config.model_load_timeout,
+        )
 
         try:
             for model_cfg in config.models:
@@ -422,6 +425,8 @@ def create_multi_lifespan(config: MultiModelServerConfig):
                         context_length=model_cfg.context_length,
                         queue_config=queue_config,
                         idle_timeout=model_cfg.on_demand_idle_timeout,
+                        aliases=model_cfg.alias_names(),
+                        version=model_cfg.version,
                     )
                     logger.info(
                         f"Model '{model_id}' registered as on-demand "
@@ -449,6 +454,8 @@ def create_multi_lifespan(config: MultiModelServerConfig):
                     handler=proxy,
                     model_type=model_cfg.model_type,
                     context_length=model_cfg.context_length,
+                    aliases=model_cfg.alias_names(),
+                    version=model_cfg.version,
                 )
                 logger.info(f"Model '{model_id}' spawned and registered successfully")
 

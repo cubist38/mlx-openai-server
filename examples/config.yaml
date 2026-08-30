@@ -7,6 +7,8 @@ server:
   host: "0.0.0.0"
   port: 8000
   log_level: INFO
+  max_loaded_models: 1
+  model_load_timeout: 300
   # log_file: logs/app.log     # uncomment to log to file
   # no_log_file: true           # uncomment to disable file logging
 
@@ -14,7 +16,9 @@ models:
   # Language model
   - model_path: mlx-community/MiniMax-M2.5-4bit
     model_type: lm
-    served_model_name: Minimax-M2.5    # optional alias (defaults to model_path)
+    served_model_name: Minimax-M2.5 # public name (defaults to model_path)
+    version: "2.5" # also routable as Minimax-M2.5:2.5
+    aliases: [chat, chat:stable] # extra names for the same model
     enable_auto_tool_choice: true
     tool_call_parser: minimax_m2
     reasoning_parser: minimax_m2
@@ -25,4 +29,4 @@ models:
     quantize: 4
     served_model_name: flux2-klein-4b
     on_demand: true
-    on_demand_idle_timeout: 120  # seconds before unloading (default: 60)
+    on_demand_idle_timeout: 2m # default is 5m
