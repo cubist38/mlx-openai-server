@@ -50,6 +50,27 @@ Install from GitHub instead:
 uv pip install git+https://github.com/cubist38/mlx-openai-server.git
 ```
 
+Install from a local clone, to run your own changes:
+
+```bash
+git clone https://github.com/cubist38/mlx-openai-server.git
+cd mlx-openai-server
+
+uv venv --python 3.11
+uv pip install -e .
+```
+
+`-e` installs in editable mode: edits under `app/` take effect the next time the
+server starts, with no reinstall. Drop it (`uv pip install .`) to install a fixed
+copy of the working tree instead. Either way the entry point lands in the venv,
+so activate it or call it by path:
+
+```bash
+.venv/bin/mlx-openai-server launch --model-path <model> --model-type lm
+```
+
+Add the test and lint tooling with `uv pip install -e . --group dev`.
+
 Whisper transcription also needs ffmpeg:
 
 ```bash
@@ -253,7 +274,14 @@ The request `model` should be the model path, `--served-model-name`, or YAML `se
 | `--config-name`        | model-dependent | Image model preset                                                            |
 | `--quantize`           | unset           | Image model quantization: `4`, `8`, or `16`                                   |
 | `--log-level`          | `INFO`          | `DEBUG`, `INFO`, `WARNING`, `ERROR`, `CRITICAL`                               |
+| `--log-file`           | `logs/app.log`  | Log file path, relative to the working directory unless absolute              |
 | `--no-log-file`        | `false`         | Disable file logging                                                          |
+| `--log-rotation`       | `50 MB`         | Roll the log file over at this size or interval; `none` disables rotation     |
+| `--log-retention`      | `5`             | Rotated files to keep, as a count or an age (`10 days`); `none` keeps all     |
+
+The log file collects the model subprocesses' output as well as the server's own,
+so a traceback from inside a model lands there next to the request that caused
+it. See [docs/CONFIGURATION.md](docs/CONFIGURATION.md#where-the-logs-go).
 
 LM-specific memory and batching options:
 

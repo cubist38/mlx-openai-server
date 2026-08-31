@@ -46,6 +46,8 @@ import uuid
 
 from loguru import logger
 
+from app.core.log_relay import LOG_MESSAGE_TYPE, emit_record, get_log_level, install_queue_sink
+
 # ---------------------------------------------------------------------------
 # IPC protocol constants
 # ---------------------------------------------------------------------------
@@ -213,6 +215,7 @@ def _handler_worker(
     request_queue: mp.Queue,  # type: ignore[type-arg]
     response_queue: mp.Queue,  # type: ignore[type-arg]
     control_queue: mp.Queue,  # type: ignore[type-arg]
+    log_level: str = "INFO",
 ) -> None:
     """Entry point for the spawned handler subprocess.
 
@@ -239,6 +242,9 @@ def _handler_worker(
         Queue for sending responses back to the main process.
     control_queue : mp.Queue
         Queue for cancel signals from the main process (client disconnect).
+    log_level : str
+        Level this process forwards log records at; see
+        :mod:`app.core.log_relay`.
     """
     # ------------------------------------------------------------------
     # Ignore SIGINT — the parent manages our lifecycle via _SHUTDOWN.
@@ -248,6 +254,12 @@ def _handler_worker(
     import signal
 
     signal.signal(signal.SIGINT, signal.SIG_IGN)
+
+    # Sinks are per-process, so this child starts with loguru's stderr default
+    # and knows nothing of the server's log file. Route its records back to the
+    # parent before anything else can log, so handler output (tracebacks
+    # included) ends up wherever the server's logs go.
+    install_queue_sink(response_queue, level=log_level)
 
     import asyncio
     import gc
@@ -585,6 +597,7 @@ class HandlerProcessProxy:
                 self._request_queue,
                 self._response_queue,
                 self._control_queue,
+                get_log_level(),
             ),
             name=f"handler-{self.served_model_name}",
         )
@@ -805,6 +818,7 @@ class HandlerProcessProxy:
                 self._request_queue,
                 self._response_queue,
                 self._control_queue,
+                get_log_level(),
             ),
             name=f"handler-{self.served_model_name}",
         )
@@ -848,6 +862,18 @@ class HandlerProcessProxy:
                         exc_info=True,
                     )
                 break
+
+            # Log records forwarded by the child: re-emit them through this
+            # process's sinks. Not tied to a request id, so they arrive whether
+            # or not a caller is waiting.
+            if response.get("type") == LOG_MESSAGE_TYPE:
+                try:
+                    emit_record(response, self.served_model_name)
+                except Exception:  # noqa: BLE001 - never let a log line stop routing
+                    # This thread delivers every response for the model; losing
+                    # it over a malformed record would stall all its requests.
+                    logger.debug("Failed to re-emit a forwarded log record", exc_info=True)
+                continue
 
             # Special case: ready / progress signals during start().
             if response.get("type") in ("ready", "progress"):

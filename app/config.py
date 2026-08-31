@@ -48,6 +48,8 @@ class MLXServerConfig:
     log_file: str | None = None
     no_log_file: bool = False
     log_level: str = "INFO"
+    log_rotation: str | None = "50 MB"
+    log_retention: str | int | None = 5
     enable_auto_tool_choice: bool = False
     tool_call_parser: str | None = None
     reasoning_parser: str | None = None
@@ -240,6 +242,8 @@ class MLXServerConfig:
             log_level=self.log_level,
             log_file=self.log_file,
             no_log_file=self.no_log_file,
+            log_rotation=self.log_rotation,
+            log_retention=self.log_retention,
         )
 
 
@@ -474,6 +478,8 @@ class MultiModelServerConfig:
     log_level: str = "INFO"
     log_file: str | None = None
     no_log_file: bool = False
+    log_rotation: str | None = "50 MB"
+    log_retention: str | int | None = 5
     max_loaded_models: int = 1
     model_load_timeout: float = 300.0
 
@@ -575,6 +581,8 @@ def load_config_from_yaml(config_path: str) -> MultiModelServerConfig:
         log_level=server_raw.get("log_level", "INFO"),
         log_file=server_raw.get("log_file"),
         no_log_file=server_raw.get("no_log_file", False),
+        log_rotation=server_raw.get("log_rotation", "50 MB"),
+        log_retention=server_raw.get("log_retention", 5),
         max_loaded_models=server_raw.get("max_loaded_models", 1),
         model_load_timeout=server_raw.get("model_load_timeout", 300.0),
     )

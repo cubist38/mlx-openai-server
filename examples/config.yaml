@@ -11,6 +11,8 @@ server:
   model_load_timeout: 300
   # log_file: logs/app.log     # uncomment to log to file
   # no_log_file: true           # uncomment to disable file logging
+  # log_rotation: 50 MB         # size or interval to roll the file over ('none' = never)
+  # log_retention: 5            # rotated files to keep, or an age like '10 days'
 
 models:
   # Language model

@@ -219,6 +219,20 @@ def cli():
     help="Disable file logging entirely. Only console output will be shown.",
 )
 @click.option(
+    "--log-rotation",
+    default="50 MB",
+    type=str,
+    help="Roll the log file over at this size or interval (e.g. '50 MB', '1 day'). "
+    "Use 'none' to disable rotation.",
+)
+@click.option(
+    "--log-retention",
+    default="5",
+    type=str,
+    help="Rotated log files to keep: a count (e.g. '5') or an age (e.g. '10 days'). "
+    "Use 'none' to keep them all.",
+)
+@click.option(
     "--log-level",
     default="INFO",
     type=UpperChoice(["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"]),
@@ -412,6 +426,8 @@ def launch(
     disable_auto_resize,
     log_file,
     no_log_file,
+    log_rotation,
+    log_retention,
     log_level,
     enable_auto_tool_choice,
     tool_call_parser,
@@ -489,6 +505,8 @@ def launch(
         log_file=log_file,
         no_log_file=no_log_file,
         log_level=log_level,
+        log_rotation=log_rotation,
+        log_retention=log_retention,
         enable_auto_tool_choice=enable_auto_tool_choice,
         tool_call_parser=tool_call_parser,
         reasoning_parser=reasoning_parser,

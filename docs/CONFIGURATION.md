@@ -27,21 +27,48 @@ one machine.
 
 ## `server:` section
 
-| Key                  | Default     | Notes                                                                     |
-| -------------------- | ----------- | ------------------------------------------------------------------------- |
-| `host`               | `"0.0.0.0"` | Bind address. Use `127.0.0.1` to refuse connections from other machines.  |
-| `port`               | `8000`      | TCP port.                                                                 |
-| `log_level`          | `"INFO"`    | `DEBUG`, `INFO`, `WARNING`, `ERROR`.                                      |
-| `log_file`           | unset       | Path to a log file, in addition to stdout.                                |
-| `no_log_file`        | `false`     | Disable file logging entirely.                                            |
-| `max_loaded_models`  | `1`         | Maximum on-demand models resident at once. `0` removes the limit.         |
-| `model_load_timeout` | `300`       | Seconds a request waits for a free slot before failing. Must be positive. |
+| Key                  | Default        | Notes                                                                                            |
+| -------------------- | -------------- | ------------------------------------------------------------------------------------------------ |
+| `host`               | `"0.0.0.0"`    | Bind address. Use `127.0.0.1` to refuse connections from other machines.                         |
+| `port`               | `8000`         | TCP port.                                                                                        |
+| `log_level`          | `"INFO"`       | `DEBUG`, `INFO`, `WARNING`, `ERROR`.                                                             |
+| `log_file`           | `logs/app.log` | Path to a log file, in addition to stdout. Relative paths resolve against the working directory. |
+| `no_log_file`        | `false`        | Disable file logging entirely.                                                                   |
+| `log_rotation`       | `"50 MB"`      | Size or interval at which the log file rolls over (`"1 day"` also works). `none` never rolls it. |
+| `log_retention`      | `5`            | Rotated files to keep — a count, or an age such as `"10 days"`. `none` keeps them all.           |
+| `max_loaded_models`  | `1`            | Maximum on-demand models resident at once. `0` removes the limit.                                |
+| `model_load_timeout` | `300`          | Seconds a request waits for a free slot before failing. Must be positive.                        |
 
 Unknown keys in this section are **ignored silently**, so a misspelled
 `max_loaded_model` leaves the default in place with no warning. Unknown keys in
 a model entry raise an error instead, which is also what happens if a
 server-level key such as `max_loaded_models` is indented under a model by
 mistake.
+
+### Where the logs go
+
+Everything is written to stdout and, unless `no_log_file` is set, to the log
+file — including the output of the subprocess each model runs in, so a failure
+raised while generating shows up with its traceback in the same file as the
+lifecycle events around it. Records from a model process are prefixed with its
+`served_model_name`. Output written directly to the process's stderr by native
+code (MLX/Metal warnings) is the exception: it stays on stderr.
+
+`log_rotation` and `log_retention` bound the file: a count-based retention caps
+disk use at roughly `(log_retention + 1) x log_rotation` no matter how long the
+server runs, while an age-based one (`"10 days"`) caps how old the files get
+instead. Rotated files sit next to the current one with a timestamp in the name.
+
+A daemon started with a working directory it does not own — a systemd unit, a
+launchd job — should set an absolute `log_file`, or the default `logs/app.log`
+is created inside that directory:
+
+```yaml
+server:
+  log_file: /Users/me/Library/Logs/mlx-openai-server.log
+  log_rotation: 50 MB
+  log_retention: 5
+```
 
 ## `models:` section
 
