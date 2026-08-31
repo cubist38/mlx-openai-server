@@ -181,6 +181,21 @@ Inspect all workers:
 curl http://127.0.0.1:8000/v1/models/status
 ```
 
+The CLI renders the same payload as a table, which is easier to read when
+checking on a service by hand:
+
+```console
+$ mlx-openai-server list models
+2 configured, 1 loaded · http://127.0.0.1:8000
+
+STATE     MODEL            TYPE        PID   ACTIVE  KEEP-ALIVE  EXPIRES
+unloaded  qwen-agentcoder  multimodal  -     -       5m          -
+loaded    qwen3-embedding  embeddings  7247  0       2m          1m 49s
+```
+
+Point it at a non-default address with `--host`/`--port`, or with `--config`
+pointing at the service's own YAML. It exits non-zero when nothing answers.
+
 Preload a model:
 
 ```bash

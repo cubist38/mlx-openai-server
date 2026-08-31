@@ -23,6 +23,7 @@ classifiers = [
 
 dependencies = [
   "aiofiles>=25,<26",
+  "aiohttp>=3.9,<4",
   "av>=16.0.1,<17",
   "click>=8.2.1,<8.4",
   "dill>=0.4,<0.5",

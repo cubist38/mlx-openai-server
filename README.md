@@ -15,6 +15,7 @@ OpenAI-compatible API server for local MLX models on Apple Silicon. It serves te
 - [API Usage](#api-usage)
 - [Server Options](#server-options)
 - [Multi-Model Config](#multi-model-config)
+- [Inspect a Running Server](#inspect-a-running-server)
 - [Long Context and Metal OOM](#long-context-and-metal-oom)
 - [Advanced LM Options](#advanced-lm-options)
 - [Troubleshooting](#troubleshooting)
@@ -390,6 +391,39 @@ See [docs/CONFIGURATION.md](docs/CONFIGURATION.md) for the full YAML reference
 and [docs/MODEL-LIFECYCLE.md](docs/MODEL-LIFECYCLE.md) for the persistent macOS
 service, versioning and aliases, streaming, reasoning, LangChain, and LangGraph
 examples.
+
+## Inspect a Running Server
+
+A config file says which models are _configured_; only the server knows which
+are resident. `list models` asks it:
+
+```console
+$ mlx-openai-server list models --port 8123
+2 configured, 1 loaded · http://127.0.0.1:8123
+
+STATE     MODEL            TYPE        PID   ACTIVE  KEEP-ALIVE  EXPIRES
+unloaded  qwen-agentcoder  multimodal  -     -       5m          -
+loaded    qwen3-embedding  embeddings  7247  0       2m          1m 49s
+```
+
+`STATE` is `unloaded`, `loading`, `loaded` or `busy`, `PID` is the model's
+handler subprocess, `ACTIVE` counts requests in flight, and `EXPIRES` counts
+down to idle eviction. `KEEP-ALIVE` is the model's configured default, so a
+request that passed its own `keep_alive` can leave `EXPIRES` beyond it, and a
+model pinned with a negative keep-alive reads `never`. An `ALIASES` column
+appears when a model has extra routes, and a model whose last load failed gets
+a `!` line under the table.
+
+The address can come from `--host` and `--port`, from `MLX_SERVER_HOST` and
+`MLX_SERVER_PORT`, or from the same YAML the server was launched with:
+
+```bash
+mlx-openai-server list models --config config.yaml
+```
+
+Add `--json` for the raw `/v1/models/status` payload, which also carries
+`model_path`, `context_length`, `loaded_at` and `last_used`. The command exits
+non-zero when no server answers, so it can gate a script.
 
 ## Long Context and Metal OOM
 
