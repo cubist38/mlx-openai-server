@@ -85,23 +85,25 @@ You can also run ruff directly on specific files:
 from __future__ import annotations  # Modern approach: defers evaluation, no string literals needed
 from typing import Any
 
+
 def process_request(
-    request_id: str, 
-    data: dict[str, Any], 
-    timeout: float | None = None
+    request_id: str, data: dict[str, Any], timeout: float | None = None
 ) -> list[Response]:
     """Process a request and return results."""
     ...
 
+
 class Response:
     def __init__(self, status: str) -> None:
         self.status = status
+
 
 # Example of self-referential type (forward reference)
 class Node:
     def __init__(self, value: str, children: list[Node] | None = None) -> None:
         self.value = value
         self.children = children or []
+
 
 # Alternative with string literals (for older Python or when not using __future__ import):
 # class Node:
