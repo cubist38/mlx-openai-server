@@ -15,14 +15,14 @@ repos:
       - id: check-merge-conflict
 
   - repo: https://github.com/rhysd/actionlint
-    rev: v1.7.9
+    rev: v1.7.12
     hooks:
       - id: actionlint
 
   # Note: shellcheck cannot directly parse YAML; actionlint extracts workflow
   # shell blocks and calls shellcheck when available.
   - repo: https://github.com/shellcheck-py/shellcheck-py
-    rev: v0.11.0.1
+    rev: v0.11.0.1-1
     hooks:
       - id: shellcheck
         # Match by detected shell file type (extensions or shebang)
@@ -30,14 +30,14 @@ repos:
         args: ['-x']
 
   - repo: https://github.com/codespell-project/codespell
-    rev: v2.4.1
+    rev: v2.4.3
     hooks:
       - id: codespell
         additional_dependencies:
           - tomli
 
   - repo: https://github.com/astral-sh/ruff-pre-commit
-    rev: v0.14.6
+    rev: v0.16.5
     hooks:
       # Run the linter.
       - id: ruff-check
