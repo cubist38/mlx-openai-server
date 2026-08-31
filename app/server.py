@@ -33,17 +33,18 @@ import uvicorn
 from .api.endpoints import router
 from .config import MLXServerConfig, ModelEntryConfig, MultiModelServerConfig
 from .core.handler_process import HandlerProcessProxy
+from .core.log_relay import set_log_level
 from .core.model_registry import ModelRegistry
 from .version import __version__
 
 MFLUX_INSTALL_HINT = (
-    "Image generation and editing require the `mflux` package. "
-    "Install it with `pip install mflux==0.17.0`."
+    "The required `mflux` image backend is unavailable. "
+    "Reinstall the project dependencies with `pip install -e .`."
 )
 
 
 def ensure_image_handler_available(model_type: str) -> None:
-    """Validate that optional image generation support is installed."""
+    """Validate that the required image generation backend is installed."""
     if model_type not in {"image-generation", "image-edit"}:
         return
 
@@ -86,8 +87,62 @@ def _attach_sampling_defaults(handler: Any, config: Any) -> Any:
     return handler
 
 
+def _log_option_text(value: Any) -> str | None:
+    """Return a trimmed option string, or ``None`` for an explicit opt-out.
+
+    ``none`` (any case) and the empty string mean "disabled" — the way both the
+    CLI and YAML express it, since neither can pass Python's ``None`` through a
+    string option.
+    """
+    if value is None:
+        return None
+
+    text = str(value).strip()
+    if not text or text.lower() == "none":
+        return None
+    return text
+
+
+def parse_log_rotation(value: str | None) -> str | None:
+    """Normalize a configured rotation value for loguru (``None`` = never roll)."""
+    return _log_option_text(value)
+
+
+def parse_log_retention(value: str | int | None) -> str | int | None:
+    """Normalize a configured retention value for loguru.
+
+    Loguru accepts either a count of rotated files to keep (an ``int``) or a
+    duration string (``"10 days"``). YAML and the CLI both hand us strings, so a
+    digits-only value becomes an ``int`` — the difference matters: a count caps
+    disk usage at ``(count + 1) * rotation`` no matter how fast the log grows,
+    while a duration only caps its age.
+
+    Parameters
+    ----------
+    value : str | int | None
+        Configured retention, e.g. ``5``, ``"5"``, ``"10 days"`` or ``"none"``.
+
+    Returns
+    -------
+    str | int | None
+        ``int`` for a file count, the trimmed string for a duration, ``None``
+        to keep every rotated file.
+    """
+    if isinstance(value, int):
+        return value
+
+    text = _log_option_text(value)
+    if text is None:
+        return None
+    return int(text) if text.isdigit() else text
+
+
 def configure_logging(
-    log_file: str | None = None, no_log_file: bool = False, log_level: str = "INFO"
+    log_file: str | None = None,
+    no_log_file: bool = False,
+    log_level: str = "INFO",
+    log_rotation: str | None = "50 MB",
+    log_retention: str | int | None = 5,
 ) -> None:
     """Set up loguru handlers used by the server.
 
@@ -95,6 +150,10 @@ def configure_logging(
     handler using a compact, colored format. When ``no_log_file`` is
     False a rotating file handler is also added using ``log_file`` or
     a default path.
+
+    The level is also recorded in :mod:`app.core.log_relay` so handler
+    subprocesses — whose own sinks are separate — forward their records back
+    here and into the same destinations.
 
     Parameters
     ----------
@@ -107,8 +166,18 @@ def configure_logging(
         emitted.
     log_level:
         Minimum log level to emit (e.g. "DEBUG", "INFO").
+    log_rotation:
+        Size or time at which the log file is rolled over, e.g. ``"50 MB"``
+        or ``"1 day"``. ``None`` disables rotation (the file grows forever).
+    log_retention:
+        How many rotated files to keep (``5``) or how long to keep them
+        (``"10 days"``); see :func:`parse_log_retention`. ``None`` keeps all.
     """
     logger.remove()  # Remove default handler
+
+    # Children are spawned later and filter their forwarded records against
+    # this level (app/core/log_relay.py).
+    set_log_level(log_level)
 
     # Add console handler
     logger.add(
@@ -124,8 +193,8 @@ def configure_logging(
         file_path = log_file or "logs/app.log"
         logger.add(
             file_path,
-            rotation="500 MB",
-            retention="10 days",
+            rotation=parse_log_rotation(log_rotation),
+            retention=parse_log_retention(log_retention),
             level=log_level,
             format="{time:YYYY-MM-DD HH:mm:ss} | {level} | {message}",
         )
@@ -394,7 +463,10 @@ def create_multi_lifespan(config: MultiModelServerConfig):
         app : FastAPI
             FastAPI application instance being started.
         """
-        registry = ModelRegistry()
+        registry = ModelRegistry(
+            max_loaded_models=config.max_loaded_models,
+            model_load_timeout=config.model_load_timeout,
+        )
 
         try:
             for model_cfg in config.models:
@@ -422,6 +494,8 @@ def create_multi_lifespan(config: MultiModelServerConfig):
                         context_length=model_cfg.context_length,
                         queue_config=queue_config,
                         idle_timeout=model_cfg.on_demand_idle_timeout,
+                        aliases=model_cfg.alias_names(),
+                        version=model_cfg.version,
                     )
                     logger.info(
                         f"Model '{model_id}' registered as on-demand "
@@ -449,6 +523,8 @@ def create_multi_lifespan(config: MultiModelServerConfig):
                     handler=proxy,
                     model_type=model_cfg.model_type,
                     context_length=model_cfg.context_length,
+                    aliases=model_cfg.alias_names(),
+                    version=model_cfg.version,
                 )
                 logger.info(f"Model '{model_id}' spawned and registered successfully")
 
@@ -523,12 +599,16 @@ def setup_server(config_args: MLXServerConfig | MultiModelServerConfig) -> uvico
     log_file = getattr(config_args, "log_file", None)
     no_log_file = getattr(config_args, "no_log_file", False)
     log_level = getattr(config_args, "log_level", "INFO")
+    log_rotation = getattr(config_args, "log_rotation", "50 MB")
+    log_retention = getattr(config_args, "log_retention", 5)
 
     # Configure logging based on CLI parameters
     configure_logging(
         log_file=log_file,
         no_log_file=no_log_file,
         log_level=log_level,
+        log_rotation=log_rotation,
+        log_retention=log_retention,
     )
 
     # Choose the correct lifespan based on config type

@@ -26,7 +26,7 @@ def _install_fake_mlx_cache_module(
     *,
     trimmable: bool = True,
 ) -> None:
-    """Install an ``mlx_lm.models.cache`` stub.
+    """Install ``mlx.core`` and ``mlx_lm.models.cache`` stubs.
 
     Parameters
     ----------
@@ -35,6 +35,11 @@ def _install_fake_mlx_cache_module(
     trimmable : bool
         Value returned by ``can_trim_prompt_cache``.
     """
+    fake_mlx = types.ModuleType("mlx")
+    fake_mlx_core = types.ModuleType("mlx.core")
+    fake_mlx_core.clear_cache = Mock()
+    fake_mlx.core = fake_mlx_core
+
     fake_mlx_lm = types.ModuleType("mlx_lm")
     fake_models = types.ModuleType("mlx_lm.models")
     fake_cache = types.ModuleType("mlx_lm.models.cache")
@@ -45,6 +50,8 @@ def _install_fake_mlx_cache_module(
     fake_models.cache = fake_cache
     fake_mlx_lm.models = fake_models
 
+    monkeypatch.setitem(sys.modules, "mlx", fake_mlx)
+    monkeypatch.setitem(sys.modules, "mlx.core", fake_mlx_core)
     monkeypatch.setitem(sys.modules, "mlx_lm", fake_mlx_lm)
     monkeypatch.setitem(sys.modules, "mlx_lm.models", fake_models)
     monkeypatch.setitem(sys.modules, "mlx_lm.models.cache", fake_cache)

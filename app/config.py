@@ -18,6 +18,7 @@ from pathlib import Path
 
 from loguru import logger
 
+from .core.keep_alive import KeepAlive, parse_keep_alive
 from .message_converters import resolve_message_converter_name
 
 
@@ -47,6 +48,8 @@ class MLXServerConfig:
     log_file: str | None = None
     no_log_file: bool = False
     log_level: str = "INFO"
+    log_rotation: str | None = "50 MB"
+    log_retention: str | int | None = 5
     enable_auto_tool_choice: bool = False
     tool_call_parser: str | None = None
     reasoning_parser: str | None = None
@@ -239,6 +242,8 @@ class MLXServerConfig:
             log_level=self.log_level,
             log_file=self.log_file,
             no_log_file=self.no_log_file,
+            log_rotation=self.log_rotation,
+            log_retention=self.log_retention,
         )
 
 
@@ -251,6 +256,53 @@ VALID_MODEL_TYPES = frozenset(
 )
 
 
+def _validate_model_name_part(value: str | None, kind: str, model_path: str) -> str | None:
+    """Validate a routable name fragment such as a ``version`` or an ``alias``.
+
+    Both end up in the request-routing table, so a blank or whitespace-bearing
+    value would produce a name no client could reliably send. A ``version``
+    additionally may not contain ``:`` because it is joined to the model name
+    with that separator.
+
+    Parameters
+    ----------
+    value : str | None
+        Raw value from the configuration. ``None`` passes through.
+    kind : str
+        Either ``"version"`` or ``"alias"``, used for the error message and to
+        decide whether ``:`` is permitted.
+    model_path : str
+        Owning model, quoted in the error message.
+
+    Returns
+    -------
+    str | None
+        The stripped value, or ``None`` when nothing was set.
+
+    Raises
+    ------
+    ValueError
+        If the value is not a non-empty string without whitespace.
+    """
+    if value is None:
+        return None
+    if not isinstance(value, str) or not value.strip():
+        msg = f"Model '{model_path}' has an empty {kind}; it must be a non-empty string."
+        raise ValueError(msg)
+
+    stripped = value.strip()
+    if any(char.isspace() for char in stripped):
+        msg = f"Model '{model_path}' has a {kind} containing whitespace: '{value}'."
+        raise ValueError(msg)
+    if kind == "version" and ":" in stripped:
+        msg = (
+            f"Model '{model_path}' has a version containing ':': '{value}'. "
+            "The version is appended to the model name with that separator."
+        )
+        raise ValueError(msg)
+    return stripped
+
+
 @dataclass
 class ModelEntryConfig:
     """Configuration for a single model entry in a multi-model YAML config.
@@ -259,11 +311,22 @@ class ModelEntryConfig:
     the ``ModelRegistry``.  The ``served_model_name`` defaults to
     ``model_path`` when not set explicitly, giving callers a short
     alias they can use in API requests.
+
+    ``version`` and ``aliases`` add further names that route to the same
+    entry.  Declaring ``version`` makes the model reachable as
+    ``<served_model_name>:<version>`` in addition to its bare name, so a
+    client can pin a checkpoint while another keeps using the stable name.
+    ``aliases`` lists arbitrary extra names, which is how a bare base name
+    is pointed at whichever version is currently the default.
     """
 
     model_path: str
     model_type: str = "lm"
     served_model_name: str | None = None
+
+    # Versioning / aliasing
+    version: str | None = None
+    aliases: list[str] | None = None
 
     # Common options
     context_length: int | None = None
@@ -280,7 +343,7 @@ class ModelEntryConfig:
 
     # On-demand (dynamic swapping) options
     on_demand: bool = False
-    on_demand_idle_timeout: int = 60  # seconds before unloading idle on-demand model
+    on_demand_idle_timeout: KeepAlive = 300
 
     # LM / multimodal options
     disable_auto_resize: bool = False
@@ -320,12 +383,20 @@ class ModelEntryConfig:
         if self.served_model_name is None:
             self.served_model_name = self.model_path
 
+        self.version = _validate_model_name_part(self.version, "version", self.model_path)
+        if self.aliases is not None:
+            self.aliases = [
+                _validate_model_name_part(alias, "alias", self.model_path) for alias in self.aliases
+            ]
+
         if self.model_type not in VALID_MODEL_TYPES:
             msg = (
                 f"Invalid model_type '{self.model_type}' for model '{self.model_path}'. "
                 f"Must be one of {sorted(VALID_MODEL_TYPES)}."
             )
             raise ValueError(msg)
+
+        parse_keep_alive(self.on_demand_idle_timeout, 300.0)
 
         # Apply image-generation / image-edit defaults (same as MLXServerConfig)
         if self.model_type == "image-generation" and not self.config_name:
@@ -367,6 +438,30 @@ class ModelEntryConfig:
                 reasoning_parser_name=self.reasoning_parser,
             )
 
+    def alias_names(self) -> list[str]:
+        """Return every extra name that should route to this model.
+
+        The list combines the explicit ``aliases`` with the implicit
+        ``<served_model_name>:<version>`` form. Order is preserved and the
+        canonical name is excluded, so the result can be registered as-is.
+
+        Returns
+        -------
+        list[str]
+            Deduplicated alias names, excluding ``served_model_name``.
+        """
+        names: list[str] = []
+        if self.version:
+            names.append(f"{self.served_model_name}:{self.version}")
+        names.extend(self.aliases or [])
+
+        seen: set[str] = set()
+        return [
+            name
+            for name in names
+            if name != self.served_model_name and not (name in seen or seen.add(name))
+        ]
+
 
 @dataclass
 class MultiModelServerConfig:
@@ -383,6 +478,17 @@ class MultiModelServerConfig:
     log_level: str = "INFO"
     log_file: str | None = None
     no_log_file: bool = False
+    log_rotation: str | None = "50 MB"
+    log_retention: str | int | None = 5
+    max_loaded_models: int = 1
+    model_load_timeout: float = 300.0
+
+    def __post_init__(self) -> None:
+        """Validate server-level model lifecycle options."""
+        if self.max_loaded_models < 0:
+            raise ValueError("max_loaded_models must be greater than or equal to zero")
+        if self.model_load_timeout <= 0:
+            raise ValueError("model_load_timeout must be greater than zero")
 
 
 def load_config_from_yaml(config_path: str) -> MultiModelServerConfig:
@@ -453,6 +559,19 @@ def load_config_from_yaml(config_path: str) -> MultiModelServerConfig:
             )
             raise ValueError(msg)
         seen_ids.add(model_cfg.served_model_name)
+
+        # Aliases share the routing namespace with served_model_name, so a
+        # collision would silently make one of the two names unreachable.
+        for alias in model_cfg.alias_names():
+            if alias in seen_ids:
+                msg = (
+                    f"Alias '{alias}' for model '{model_cfg.served_model_name}' collides with "
+                    "another model name or alias in config. Model names and aliases must be "
+                    "unique."
+                )
+                raise ValueError(msg)
+            seen_ids.add(alias)
+
         model_entries.append(model_cfg)
 
     return MultiModelServerConfig(
@@ -462,4 +581,8 @@ def load_config_from_yaml(config_path: str) -> MultiModelServerConfig:
         log_level=server_raw.get("log_level", "INFO"),
         log_file=server_raw.get("log_file"),
         no_log_file=server_raw.get("no_log_file", False),
+        log_rotation=server_raw.get("log_rotation", "50 MB"),
+        log_retention=server_raw.get("log_retention", 5),
+        max_loaded_models=server_raw.get("max_loaded_models", 1),
+        model_load_timeout=server_raw.get("model_load_timeout", 300.0),
     )

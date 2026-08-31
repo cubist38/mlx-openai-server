@@ -11,6 +11,13 @@ from fastapi import UploadFile
 from loguru import logger
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+KeepAliveValue: TypeAlias = str | int | float | None
+
+# The OpenAI embeddings API also accepts pre-tokenized input. Clients that count
+# tokens before sending, such as LangChain's ``OpenAIEmbeddings``, rely on it.
+# ``list[str]`` stays first so numeric strings are not coerced to token ids.
+EmbeddingInput: TypeAlias = list[str] | str | list[int] | list[list[int]]
+
 
 class OpenAIBaseModel(BaseModel):
     """Base model for OpenAI API schemas."""
@@ -71,6 +78,12 @@ class HealthCheckResponse(OpenAIBaseModel):
     model_id: str | None = Field(None, description="ID of the loaded model, if any.")
     model_status: str | None = Field(
         None, description="Status of the model handler (initialized/uninitialized)."
+    )
+    models_configured: int | None = Field(
+        None, description="Number of configured models in multi-model mode."
+    )
+    models_loaded: int | None = Field(
+        None, description="Number of models currently resident in multi-model mode."
     )
 
 
@@ -217,6 +230,7 @@ class Message(OpenAIBaseModel):
         "Rendered into the chat template for models that support named messages.",
     )
     reasoning_content: str | None = Field(None, description="The reasoning content, if any.")
+    reasoning: str | None = Field(None, description="Alias for reasoning_content.")
     tool_calls: list[ChatCompletionMessageToolCall] | None = Field(
         None, description="List of tool calls, if any."
     )
@@ -226,6 +240,15 @@ class Message(OpenAIBaseModel):
         description="When true on the final assistant message, the model continues "
         "from this message instead of starting a new assistant turn (prefill / partial mode).",
     )
+
+    @model_validator(mode="after")
+    def sync_reasoning_alias(self) -> Message:
+        """Keep both reasoning response field names in sync."""
+        if self.reasoning_content is None:
+            self.reasoning_content = self.reasoning
+        elif self.reasoning is None:
+            self.reasoning = self.reasoning_content
+        return self
 
 
 class ChatTemplateKwargs(OpenAIBaseModel):
@@ -309,6 +332,10 @@ class ChatCompletionRequest(OpenAIBaseModel):
     )
     stream: bool = Field(False, description="Whether to stream the response.")
     stream_options: StreamOptions | None = None
+    keep_alive: KeepAliveValue = Field(
+        None,
+        description="How long to keep an on-demand model loaded after this request.",
+    )
     chat_template_kwargs: ChatTemplateKwargs = Field(
         default_factory=ChatTemplateKwargs, description="Arguments for the chat template."
     )
@@ -371,6 +398,16 @@ class Delta(OpenAIBaseModel):
         None, description="List of tool call deltas, if any."
     )
     reasoning_content: str | None = Field(None, description="Reasoning content, if any.")
+    reasoning: str | None = Field(None, description="Alias for reasoning_content.")
+
+    @model_validator(mode="after")
+    def sync_reasoning_alias(self) -> Delta:
+        """Keep both reasoning response field names in sync."""
+        if self.reasoning_content is None:
+            self.reasoning_content = self.reasoning
+        elif self.reasoning is None:
+            self.reasoning = self.reasoning_content
+        return self
 
 
 class StreamingChoice(OpenAIBaseModel):
@@ -404,13 +441,21 @@ class EmbeddingRequest(OpenAIBaseModel):
     """Model for embedding requests."""
 
     model: str = Field(Config.EMBEDDING_MODEL, description="The embedding model to use.")
-    input: list[str] | str = Field(
-        ..., description="List of text inputs for embedding or the image file to embed."
+    input: EmbeddingInput = Field(
+        ...,
+        description=(
+            "Text inputs for embedding, the image file to embed, or pre-tokenized "
+            "input as a token id array or an array of token id arrays."
+        ),
     )
     image_url: str | None = Field(default=None, description="Image URL to embed.")
     user: str | None = Field(default=None, description="User identifier.")
     encoding_format: Literal["float", "base64"] = Field(
         default="float", description="The encoding format for the embedding."
+    )
+    keep_alive: KeepAliveValue = Field(
+        None,
+        description="How long to keep an on-demand model loaded after this request.",
     )
 
 
@@ -448,6 +493,26 @@ class ModelsResponse(OpenAIBaseModel):
 
     object: str = Field("list", description="The object type, always 'list'.")
     data: list[Model] = Field(..., description="List of models.")
+
+
+class ModelLoadRequest(OpenAIBaseModel):
+    """Request to load an on-demand model."""
+
+    model: str = Field(..., description="Configured model identifier.")
+    keep_alive: KeepAliveValue = Field(
+        None,
+        description="How long to retain the model after it is loaded.",
+    )
+
+
+class ModelUnloadRequest(OpenAIBaseModel):
+    """Request to unload an on-demand model."""
+
+    model: str = Field(..., description="Configured model identifier.")
+    force: bool = Field(
+        False,
+        description="Interrupt active requests. Disabled by default for safety.",
+    )
 
 
 class ImageSize(StrEnum):
@@ -512,6 +577,10 @@ class ImageGenerationRequest(OpenAIBaseModel):
         default=ImageResponseFormat.B64_JSON,
         description="The format in which the generated images are returned",
     )
+    keep_alive: KeepAliveValue = Field(
+        None,
+        description="How long to keep an on-demand model loaded after this request.",
+    )
 
 
 class ImageData(OpenAIBaseModel):
@@ -568,6 +637,10 @@ class ImageEditRequest(OpenAIBaseModel):
     steps: int | None = Field(
         default=28, description="The number of inference steps for the image edit"
     )
+    keep_alive: KeepAliveValue = Field(
+        None,
+        description="How long to keep an on-demand model loaded after this request.",
+    )
 
 
 class ImageEditResponse(OpenAIBaseModel):
@@ -610,6 +683,10 @@ class TranscriptionRequest(OpenAIBaseModel):
         default=None, description="Presence penalty for token generation"
     )
     reasoning_effort: Literal["low", "medium", "high"] | None = None
+    keep_alive: KeepAliveValue = Field(
+        None,
+        description="How long to keep an on-demand model loaded after this request.",
+    )
 
 
 # Transcription response objects
@@ -706,6 +783,10 @@ class ResponsesRequest(OpenAIBaseModel):
         default="auto", description="The tool choice to use for the response."
     )
     reasoning: Reasoning | None = None
+    keep_alive: KeepAliveValue = Field(
+        None,
+        description="How long to keep an on-demand model loaded after this request.",
+    )
 
 
 class InputTokensDetails(OpenAIBaseModel):
