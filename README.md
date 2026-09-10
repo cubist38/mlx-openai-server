@@ -12,6 +12,7 @@ OpenAI-compatible API server for local MLX models on Apple Silicon. It serves te
 - [Feature Launch](#feature-launch)
 - [Install](#install)
 - [Start a Server](#start-a-server)
+- [Convert Models to MLX](#convert-models-to-mlx)
 - [API Usage](#api-usage)
 - [Server Options](#server-options)
 - [Multi-Model Config](#multi-model-config)
@@ -146,6 +147,31 @@ Image `--config-name` values:
 
 - Generation: `flux-schnell`, `flux-dev`, `flux-krea-dev`, `flux2-klein-4b`, `flux2-klein-9b`, `qwen-image`, `z-image-turbo`, `fibo`
 - Editing: `flux-kontext-dev`, `flux2-klein-edit-4b`, `flux2-klein-edit-9b`, `qwen-image-edit`
+
+## Convert Models to MLX
+
+Most popular checkpoints already exist converted and quantized under
+[mlx-community](https://huggingface.co/mlx-community), and `--model-path` takes
+a repo id. Convert your own when the model is not there, is there at the wrong
+precision, or should live on local disk instead of the shared cache:
+
+| Type                             | Converter                                                                          |
+| -------------------------------- | ---------------------------------------------------------------------------------- |
+| `lm`                             | `mlx_lm.convert --hf-path <repo> --mlx-path <dir> -q --q-bits 4`                   |
+| `multimodal`                     | `mlx_vlm.convert --hf-path <repo> --mlx-path <dir> -q --q-bits 4`                  |
+| `embeddings`                     | `python -m mlx_embeddings.convert --hf-path <repo> --mlx-path <dir> -q --q-bits 4` |
+| `whisper`                        | none ships with `mlx-whisper`; serve the `mlx-community/whisper-*` repos           |
+| `image-generation`, `image-edit` | none needed; `mflux` quantizes at load, and `mflux-save` persists a quantized copy |
+
+Every converter is installed with this project, so run them from the same
+environment as the server. Quantization is what conversion buys: `mlx-lm`,
+`mlx-vlm` and `mlx-embeddings` all read an unquantized Hugging Face checkpoint
+as it comes.
+
+[docs/MODEL-CONVERSION.md](docs/MODEL-CONVERSION.md) has the full flag set per
+type, the mixed-bit and DWQ/AWQ recipes, why a multimodal conversion reports
+more bits per weight than it was asked for, and how to check the output loads
+before wiring it into a config.
 
 ## API Usage
 

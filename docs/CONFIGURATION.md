@@ -82,6 +82,10 @@ server:
 | `version`           | unset        | Adds a `<served_model_name>:<version>` route and appears in `/v1/models`.             |
 | `aliases`           | unset        | Extra names that route to this model.                                                 |
 
+`model_path` must resolve to weights the type's backend can read. Whichever
+backend that is, [MODEL-CONVERSION.md](MODEL-CONVERSION.md) has the command that
+produces them and the quantization flags worth setting.
+
 `version` and `aliases` share one namespace with `served_model_name`. A
 collision anywhere in that namespace is rejected at startup instead of leaving
 one name unreachable, a `version` may not contain `:` (it is joined with that
@@ -212,5 +216,7 @@ the server down with it.
 
 - [MODEL-LIFECYCLE.md](MODEL-LIFECYCLE.md) — lifecycle endpoints, `keep_alive`,
   running as a macOS service, aliases at request time, LangChain and LangGraph.
+- [MODEL-CONVERSION.md](MODEL-CONVERSION.md) — the converter for each
+  `model_type`, quantization flags, and how to check the output loads.
 - `examples/config.yaml` — a runnable starting point.
 - The README's _Server Options_ section — the equivalent single-model CLI flags.
