@@ -56,6 +56,7 @@ class MLXServerConfig:
     message_converter: str | None = None
     trust_remote_code: bool = False
     chat_template_file: str | None = None
+    preserve_reasoning_history: bool = False
     debug: bool = False
     prompt_cache_size: int = 10
     prompt_cache_max_bytes: int = 1 << 63
@@ -196,6 +197,7 @@ class MLXServerConfig:
             message_converter=self.message_converter,
             trust_remote_code=self.trust_remote_code,
             chat_template_file=self.chat_template_file,
+            preserve_reasoning_history=self.preserve_reasoning_history,
             debug=self.debug,
             prompt_cache_size=self.prompt_cache_size,
             prompt_cache_max_bytes=self.prompt_cache_max_bytes,
@@ -353,6 +355,7 @@ class ModelEntryConfig:
     message_converter: str | None = None
     trust_remote_code: bool = False
     chat_template_file: str | None = None
+    preserve_reasoning_history: bool = False
     debug: bool = False
     prompt_cache_size: int = 10
     prompt_cache_max_bytes: int = 1 << 63

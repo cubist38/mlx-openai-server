@@ -512,6 +512,33 @@ bash configure_mlx.sh
 
 ## Advanced LM Options
 
+### Termination, parser diagnostics, and reasoning history
+
+LM generation preserves the engine termination reason through both Chat Completions
+and Responses APIs, streaming or non-streaming. `length` (and `content_filter`) takes
+precedence over `tool_calls`; a normal engine `stop` with parsed tools becomes
+`tool_calls`. Responses maps `length` to `status: incomplete` with
+`incomplete_details.reason: max_output_tokens` and a `response.incomplete` SSE event.
+A complete tool can precede truncation, so clients should inspect termination before
+executing calls.
+
+Separate parsers flush safe literal delimiter fragments at EOF in their original
+channel. Unclosed tools are not emitted as calls. Optional `parser_diagnostics`
+appears on the final Chat Completions choice (or Responses object), with codes such
+as `incomplete_tool_call`, `incomplete_reasoning`, and `duplicate_tool_parameter`.
+Duplicate function parameters reject the ambiguous payload rather than keeping the
+last value. Tool XML inside Nemotron reasoning remains reasoning, never an action.
+
+LM prompt history still strips prior assistant reasoning by default. Set
+`preserve_reasoning_history: true` on a YAML model entry to opt in, or override per
+Chat Completions request with
+`chat_template_kwargs: {"preserve_reasoning_history": true}` (or `false`). This
+preserves supplied reasoning fields and defaults the template option
+`truncate_history_thinking` to `false` (an explicit template option still wins); it
+does not reconstruct missing reasoning. The setting is LM-only; Responses input reasoning
+items retain their existing exclusion policy.
+
+
 ### Tool and Reasoning Parsers
 
 Some models need parser flags for tool calls or reasoning blocks:

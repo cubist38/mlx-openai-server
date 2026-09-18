@@ -387,6 +387,18 @@ class TestModelCheckpointPrefill:
 
         return model, fake_generate
 
+    @pytest.mark.parametrize("reason", ["stop", "length"])
+    def test_nonstream_preserves_engine_finish_reason(
+        self, monkeypatch: pytest.MonkeyPatch, reason: str
+    ) -> None:
+        """Model aggregation must not discard the final engine termination reason."""
+        model, engine = self._make_model(monkeypatch)
+        engine.stream_generate.return_value = iter([engine.GenerationResponse("hi", 99, reason)])
+        result = model([1, 2, 3], stream=False, max_tokens=1)
+        assert result.finish_reason == reason
+        assert result.text == "hi"
+        assert engine.stream_generate.call_args.kwargs["max_tokens"] == 1
+
     def test_prefill_called_with_correct_prefix(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """``_prefill_cache`` receives exactly the prefix tokens up to checkpoint_position."""
         model, _ = self._make_model(monkeypatch)

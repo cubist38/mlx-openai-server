@@ -1259,6 +1259,8 @@ async def handle_stream_response(
     chat_index = get_id()
     created_time = int(time.time())
     finish_reason = "stop"
+    engine_finish_reason = None
+    parser_diagnostics: list[str] = []
     tool_call_index = -1
     tool_call_ids: dict[int, str] = {}
     usage_info = None
@@ -1293,6 +1295,8 @@ async def handle_stream_response(
                 # Check if this is usage info from the handler
                 if "__usage__" in chunk:
                     usage_info = chunk["__usage__"]
+                    engine_finish_reason = chunk.get("__finish_reason__")
+                    parser_diagnostics = chunk.get("__parser_diagnostics__", [])
                     continue
 
                 # Handle tool call chunks
@@ -1340,6 +1344,7 @@ async def handle_stream_response(
         yield _yield_sse_chunk(error_response)
     finally:
         # Final chunk: finish_reason with usage info, as per OpenAI
+        finish_reason = _resolve_finish_reason(engine_finish_reason, finish_reason == "tool_calls")
         final_chunk = ChatCompletionChunk(
             id=chat_index,
             object="chat.completion.chunk",
@@ -1351,6 +1356,8 @@ async def handle_stream_response(
             else None,
             request_id=request_id,
         )
+        if parser_diagnostics:
+            final_chunk.choices[0].parser_diagnostics = parser_diagnostics
         yield _yield_sse_chunk(final_chunk)
         yield "data: [DONE]\n\n"
 
@@ -1425,6 +1432,13 @@ def get_tool_call_id() -> str:
     return f"call_{timestamp}{random_suffix:06d}"
 
 
+def _resolve_finish_reason(engine_reason: str | None, has_tools: bool = False) -> str:
+    """Preserve engine truncation/filtering over tools; tools supersede normal stop."""
+    if engine_reason in {"length", "content_filter"}:
+        return engine_reason
+    return "tool_calls" if has_tools else (engine_reason or "stop")
+
+
 def format_final_response(
     response: str | dict[str, Any],
     model: str,
@@ -1459,6 +1473,8 @@ def format_final_response(
     reasoning_content = response.get("reasoning_content", None)
     response_content = response.get("content", None)
     tool_calls = response.get("tool_calls", None)
+    finish_reason = _resolve_finish_reason(response.get("finish_reason"), bool(tool_calls))
+    diagnostics = response.get("parser_diagnostics") or None
     tool_call_responses = []
     if tool_calls is None or len(tool_calls) == 0:
         return ChatCompletionResponse(
@@ -1477,7 +1493,8 @@ def format_final_response(
                         tool_calls=None,
                         tool_call_id=None,
                     ),
-                    finish_reason="stop",
+                    finish_reason=finish_reason,
+                    parser_diagnostics=diagnostics,
                 )
             ],
             usage=usage,
@@ -1510,7 +1527,14 @@ def format_final_response(
         object="chat.completion",
         created=int(time.time()),
         model=model,
-        choices=[Choice(index=0, message=message, finish_reason="tool_calls")],
+        choices=[
+            Choice(
+                index=0,
+                message=message,
+                finish_reason=finish_reason,
+                parser_diagnostics=diagnostics,
+            )
+        ],
         usage=usage,
         request_id=request_id,
     )
@@ -1848,6 +1872,11 @@ def convert_responses_request_to_chat_request(request: ResponsesRequest) -> Chat
     return ChatCompletionRequest(**chat_request_payload)
 
 
+def _responses_incomplete_reason(engine_reason: str | None) -> str | None:
+    """Map engine termination into the Responses API incomplete reason vocabulary."""
+    return {"length": "max_output_tokens", "content_filter": "content_filter"}.get(engine_reason)
+
+
 def format_final_responses_response(
     response: str | dict[str, Any], request: ResponsesRequest, usage: UsageInfo | None = None
 ) -> ResponsesResponse:
@@ -1924,11 +1953,13 @@ def format_final_responses_response(
             total_tokens=usage.total_tokens,
         )
 
+    incomplete_reason = _responses_incomplete_reason(response_payload.get("finish_reason"))
     return ResponsesResponse(
         id=f"resp_{unique_id}",
         created_at=int(time.time()),
-        status="completed",
-        incomplete_details=None,
+        status="incomplete" if incomplete_reason else "completed",
+        incomplete_details={"reason": incomplete_reason} if incomplete_reason else None,
+        parser_diagnostics=response_payload.get("parser_diagnostics") or None,
         instructions=request.instructions,
         model=request.model,
         object="response",
@@ -2086,6 +2117,8 @@ async def handle_responses_stream_response(  # noqa: C901
     # Message item state
     full_text = ""
     usage_info = None
+    engine_finish_reason = None
+    parser_diagnostics: list[str] = []
     # track pending tool-call streams keyed by tool_call_index
     tool_call_output_indices: dict[int, int] = {}  # tool_call_index → output_index
     tool_call_ids: dict[int, str] = {}  # tool_call_index → item id (fc_...)
@@ -2129,6 +2162,8 @@ async def handle_responses_stream_response(  # noqa: C901
             elif isinstance(chunk, dict):
                 if "__usage__" in chunk:
                     usage_info = chunk["__usage__"]
+                    engine_finish_reason = chunk.get("__finish_reason__")
+                    parser_diagnostics = chunk.get("__parser_diagnostics__", [])
                     continue
 
                 if "reasoning_content" in chunk:
@@ -2277,7 +2312,13 @@ async def handle_responses_stream_response(  # noqa: C901
                 }
             )
 
-        final_response_obj = _create_base_response("completed", final_output)
+        incomplete_reason = _responses_incomplete_reason(engine_finish_reason)
+        status = "incomplete" if incomplete_reason else "completed"
+        final_response_obj = _create_base_response(status, final_output)
+        if incomplete_reason:
+            final_response_obj["incomplete_details"] = {"reason": incomplete_reason}
+        if parser_diagnostics:
+            final_response_obj["parser_diagnostics"] = parser_diagnostics
 
         if usage_info:
             input_tokens = usage_info.prompt_tokens
@@ -2305,9 +2346,10 @@ async def handle_responses_stream_response(  # noqa: C901
                 "total_tokens": usage_info.total_tokens,
             }
 
+        event_type = f"response.{status}"
         yield (
-            f"event: response.completed\n"
-            f"data: {json.dumps({'response': final_response_obj, 'sequence_number': _next_seq(), 'type': 'response.completed'})}\n\n"
+            f"event: {event_type}\n"
+            f"data: {json.dumps({'response': final_response_obj, 'sequence_number': _next_seq(), 'type': event_type})}\n\n"
         )
 
 

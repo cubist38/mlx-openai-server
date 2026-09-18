@@ -342,10 +342,10 @@ class MixedThinkToolHandoffStreamHandlerIntegrationTests(unittest.TestCase):
         if isinstance(parsed.get("content"), str):
             assert "<tool_call>" not in parsed["content"]
 
-    def test_nonstream_qwen3_moe_tool_fallback_does_not_leak_synthetic_reasoning_prefix(
+    def test_nonstream_qwen3_moe_unclosed_reasoning_never_executes_embedded_tool(
         self,
     ) -> None:
-        """Synthetic reasoning-open prefixes should not leak into content fallback."""
+        """Implicit-open reasoning must remain reasoning even without its close marker."""
         handler_cls = _load_mlx_lm_handler_class()
         handler = _new_handler(handler_cls)
 
@@ -379,18 +379,11 @@ class MixedThinkToolHandoffStreamHandlerIntegrationTests(unittest.TestCase):
         parsed = result["response"]
 
         assert isinstance(parsed, dict)
-        assert parsed["reasoning_content"] is None
-        assert isinstance(parsed.get("tool_calls"), list)
-        assert len(parsed["tool_calls"]) == 1
-        assert parsed["tool_calls"][0]["name"] == "read_file"
-        assert json.loads(parsed["tool_calls"][0]["arguments"]) == {
-            "path": "app/handler/mlx_vlm.py"
-        }
-        assert isinstance(parsed.get("content"), str)
-        visible_content = parsed["content"]
-        assert "preface before tool." in visible_content
-        assert "<think>" not in visible_content
-        assert "<tool_call>" not in visible_content
+        assert "preface before tool." in parsed["reasoning_content"]
+        assert "<tool_call>" in parsed["reasoning_content"]
+        assert parsed["tool_calls"] is None
+        assert not parsed["content"]
+        assert parsed["parser_diagnostics"] == ["incomplete_reasoning"]
 
     def test_stream_step35_parses_tool_call_when_output_starts_with_stray_think_close(self) -> None:
         """Streaming should parse tool calls even when output starts with stray ``</think>``."""

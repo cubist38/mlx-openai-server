@@ -254,6 +254,10 @@ class Message(OpenAIBaseModel):
 class ChatTemplateKwargs(OpenAIBaseModel):
     """Represents the arguments for a chat template."""
 
+    preserve_reasoning_history: bool | None = Field(
+        default=None,
+        description="LM-only: preserve assistant reasoning in prompt history; None uses model default.",
+    )
     enable_thinking: bool = Field(default=True, description="Whether to enable thinking.")
     reasoning_effort: Literal["low", "medium", "high"] = Field(
         default="medium", description="The reasoning effort level."
@@ -347,6 +351,9 @@ class Choice(OpenAIBaseModel):
     finish_reason: Literal["stop", "length", "tool_calls", "content_filter", "function_call"] = (
         Field(..., description="The reason for the choice.")
     )
+    parser_diagnostics: list[str] | None = Field(
+        None, description="Non-executable parser warnings."
+    )
     index: int = Field(..., description="The index of the choice.")
     message: Message = Field(..., description="The message of the choice.")
 
@@ -413,6 +420,9 @@ class Delta(OpenAIBaseModel):
 class StreamingChoice(OpenAIBaseModel):
     """Represents a choice in a streaming response."""
 
+    parser_diagnostics: list[str] | None = Field(
+        None, description="Non-executable parser warnings."
+    )
     delta: Delta | None = Field(None, description="The delta for this streaming choice.")
     finish_reason: (
         Literal["stop", "length", "tool_calls", "content_filter", "function_call"] | None
@@ -815,6 +825,9 @@ class ResponsesResponse(OpenAIBaseModel):
 
     id: str = Field(default_factory=lambda: f"resp_{random_uuid()}")
     created_at: int = Field(default_factory=lambda: int(time.time()))
+    parser_diagnostics: list[str] | None = Field(
+        None, description="Non-executable parser warnings."
+    )
     incomplete_details: IncompleteDetails | None = None
     instructions: str | None = None
     model: str
