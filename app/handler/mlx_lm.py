@@ -139,6 +139,7 @@ class MLXLMHandler:
         batch_prefill_step_size: int = 2048,
         batch_max_kv_size: int | None = None,
         disable_batching: bool = False,
+        preserve_reasoning_history: bool = False,
     ):
         """
         Initialize the handler with the specified model path.
@@ -192,8 +193,11 @@ class MLXLMHandler:
         disable_batching : bool
             Disable the continuous batch scheduler and use the single-request
             path for LM generation.
+        preserve_reasoning_history : bool
+            Preserve supplied assistant reasoning for the chat template by default.
         """
         self.model_path = model_path
+        self.preserve_reasoning_history = preserve_reasoning_history
         from ..models.mlx_lm import MLX_LM
         from ..utils.prompt_cache import LRUPromptCache
 
@@ -995,6 +999,18 @@ class MLXLMHandler:
 
                         yield text
 
+                if reasoning_parser:
+                    tail = reasoning_parser.finalize()
+                    if tail.get("reasoning_content"):
+                        yield {"reasoning_content": tail["reasoning_content"]}
+                    if tail.get("content"):
+                        # EOF tails are literals, not another chance to execute tools.
+                        yield tail["content"]
+                if tool_parser:
+                    tail = tool_parser.finalize()
+                    if tail.get("content"):
+                        yield tail["content"]
+
             total_tokens = total_input_tokens + final_chunk.generation_tokens
             if self.debug:
                 self.prompt_cache.log_cache_stats()
@@ -1008,6 +1024,13 @@ class MLXLMHandler:
                 )
 
             yield {
+                "__finish_reason__": getattr(final_chunk, "finish_reason", None),
+                "__parser_diagnostics__": [
+                    diagnostic
+                    for parser in (parsers_result.reasoning_parser, parsers_result.tool_parser)
+                    if parser
+                    for diagnostic in parser.diagnostics
+                ],
                 "__usage__": UsageInfo(
                     prompt_tokens=total_input_tokens,
                     completion_tokens=final_chunk.generation_tokens,
@@ -1015,7 +1038,7 @@ class MLXLMHandler:
                     prompt_tokens_details=PromptTokenUsageInfo(
                         cached_tokens=_coerce_cached_tokens(total_cached_tokens, final_chunk)
                     ),
-                )
+                ),
             }
 
         except asyncio.QueueFull:
@@ -1133,7 +1156,13 @@ class MLXLMHandler:
 
                 if response_text:
                     if tool_parser:
-                        parsed_content = tool_parser.extract_tool_calls(response_text)
+                        parsed_content, _ = tool_parser.extract_tool_calls_streaming(response_text)
+                        parsed_content = parsed_content or {}
+                        tail = tool_parser.finalize()
+                        if tail.get("content"):
+                            parsed_content["content"] = (
+                                parsed_content.get("content", "") + tail["content"]
+                            )
                         if self.debug:
                             log_debug_parser_event(
                                 component="mlx_lm.nonstream.tool",
@@ -1146,20 +1175,7 @@ class MLXLMHandler:
                             )
                         parsed_response["tool_calls"] = parsed_content.get("tool_calls")
                         tool_content = parsed_content.get("content")
-                        if isinstance(tool_content, str):
-                            parsed_response["content"] = tool_content
-                        elif parsed_response["tool_calls"]:
-                            strip_source = response_text
-                            if synthetic_reasoning_open and strip_source.startswith(
-                                synthetic_reasoning_open
-                            ):
-                                strip_source = strip_source[len(synthetic_reasoning_open) :]
-                            stripped_content = _strip_complete_tool_blocks(
-                                strip_source,
-                                tool_parser.get_tool_open(),
-                                tool_parser.get_tool_close(),
-                            )
-                            parsed_response["content"] = stripped_content or None
+                        parsed_response["content"] = tool_content or None
             else:
                 parsed_response["content"] = response_text
 
@@ -1194,6 +1210,13 @@ class MLXLMHandler:
                 ),
             )
 
+            parsed_response["finish_reason"] = getattr(response, "finish_reason", None)
+            parsed_response["parser_diagnostics"] = [
+                diagnostic
+                for parser in (parsers_result.reasoning_parser, parsers_result.tool_parser)
+                if parser
+                for diagnostic in parser.diagnostics
+            ]
             return {"response": parsed_response, "usage": usage}
 
         except asyncio.QueueFull:
@@ -1412,6 +1435,7 @@ class MLXLMHandler:
             prompt_tokens=prompt_tokens,
             generation_tokens=generation_tokens,
             cached_prompt_tokens=cached_prompt_tokens,
+            finish_reason=getattr(final_chunk, "finish_reason", None),
         )
 
     async def get_queue_stats(self) -> dict[str, Any]:
@@ -1527,16 +1551,27 @@ class MLXLMHandler:
 
             raw_messages = [m.model_dump() for m in request.messages] if request.messages else []
 
+            preserve_reasoning = chat_template_kwargs.pop("preserve_reasoning_history", None)
+            if preserve_reasoning is None:
+                preserve_reasoning = getattr(self, "preserve_reasoning_history", False)
+            if preserve_reasoning:
+                chat_template_kwargs.setdefault("truncate_history_thinking", False)
             for message in raw_messages:
                 # Reasoning content is output metadata and should not be replayed
-                # into subsequent prompt history turns.
-                message.pop("reasoning_content", None)
+                # into subsequent prompt history turns unless explicitly requested.
+                if not preserve_reasoning:
+                    message.pop("reasoning_content", None)
+                    message.pop("reasoning", None)
 
                 # Handle content that might be a list of dictionaries (multimodal format)
                 content = message.get("content")
                 if content is None:
                     # Assistant messages with tool_calls or partial have content: null — keep them
-                    if message.get("tool_calls") or message.get("partial"):
+                    if (
+                        message.get("tool_calls")
+                        or message.get("partial")
+                        or (preserve_reasoning and message.get("reasoning_content"))
+                    ):
                         message["content"] = ""
                     else:
                         continue

@@ -250,7 +250,7 @@ class MLX_VLM:
         audios: list[str] | None = None,
     ) -> dict[str, Any]:
         """Create MLX-ready multimodal inputs from formatted chat messages."""
-        image_inputs, video_inputs = self._extract_vision_inputs(messages)
+        image_inputs, video_inputs = self.extract_vision_inputs(messages)
         inputs = self._create_processor_inputs(
             text,
             images=image_inputs,
@@ -259,9 +259,7 @@ class MLX_VLM:
         )
         return self._to_mlx_inputs(inputs)
 
-    def _extract_vision_inputs(
-        self, messages: list[dict[str, Any]]
-    ) -> tuple[list[Any] | None, Any]:
+    def extract_vision_inputs(self, messages: list[dict[str, Any]]) -> tuple[list[Any] | None, Any]:
         """Extract image/video inputs without loading video dependencies eagerly.
 
         Parameters
@@ -282,12 +280,8 @@ class MLX_VLM:
             )
             for message in messages
         )
-        if has_video:
-            from mlx_vlm.video_generate import process_vision_info
-
-            return process_vision_info(messages)
-
         image_inputs: list[Any] = []
+        video_inputs: list[Any] = []
         for message in messages:
             content = message.get("content")
             if not isinstance(content, list):
@@ -296,9 +290,21 @@ class MLX_VLM:
                 if not isinstance(part, dict):
                     continue
                 image_source = part.get("image") or part.get("image_url")
-                if image_source is None:
-                    continue
-                image_inputs.append(load_image(image_source))
+                if image_source is not None:
+                    image_inputs.append(load_image(image_source))
+                video_source = part.get("video") or part.get("video_url")
+                if video_source is not None:
+                    video_inputs.append(video_source)
+
+        if has_video:
+            from mlx_vlm.generate.video import resolve_video_inputs
+
+            resolution = resolve_video_inputs(
+                self.processor,
+                video_inputs,
+                images=image_inputs,
+            )
+            return (resolution.images or None), (resolution.videos or None)
         return (image_inputs or None), None
 
     def create_inputs(
@@ -405,10 +411,7 @@ class MLX_VLM:
 
 
 if __name__ == "__main__":
-    from mlx_vlm.video_generate import process_vision_info
-
     image_path = "examples/images/attention.png"
-    video_path = "examples/videos/demo.mp4"
     model_path = "mlx-community/Qwen3-VL-2B-Thinking-8bit"
 
     model = MLX_VLM(model_path, context_length=2048)
@@ -444,7 +447,7 @@ if __name__ == "__main__":
     ]
     input_prompt = model.create_input_prompt(messages, chat_template_kwargs)
 
-    image_inputs, video_inputs = process_vision_info(messages)
+    image_inputs, video_inputs = model.extract_vision_inputs(messages)
 
     inputs = model.create_inputs(input_prompt, image_inputs, video_inputs)
 

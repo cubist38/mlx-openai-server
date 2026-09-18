@@ -5,6 +5,7 @@ This document tracks session-to-session handoffs for the `mlx-openai-server-lab`
 ---
 
 ## Session 1: Phase 0 – Engine Warm-Up
+
 **Date**: 2025-11-16
 **Branch**: `claude/phase0-engine-warmup-012M2QbGXpRukoMy8x4jyVrg`
 **Goal**: Map the existing codebase and document architecture for Phase 1 transformation
@@ -12,6 +13,7 @@ This document tracks session-to-session handoffs for the `mlx-openai-server-lab`
 ### Discoveries
 
 **Architecture Overview:**
+
 - FastAPI-based OpenAI-compatible API server running on Apple Silicon (MLX)
 - Stateless design: no database, no persistent storage, all config via CLI
 - Single-model-per-instance: model loaded at startup, no runtime switching
@@ -19,6 +21,7 @@ This document tracks session-to-session handoffs for the `mlx-openai-server-lab`
 - Supports 6 model types: lm, multimodal, embeddings, whisper, image-generation, image-edit
 
 **Key Components Identified:**
+
 1. **Entrypoints**: CLI via Click (`app/cli.py:145`) or argparse (`app/main.py:50`), script entry in `pyproject.toml:56`
 2. **Model Loading**: Model wrappers in `app/models/` (mlx_lm, mlx_vlm, etc.), handlers in `app/handler/` wrapping models with queue logic
 3. **Configuration**: All via CLI args (no config files), defaults from env vars in `app/models/mlx_lm.py:15-21`
@@ -26,14 +29,15 @@ This document tracks session-to-session handoffs for the `mlx-openai-server-lab`
 5. **Concurrency**: `app/core/queue.py` RequestQueue with `asyncio.Semaphore`, defaults: max_concurrency=1, timeout=300s, queue_size=100
 
 **Current Limitations:**
+
 - **No model registry**: Can't switch models without restarting server
 - **No persistent queue**: Queue is in-memory, lost on restart
 - **No state management**: Completely stateless (good for Tier 3, but needs Tier 2 integration)
 - **Sequential by default**: max_concurrency=1 means only one request processed at a time
-- **No multi-model support**: Can only load one model per server instance
 - **No job tracking**: No request history, logs, or status persistence
 
 **Code Quality Observations:**
+
 - Well-structured, clear separation of concerns (models, handlers, API)
 - Good error handling and logging (loguru)
 - Memory-conscious: explicit garbage collection and MLX cache clearing
@@ -64,6 +68,7 @@ This document tracks session-to-session handoffs for the `mlx-openai-server-lab`
 **Goal**: Transform this stateless inference server into a **multi-model fusion engine** that integrates with Tier 2 (MCP) for state management and orchestration.
 
 #### Priority 1: Model Registry & Management
+
 1. **Implement model registry** (`app/core/model_registry.py`):
    - Registry class to track loaded models by ID
    - Support multiple models loaded simultaneously
@@ -82,6 +87,7 @@ This document tracks session-to-session handoffs for the `mlx-openai-server-lab`
    - `GET /v1/models/{model_id}/stats` – Get model usage stats
 
 #### Priority 2: Persistent Queue & Job Tracking
+
 4. **Integrate MongoDB for job tracking**:
    - Job schema: request ID, model ID, status, timestamps, input/output
    - Status enum: queued, processing, completed, failed, cancelled
@@ -98,6 +104,7 @@ This document tracks session-to-session handoffs for the `mlx-openai-server-lab`
    - Enable distributed queue for multi-node setup
 
 #### Priority 3: Tier 2 Integration
+
 7. **Define Tier 2 ↔ Tier 3 protocol**:
    - MCP (Tier 2) sends job requests to Tier 3 via HTTP
    - Tier 3 reports job status back to MCP (webhooks or polling)
@@ -115,6 +122,7 @@ This document tracks session-to-session handoffs for the `mlx-openai-server-lab`
    - Retry logic for failed notifications
 
 #### Priority 4: Observability & Performance
+
 10. **Add Prometheus metrics export** (`/metrics`):
     - Request rate, error rate, latency
     - Queue stats (depth, wait time)
@@ -132,6 +140,7 @@ This document tracks session-to-session handoffs for the `mlx-openai-server-lab`
     - Consider adaptive concurrency (auto-tune based on VRAM/latency)
 
 #### Priority 5: Code Refactoring (Low Priority)
+
 13. **Extract config to dataclass** (optional):
     - Centralize all config in `app/core/config.py`
     - Replace arg parsing with pydantic settings
@@ -150,30 +159,34 @@ This document tracks session-to-session handoffs for the `mlx-openai-server-lab`
 ### Risks & Open Questions
 
 **Risks:**
+
 1. **VRAM constraints**: Loading multiple models simultaneously may exceed available VRAM
-   - *Mitigation*: Implement model LRU eviction, lazy loading, or VRAM monitoring
+   - _Mitigation_: Implement model LRU eviction, lazy loading, or VRAM monitoring
 2. **Concurrency complexity**: Managing multiple models with different concurrency limits
-   - *Mitigation*: Per-model queue configuration, global semaphore for VRAM
+   - _Mitigation_: Per-model queue configuration, global semaphore for VRAM
 3. **State synchronization**: Keeping Tier 2 and Tier 3 state consistent
-   - *Mitigation*: Single source of truth (MongoDB), atomic operations, idempotency
+   - _Mitigation_: Single source of truth (MongoDB), atomic operations, idempotency
 
 **Open Questions:**
+
 1. Should Tier 3 own the model registry, or should Tier 2 dictate which models to load?
-   - *Recommendation*: Tier 2 owns configuration, Tier 3 manages lifecycle
+   - _Recommendation_: Tier 2 owns configuration, Tier 3 manages lifecycle
 2. How to handle model loading failures (e.g., out of VRAM)?
-   - *Recommendation*: Return 503 Service Unavailable, log error, notify Tier 2
+   - _Recommendation_: Return 503 Service Unavailable, log error, notify Tier 2
 3. Should job history be stored indefinitely, or pruned after N days?
-   - *Recommendation*: Configurable TTL (e.g., 7 days), archive to S3/disk if needed
+   - _Recommendation_: Configurable TTL (e.g., 7 days), archive to S3/disk if needed
 4. Should Tier 3 support streaming to Tier 2, or only non-streaming?
-   - *Recommendation*: Support both, use SSE for streaming, JSON for non-streaming
+   - _Recommendation_: Support both, use SSE for streaming, JSON for non-streaming
 5. How to handle model version updates (e.g., model repo changes)?
-   - *Recommendation*: Treat as new model ID, allow side-by-side deployment, manual cutover
+   - _Recommendation_: Treat as new model ID, allow side-by-side deployment, manual cutover
 
 ### Files Changed
+
 - ✅ Created `docs/FUSION_PHASE0.md` (architecture documentation)
 - ✅ Created `docs/HANDOFFS.md` (session log, this file)
 
 ### Files to Change in Phase 1
+
 - `app/core/model_registry.py` (NEW) – Model registry implementation
 - `app/core/job_tracker.py` (NEW) – MongoDB job tracking
 - `app/api/endpoints.py` – Add model management and job status endpoints
@@ -186,21 +199,27 @@ This document tracks session-to-session handoffs for the `mlx-openai-server-lab`
 ---
 
 ## Session 2: TBD
+
 **Date**: TBD
 **Branch**: TBD
 **Goal**: TBD
 
 ### Discoveries
+
 (Append here)
 
 ### Actions Taken
+
 (Append here)
 
 ### Next Actions
+
 (Append here)
 
 ### Risks & Open Questions
+
 (Append here)
 
 ### Files Changed
+
 (Append here)

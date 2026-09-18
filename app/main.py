@@ -198,7 +198,9 @@ def _model_entry_extras(m: ModelEntryConfig) -> list[tuple[str, object]]:
     if m.disable_auto_resize:
         extras.append(("auto_resize", False))
     if m.on_demand:
-        extras.append(("on_demand", f"idle_timeout={m.on_demand_idle_timeout}s"))
+        timeout = m.on_demand_idle_timeout
+        suffix = "" if isinstance(timeout, str) else "s"
+        extras.append(("on_demand", f"idle_timeout={timeout}{suffix}"))
     if m.debug:
         extras.append(("debug", True))
     return extras
@@ -267,11 +269,12 @@ async def start(config: MLXServerConfig) -> None:
     """
     try:
         _apply_sampling_env(config)
-        # Display startup information
-        print_startup_banner(config)
 
-        # Set up and start the server
+        # Set up the server first: setup_server installs the log sinks, so a
+        # banner printed before it would only ever reach stderr, leaving the log
+        # file without the host/port/model context for the run it belongs to.
         uvconfig = setup_server(config)
+        print_startup_banner(config)
         logger.info("Server configuration complete.")
         logger.info("Starting Uvicorn server...")
         server = uvicorn.Server(uvconfig)
@@ -295,9 +298,10 @@ async def start_multi(config: MultiModelServerConfig) -> None:
         Multi-model YAML-based configuration.
     """
     try:
-        print_multi_startup_banner(config)
-
+        # setup_server installs the log sinks; banner afterwards so the run's
+        # host/port/model inventory is in the log file, not only on stderr.
         uvconfig = setup_server(config)
+        print_multi_startup_banner(config)
         logger.info("Multi-handler server configuration complete.")
         logger.info("Starting Uvicorn server...")
         server = uvicorn.Server(uvconfig)

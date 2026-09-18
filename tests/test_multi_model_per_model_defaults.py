@@ -113,7 +113,12 @@ class _FakeRegistry:
         self._handlers[model_id] = handler
         return handler
 
-    async def release_on_demand(self, model_id: str) -> None:
+    async def release_on_demand(
+        self,
+        model_id: str,
+        keep_alive: Any = None,
+        handler: Any = None,
+    ) -> None:
         if model_id in self._on_demand_handlers:
             self._handlers.pop(model_id, None)
 

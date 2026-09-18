@@ -28,15 +28,11 @@ def __getattr__(name: str) -> Any:
 
         return MLXEmbeddingsHandler
     if name == "MLXFluxHandler":
-        try:
-            from .mflux import MLXFluxHandler
-        except ImportError:
-            return None
+        from .mflux import MLXFluxHandler
+
         return MLXFluxHandler
     if name == "MFLUX_AVAILABLE":
-        try:
-            import mflux  # noqa: F401
-        except ImportError:
-            return False
+        import mflux  # noqa: F401
+
         return True
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

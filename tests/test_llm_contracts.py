@@ -222,6 +222,7 @@ class TestLLMContract:
                 "ready",
                 "ok",
                 "unknown",
+                "initialized",  # single-handler mode
             ]  # Model status can vary
         else:
             assert status in ["ok", "healthy", "ready"]

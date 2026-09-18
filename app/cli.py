@@ -4,16 +4,30 @@ This module defines the Click command group used by the package and the
 ``launch`` command which constructs a server configuration and starts
 the ASGI server. When a ``--config`` YAML file is supplied the server
 runs in multi-handler mode, loading multiple models at once.
+
+The ``list`` group holds the read-only commands that query an *already
+running* server over HTTP rather than starting one; see
+:mod:`app.cli_status` for the client behind them.
 """
 
 from __future__ import annotations
 
 import asyncio
+import json
 import sys
 
 import click
 from loguru import logger
 
+from .cli_status import (
+    DEFAULT_HOST,
+    DEFAULT_PORT,
+    DEFAULT_TIMEOUT,
+    StatusUnavailable,
+    fetch_model_status,
+    format_status_table,
+    resolve_base_url,
+)
 from .config import MLXServerConfig, load_config_from_yaml
 from .main import start_multi
 from .parsers import REASONING_PARSER_MAP, TOOL_PARSER_MAP, UNIFIED_PARSER_MAP
@@ -35,8 +49,8 @@ IMAGE_CONFIG_NAMES: tuple[str, ...] = (
 )
 
 MFLUX_INSTALL_HINT = (
-    "Image generation and editing require the `mflux` package. "
-    "Install it with `pip install mflux==0.17.0`."
+    "The required `mflux` image backend is unavailable. "
+    "Reinstall the project dependencies with `pip install -e .`."
 )
 
 
@@ -79,7 +93,7 @@ class UpperChoice(click.Choice):
 def validate_image_config_name(
     _ctx: click.Context, _param: click.Parameter, value: str | None
 ) -> str | None:
-    """Validate image config names when optional mflux support is installed."""
+    """Validate image backend configuration names."""
     if value is None or not IMAGE_CONFIG_NAMES:
         return value
 
@@ -91,17 +105,17 @@ def validate_image_config_name(
 
 
 def ensure_image_support_available(model_types: set[str]) -> None:
-    """Raise a usage error when image features are requested without mflux."""
+    """Raise a usage error when the required image backend cannot initialize."""
     if not any(model_type in {"image-generation", "image-edit"} for model_type in model_types):
         return
 
     try:
         import mflux  # noqa: F401
     except ImportError as exc:
-        detail = f" Optional import failed: {exc!s}"
+        detail = f" Backend import failed: {exc!s}"
         raise click.UsageError(f"{MFLUX_INSTALL_HINT}{detail}") from exc
     except RuntimeError as exc:
-        detail = f" Optional import failed: {exc!s}"
+        detail = f" Backend initialization failed: {exc!s}"
         raise click.UsageError(f"{MFLUX_INSTALL_HINT}{detail}") from exc
     else:
         return
@@ -217,6 +231,20 @@ def cli():
     "--no-log-file",
     is_flag=True,
     help="Disable file logging entirely. Only console output will be shown.",
+)
+@click.option(
+    "--log-rotation",
+    default="50 MB",
+    type=str,
+    help="Roll the log file over at this size or interval (e.g. '50 MB', '1 day'). "
+    "Use 'none' to disable rotation.",
+)
+@click.option(
+    "--log-retention",
+    default="5",
+    type=str,
+    help="Rotated log files to keep: a count (e.g. '5') or an age (e.g. '10 days'). "
+    "Use 'none' to keep them all.",
 )
 @click.option(
     "--log-level",
@@ -412,6 +440,8 @@ def launch(
     disable_auto_resize,
     log_file,
     no_log_file,
+    log_rotation,
+    log_retention,
     log_level,
     enable_auto_tool_choice,
     tool_call_parser,
@@ -489,6 +519,8 @@ def launch(
         log_file=log_file,
         no_log_file=no_log_file,
         log_level=log_level,
+        log_rotation=log_rotation,
+        log_retention=log_retention,
         enable_auto_tool_choice=enable_auto_tool_choice,
         tool_call_parser=tool_call_parser,
         reasoning_parser=reasoning_parser,
@@ -527,3 +559,85 @@ def launch(
     # the continuous batcher runs on a thread other than the one that
     # loaded the model. See https://github.com/ml-explore/mlx/issues/2457.
     asyncio.run(start_multi(args.to_multi_model_server_config()))
+
+
+@cli.group("list")
+def list_group() -> None:
+    """Inspect a server that is already running."""
+
+
+@list_group.command("models")
+@click.option(
+    "--config",
+    "config_file",
+    default=None,
+    type=click.Path(exists=True),
+    help="Take the host and port from a multi-model YAML config file.",
+)
+@click.option(
+    "--host",
+    default=None,
+    envvar="MLX_SERVER_HOST",
+    help=f"Host the server listens on  [default: {DEFAULT_HOST}]",
+)
+@click.option(
+    "--port",
+    default=None,
+    type=int,
+    envvar="MLX_SERVER_PORT",
+    help=f"Port the server listens on  [default: {DEFAULT_PORT}]",
+)
+@click.option(
+    "--timeout",
+    default=DEFAULT_TIMEOUT,
+    type=float,
+    show_default=True,
+    help="Seconds to wait for the server to answer.",
+)
+@click.option(
+    "--json",
+    "as_json",
+    is_flag=True,
+    help="Print the raw status payload instead of the table.",
+)
+def list_models(
+    config_file: str | None,
+    host: str | None,
+    port: int | None,
+    timeout: float,
+    as_json: bool,
+) -> None:
+    """List the models a running server knows about, and which are loaded.
+
+    Reads the server's status endpoint, so it reports live state rather than
+    configuration: whether each model is unloaded, loading, loaded or busy,
+    the pid of its handler subprocess, how many requests it is serving, and
+    how long an idle one has left before it is evicted. The keep-alive column
+    is the model's configured default, which a per-request ``keep_alive`` can
+    override for the current residency.
+
+    The address may come from flags, from the ``MLX_SERVER_HOST`` and
+    ``MLX_SERVER_PORT`` environment variables, or from ``--config`` pointing
+    at the same YAML the server was launched with. Explicit flags win over a
+    config file. Exits non-zero when no server answers, so it can gate a
+    script.
+    """
+    if config_file is not None:
+        server_config = load_config_from_yaml(config_file)
+        if host is None:
+            host = server_config.host
+        if port is None:
+            port = server_config.port
+
+    base_url = resolve_base_url(host, port)
+    try:
+        payload = fetch_model_status(base_url, timeout=timeout)
+    except StatusUnavailable as exc:
+        raise click.ClickException(str(exc)) from exc
+
+    if as_json:
+        click.echo(json.dumps(payload, indent=2))
+        return
+
+    for line in format_status_table(payload, base_url=base_url):
+        click.echo(line)

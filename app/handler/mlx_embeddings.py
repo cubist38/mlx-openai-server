@@ -70,6 +70,50 @@ class MLXEmbeddingsHandler:
         self.inference_worker.start()
         logger.info("Initialized MLXEmbeddingsHandler and started inference worker")
 
+    def _normalize_input(self, value: str | list[Any]) -> list[str]:
+        """Reduce any accepted ``input`` shape to a list of strings.
+
+        The OpenAI embeddings API accepts pre-tokenized input, so token ids are
+        decoded back to text before the model tokenizes them again.
+
+        Parameters
+        ----------
+        value : str | list[Any]
+            A string, a list of strings, a token id array, or a list of token
+            id arrays.
+
+        Returns
+        -------
+        list[str]
+            Texts ready for the embedding model.
+
+        Raises
+        ------
+        ValueError
+            If the input mixes shapes or holds unsupported item types.
+        """
+        if isinstance(value, str):
+            return [value]
+        if not value:
+            return []
+
+        if all(isinstance(item, str) for item in value):
+            return list(value)
+
+        tokenizer = getattr(self.model.tokenizer, "_tokenizer", self.model.tokenizer)
+        if all(isinstance(item, int) for item in value):
+            return [tokenizer.decode(list(value))]
+        if all(
+            isinstance(item, list) and all(isinstance(token, int) for token in item)
+            for item in value
+        ):
+            return [tokenizer.decode(item) for item in value]
+
+        raise ValueError(
+            "Embedding input must be a string, a list of strings, a token id array, "
+            "or a list of token id arrays."
+        )
+
     async def generate_embeddings_response(self, request: EmbeddingRequest):
         """
         Generate embeddings for a given text input.
@@ -81,8 +125,7 @@ class MLXEmbeddingsHandler:
             List[float]: Embeddings for the input text.
         """
         try:
-            if isinstance(request.input, str):
-                request.input = [request.input]
+            request.input = self._normalize_input(request.input)
             # Submit directly to the inference thread
             return await self.inference_worker.submit(
                 self.model,
