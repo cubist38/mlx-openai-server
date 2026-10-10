@@ -45,6 +45,23 @@ class OpenAIBaseModel(BaseModel):
             )
         return result
 
+    @model_validator(mode="before")
+    @classmethod
+    def _coerce_openai_compatible(cls, data):
+        # Clients following the OpenAI image contract send the edit image as the
+        # array field "image[]" and may request size="auto"; this server names the
+        # field "image" and only knows fixed square sizes. Normalize both so those
+        # requests validate instead of failing with 422.
+        if not isinstance(data, dict):
+            return data
+        out = dict(data)
+        if "image" not in out and "image[]" in out:
+            out["image"] = out.pop("image[]")
+        size = out.get("size")
+        if isinstance(size, str) and size not in ("256x256", "512x512", "1024x1024"):
+            out["size"] = "1024x1024"
+        return out
+
 
 # Configuration
 class Config:
