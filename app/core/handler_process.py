@@ -1250,6 +1250,8 @@ class HandlerProcessProxy:
         request_data: dict[str, Any] = {
             "audio_path": audio_path,
             "verbose": False,
+            "response_format": request.response_format,
+            "timestamp_granularities": request.timestamp_granularities,
         }
         if request.temperature is not None:
             request_data["temperature"] = request.temperature
@@ -1273,8 +1275,8 @@ class HandlerProcessProxy:
 
         Returns
         -------
-        TranscriptionResponse
-            The transcription result.
+        TranscriptionResponse | TranscriptionVerboseResponse
+            The transcription result, with timestamps for ``verbose_json``.
         """
         request_data = await self.prepare_transcription_request(request)
         return await self._call("transcribe_from_data", request_data)

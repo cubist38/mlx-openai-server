@@ -10,6 +10,7 @@ import uuid
 
 from fastapi import HTTPException
 from loguru import logger
+from mlx_whisper.tokenizer import LANGUAGES
 
 from ..core import InferenceWorker
 from ..models.mlx_whisper import MLX_Whisper, calculate_audio_duration
@@ -20,9 +21,113 @@ from ..schemas.openai import (
     TranscriptionResponseFormat,
     TranscriptionResponseStream,
     TranscriptionResponseStreamChoice,
+    TranscriptionSegment,
+    TranscriptionTimestampGranularity,
     TranscriptionUsageAudio,
+    TranscriptionVerboseResponse,
+    TranscriptionWord,
 )
 from ..utils.errors import create_error_response
+
+
+def pop_response_options(
+    request_data: dict[str, Any],
+) -> tuple[TranscriptionResponseFormat, set[TranscriptionTimestampGranularity]]:
+    """Take the response options out of prepared request data.
+
+    What remains is passed to ``mlx_whisper.transcribe``. When word
+    timestamps are requested, ``word_timestamps`` is turned on for it.
+
+    Parameters
+    ----------
+    request_data : dict[str, Any]
+        Prepared request data, modified in place.
+
+    Returns
+    -------
+    tuple[TranscriptionResponseFormat, set[TranscriptionTimestampGranularity]]
+        The response format, and the timestamp granularities for
+        ``verbose_json`` (segments when none were asked for).
+    """
+    response_format = TranscriptionResponseFormat(
+        request_data.pop("response_format", None) or TranscriptionResponseFormat.JSON
+    )
+    granularities = {
+        TranscriptionTimestampGranularity(g)
+        for g in request_data.pop("timestamp_granularities", None) or []
+    } or {TranscriptionTimestampGranularity.SEGMENT}
+    if (
+        response_format == TranscriptionResponseFormat.VERBOSE_JSON
+        and TranscriptionTimestampGranularity.WORD in granularities
+    ):
+        request_data["word_timestamps"] = True
+    return response_format, granularities
+
+
+def build_transcription_response(
+    result: dict[str, Any],
+    duration: float,
+    response_format: TranscriptionResponseFormat,
+    granularities: set[TranscriptionTimestampGranularity],
+) -> TranscriptionResponse | TranscriptionVerboseResponse:
+    """Build the API response from an ``mlx_whisper.transcribe`` result.
+
+    Parameters
+    ----------
+    result : dict[str, Any]
+        The result of ``mlx_whisper.transcribe``: ``text``, ``segments``
+        and ``language``.
+    duration : float
+        The duration of the audio in seconds.
+    response_format : TranscriptionResponseFormat
+        The requested response format.
+    granularities : set[TranscriptionTimestampGranularity]
+        The timestamp granularities to include with ``verbose_json``.
+
+    Returns
+    -------
+    TranscriptionResponse | TranscriptionVerboseResponse
+        A verbose response with timestamps for ``verbose_json``,
+        otherwise the text alone.
+    """
+    usage = TranscriptionUsageAudio(type="duration", seconds=int(duration))
+    if response_format != TranscriptionResponseFormat.VERBOSE_JSON:
+        return TranscriptionResponse(text=result["text"], usage=usage)
+
+    raw_segments = result.get("segments") or []
+    segments = None
+    if TranscriptionTimestampGranularity.SEGMENT in granularities:
+        segments = [
+            TranscriptionSegment(
+                id=i,
+                seek=s["seek"],
+                start=s["start"],
+                end=s["end"],
+                text=s["text"],
+                tokens=s["tokens"],
+                temperature=s["temperature"],
+                avg_logprob=s["avg_logprob"],
+                compression_ratio=s["compression_ratio"],
+                no_speech_prob=s["no_speech_prob"],
+            )
+            for i, s in enumerate(raw_segments)
+        ]
+    words = None
+    if TranscriptionTimestampGranularity.WORD in granularities:
+        words = [
+            TranscriptionWord(word=w["word"].strip(), start=w["start"], end=w["end"])
+            for s in raw_segments
+            for w in s.get("words") or []
+        ]
+    code = result.get("language") or ""
+    return TranscriptionVerboseResponse(
+        language=LANGUAGES.get(code, code),
+        duration=duration,
+        text=result["text"],
+        segments=segments,
+        words=words,
+        usage=usage,
+    )
 
 
 class MLXWhisperHandler:
@@ -102,18 +207,16 @@ class MLXWhisperHandler:
 
             # Submit to the inference thread
             audio_path = request_data.pop("audio_path")
+            response_format, granularities = pop_response_options(request_data)
             response = await self.inference_worker.submit(
                 self.model,
                 audio_path=audio_path,
                 **request_data,
             )
-            response_data = TranscriptionResponse(
-                text=response["text"],
-                usage=TranscriptionUsageAudio(
-                    type="duration", seconds=int(calculate_audio_duration(temp_file_path))
-                ),
+            response_data = build_transcription_response(
+                response, calculate_audio_duration(temp_file_path), response_format, granularities
             )
-            if request.response_format == TranscriptionResponseFormat.JSON:
+            if response_format != TranscriptionResponseFormat.TEXT:
                 return response_data
             # dump to string for text response
             return json.dumps(response_data.model_dump())
@@ -146,6 +249,9 @@ class MLXWhisperHandler:
             request_data["stream"] = True
             audio_path = request_data.pop("audio_path")
             request_data.pop("stream")
+            # Streamed chunks carry text only, so timestamps aren't computed.
+            request_data.pop("response_format", None)
+            request_data.pop("timestamp_granularities", None)
 
             generator = self.inference_worker.submit_stream(
                 self.model,
@@ -247,6 +353,8 @@ class MLXWhisperHandler:
             request_data = {
                 "audio_path": file_path,
                 "verbose": False,
+                "response_format": request.response_format,
+                "timestamp_granularities": request.timestamp_granularities,
             }
 
             # Add optional parameters if provided
@@ -288,28 +396,27 @@ class MLXWhisperHandler:
         Parameters
         ----------
         request_data : dict[str, Any]
-            Dictionary containing ``audio_path`` and optional model
-            parameters (``temperature``, ``language``, etc.).
+            Dictionary containing ``audio_path``, the response options
+            (``response_format``, ``timestamp_granularities``) and optional
+            model parameters (``temperature``, ``language``, etc.).
 
         Returns
         -------
-        TranscriptionResponse
-            The transcription result with text and usage info.
+        TranscriptionResponse | TranscriptionVerboseResponse
+            The transcription result with usage info, and timestamps for
+            ``verbose_json``.
         """
         temp_file_path = request_data.get("audio_path")
         try:
             audio_path = request_data.pop("audio_path")
+            response_format, granularities = pop_response_options(request_data)
             response = await self.inference_worker.submit(
                 self.model,
                 audio_path=audio_path,
                 **request_data,
             )
-            return TranscriptionResponse(
-                text=response["text"],
-                usage=TranscriptionUsageAudio(
-                    type="duration",
-                    seconds=int(calculate_audio_duration(temp_file_path)),
-                ),
+            return build_transcription_response(
+                response, calculate_audio_duration(temp_file_path), response_format, granularities
             )
         finally:
             if temp_file_path and os.path.exists(temp_file_path):
@@ -347,6 +454,9 @@ class MLXWhisperHandler:
             request_data["stream"] = True
             audio_path = request_data.pop("audio_path")
             request_data.pop("stream")
+            # Streamed chunks carry text only, so timestamps aren't computed.
+            request_data.pop("response_format", None)
+            request_data.pop("timestamp_granularities", None)
 
             generator = self.inference_worker.submit_stream(
                 self.model,
