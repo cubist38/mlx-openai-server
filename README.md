@@ -202,6 +202,26 @@ response = client.embeddings.create(
 print(len(response.data[0].embedding))
 ```
 
+### Transcription
+
+```python
+import openai
+
+client = openai.OpenAI(base_url="http://localhost:8000/v1", api_key="not-needed")
+
+with open("speech.wav", "rb") as audio:
+    response = client.audio.transcriptions.create(
+        model="local-transcription-model",
+        file=audio,
+        response_format="verbose_json",
+        timestamp_granularities=["word", "segment"],
+    )
+for word in response.words:
+    print(f"{word.start:6.2f}-{word.end:6.2f} {word.word}")
+```
+
+`response_format` is `json` (text only, the default), `text`, or `verbose_json`, which adds `language`, `duration` and timestamps. `timestamp_granularities` picks `segment` (the default), `word`, or both; word timestamps take longer to compute. Streamed transcriptions return text only.
+
 ### Responses API
 
 ```python

@@ -54,6 +54,7 @@ from ..schemas.openai import (
     StreamingChoice,
     TranscriptionRequest,
     TranscriptionResponse,
+    TranscriptionVerboseResponse,
     UsageInfo,
     random_uuid,
 )
@@ -764,7 +765,7 @@ async def create_image_edit(
 @router.post("/v1/audio/transcriptions", response_model=None)
 async def create_audio_transcriptions(
     request: Annotated[TranscriptionRequest, Form()], raw_request: Request
-) -> StreamingResponse | TranscriptionResponse | JSONResponse | str:
+) -> StreamingResponse | TranscriptionResponse | TranscriptionVerboseResponse | JSONResponse | str:
     """Handle audio transcription requests."""
     handler = await _resolve_handler(raw_request, model_id=request.model)
     if handler is None:
@@ -792,7 +793,7 @@ async def create_audio_transcriptions(
                 },
             )
         transcription_response: (
-            TranscriptionResponse | str
+            TranscriptionResponse | TranscriptionVerboseResponse | str
         ) = await handler.generate_transcription_response(request)
     except HTTPException:
         raise

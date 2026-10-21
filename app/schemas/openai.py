@@ -486,6 +486,14 @@ class TranscriptionResponseFormat(StrEnum):
 
     JSON = "json"
     TEXT = "text"
+    VERBOSE_JSON = "verbose_json"
+
+
+class TranscriptionTimestampGranularity(StrEnum):
+    """Timestamp detail returned with ``verbose_json`` transcriptions."""
+
+    WORD = "word"
+    SEGMENT = "segment"
 
 
 class ImageGenerationRequest(OpenAIBaseModel):
@@ -592,6 +600,13 @@ class TranscriptionRequest(OpenAIBaseModel):
         default=TranscriptionResponseFormat.JSON,
         description="The format in which the transcription is returned",
     )
+    timestamp_granularities: list[TranscriptionTimestampGranularity] | None = Field(
+        default=None,
+        description=(
+            "Timestamp detail to include with response_format 'verbose_json': 'segment' "
+            "(the default), 'word', or both. Word timestamps add some processing time."
+        ),
+    )
     stream: bool | None = Field(default=False, description="Whether to stream the transcription")
     temperature: float | None = Field(
         default=0.0, description="The temperature for the transcription"
@@ -611,6 +626,30 @@ class TranscriptionRequest(OpenAIBaseModel):
     )
     reasoning_effort: Literal["low", "medium", "high"] | None = None
 
+    @model_validator(mode="before")
+    @classmethod
+    def _accept_bracketed_granularities(cls, data: Any) -> Any:
+        """Accept ``timestamp_granularities[]``, the form key the OpenAI SDKs send.
+
+        Parameters
+        ----------
+        data : Any
+            The raw request data.
+
+        Returns
+        -------
+        Any
+            The data with ``timestamp_granularities[]`` moved to
+            ``timestamp_granularities``.
+        """
+        if isinstance(data, dict) and "timestamp_granularities[]" in data:
+            data = dict(data)
+            values = data.pop("timestamp_granularities[]")
+            data.setdefault(
+                "timestamp_granularities", values if isinstance(values, list) else [values]
+            )
+        return data
+
 
 # Transcription response objects
 class TranscriptionUsageAudio(OpenAIBaseModel):
@@ -624,6 +663,45 @@ class TranscriptionResponse(OpenAIBaseModel):
     """Represents a transcription response."""
 
     text: str = Field(..., description="The transcribed text.")
+    usage: TranscriptionUsageAudio = Field(..., description="The usage of the transcription.")
+
+
+class TranscriptionWord(OpenAIBaseModel):
+    """A transcribed word with its timing."""
+
+    word: str = Field(..., description="The text content of the word.")
+    start: float = Field(..., description="Start time of the word in seconds.")
+    end: float = Field(..., description="End time of the word in seconds.")
+
+
+class TranscriptionSegment(OpenAIBaseModel):
+    """A segment of transcribed text with its timing and decoding statistics."""
+
+    id: int = Field(..., description="Unique identifier of the segment.")
+    seek: int = Field(..., description="Seek offset of the segment.")
+    start: float = Field(..., description="Start time of the segment in seconds.")
+    end: float = Field(..., description="End time of the segment in seconds.")
+    text: str = Field(..., description="Text content of the segment.")
+    tokens: list[int] = Field(..., description="Token IDs of the segment text.")
+    temperature: float = Field(..., description="Temperature used to decode the segment.")
+    avg_logprob: float = Field(..., description="Average log probability of the segment.")
+    compression_ratio: float = Field(..., description="Compression ratio of the segment.")
+    no_speech_prob: float = Field(..., description="Probability that the segment is silence.")
+
+
+class TranscriptionVerboseResponse(OpenAIBaseModel):
+    """Represents a ``verbose_json`` transcription response with timestamps."""
+
+    task: Literal["transcribe"] = Field(default="transcribe", description="Always 'transcribe'.")
+    language: str = Field(..., description="The language of the audio, e.g. 'english'.")
+    duration: float = Field(..., description="The duration of the audio in seconds.")
+    text: str = Field(..., description="The transcribed text.")
+    segments: list[TranscriptionSegment] | None = Field(
+        default=None, description="Segments of the transcription, when requested."
+    )
+    words: list[TranscriptionWord] | None = Field(
+        default=None, description="Words of the transcription, when requested."
+    )
     usage: TranscriptionUsageAudio = Field(..., description="The usage of the transcription.")
 
 
