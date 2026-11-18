@@ -451,6 +451,39 @@ Add `--json` for the raw `/v1/models/status` payload, which also carries
 `model_path`, `context_length`, `loaded_at` and `last_used`. The command exits
 non-zero when no server answers, so it can gate a script.
 
+## Remove a Model Registration
+
+Remove a model from a running local server and its YAML configuration:
+
+```bash
+mlx-openai-server delete model nemotron-nano-30b-agentcoder --port 8123
+```
+
+If only one server is running under your user account, `--port` is optional:
+
+```bash
+mlx-openai-server delete model nemotron-nano-30b-agentcoder
+```
+
+The command shows the model and configuration file, then asks for confirmation.
+It removes the canonical model and its aliases from the running registry, updates
+the YAML, and saves the previous configuration as `<config-file>.bak`.
+Checkpoint directories and Hugging Face cache files are kept.
+
+Use `--dry-run` to preview the selection or `--yes` to skip confirmation.
+`MLX_SERVER_PORT` can also select the server. When multiple local servers are
+running, specify a port explicitly.
+
+The server must be started with `--config` using this version of the package;
+restart an older running process after upgrading. Idle on-demand workers are
+unloaded before removal. Active requests prevent deletion. Startup-loaded models
+must be switched to `on_demand: true` and the server restarted first, since those
+workers do not track the leases needed for safe removal.
+
+Deleting the last entry leaves a valid `models: []` configuration. The local
+management connection is accessible only to the server's OS user and is separate
+from the public HTTP inference API.
+
 ## Long Context and Metal OOM
 
 Large prompts, high concurrency, and long generations all increase KV-cache memory. If Metal runs out of memory, macOS may terminate the process with:

@@ -9,6 +9,8 @@ mlx-openai-server launch --config /path/to/config.yaml
 The file has two sections: `server:` for host, logging and lifecycle limits, and
 `models:` for the list of models. Only `models` is required, and every entry
 needs at least a `model_path`.
+An explicit `models: []` is valid, including after removing the last registration
+with `mlx-openai-server delete model`.
 
 ```yaml
 server:
@@ -203,7 +205,7 @@ the server down with it.
 
 | Message                                                   | Cause                                                        |
 | --------------------------------------------------------- | ------------------------------------------------------------ |
-| `'models' section must be a non-empty list`               | No `models:` key, or it is empty.                            |
+| `'models' section must be a list of model entries`        | No `models:` key, or its value is not a list.                |
 | `missing required key 'model_path'`                       | A model entry has no `model_path`.                           |
 | `unexpected keyword argument '<key>'`                     | A misspelled key, or a `server:` key indented under a model. |
 | `Invalid model_type '<type>'`                             | `model_type` is not one of the six valid values.             |

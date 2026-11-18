@@ -10,6 +10,7 @@ corresponding handler instances. It is thread-safe via an
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Callable
 import time
 from typing import Any
 
@@ -359,6 +360,59 @@ class ModelRegistry:
             self._on_demand_last_error.clear()
             logger.info("All models unregistered and cleaned up")
 
+    async def delete_model(self, model_id: str, persist: Callable[[str], None]) -> str:
+        """Remove an idle model after persisting its configuration change.
+
+        Parameters
+        ----------
+        model_id : str
+            Model identifier or alias.
+        persist : Callable[[str], None]
+            Persist removal of the canonical name. Failure keeps the model
+            registered, although its idle worker may already have unloaded.
+
+        Returns
+        -------
+        str
+            The removed canonical model identifier.
+        """
+        async with self._on_demand_load_lock, self._lock:
+            canonical = self.resolve_model_id(model_id)
+            if not self.has_model(canonical):
+                raise KeyError(f"Model '{model_id}' is not registered")
+            if canonical in self._handlers and canonical not in self._on_demand_configs:
+                raise ValueError(
+                    f"Model '{canonical}' is startup-loaded. Configure it with "
+                    "on_demand: true and restart before deleting it."
+                )
+            active = self._on_demand_ref_count.get(canonical, 0)
+            if active:
+                raise ValueError(f"Model '{canonical}' has {active} active request(s)")
+
+            await self._unload_on_demand_locked(canonical)
+            persist(canonical)
+
+            task = self._on_demand_idle_tasks.pop(canonical, None)
+            if task is not None:
+                task.cancel()
+            for mapping in (
+                self._metadata,
+                self._on_demand_configs,
+                self._on_demand_ref_count,
+                self._on_demand_idle_timeouts,
+                self._on_demand_loaded_at,
+                self._on_demand_last_used,
+                self._on_demand_expires_at,
+                self._on_demand_last_error,
+            ):
+                mapping.pop(canonical, None)
+            self._on_demand_loading.discard(canonical)
+            for alias in self.list_aliases(canonical):
+                self._aliases.pop(alias, None)
+            self._on_demand_capacity_changed.set()
+            logger.info(f"Deleted model registration: {canonical}; model files retained")
+            return canonical
+
     @staticmethod
     async def _cleanup_single_handler(model_id: str, handler: Any) -> None:
         """Clean up a single handler, logging success or failure.
@@ -532,6 +586,8 @@ class ModelRegistry:
 
         while True:
             async with self._on_demand_load_lock:
+                if model_id not in self._on_demand_configs:
+                    raise KeyError(f"Model '{requested_id}' is no longer registered")
                 if model_id in self._handlers and model_id in self._on_demand_loaded:
                     return self._acquire_loaded_model(model_id)
 

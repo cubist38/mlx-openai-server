@@ -35,6 +35,7 @@ from .config import MLXServerConfig, ModelEntryConfig, MultiModelServerConfig
 from .core.handler_process import HandlerProcessProxy
 from .core.log_relay import set_log_level
 from .core.model_registry import ModelRegistry
+from .model_management import serve_model_management
 from .version import __version__
 
 MFLUX_INSTALL_HINT = (
@@ -554,15 +555,17 @@ def create_multi_lifespan(config: MultiModelServerConfig):
         _clear_mlx_cache()
         gc.collect()
 
-        yield
+        try:
+            async with serve_model_management(config, registry):
+                yield
+        finally:
+            # Shutdown
+            logger.info("Shutting down multi-handler application")
+            await registry.cleanup_all()
 
-        # Shutdown
-        logger.info("Shutting down multi-handler application")
-        await registry.cleanup_all()
-
-        # Final memory cleanup
-        _clear_mlx_cache()
-        gc.collect()
+            # Final memory cleanup
+            _clear_mlx_cache()
+            gc.collect()
 
     return lifespan
 

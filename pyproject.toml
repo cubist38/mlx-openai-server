@@ -46,6 +46,7 @@ dependencies = [
   "PyYAML>=6.0,<7",
   "python-multipart>=0.0.32,<0.1",
   "rich>=14,<15",
+  "ruamel.yaml>=0.18.10,<0.19",
   "torchvision>=0.23.0,<0.30",
   "mflux>=0.19.1,<0.20",
   "uvicorn>=0.35.0,<0.40",

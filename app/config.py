@@ -485,6 +485,7 @@ class MultiModelServerConfig:
     log_retention: str | int | None = 5
     max_loaded_models: int = 1
     model_load_timeout: float = 300.0
+    source_path: str | None = field(default=None, repr=False, compare=False)
 
     def __post_init__(self) -> None:
         """Validate server-level model lifecycle options."""
@@ -534,10 +535,10 @@ def load_config_from_yaml(config_path: str) -> MultiModelServerConfig:
         msg = "'server' section must be a mapping"
         raise ValueError(msg)
 
-    # ---- models section (required, at least one entry) ----
-    models_raw: list = raw.get("models", [])
-    if not isinstance(models_raw, list) or len(models_raw) == 0:
-        msg = "'models' section must be a non-empty list of model entries"
+    # An explicit empty list remains valid after deleting the last model.
+    models_raw: list = raw.get("models")
+    if not isinstance(models_raw, list):
+        msg = "'models' section must be a list of model entries"
         raise ValueError(msg)
 
     model_entries: list[ModelEntryConfig] = []
@@ -588,4 +589,5 @@ def load_config_from_yaml(config_path: str) -> MultiModelServerConfig:
         log_retention=server_raw.get("log_retention", 5),
         max_loaded_models=server_raw.get("max_loaded_models", 1),
         model_load_timeout=server_raw.get("model_load_timeout", 300.0),
+        source_path=str(path.resolve()),
     )

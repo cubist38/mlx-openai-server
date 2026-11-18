@@ -30,6 +30,12 @@ from .cli_status import (
 )
 from .config import MLXServerConfig, load_config_from_yaml
 from .main import start_multi
+from .model_management import (
+    DEFAULT_MANAGEMENT_TIMEOUT,
+    ModelManagementError,
+    find_local_server,
+    management_request,
+)
 from .parsers import REASONING_PARSER_MAP, TOOL_PARSER_MAP, UNIFIED_PARSER_MAP
 from .version import __version__
 
@@ -641,3 +647,63 @@ def list_models(
 
     for line in format_status_table(payload, base_url=base_url):
         click.echo(line)
+
+
+@cli.group("delete")
+def delete_group() -> None:
+    """Remove models from a local server and its YAML configuration."""
+
+
+@delete_group.command("model")
+@click.argument("model_name")
+@click.option(
+    "--port",
+    type=click.IntRange(1, 65535),
+    envvar="MLX_SERVER_PORT",
+    help="Server port. Omit when only one local server is running.",
+)
+@click.option(
+    "--timeout",
+    type=click.FloatRange(min=0, min_open=True),
+    default=DEFAULT_MANAGEMENT_TIMEOUT,
+    show_default=True,
+    help="Seconds to wait for the server.",
+)
+@click.option("--yes", "-y", is_flag=True, help="Skip the confirmation prompt.")
+@click.option("--dry-run", is_flag=True, help="Show the selected model without removing it.")
+def delete_model(
+    model_name: str, port: int | None, timeout: float, yes: bool, dry_run: bool
+) -> None:
+    """Remove MODEL_NAME from a local server and its persistent configuration.
+
+    Checkpoint files and Hugging Face caches are kept. Idle on-demand workers
+    are unloaded; busy models are refused. The server must have been started
+    by the current user with --config.
+    """
+    try:
+        server = find_local_server(port, timeout)
+        matches = [
+            model
+            for model in server["models"]
+            if model_name == model["id"] or model_name in model["aliases"]
+        ]
+        if len(matches) != 1:
+            raise ModelManagementError(
+                f"Model '{model_name}' is not registered on port {server['port']}."
+            )
+        canonical = matches[0]["id"]
+        click.echo(f"Model: {canonical}")
+        click.echo(f"Server: 127.0.0.1:{server['port']}")
+        click.echo(f"Configuration: {server['config']}")
+        click.echo("Checkpoint and cache files will be kept.")
+        if dry_run:
+            return
+        if not yes:
+            click.confirm("Remove this model from the server and configuration?", abort=True)
+        result = management_request(
+            server["port"], {"operation": "delete", "model": canonical}, timeout
+        )
+    except ModelManagementError as exc:
+        raise click.ClickException(str(exc)) from exc
+    click.echo(f"Deleted registration: {result['model']}")
+    click.echo(f"Configuration backup: {result['backup']}")
