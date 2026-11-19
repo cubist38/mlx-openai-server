@@ -7,6 +7,13 @@ node_modules/
 
 # Environments
 .env
+.env.*
+!.env.example
+!.env.sample
+!.env.template
+!.env.*.example
+!.env.*.sample
+!.env.*.template
 .venv
 env/
 venv/
@@ -148,32 +155,24 @@ dmypy.json
 # Pyre type checker
 .pyre/
 
-*/**/venv
-*/**/*.egg-info
-*/**/default.profraw
+# Instrumentation output
+default.profraw
 
-# Terraform files
+# Terraform working directories and state; keep .terraform.lock.hcl tracked
+.terraform/
+*.tfstate
+*.tfstate.*
 
-*/**/.terraform*
-
-# Base data exclude
-
-*/**/data/
-data/outputs
-*/**/cdk.*/
-*/**/configs_*
-*/**/input
+# Generated data and CDK output; keep source data, fixtures and inputs trackable
+/data/outputs/
+cdk.out/
 
 # Linter / formatter caches
-# Ruff writes a .gitignore containing '*' inside .ruff_cache, so this is belt and
-# braces - but relying on that is accidental, and `git check-ignore .ruff_cache`
-# reports the directory itself as not ignored.
--.ruff_cache/
+.ruff_cache/
 
-# Ignore Claude-related directories (any depth)
+# Local AI-tool settings (directory names match at any depth)
 .claude/
-**/.claude/
+.codex/
 
-# Ignore any 'codex' directories (any depth)
-codex/
-**/codex/
+# MCP browser profiles, screenshots and other runtime artifacts
+.playwright-mcp/
