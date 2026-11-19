@@ -4,18 +4,38 @@ This module defines the Click command group used by the package and the
 ``launch`` command which constructs a server configuration and starts
 the ASGI server. When a ``--config`` YAML file is supplied the server
 runs in multi-handler mode, loading multiple models at once.
+
+The ``list`` group holds the read-only commands that query an *already
+running* server over HTTP rather than starting one; see
+:mod:`app.cli_status` for the client behind them.
 """
 
 from __future__ import annotations
 
 import asyncio
+import json
 import sys
 
 import click
 from loguru import logger
 
+from .cli_status import (
+    DEFAULT_HOST,
+    DEFAULT_PORT,
+    DEFAULT_TIMEOUT,
+    StatusUnavailable,
+    fetch_model_status,
+    format_status_table,
+    resolve_base_url,
+)
 from .config import MLXServerConfig, load_config_from_yaml
 from .main import start_multi
+from .model_management import (
+    DEFAULT_MANAGEMENT_TIMEOUT,
+    ModelManagementError,
+    find_local_server,
+    management_request,
+)
 from .parsers import REASONING_PARSER_MAP, TOOL_PARSER_MAP, UNIFIED_PARSER_MAP
 from .version import __version__
 
@@ -35,8 +55,8 @@ IMAGE_CONFIG_NAMES: tuple[str, ...] = (
 )
 
 MFLUX_INSTALL_HINT = (
-    "Image generation and editing require the `mflux` package. "
-    "Install it with `pip install mflux==0.17.0`."
+    "The required `mflux` image backend is unavailable. "
+    "Reinstall the project dependencies with `pip install -e .`."
 )
 
 
@@ -79,7 +99,7 @@ class UpperChoice(click.Choice):
 def validate_image_config_name(
     _ctx: click.Context, _param: click.Parameter, value: str | None
 ) -> str | None:
-    """Validate image config names when optional mflux support is installed."""
+    """Validate image backend configuration names."""
     if value is None or not IMAGE_CONFIG_NAMES:
         return value
 
@@ -91,17 +111,17 @@ def validate_image_config_name(
 
 
 def ensure_image_support_available(model_types: set[str]) -> None:
-    """Raise a usage error when image features are requested without mflux."""
+    """Raise a usage error when the required image backend cannot initialize."""
     if not any(model_type in {"image-generation", "image-edit"} for model_type in model_types):
         return
 
     try:
         import mflux  # noqa: F401
     except ImportError as exc:
-        detail = f" Optional import failed: {exc!s}"
+        detail = f" Backend import failed: {exc!s}"
         raise click.UsageError(f"{MFLUX_INSTALL_HINT}{detail}") from exc
     except RuntimeError as exc:
-        detail = f" Optional import failed: {exc!s}"
+        detail = f" Backend initialization failed: {exc!s}"
         raise click.UsageError(f"{MFLUX_INSTALL_HINT}{detail}") from exc
     else:
         return
@@ -217,6 +237,20 @@ def cli():
     "--no-log-file",
     is_flag=True,
     help="Disable file logging entirely. Only console output will be shown.",
+)
+@click.option(
+    "--log-rotation",
+    default="50 MB",
+    type=str,
+    help="Roll the log file over at this size or interval (e.g. '50 MB', '1 day'). "
+    "Use 'none' to disable rotation.",
+)
+@click.option(
+    "--log-retention",
+    default="5",
+    type=str,
+    help="Rotated log files to keep: a count (e.g. '5') or an age (e.g. '10 days'). "
+    "Use 'none' to keep them all.",
 )
 @click.option(
     "--log-level",
@@ -412,6 +446,8 @@ def launch(
     disable_auto_resize,
     log_file,
     no_log_file,
+    log_rotation,
+    log_retention,
     log_level,
     enable_auto_tool_choice,
     tool_call_parser,
@@ -489,6 +525,8 @@ def launch(
         log_file=log_file,
         no_log_file=no_log_file,
         log_level=log_level,
+        log_rotation=log_rotation,
+        log_retention=log_retention,
         enable_auto_tool_choice=enable_auto_tool_choice,
         tool_call_parser=tool_call_parser,
         reasoning_parser=reasoning_parser,
@@ -527,3 +565,145 @@ def launch(
     # the continuous batcher runs on a thread other than the one that
     # loaded the model. See https://github.com/ml-explore/mlx/issues/2457.
     asyncio.run(start_multi(args.to_multi_model_server_config()))
+
+
+@cli.group("list")
+def list_group() -> None:
+    """Inspect a server that is already running."""
+
+
+@list_group.command("models")
+@click.option(
+    "--config",
+    "config_file",
+    default=None,
+    type=click.Path(exists=True),
+    help="Take the host and port from a multi-model YAML config file.",
+)
+@click.option(
+    "--host",
+    default=None,
+    envvar="MLX_SERVER_HOST",
+    help=f"Host the server listens on  [default: {DEFAULT_HOST}]",
+)
+@click.option(
+    "--port",
+    default=None,
+    type=int,
+    envvar="MLX_SERVER_PORT",
+    help=f"Port the server listens on  [default: {DEFAULT_PORT}]",
+)
+@click.option(
+    "--timeout",
+    default=DEFAULT_TIMEOUT,
+    type=float,
+    show_default=True,
+    help="Seconds to wait for the server to answer.",
+)
+@click.option(
+    "--json",
+    "as_json",
+    is_flag=True,
+    help="Print the raw status payload instead of the table.",
+)
+def list_models(
+    config_file: str | None,
+    host: str | None,
+    port: int | None,
+    timeout: float,
+    as_json: bool,
+) -> None:
+    """List the models a running server knows about, and which are loaded.
+
+    Reads the server's status endpoint, so it reports live state rather than
+    configuration: whether each model is unloaded, loading, loaded or busy,
+    the pid of its handler subprocess, how many requests it is serving, and
+    how long an idle one has left before it is evicted. The keep-alive column
+    is the model's configured default, which a per-request ``keep_alive`` can
+    override for the current residency.
+
+    The address may come from flags, from the ``MLX_SERVER_HOST`` and
+    ``MLX_SERVER_PORT`` environment variables, or from ``--config`` pointing
+    at the same YAML the server was launched with. Explicit flags win over a
+    config file. Exits non-zero when no server answers, so it can gate a
+    script.
+    """
+    if config_file is not None:
+        server_config = load_config_from_yaml(config_file)
+        if host is None:
+            host = server_config.host
+        if port is None:
+            port = server_config.port
+
+    base_url = resolve_base_url(host, port)
+    try:
+        payload = fetch_model_status(base_url, timeout=timeout)
+    except StatusUnavailable as exc:
+        raise click.ClickException(str(exc)) from exc
+
+    if as_json:
+        click.echo(json.dumps(payload, indent=2))
+        return
+
+    for line in format_status_table(payload, base_url=base_url):
+        click.echo(line)
+
+
+@cli.group("delete")
+def delete_group() -> None:
+    """Remove models from a local server and its YAML configuration."""
+
+
+@delete_group.command("model")
+@click.argument("model_name")
+@click.option(
+    "--port",
+    type=click.IntRange(1, 65535),
+    envvar="MLX_SERVER_PORT",
+    help="Server port. Omit when only one local server is running.",
+)
+@click.option(
+    "--timeout",
+    type=click.FloatRange(min=0, min_open=True),
+    default=DEFAULT_MANAGEMENT_TIMEOUT,
+    show_default=True,
+    help="Seconds to wait for the server.",
+)
+@click.option("--yes", "-y", is_flag=True, help="Skip the confirmation prompt.")
+@click.option("--dry-run", is_flag=True, help="Show the selected model without removing it.")
+def delete_model(
+    model_name: str, port: int | None, timeout: float, yes: bool, dry_run: bool
+) -> None:
+    """Remove MODEL_NAME from a local server and its persistent configuration.
+
+    Checkpoint files and Hugging Face caches are kept. Idle on-demand workers
+    are unloaded; busy models are refused. The server must have been started
+    by the current user with --config.
+    """
+    try:
+        server = find_local_server(port, timeout)
+        matches = [
+            model
+            for model in server["models"]
+            if model_name == model["id"] or model_name in model["aliases"]
+        ]
+        if len(matches) != 1:
+            raise ModelManagementError(
+                f"Model '{model_name}' is not registered on port {server['port']}."
+            )
+        canonical = matches[0]["id"]
+        click.echo(f"Model: {canonical}")
+        click.echo(f"Server: 127.0.0.1:{server['port']}")
+        click.echo(f"Configuration: {server['config']}")
+        click.echo("Checkpoint and cache files will be kept.")
+        if dry_run:
+            return
+        if not yes:
+            click.confirm("Remove this model from the server and configuration?", abort=True)
+        result = management_request(
+            server["port"], {"operation": "delete", "model": canonical}, timeout
+        )
+    except ModelManagementError as exc:
+        raise click.ClickException(str(exc)) from exc
+    click.echo(f"Deleted registration: {result['model']}")
+    click.echo(f"Configuration backup: {result['backup']}")

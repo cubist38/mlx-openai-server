@@ -9,6 +9,7 @@ import importlib
 import json
 from pathlib import Path
 import sys
+import threading
 import types
 import unittest
 
@@ -20,6 +21,13 @@ def _load_mlx_lm_handler_class() -> type:
     fake_handler_package = types.ModuleType("app.handler")
     fake_handler_package.__path__ = [str(repo_root / "app" / "handler")]
 
+    fake_core_module = types.ModuleType("app.core")
+    fake_core_module.BatchScheduler = object
+    fake_core_module.InferenceWorker = object
+
+    fake_batch_scheduler_module = types.ModuleType("app.core.batch_scheduler")
+    fake_batch_scheduler_module.BATCHING_AVAILABLE = False
+
     fake_model_module = types.ModuleType("app.models.mlx_lm")
     fake_model_module.MLX_LM = object
 
@@ -28,6 +36,8 @@ def _load_mlx_lm_handler_class() -> type:
 
     module_names = [
         "app.handler",
+        "app.core",
+        "app.core.batch_scheduler",
         "app.models.mlx_lm",
         "app.utils.prompt_cache",
         "app.handler.mlx_lm",
@@ -38,6 +48,8 @@ def _load_mlx_lm_handler_class() -> type:
 
     try:
         sys.modules["app.handler"] = fake_handler_package
+        sys.modules["app.core"] = fake_core_module
+        sys.modules["app.core.batch_scheduler"] = fake_batch_scheduler_module
         sys.modules["app.models.mlx_lm"] = fake_model_module
         sys.modules["app.utils.prompt_cache"] = fake_prompt_cache_module
         sys.modules.pop("app.handler.mlx_lm", None)
@@ -51,6 +63,14 @@ def _load_mlx_lm_handler_class() -> type:
                 sys.modules.pop(name, None)
             else:
                 sys.modules[name] = module
+
+
+def _new_handler(handler_class: type) -> object:
+    """Create a handler double with synchronization fields from ``__init__``."""
+
+    handler = object.__new__(handler_class)
+    handler._generation_lock = threading.RLock()
+    return handler
 
 
 @dataclass
@@ -80,6 +100,8 @@ class _FakeNonStreamResponse:
 class _FakeModel:
     """Tiny model stub used by ``generate_text_stream``."""
 
+    cache_is_trimmable = True
+
     def create_input_prompt(self, messages: list[dict[str, str]], kwargs: dict[str, object]) -> str:
         return "prompt"
 
@@ -96,7 +118,12 @@ class _FakePromptCache:
     def __init__(self) -> None:
         self.inserted_keys: list[list[int]] = []
 
-    def fetch_nearest_cache(self, input_ids: list[int]) -> tuple[None, list[int]]:
+    def fetch_nearest_cache(
+        self,
+        input_ids: list[int],
+        allowed_sources: set[str] | None = None,
+    ) -> tuple[None, list[int]]:
+        del allowed_sources
         return None, input_ids
 
     def insert_cache(self, cache_key: list[int], cache: object) -> None:
@@ -135,7 +162,7 @@ class MixedThinkToolHandoffStreamHandlerIntegrationTests(unittest.TestCase):
     ) -> None:
         """Tool chunks inside thinking should parse as tool calls, not leaked text."""
         handler_cls = _load_mlx_lm_handler_class()
-        handler = object.__new__(handler_cls)
+        handler = _new_handler(handler_cls)
 
         handler.debug = False
         handler.message_converter = None
@@ -193,7 +220,7 @@ class MixedThinkToolHandoffStreamHandlerIntegrationTests(unittest.TestCase):
     def test_mixed_think_tool_handoff_terminal_tool_call_before_thinking_close(self) -> None:
         """Terminal in-thinking tool calls should still parse when they end right before ``</thinking>``."""
         handler_cls = _load_mlx_lm_handler_class()
-        handler = object.__new__(handler_cls)
+        handler = _new_handler(handler_cls)
 
         handler.debug = False
         handler.message_converter = None
@@ -259,7 +286,7 @@ class MixedThinkToolHandoffStreamHandlerIntegrationTests(unittest.TestCase):
     ) -> None:
         """Non-stream parsing should still extract tool calls after a leading stray ``</think>``."""
         handler_cls = _load_mlx_lm_handler_class()
-        handler = object.__new__(handler_cls)
+        handler = _new_handler(handler_cls)
 
         handler.debug = False
         handler.message_converter = None
@@ -315,12 +342,12 @@ class MixedThinkToolHandoffStreamHandlerIntegrationTests(unittest.TestCase):
         if isinstance(parsed.get("content"), str):
             assert "<tool_call>" not in parsed["content"]
 
-    def test_nonstream_qwen3_moe_tool_fallback_does_not_leak_synthetic_reasoning_prefix(
+    def test_nonstream_qwen3_moe_unclosed_reasoning_never_executes_embedded_tool(
         self,
     ) -> None:
-        """Synthetic reasoning-open prefixes should not leak into content fallback."""
+        """Implicit-open reasoning must remain reasoning even without its close marker."""
         handler_cls = _load_mlx_lm_handler_class()
-        handler = object.__new__(handler_cls)
+        handler = _new_handler(handler_cls)
 
         handler.debug = False
         handler.message_converter = None
@@ -352,23 +379,16 @@ class MixedThinkToolHandoffStreamHandlerIntegrationTests(unittest.TestCase):
         parsed = result["response"]
 
         assert isinstance(parsed, dict)
-        assert parsed["reasoning_content"] is None
-        assert isinstance(parsed.get("tool_calls"), list)
-        assert len(parsed["tool_calls"]) == 1
-        assert parsed["tool_calls"][0]["name"] == "read_file"
-        assert json.loads(parsed["tool_calls"][0]["arguments"]) == {
-            "path": "app/handler/mlx_vlm.py"
-        }
-        assert isinstance(parsed.get("content"), str)
-        visible_content = parsed["content"]
-        assert "preface before tool." in visible_content
-        assert "<think>" not in visible_content
-        assert "<tool_call>" not in visible_content
+        assert "preface before tool." in parsed["reasoning_content"]
+        assert "<tool_call>" in parsed["reasoning_content"]
+        assert parsed["tool_calls"] is None
+        assert not parsed["content"]
+        assert parsed["parser_diagnostics"] == ["incomplete_reasoning"]
 
     def test_stream_step35_parses_tool_call_when_output_starts_with_stray_think_close(self) -> None:
         """Streaming should parse tool calls even when output starts with stray ``</think>``."""
         handler_cls = _load_mlx_lm_handler_class()
-        handler = object.__new__(handler_cls)
+        handler = _new_handler(handler_cls)
 
         handler.debug = False
         handler.message_converter = None
@@ -425,7 +445,7 @@ class MixedThinkToolHandoffStreamHandlerIntegrationTests(unittest.TestCase):
     ) -> None:
         """Legacy step_35 behavior should infer reasoning from stray close tags."""
         handler_cls = _load_mlx_lm_handler_class()
-        handler = object.__new__(handler_cls)
+        handler = _new_handler(handler_cls)
 
         handler.debug = False
         handler.message_converter = None
@@ -491,7 +511,7 @@ class MixedThinkToolHandoffStreamHandlerIntegrationTests(unittest.TestCase):
     ) -> None:
         """Legacy step_35 non-stream behavior should infer reasoning from stray close tags."""
         handler_cls = _load_mlx_lm_handler_class()
-        handler = object.__new__(handler_cls)
+        handler = _new_handler(handler_cls)
 
         handler.debug = False
         handler.message_converter = None
@@ -551,7 +571,7 @@ class MixedThinkToolHandoffStreamHandlerIntegrationTests(unittest.TestCase):
     ) -> None:
         """Semantic mixed-think parser remains strict when no opening reasoning marker exists."""
         handler_cls = _load_mlx_lm_handler_class()
-        handler = object.__new__(handler_cls)
+        handler = _new_handler(handler_cls)
 
         handler.debug = False
         handler.message_converter = None
@@ -603,7 +623,7 @@ class MixedThinkToolHandoffStreamHandlerIntegrationTests(unittest.TestCase):
     def test_stream_step35_preserves_split_parameter_close_marker_inside_tool_call(self) -> None:
         """A chunk split at ``<`` + ``/parameter>`` should not corrupt parsed tool arguments."""
         handler_cls = _load_mlx_lm_handler_class()
-        handler = object.__new__(handler_cls)
+        handler = _new_handler(handler_cls)
 
         handler.debug = False
         handler.message_converter = None
@@ -664,7 +684,7 @@ class MixedThinkToolHandoffStreamHandlerIntegrationTests(unittest.TestCase):
     ) -> None:
         """A ``<too`` + ``l_call>`` split should still produce one parsed tool call."""
         handler_cls = _load_mlx_lm_handler_class()
-        handler = object.__new__(handler_cls)
+        handler = _new_handler(handler_cls)
 
         handler.debug = False
         handler.message_converter = None

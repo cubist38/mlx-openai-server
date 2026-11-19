@@ -149,7 +149,14 @@ class BaseImageModel(ABC):
         valid = set(sig.parameters.keys())
         filtered = {k: v for k, v in kwargs.items() if k in valid}
         result = self._model.generate_image(prompt=prompt, seed=seed, **filtered)
-        return result.image
+        if isinstance(result, Image.Image):
+            return result
+        image = getattr(result, "image", None)
+        if not isinstance(image, Image.Image):
+            raise ModelGenerationError(
+                f"{self._model.__class__.__name__} returned an unsupported image result"
+            )
+        return image
 
     def __call__(self, prompt: str, seed: int = 42, **kwargs: Any) -> Image.Image:
         if not self._is_loaded:
@@ -181,13 +188,36 @@ def _load_backed(
     if self.config.lora_paths:
         logger.info(f"LoRA adapters: {self.config.lora_paths}")
     try:
-        self._model = backend_class(
-            quantize=self.config.quantize,
-            model_path=self.model_path,
-            lora_paths=self.config.lora_paths,
-            lora_scales=self.config.lora_scales,
-            model_config=self.config.model_config,
+        constructor_arguments = {
+            "quantize": self.config.quantize,
+            "model_path": self.model_path,
+            "lora_paths": self.config.lora_paths,
+            "lora_scales": self.config.lora_scales,
+            "model_config": self.config.model_config,
+        }
+        constructor_signature = inspect.signature(backend_class)
+        supports_arbitrary_arguments = any(
+            parameter.kind is inspect.Parameter.VAR_KEYWORD
+            for parameter in constructor_signature.parameters.values()
         )
+        if not supports_arbitrary_arguments:
+            unsupported_lora_arguments = {
+                name
+                for name in ("lora_paths", "lora_scales")
+                if constructor_arguments[name] and name not in constructor_signature.parameters
+            }
+            if unsupported_lora_arguments:
+                unsupported = ", ".join(sorted(unsupported_lora_arguments))
+                raise InvalidConfigurationError(
+                    f"{display_name} does not support these LoRA options: {unsupported}"
+                )
+            constructor_arguments = {
+                name: value
+                for name, value in constructor_arguments.items()
+                if name in constructor_signature.parameters
+            }
+
+        self._model = backend_class(**constructor_arguments)
         self._is_loaded = True
         logger.info(f"{display_name} loaded successfully")
     except Exception as e:

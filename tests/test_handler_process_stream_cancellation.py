@@ -59,17 +59,23 @@ async def test_call_stream_does_not_enqueue_cancel_after_normal_completion(
     req_id = "req-stream-ok"
     monkeypatch.setattr(handler_process_module.uuid, "uuid4", lambda: req_id)
 
-    async def _collect_stream() -> list[str]:
+    async def _collect_stream() -> list[Any]:
         return [chunk async for chunk in proxy._call_stream("generate_text_stream", "hello")]
 
     stream_task = asyncio.create_task(_collect_stream())
     await asyncio.sleep(0)
 
+    metadata = {
+        "__finish_reason__": "length",
+        "__parser_diagnostics__": ["incomplete_tool_call"],
+        "__usage__": {"completion_tokens": 10},
+    }
     result_queue = proxy._pending[req_id]
     await result_queue.put({"type": "chunk", "value": "hello"})
+    await result_queue.put({"type": "chunk", "value": metadata})
     await result_queue.put({"type": handler_process_module._STREAM_END})
 
-    assert await stream_task == ["hello"]
+    assert await stream_task == ["hello", metadata]
     assert proxy._control_queue.items == []
 
 

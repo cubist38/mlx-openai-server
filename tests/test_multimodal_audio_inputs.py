@@ -37,25 +37,21 @@ def _load_mlx_vlm_model_module(monkeypatch: pytest.MonkeyPatch) -> Any:
     fake_utils_module.process_inputs_with_fallback = fake_process_inputs_with_fallback
     fake_utils_module.load_image = lambda source: source
 
-    fake_video_module = types.ModuleType("mlx_vlm.video_generate")
+    fake_generate_module = types.ModuleType("mlx_vlm.generate")
+    fake_video_module = types.ModuleType("mlx_vlm.generate.video")
 
-    def fake_process_vision_info(messages: list[dict[str, Any]]) -> tuple[list[str], list[str]]:
-        return (
-            [
-                item["image"]
-                for message in messages
-                for item in message["content"]
-                if "image" in item
-            ],
-            [
-                item["video"]
-                for message in messages
-                for item in message["content"]
-                if "video" in item
-            ],
+    def fake_resolve_video_inputs(
+        _processor: Any,
+        videos: list[str],
+        *,
+        images: list[str],
+    ) -> Any:
+        return types.SimpleNamespace(
+            images=images,
+            videos=videos,
         )
 
-    fake_video_module.process_vision_info = fake_process_vision_info
+    fake_video_module.resolve_video_inputs = fake_resolve_video_inputs
 
     fake_outlines_module = types.ModuleType("outlines.processors")
     fake_outlines_module.JSONLogitsProcessor = object
@@ -67,7 +63,8 @@ def _load_mlx_vlm_model_module(monkeypatch: pytest.MonkeyPatch) -> Any:
     monkeypatch.setitem(sys.modules, "mlx.core", fake_mx_module)
     monkeypatch.setitem(sys.modules, "mlx_vlm", fake_mlx_vlm_module)
     monkeypatch.setitem(sys.modules, "mlx_vlm.utils", fake_utils_module)
-    monkeypatch.setitem(sys.modules, "mlx_vlm.video_generate", fake_video_module)
+    monkeypatch.setitem(sys.modules, "mlx_vlm.generate", fake_generate_module)
+    monkeypatch.setitem(sys.modules, "mlx_vlm.generate.video", fake_video_module)
     monkeypatch.setitem(sys.modules, "outlines.processors", fake_outlines_module)
     monkeypatch.setitem(
         sys.modules, "app.utils.outlines_transformer_tokenizer", fake_outlines_tokenizer_module

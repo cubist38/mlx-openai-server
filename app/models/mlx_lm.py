@@ -121,6 +121,7 @@ class CompletionResponse:
     prompt_tokens: int = None
     generation_tokens: int = None
     cached_prompt_tokens: int = 0
+    finish_reason: str | None = None
 
 
 class MLX_LM:
@@ -632,4 +633,5 @@ class MLX_LM:
             prompt_tps=final_chunk.prompt_tps,
             prompt_tokens=final_chunk.prompt_tokens,
             generation_tokens=final_chunk.generation_tokens,
+            finish_reason=final_chunk.finish_reason,
         )

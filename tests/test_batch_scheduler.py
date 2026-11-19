@@ -238,18 +238,34 @@ class _FakeSequenceStateMachine:
 
 
 @pytest.fixture
-def patched_scheduler(monkeypatch):
+def patched_scheduler(monkeypatch: pytest.MonkeyPatch) -> Any:
     """Load ``batch_scheduler`` with ``BatchGenerator`` + mlx stream stubbed."""
 
-    from app.core import batch_scheduler as bsm
+    fake_mx = types.ModuleType("mlx.core")
+    fake_mx.stream = _fake_stream_cm
+    fake_mx.new_stream = _fake_device
+    fake_mx.new_thread_local_stream = _fake_device
+    fake_mx.default_device = _fake_device
+    fake_mx.get_peak_memory = _zero
+    fake_mlx = types.ModuleType("mlx")
+    fake_mlx.core = fake_mx
 
-    monkeypatch.setattr(bsm, "BatchGenerator", FakeBatchGenerator)
-    monkeypatch.setattr(bsm, "SequenceStateMachine", _FakeSequenceStateMachine)
-    monkeypatch.setattr(bsm.mx, "stream", _fake_stream_cm)
-    monkeypatch.setattr(bsm.mx, "new_stream", _fake_device)
-    monkeypatch.setattr(bsm.mx, "new_thread_local_stream", _fake_device, raising=False)
-    monkeypatch.setattr(bsm.mx, "default_device", _fake_device)
-    monkeypatch.setattr(bsm.mx, "get_peak_memory", _zero)
+    fake_mlx_lm = types.ModuleType("mlx_lm")
+    fake_generate = types.ModuleType("mlx_lm.generate")
+    fake_generate.BatchGenerator = FakeBatchGenerator
+    fake_generate.SequenceStateMachine = _FakeSequenceStateMachine
+    fake_cache = types.ModuleType("mlx_lm.models.cache")
+    fake_cache.can_trim_prompt_cache = lambda _cache: True
+    fake_cache.trim_prompt_cache = lambda _cache, _amount: None
+
+    monkeypatch.setitem(sys.modules, "mlx", fake_mlx)
+    monkeypatch.setitem(sys.modules, "mlx.core", fake_mx)
+    monkeypatch.setitem(sys.modules, "mlx_lm", fake_mlx_lm)
+    monkeypatch.setitem(sys.modules, "mlx_lm.generate", fake_generate)
+    monkeypatch.setitem(sys.modules, "mlx_lm.models.cache", fake_cache)
+    monkeypatch.delitem(sys.modules, "app.core.batch_scheduler", raising=False)
+    bsm = importlib.import_module("app.core.batch_scheduler")
+
     # Reset shared state each test.
     FakeBatchGenerator.script_queue = []
     FakeBatchGenerator.step_delay = 0.0
@@ -505,7 +521,8 @@ async def test_admission_reclaims_lru_based_on_live_batch(patched_scheduler):
         max_bytes = 1_000
         trim_calls: list[int] = []
 
-        def fetch_nearest_cache(self, _tokens):
+        def fetch_nearest_cache(self, _tokens, allowed_sources=None):
+            del allowed_sources
             return None, list(_tokens)
 
         def trim_to(self, *, n_bytes):
@@ -589,7 +606,8 @@ async def test_exact_cache_hit_is_backed_off_before_kickoff_token(patched_schedu
             self.nbytes = nbytes
 
     class _FakeLRU:
-        def fetch_nearest_cache(self, tokens):
+        def fetch_nearest_cache(self, tokens, allowed_sources=None):
+            del allowed_sources
             if tokens == [1, 2, 3]:
                 return [_FakeLayer()], []
             raise AssertionError(f"unexpected fetch for tokens={tokens}")
@@ -644,7 +662,8 @@ async def test_exact_non_trimmable_cache_hit_falls_back_to_reprefill(patched_sch
         nbytes = 0
 
     class _FakeLRU:
-        def fetch_nearest_cache(self, tokens):
+        def fetch_nearest_cache(self, tokens, allowed_sources=None):
+            del allowed_sources
             if tokens == [1, 2, 3]:
                 return [_FakeLayer()], []
             if tokens == [1, 2]:
@@ -702,7 +721,8 @@ async def test_exact_non_trimmable_cache_hit_logs_info(patched_scheduler):
         nbytes = 0
 
     class _FakeLRU:
-        def fetch_nearest_cache(self, tokens):
+        def fetch_nearest_cache(self, tokens, allowed_sources=None):
+            del allowed_sources
             if tokens == [1, 2, 3]:
                 return [_FakeLayer()], []
             if tokens == [1, 2]:

@@ -200,3 +200,22 @@ def test_model_entry_extras_surfaces_non_default_batch_scheduler_settings(
     )
 
     assert extras["batch_scheduler"] == "decode=16, prefill_step=1024"
+
+
+def test_model_entry_extras_preserves_duration_units(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The startup banner should not append seconds to duration strings."""
+
+    main_module = _load_main_module(monkeypatch)
+    extras = dict(
+        main_module._model_entry_extras(
+            ModelEntryConfig(
+                model_path="dummy-model",
+                on_demand=True,
+                on_demand_idle_timeout="5m",
+            )
+        )
+    )
+
+    assert extras["on_demand"] == "idle_timeout=5m"

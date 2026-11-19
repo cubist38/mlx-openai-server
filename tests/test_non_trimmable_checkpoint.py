@@ -26,7 +26,7 @@ def _install_fake_mlx_cache_module(
     *,
     trimmable: bool = True,
 ) -> None:
-    """Install an ``mlx_lm.models.cache`` stub.
+    """Install ``mlx.core`` and ``mlx_lm.models.cache`` stubs.
 
     Parameters
     ----------
@@ -35,6 +35,11 @@ def _install_fake_mlx_cache_module(
     trimmable : bool
         Value returned by ``can_trim_prompt_cache``.
     """
+    fake_mlx = types.ModuleType("mlx")
+    fake_mlx_core = types.ModuleType("mlx.core")
+    fake_mlx_core.clear_cache = Mock()
+    fake_mlx.core = fake_mlx_core
+
     fake_mlx_lm = types.ModuleType("mlx_lm")
     fake_models = types.ModuleType("mlx_lm.models")
     fake_cache = types.ModuleType("mlx_lm.models.cache")
@@ -45,6 +50,8 @@ def _install_fake_mlx_cache_module(
     fake_models.cache = fake_cache
     fake_mlx_lm.models = fake_models
 
+    monkeypatch.setitem(sys.modules, "mlx", fake_mlx)
+    monkeypatch.setitem(sys.modules, "mlx.core", fake_mlx_core)
     monkeypatch.setitem(sys.modules, "mlx_lm", fake_mlx_lm)
     monkeypatch.setitem(sys.modules, "mlx_lm.models", fake_models)
     monkeypatch.setitem(sys.modules, "mlx_lm.models.cache", fake_cache)
@@ -379,6 +386,18 @@ class TestModelCheckpointPrefill:
         model._prefill_cache = Mock()
 
         return model, fake_generate
+
+    @pytest.mark.parametrize("reason", ["stop", "length"])
+    def test_nonstream_preserves_engine_finish_reason(
+        self, monkeypatch: pytest.MonkeyPatch, reason: str
+    ) -> None:
+        """Model aggregation must not discard the final engine termination reason."""
+        model, engine = self._make_model(monkeypatch)
+        engine.stream_generate.return_value = iter([engine.GenerationResponse("hi", 99, reason)])
+        result = model([1, 2, 3], stream=False, max_tokens=1)
+        assert result.finish_reason == reason
+        assert result.text == "hi"
+        assert engine.stream_generate.call_args.kwargs["max_tokens"] == 1
 
     def test_prefill_called_with_correct_prefix(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """``_prefill_cache`` receives exactly the prefix tokens up to checkpoint_position."""

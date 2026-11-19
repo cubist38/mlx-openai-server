@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 from dataclasses import dataclass
+import importlib
 import sys
 import types
 from typing import Any
@@ -24,6 +25,22 @@ def _fake_device(_device: Any = None) -> object:
 def _zero() -> int:
     """Return zero for fake memory counters."""
     return 0
+
+
+def _install_fake_mlx(monkeypatch: pytest.MonkeyPatch) -> types.ModuleType:
+    """Install a hardware-independent ``mlx.core`` test double."""
+
+    fake_mx = types.ModuleType("mlx.core")
+    fake_mx.stream = _fake_stream_cm
+    fake_mx.new_stream = _fake_device
+    fake_mx.new_thread_local_stream = _fake_device
+    fake_mx.default_device = _fake_device
+    fake_mx.get_peak_memory = _zero
+    fake_mlx = types.ModuleType("mlx")
+    fake_mlx.core = fake_mx
+    monkeypatch.setitem(sys.modules, "mlx", fake_mlx)
+    monkeypatch.setitem(sys.modules, "mlx.core", fake_mx)
+    return fake_mx
 
 
 @dataclass
@@ -157,14 +174,18 @@ class FakeModel:
 @pytest.fixture
 def patched_vlm_scheduler(monkeypatch):
     """Patch MLX stream calls and VLM BatchGenerator."""
-    from app.core import vlm_batch_scheduler as module
+    _install_fake_mlx(monkeypatch)
+    fake_mlx_vlm = types.ModuleType("mlx_vlm")
+    fake_generate = types.ModuleType("mlx_vlm.generate")
+    fake_generate.DEFAULT_KV_GROUP_SIZE = 64
+    fake_generate.DEFAULT_KV_QUANT_SCHEME = "uniform"
+    fake_generate.DEFAULT_QUANTIZED_KV_START = 0
+    fake_generate.BatchGenerator = FakeVLMBatchGenerator
+    monkeypatch.setitem(sys.modules, "mlx_vlm", fake_mlx_vlm)
+    monkeypatch.setitem(sys.modules, "mlx_vlm.generate", fake_generate)
+    monkeypatch.delitem(sys.modules, "app.core.vlm_batch_scheduler", raising=False)
+    module = importlib.import_module("app.core.vlm_batch_scheduler")
 
-    monkeypatch.setattr(module, "BatchGenerator", FakeVLMBatchGenerator)
-    monkeypatch.setattr(module.mx, "stream", _fake_stream_cm)
-    monkeypatch.setattr(module.mx, "new_stream", _fake_device)
-    monkeypatch.setattr(module.mx, "new_thread_local_stream", _fake_device, raising=False)
-    monkeypatch.setattr(module.mx, "default_device", _fake_device)
-    monkeypatch.setattr(module.mx, "get_peak_memory", _zero)
     FakeVLMBatchGenerator.script_queue = []
     FakeVLMBatchGenerator.init_kwargs = None
     return module
@@ -206,6 +227,7 @@ async def test_vlm_scheduler_streams_chunks(patched_vlm_scheduler):
 
 def test_vlm_handler_batchability_flag(monkeypatch):
     """``--disable-batching`` should route VLM requests to the worker path."""
+    _install_fake_mlx(monkeypatch)
     fake_mlx_vlm_module = types.ModuleType("mlx_vlm")
     fake_mlx_vlm_module.load = lambda *args, **kwargs: (None, None)
     fake_mlx_vlm_module.stream_generate = lambda *args, **kwargs: iter(())
@@ -214,8 +236,12 @@ def test_vlm_handler_batchability_flag(monkeypatch):
     fake_utils = types.ModuleType("mlx_vlm.utils")
     fake_utils.process_inputs_with_fallback = lambda *args, **kwargs: {}
     fake_utils.load_image = lambda source: source
-    fake_video = types.ModuleType("mlx_vlm.video_generate")
-    fake_video.process_vision_info = lambda _messages: ([], [])
+    fake_generate = types.ModuleType("mlx_vlm.generate")
+    fake_video = types.ModuleType("mlx_vlm.generate.video")
+    fake_video.resolve_video_inputs = lambda _processor, videos, images: types.SimpleNamespace(
+        images=images,
+        videos=videos,
+    )
     fake_outlines = types.ModuleType("outlines")
     fake_processors = types.ModuleType("outlines.processors")
 
@@ -232,10 +258,14 @@ def test_vlm_handler_batchability_flag(monkeypatch):
             self.tokenizer = tokenizer
 
     fake_outlines_tokenizer.OutlinesTransformerTokenizer = _FakeOutlinesTransformerTokenizer
+    fake_scheduler = types.ModuleType("app.core.vlm_batch_scheduler")
+    fake_scheduler.VLM_BATCHING_AVAILABLE = True
+    fake_scheduler.VLMBatchScheduler = object
     monkeypatch.setitem(sys.modules, "mlx_vlm", fake_mlx_vlm_module)
     monkeypatch.setitem(sys.modules, "mlx_vlm.sample_utils", fake_sample_utils)
     monkeypatch.setitem(sys.modules, "mlx_vlm.utils", fake_utils)
-    monkeypatch.setitem(sys.modules, "mlx_vlm.video_generate", fake_video)
+    monkeypatch.setitem(sys.modules, "mlx_vlm.generate", fake_generate)
+    monkeypatch.setitem(sys.modules, "mlx_vlm.generate.video", fake_video)
     monkeypatch.setitem(sys.modules, "outlines", fake_outlines)
     monkeypatch.setitem(sys.modules, "outlines.processors", fake_processors)
     monkeypatch.setitem(
@@ -243,10 +273,11 @@ def test_vlm_handler_batchability_flag(monkeypatch):
         "app.utils.outlines_transformer_tokenizer",
         fake_outlines_tokenizer,
     )
+    monkeypatch.setitem(sys.modules, "app.core.vlm_batch_scheduler", fake_scheduler)
     monkeypatch.delitem(sys.modules, "app.models.mlx_vlm", raising=False)
     monkeypatch.delitem(sys.modules, "app.handler.mlx_vlm", raising=False)
 
-    from app.handler import mlx_vlm as module
+    module = importlib.import_module("app.handler.mlx_vlm")
 
     handler = object.__new__(module.MLXVLMHandler)
     handler._disable_batching = False

@@ -49,6 +49,10 @@ class HermesReasoningParser(AbstractReasoningParser):
         matches = self.reasoning_regex.findall(model_output)
         after_reasoning_close_content = None
         if not matches:
+            if self.reasoning_open in model_output:
+                leading, body = model_output.split(self.reasoning_open, 1)
+                self.diagnostics.append("incomplete_reasoning")
+                return {"content": leading, "reasoning_content": body}
             return {"content": model_output}
         reasoning_content_end_idx = model_output.rfind(self.reasoning_close)
         after_reasoning_close_content = model_output[
@@ -75,9 +79,20 @@ class HermesReasoningParser(AbstractReasoningParser):
             - is_complete: False if not complete or in normal state, True if complete
         """
 
-        if self.reasoning_open in chunk:
+        if self.state == ReasoningParserState.NORMAL:
+            chunk = self.buffer + chunk
+            self.buffer = ""
+            if self.reasoning_open not in chunk:
+                overlap = _suffix_prefix_overlap(chunk, self.reasoning_open)
+                if overlap:
+                    self.buffer = chunk[-overlap:]
+                    chunk = chunk[:-overlap]
+                return {"content": chunk}, False
+
+        if self.state == ReasoningParserState.NORMAL and self.reasoning_open in chunk:
             self.state = ReasoningParserState.FOUND_PREFIX
             reasoning_content_start_idx = chunk.find(self.reasoning_open)
+            leading_content = chunk[:reasoning_content_start_idx]
             reasoning_content = chunk[reasoning_content_start_idx + len(self.reasoning_open) :]
 
             if self.reasoning_close in reasoning_content:
@@ -88,6 +103,7 @@ class HermesReasoningParser(AbstractReasoningParser):
                 self.state = ReasoningParserState.NORMAL
                 return {
                     "reasoning_content": reasoning_content[:reasoning_content_end_idx],
+                    "content": leading_content,
                     "after_reasoning_close_content": after_reasoning_close_content,
                 }, True
 
@@ -99,8 +115,8 @@ class HermesReasoningParser(AbstractReasoningParser):
                 emitted_reasoning = reasoning_content
                 self.buffer = ""
 
-            if emitted_reasoning:
-                return {"reasoning_content": emitted_reasoning}, False
+            if emitted_reasoning or leading_content:
+                return {"reasoning_content": emitted_reasoning, "content": leading_content}, False
             return None, False
 
         if self.state == ReasoningParserState.FOUND_PREFIX:
@@ -112,6 +128,7 @@ class HermesReasoningParser(AbstractReasoningParser):
                     reasoning_content_end_idx + len(self.reasoning_close) :
                 ]
                 self.buffer = ""
+                self.state = ReasoningParserState.NORMAL
                 return {
                     "reasoning_content": reasoning_content,
                     "after_reasoning_close_content": after_reasoning_close_content,

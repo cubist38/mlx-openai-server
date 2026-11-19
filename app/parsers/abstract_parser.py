@@ -40,6 +40,17 @@ class AbstractReasoningParser:
         self.reasoning_close = reasoning_close
         self.state = state
         self.buffer = ""
+        self.diagnostics: list[str] = []
+
+    def finalize(self) -> dict[str, str]:
+        """Flush literal tails at EOF without changing their reasoning channel."""
+        in_reasoning = self.state == ReasoningParserState.FOUND_PREFIX
+        if in_reasoning:
+            self.diagnostics.append("incomplete_reasoning")
+        payload = {"reasoning_content" if in_reasoning else "content": self.buffer}
+        self.buffer = ""
+        self.state = ReasoningParserState.NORMAL
+        return payload
 
     def get_reasoning_open(self) -> str:
         """Get the opening tag for reasoning content.
@@ -188,6 +199,20 @@ class AbstractToolParser:
         self.tool_close = tool_close
         self.state = state
         self.buffer = ""
+        self.diagnostics: list[str] = []
+
+    def finalize(self) -> dict[str, str]:
+        """Flush literal prefixes, but never parse an unclosed tool at EOF."""
+        if self.state.value not in {"normal", "found_content"}:
+            self.diagnostics.append("incomplete_tool_call")
+            payload = {}
+        elif self.state.value == "found_content":
+            payload = {}  # Custom content-mode parsers already emitted this text.
+        else:
+            payload = {"content": self.buffer}
+        self.buffer = ""
+        self.state = type(self.state).NORMAL
+        return payload
 
     def get_tool_open(self) -> str:
         """Get the opening tag for tool calls.
@@ -279,6 +304,11 @@ class AbstractToolParser:
                 self.buffer = ""
                 self.state = ToolParserState.NORMAL
                 return ""
+            open_idx = tail_text.find(self.tool_open)
+            if open_idx >= 0:
+                self.buffer = tail_text[open_idx:]
+                self.state = ToolParserState.FOUND_PREFIX
+                return tail_text[:open_idx]
             overlap = _suffix_prefix_overlap(tail_text, self.tool_open)
             if overlap > 0:
                 passthrough_tail = tail_text[:-overlap]

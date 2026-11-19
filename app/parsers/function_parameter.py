@@ -79,7 +79,11 @@ class FunctionParameterToolParser(AbstractToolParser):
 
     def _extract_tool_calls_strict(self, model_output: str) -> list[dict[str, str]]:
         """Extract tool calls using the strict function/parameter tag format."""
-        matches = self.tool_regex.findall(model_output)
+        matches = [
+            match
+            for block in self.tool_call_block_regex.findall(model_output)
+            for match in self.tool_regex.findall(block)
+        ]
         if not matches:
             return []
 
@@ -88,13 +92,13 @@ class FunctionParameterToolParser(AbstractToolParser):
             function_name = function_name_raw.strip()
             function_content = function_content_raw.strip()
 
-            param_matches = self.parameter_regex.findall(function_content)
-            if not param_matches and "<parameter" in function_content:
-                param_matches = self.permissive_parameter_regex.findall(function_content)
+            param_matches = self.permissive_parameter_regex.findall(function_content)
             arguments: dict[str, str | int | float | bool | list[Any] | dict[str, Any]] = {}
             for param_name_raw, param_value_raw in param_matches:
                 param_name = param_name_raw.strip()
                 param_value = param_value_raw.strip()
+                if param_name in arguments:
+                    raise ValueError(f"duplicate_tool_parameter: {param_name}")
                 arguments[param_name] = self._coerce_parameter_value(param_value)
 
             tool_calls.append(
@@ -128,6 +132,8 @@ class FunctionParameterToolParser(AbstractToolParser):
             ):
                 param_name = param_name_raw.strip()
                 param_value = param_value_raw.strip()
+                if param_name in arguments:
+                    raise ValueError(f"duplicate_tool_parameter: {param_name}")
                 arguments[param_name] = self._coerce_parameter_value(param_value)
 
             tool_calls.append(
@@ -153,12 +159,25 @@ class FunctionParameterToolParser(AbstractToolParser):
             Dictionary with 'tool_calls' key containing list of parsed tool calls,
             or None if no tool calls found. Each tool call has 'name' and 'arguments'.
         """
-        tool_calls = self._extract_tool_calls_strict(model_output)
+        tool_calls = []
+        content = []
+        cursor = 0
+        for match in self.tool_call_block_regex.finditer(model_output):
+            content.append(model_output[cursor : match.start()])
+            block = match.group(0)
+            try:
+                calls = self._extract_tool_calls_strict(block)
+                if not calls:
+                    calls = self._extract_tool_calls_permissive(block)
+            except ValueError:
+                self.diagnostics.append("duplicate_tool_parameter")
+                calls = []
+            tool_calls.extend(calls)
+            if not calls:
+                content.append(block)
+            cursor = match.end()
+        content.append(model_output[cursor:])
+        result = {"content": "".join(content)}
         if tool_calls:
-            return {"tool_calls": tool_calls}
-
-        tool_calls = self._extract_tool_calls_permissive(model_output)
-        if tool_calls:
-            return {"tool_calls": tool_calls}
-
-        return {"content": model_output}
+            result["tool_calls"] = tool_calls
+        return result
